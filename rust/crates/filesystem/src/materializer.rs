@@ -1211,6 +1211,7 @@ impl NativeOwnedRootAllocation {
         Ok(())
     }
 }
+
 #[cfg(not(target_arch = "wasm32"))]
 fn validate_native_state_relative(
     relative: &Path, work: &NativeMaterializationWork,
@@ -2956,7 +2957,7 @@ impl NativeMaterializationWork {
         expected_root: crate::NativeRootIdentity,
         relative: &Path,
         expected_directory: crate::NativeRootIdentity,
-        mut before_effect: F,
+        before_effect: F,
     ) -> Result<(), E>
     where
         F: FnMut() -> Fut + Send,
@@ -2970,8 +2971,30 @@ impl NativeMaterializationWork {
         }
         let held = crate::native_host::HostRoot::open_materialization_measured(root, self)?;
         if held.identity() != expected_root { return Err(NativeTreeMaterializationError::AllocationChanged { expected: expected_root, actual: held.identity() }.into()); }
+        self.release_owned_directory_held_guarded(
+            &held, relative, expected_directory, before_effect, |work| {
+                let current = crate::native_host::HostRoot::open_materialization_measured(root, work)?;
+                if current.identity() != expected_root {
+                    return Err(NativeTreeMaterializationError::AllocationChanged { expected: expected_root, actual: current.identity() });
+                }
+                Ok(())
+            },
+        ).await
+    }
+
+    async fn release_owned_directory_held_guarded<F, Fut, E, V>(
+        &self, held: &crate::native_host::HostRoot, relative: &Path,
+        expected_directory: crate::NativeRootIdentity, mut before_effect: F,
+        mut validate_root: V,
+    ) -> Result<(), E>
+    where
+        F: FnMut() -> Fut + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
+        E: From<NativeTreeMaterializationError>,
+        V: FnMut(&Self) -> Result<(), NativeTreeMaterializationError> + Send,
+    {
         let parent_path = relative.parent().unwrap_or_else(|| Path::new(""));
-        let parent = native_owned_relative_parent(&held, parent_path, self)?;
+        let parent = native_owned_relative_parent(held, parent_path, self)?;
         let parent_identity = crate::native_host::directory_identity_materialization_measured(&parent, self)?;
         let leaf = Path::new(relative.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?);
         #[cfg(unix)]
@@ -2996,9 +3019,8 @@ impl NativeMaterializationWork {
         let mut walker = NativeRemoveWalker::new(frame, self)?;
         while let Some(step) = walker.next(self, true)? {
             before_effect().await?;
-            let current = crate::native_host::HostRoot::open_materialization_measured(root, self)?;
-            if current.identity() != expected_root { return Err(NativeTreeMaterializationError::AllocationChanged { expected: expected_root, actual: current.identity() }.into()); }
-            let current_parent = native_owned_relative_parent(&current, parent_path, self)?;
+            validate_root(self).map_err(E::from)?;
+            let current_parent = native_owned_relative_parent(held, parent_path, self)?;
             let actual = crate::native_host::directory_identity_materialization_measured(&current_parent, self)?;
             if actual != parent_identity { return Err(NativeTreeMaterializationError::AllocationChanged { expected: parent_identity, actual }.into()); }
             let actual = native_stat_identity(&stat_native_walk_name(&current_parent, leaf_name, self)?);
@@ -6525,19 +6547,31 @@ impl NativeTreeMaterializationBackend {
         Ok(())
     }
 
-    /// Checks that root entries belong to the original selected install paths.
+    /// Checks root entries against original install paths and explicitly held,
+    /// preserved lazy-root locators. Locators are observations, not authority.
     /// Missing entries remain permitted during incomplete forward application.
     ///
     /// # Errors
     /// Never adopts unselected user data; returns divergence or spent scan work.
-    pub fn require_selected_root(&self, edits: &[MaterializationEdit]) -> Result<(), NativeTreeMaterializationError> {
+    pub fn require_selected_root(&self, edits: &[MaterializationEdit], preserved: &[&str]) -> Result<(), NativeTreeMaterializationError> {
+        for path in preserved {
+            if !crate::path::is_canonical_relative_with_step(path, || self.work.charge(crate::WorkCounters {
+                items_examined: 1, ..crate::WorkCounters::UNCHARGED
+            }))? {
+                return Err(NativeTreeMaterializationError::InvalidLayout);
+            }
+        }
         let directory = self.held_root.open_dir_materialization_measured(Path::new(""), &self.work)?;
         let (mut reader, _cursor) = crate::native_host::read_dir_held_with_work(&directory, &mut &self.work)?;
         while let Some((name, _allocation)) = next_native_walk_name(&mut reader, &self.work)? {
             let mut selected = false;
-            for edit in edits {
+            let paths = edits.iter().map(|edit| match edit {
+                MaterializationEdit::Install { path, .. } => Some(path.as_str()),
+                _ => None,
+            }).chain(preserved.iter().copied().map(Some));
+            for path in paths {
                 self.work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() })?;
-                let MaterializationEdit::Install { path, .. } = edit else { continue; };
+                let Some(path) = path else { continue; };
                 let top = path.split('/').next().unwrap_or_default();
                 #[cfg(unix)]
                 let equal = {

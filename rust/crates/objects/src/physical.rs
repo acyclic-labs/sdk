@@ -988,7 +988,8 @@ async fn read_body_at_native_inner(
         };
         open_meter.admit_read(0)?;
         let file_length = file.metadata()?.len();
-        let file = acyclic_native_runtime::NativeFile::from_file_measured_owned(file, open_meter)?;
+        let file = acyclic_native_runtime::NativeFile::from_file_measured_owned(file, open_meter)
+            .map_err(|(error, file)| { drop(file); error })?;
         Ok::<_, std::io::Error>((file, file_length, location))
     }, Arc::clone(&meter))?;
     let (file, file_length, location) = opened.await.map_err(|_| unavailable())??;

@@ -1273,8 +1273,7 @@ fn create_unix_directory_leaf_with_work<W: NativeHostWork>(
     use std::os::fd::AsRawFd as _;
     loop {
         let delta = WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED };
-        work.admit(delta)?;
-        work.record(delta)?;
+        work.started_io(delta)?;
         // SAFETY: held directory and terminated single-component name remain live.
         if unsafe { libc::mkdirat(parent.as_raw_fd(), leaf.as_ptr(), 0o777) } == 0 { return Ok(()); }
         let error = io::Error::last_os_error();
@@ -1537,10 +1536,21 @@ pub(crate) fn create_directories_held_materialization_measured(
 pub(crate) fn create_new_directory_held_with_work<W: NativeHostWork>(
     parent: &Dir, leaf: &Path, work: &mut W,
 ) -> Result<Dir, W::Error> {
+    let directory = create_new_directory_held_acknowledged_with_work(parent, leaf, work, || ())?;
+    sync_directory_held_with_work(parent, work)?;
+    Ok(directory)
+}
+
+/// The acknowledgement runs immediately after the successful native creation,
+/// before opening/querying the new binding or any post-creation fence.
+pub(crate) fn create_new_directory_held_acknowledged_with_work<W: NativeHostWork>(
+    parent: &Dir, leaf: &Path, work: &mut W, mut acknowledged: impl FnMut(),
+) -> Result<Dir, W::Error> {
     require_leaf(leaf)?;
     #[cfg(unix)]
     let directory = unix_name_with_work(leaf.as_os_str(), work, |leaf, work| {
         create_unix_directory_leaf_with_work(parent, leaf, work)?;
+        acknowledged();
         let file = open_unix_named_with(parent, leaf,
             libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC, || {
                 let delta = WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED };
@@ -1552,10 +1562,10 @@ pub(crate) fn create_new_directory_held_with_work<W: NativeHostWork>(
     let directory = with_wide_path_with_work(leaf, work, |leaf, work| {
         // FILE_CREATE returns the exact newly created directory handle; an
         // existing binding is never adopted, including after a race.
-        create_windows_wide_at_measured(parent, leaf, true, false, false, false, work)
-            .map(Dir::from_std_file)
+        let file = create_windows_wide_at_measured(parent, leaf, true, false, false, false, work)?;
+        acknowledged();
+        Ok(Dir::from_std_file(file))
     })?;
-    sync_directory_held_with_work(parent, work)?;
     Ok(directory)
 }
 

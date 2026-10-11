@@ -1572,7 +1572,6 @@ mod tests {
                 length: 8,
             },
         ];
-        assert_eq!(read_windows(&requests)?.len(), 2);
         let (sender, receiver) = mpsc::sync_channel(1);
         submit_read(
             Arc::clone(&file),

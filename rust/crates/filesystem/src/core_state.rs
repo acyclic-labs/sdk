@@ -2220,9 +2220,17 @@ impl CoreLog {
         bytes.resize(size, 0);
         let mut position = 0;
         while position < bytes.len() {
-            let end = bytes.len().min(position.saturating_add(64 * 1024));
+            let remaining = work.remaining()?.source_bytes_read
+                .min(work.remaining()?.bytes_copied);
+            let end = bytes.len().min(position.saturating_add(64 * 1024))
+                .min(position.saturating_add(usize::try_from(remaining).unwrap_or(usize::MAX)));
+            if end == position {
+                work.charge(crate::WorkCounters {
+                    source_bytes_read: 1, bytes_copied: 1, ..Default::default()
+                })?;
+            }
             let count = crate::native_host::read_builtin_file(&file, &mut bytes[position..end], work)?;
-            if count == 0 { return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into()); }
+            if count == 0 { return Err(std::io::ErrorKind::UnexpectedEof.into()); }
             position += count;
         }
         {
@@ -5197,6 +5205,8 @@ mod tests {
         assert_eq!(custody.bytes(), image.value.capacity() as u64 + (image.values.capacity() * std::mem::size_of::<u64>()) as u64);
         assert_eq!(work.live_allocation_bytes(), original_live + custody.bytes());
         assert!(work.receipt().items_examined >= image.values.len() as u64, "the actual sequence visitor examines every decoded element");
+        assert!(work.receipt().bytes_decoded > 0);
+        assert!(work.receipt().allocation_operations > 1);
         drop(image);
         drop(custody);
         assert_eq!(work.live_allocation_bytes(), original_live);

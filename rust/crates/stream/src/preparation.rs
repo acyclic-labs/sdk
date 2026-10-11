@@ -352,17 +352,6 @@ pub(crate) fn mutations_with_observer(
     Ok(output)
 }
 
-pub(crate) fn records(
-    start: u64,
-    bodies: Vec<OwnedBytes>,
-    commit_id: CommitId,
-    committed_at_micros: u64,
-) -> Result<Vec<Record>, StreamError> {
-    provider_result(records_with_observer(
-        start, bodies, commit_id, committed_at_micros, &MemoryObserver::default(),
-    )).map(|output| output.value)
-}
-
 pub(crate) fn records_with_observer<I>(
     start: u64,
     bodies: I,

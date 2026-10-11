@@ -8,20 +8,7 @@ cargo add acyclic-stream
 
 The default `grpc` feature provides the service client; `local` enables the durable local implementation. `MemoryStream` is deterministic but process-local. Use `StreamPath::new` to validate a path, keep the returned cursor when consuming records, and use an idempotency key plus tail precondition when retrying or coordinating writes.
 
-Native Rust gRPC and the Node/Bun N-API companion trust the platform roots through
-`rustls-platform-verifier`: Windows certificate-chain APIs, macOS Security.framework,
-and Linux native roots selected by `SSL_CERT_FILE` and `SSL_CERT_DIR`. A supplied
-PEM CA is **the only trust** for the connection, including pooled and eager clients;
-it replaces ambient trust. This does not change HTTP, browser, or direct
-TypeScript ConnectRPC transport trust.
-
-Hosted gRPC Read/Follow frames may carry an optional opaque 32-byte delivery token. After validating the complete frame, the client queues a best-effort receipt to that frame's issuing endpoint, independently of record delivery. One worker per logical reader holds at most 16 pending receipts plus one in-flight RPC bounded to 500 ms; queue pressure discards receipts, not records. Dropping or ending the reader cancels its worker and pending receipts. Failures do not alter read results, and no per-frame detached tasks or durable receipt ledger are created.
-
-`grpc::Client::without_delivery_acknowledgements` (also on `StreamClient<grpc::Client>`) opts translating clients out. Explicit `acknowledge_delivery(endpoint_index, token)` uses configured endpoint order and never fails over an endpoint-bound token. Local/memory server adapters return `Unsupported`; they never manufacture hosted tokens. These are transport receipts, not proof of application consumption, billable egress, or Actor checkpoints.
-
-Actual hosted use requires the Data service to implement the canonical `acyclic.stream.v1.StreamService/AcknowledgeDelivery` RPC, token issuance on Read/Follow frames, authenticated caller/issuing-endpoint binding, expiry, and idempotent replay with durable receipt retention. Those service capabilities are external prerequisites, not SDK implementations or deployment claims. Existing timestamps, atomic Commit, indefinite history, and reserved deletion fields are unchanged.
-
-Record values and append/fork mutation payloads use `OwnedBytes`. Ordinary callers can use `OwnedBytes::from_static`, `OwnedBytes::copy_from_slice`, or `OwnedBytes::from(Vec<u8>)`; compare borrowed contents with `as_slice()`. Generated protobuf byte fields remain `bytes::Bytes`; the ordinary wire adapter retains the original guarded owner without copying its data.
+Record values and append/fork mutation payloads use `OwnedBytes`. Ordinary callers can use `OwnedBytes::from_static`, `OwnedBytes::copy_from_slice`, or `OwnedBytes::from(Vec<u8>)`; compare borrowed contents with `as_slice()`. Generated protobuf byte fields retain guarded data as `bytes::Bytes`.
 
 Native `OwnedBytes::from_vec_with_guard_in_place` admits sharing controls before
 moving the vector; rejection restores the same original guard and leaves the

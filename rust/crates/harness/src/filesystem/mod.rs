@@ -72,6 +72,8 @@ pub use root_source::FsRootProjectSourceProvider;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_execution;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub(crate) use native_execution::NativePreparationCompletionTemplate;
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_process::{NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt, NativeReceiptError, NativeProcessDrainProof, NativeProcessPublishedVolume};

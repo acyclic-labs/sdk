@@ -127,6 +127,26 @@ pub struct NativeWorkingSet<A, O> {
 /// and does not certify unrelated immutable base-provider reads.
 pub struct NativeMountDrainProof {
     _source: Arc<dyn super::MountFilesystem>,
+    #[cfg(windows)]
+    namespace_outcome: Option<super::projfs::ProjFsNamespaceOutcome>,
+}
+
+impl NativeMountDrainProof {
+    /// Moves the original authored-capture failure and any distinct namespace
+    /// cleanup failure after physical retirement. The proof keeps the original
+    /// uncaptured namespace data; taking the cause never certifies publication
+    /// or permits deleting that data.
+    pub fn take_retained_capture_failure(&mut self) -> Option<MountLifecycleError> {
+        #[cfg(windows)]
+        {
+            self.namespace_outcome.as_mut()?.take_capture_failures()
+                .map(|(source, cleanup_failure)| MountLifecycleError::NativeCaptureFailure {
+                    source, cleanup_failure,
+                })
+        }
+        #[cfg(not(windows))]
+        { None }
+    }
 }
 
 
@@ -382,7 +402,11 @@ where
         if !self.source.capture_retired() {
             return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
         }
-        Ok(NativeMountDrainProof { _source: self.source.clone() })
+        Ok(NativeMountDrainProof {
+            _source: self.source.clone(),
+            #[cfg(windows)]
+            namespace_outcome: None,
+        })
     }
 
 
@@ -1244,7 +1268,12 @@ where
             if !self.source.physically_retired()? {
                 return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
             }
-            let proof = NativeMountDrainProof { _source: self.source.clone() };
+            let proof = NativeMountDrainProof {
+                _source: self.source.clone(),
+                #[cfg(windows)]
+                namespace_outcome: owner.as_mut()
+                    .and_then(super::NativeMountSession::take_retired_namespace_outcome),
+            };
             drop(owner.take());
             Ok(proof)
         })();
@@ -1322,6 +1351,14 @@ pub enum MountLifecycleError {
     /// Native driver admission or teardown failed.
     #[error(transparent)]
     Native(#[from] NativeMountError),
+    /// Physical retirement preserved uncaptured namespace data and its actual
+    /// authored failure, including a distinct namespace cleanup failure.
+    #[error("native capture or namespace cleanup failed: {source}")]
+    NativeCaptureFailure {
+        #[source]
+        source: NativeMountError,
+        cleanup_failure: Option<NativeMountError>,
+    },
     /// Native callback publication failed.
     #[error(transparent)]
     Source(#[from] MountSourceError),

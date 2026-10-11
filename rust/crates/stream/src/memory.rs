@@ -3057,12 +3057,6 @@ fn validate_commit_size(request: &CommitRequest, observer: &MemoryObserver) -> M
     Ok(())
 }
 
-#[cfg(any(feature = "local", test))]
-pub(crate) fn commit_encoded_len(request: &CommitRequest) -> usize {
-    commit_encoded_len_with_observer(request, &MemoryObserver::default())
-        .expect("ordinary size inspection has no fallible observer")
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn commit_encoded_len_observed(
     request: &CommitRequest,
@@ -4922,7 +4916,8 @@ mod tests {
                 idempotency_key: key(b"sizing")?,
             };
             assert_eq!(
-                commit_encoded_len(&request),
+                commit_encoded_len_with_observer(&request, &MemoryObserver::default())
+                    .expect("ordinary size inspection has no fallible observer"),
                 crate::wire_codec::commit_to_wire(&request).encoded_len(),
             );
         }

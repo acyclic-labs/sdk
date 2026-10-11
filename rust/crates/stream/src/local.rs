@@ -1023,17 +1023,6 @@ impl LocalStream {
             .map_err(|_| LocalCompletionError::Stream(self.inner.poison()))?
     }
 
-    /// Returns once every frame through `sequence` is durable: group commit.
-    /// One caller at a time flushes every frame written so far, on a blocking
-    /// thread and outside visibility; the rest wait for it and flush again
-    /// only for frames written after it began. A poisoned store fails every
-    /// wait, even for frames already durable, so no result observed before
-    /// the poison is returned after it.
-    async fn await_durable(&self, sequence: u64) -> Result<(), StreamError> {
-        self.await_durable_observed(sequence, None, None).await
-            .map_err(LocalCompletionError::ordinary)
-    }
-
     fn plan_flush(
         &self,
         meter: Option<&Arc<dyn NativeReadMeter>>,
@@ -2064,7 +2053,7 @@ struct Journal {
     required: u64,
     /// Every frame through this sequence is durable.
     synced: u64,
-    /// Whether a flush is under way; see [`LocalStream::await_durable`].
+    /// Whether a flush is under way.
     syncing: bool,
     root: PathBuf,
     torn_tail: Option<u64>,
@@ -4572,10 +4561,12 @@ mod tests {
         provider.commit(keyed_commit("durable", 0)?).await?;
         let required = provider.inner.journal.required()?;
         assert_eq!(required, 1);
-        provider.await_durable(required).await?;
+        provider.await_durable_observed(required, None, None).await
+            .map_err(LocalCompletionError::ordinary)?;
         provider.inner.poison();
         assert_eq!(
-            provider.await_durable(required).await,
+            provider.await_durable_observed(required, None, None).await
+                .map_err(LocalCompletionError::ordinary),
             Err(StreamError::Unavailable)
         );
         assert_eq!(

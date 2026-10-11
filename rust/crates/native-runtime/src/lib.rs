@@ -1827,11 +1827,7 @@ pub struct NativeByteReservation<'a> {
 }
 
 impl<'a> NativeByteReservation<'a> {
-    /// Reserves the maximum transfer on the original request meter.
-    ///
-    /// # Errors
-    /// Returns the original cancellation, quota, or arithmetic denial before
-    /// the caller issues I/O. No allocation or transfer occurs here.
+    /// Reserves the maximum physical transfer for one request.
     pub fn new(
         meter: &'a dyn NativeReadMeter, kind: NativeOperationKind, maximum: usize,
     ) -> io::Result<Self> {
@@ -5792,7 +5788,7 @@ mod tests {
         let meter = Arc::new(ReadBudgetMeter::new(physical_calls, 8));
         let read = file.read_bounded_async(0, 8, meter.clone())?;
         assert!({
-            let _inline = InlineBlocking::enter();
+            let _blocking = InlineBlocking::enter();
             complete_measured(read)
         }.is_err());
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
@@ -5816,7 +5812,7 @@ mod tests {
         let meter = Arc::new(limits);
         let read = file.read_bounded_async(0, 8, meter.clone())?;
         let error = match {
-            let _inline = InlineBlocking::enter();
+            let _blocking = InlineBlocking::enter();
             complete_measured(read)
         } {
             Err(error) => error,
@@ -5831,7 +5827,7 @@ mod tests {
 
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     #[test]
-    fn short_read_preserves_prefix_and_returned_capacity_custody() -> io::Result<()> {
+    fn bounded_short_read_transfers_actual_capacity_and_header_operation() -> io::Result<()> {
         let temporary = tempfile::tempdir()?;
         let path = temporary.path().join("eof");
         std::fs::write(&path, b"abc")?;
@@ -5839,12 +5835,16 @@ mod tests {
         let meter = Arc::new(ReadBudgetMeter::new(8, 8));
         let read = file.read_bounded_async(0, 8, meter.clone())?;
         let result = {
-            let _inline = InlineBlocking::enter();
+            let _blocking = InlineBlocking::enter();
             complete_measured(read)
         }?;
         assert_eq!(result.bytes.as_ref(), b"abc");
+        assert_eq!(result.buffer_capacity, 8);
         assert_eq!(meter.memory.load(Ordering::Acquire), result.buffer_capacity as u64);
+        assert_eq!(meter.headers.load(Ordering::Acquire), 1);
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
+        assert!(file.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
+        assert_eq!(meter.operations.load(Ordering::Acquire), if cfg!(windows) { 3 } else { 2 });
         drop(result);
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
         Ok(())
@@ -5907,6 +5907,9 @@ mod tests {
                 io::ErrorKind::Interrupted
             } else { io::ErrorKind::UnexpectedEof });
             assert_eq!(meter.read.load(Ordering::Acquire), 3);
+            assert_eq!(meter.operations.load(Ordering::Acquire),
+                if late_cancel { if cfg!(windows) { 2 } else { 1 } }
+                else if cfg!(windows) { 3 } else { 2 });
             assert_eq!(meter.headers.load(Ordering::Acquire), 0);
             let deadline = Instant::now() + Duration::from_secs(10);
             while meter.memory.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
@@ -6127,7 +6130,7 @@ mod tests {
         let file = NativeFile::from_file(input)?;
         let meter = Arc::new(ReadBudgetMeter::new(4, 3));
         let result = {
-            let _inline = InlineBlocking::enter();
+            let _blocking = InlineBlocking::enter();
             complete_measured(file.read_bounded_async(0, 3, meter.clone())?)
         }?;
         assert_eq!(result.bytes.as_ref(), b"abc");
@@ -6150,8 +6153,8 @@ mod tests {
         let file = NativeFile::from_file(File::open(&path)?)?;
         let meter = Arc::new(ReadBudgetMeter::new(2, 3));
         let result = {
-            let _inline = InlineBlocking::enter();
-            complete_measured(file.read_bounded_async(0, 3, meter.clone())?)
+            let _blocking = InlineBlocking::enter();
+            file.read_bounded_async(0, 3, meter.clone()).and_then(complete_measured)
         };
         assert!(result.is_err());
         assert_eq!(meter.operations.load(Ordering::Acquire), 2);
@@ -6204,7 +6207,7 @@ mod tests {
         let meter = Arc::new(ReadBudgetMeter::new(8, 8));
         let read = file.read_bounded_async(0, 3, meter.clone())?;
         assert!({
-            let _inline = InlineBlocking::enter();
+            let _blocking = InlineBlocking::enter();
             complete_measured(read)
         }.is_err());
         assert_eq!(meter.operations.load(Ordering::Acquire), 1);
@@ -6238,10 +6241,9 @@ mod tests {
         ).expect("finite envelope budget");
         meter.cancelled.store(true, Ordering::Release);
         let error = {
-            let _inline = InlineBlocking::enter();
+            let _blocking = InlineBlocking::enter();
             complete_measured(task)
-        }
-            .expect_err("cancelled envelope must not execute its body");
+        }.expect_err("cancelled envelope must not execute its body");
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert!(!called.load(Ordering::Acquire));
         assert_eq!(meter.allocations.load(Ordering::Acquire), 2);
@@ -6256,7 +6258,7 @@ mod tests {
             || -> () { panic!("controlled native host task panic") }, meter.clone(),
         ).expect("finite envelope budget");
         let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _inline = InlineBlocking::enter();
+            let _blocking = InlineBlocking::enter();
             complete_measured(task)
         })).expect_err("the observing poll must resume the original panic");
         assert_eq!(payload.downcast_ref::<&'static str>(),

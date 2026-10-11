@@ -12,16 +12,6 @@ Choose the backend for your deployment: embedded storage for local durability, h
 
 `WorkspaceContextRegistry` records the control-plane hierarchy of physical roots and their exact workspace identities without enumerating file contents. A context has one direct parent, but its roots can be independently adopted by another authorized context; ancestry is not a prerequisite for reference visibility. Native and browser bindings exchange the same bounded `WorkspaceContextRoot`, `WorkspaceContextRoots`, `WorkspaceContextSnapshot`, and `WorkspaceContextDiscard` protobuf records. The Rust codec rejects malformed identities, noncanonical paths, duplicate or unordered roots, invalid lifecycle states, and noncanonical encodings before adapters act on them. Context records convey routing and lineage, not permission to read or write another owner's bytes.
 
-The stock `LocalCoreStateStore` native lineage/context hooks use that same `CoreLog`
-and its canonical JSON afterimages, not the materialization journal. A funded blocking
-source retains the original resource view, cancellation and owned payload custody;
-incoming DTO capacities are checked before exchange. Resident and WAL vectors retain
-actual capacity guards, while ordinary public context maps account known logical
-entries and owned paths/names without claiming allocator-private tree-node layouts.
-Parent changes persist every affected child bucket and count together, including
-removal of the old parent's last child. A later checkpoint cannot erase a durable
-WAL acceptance; cold replay and ordinary readers observe the same records.
-
 Native materialization distinguishes an immutable `GenerationTransition { from, to }`
 from `NativePreparation`: preparation retains the actual qualified source selection
 and original full manifest/fence bytes rather than inventing a generation transition.
@@ -170,6 +160,12 @@ or effects; direct host-configured mounts retain their explicit host role.
 Authorization failure moves its typed cause into a preadmitted per-callback box,
 not a shared diagnostic slot. The same box is unsized without another allocation
 and physically destroyed before its outer allocation custody is released.
+Authored source mutation and publication request the distinct required WRITE
+verification before provider frames/effects and again after completed effects.
+READ verification alone cannot authorize capture, metadata edits, or publication.
+FUSE, Darwin, and Windows retain completed prefixes on post-effect denial rather
+than claiming rollback. Private cache hydration and already-accepted namespace
+retirement use their independent SDK namespace ownership, not authored WRITE.
 Directory pages are non-cloneable intrinsic owners of entry/name/cursor capacity.
 Physical projections transfer and split their existing custody for escaping data,
 without adopting that data again or creating another ledger.
@@ -183,23 +179,18 @@ A cancelled cleanup wait retains unattempted handles. Consumed failed SDK
 shutdowns remain failures, not absence or cleanup-complete evidence. These are
 SDK-observable control attempts, not inferred transport acknowledgements or RSS.
 
-Linux uses the pinned upstream `fuser` 0.18.0 sources in
-`rust/vendor/fuser-0.18.0` (upstream commit
-`9c957f74efe715112049298cdf1d601781829c8d`, original license retained).
-The three-file ownership correction adds pure-Rust `try_umount`: kernel refusal
-retains the original mount and join handle instead of consuming them.
-Retained session construction issues the same retirement control before physical
-birth. It retains the original helper, socket and namespace metadata on an
-uncertain device-transfer failure; that uncertainty never authorizes a path-only
-unmount. The actual received FUSE device is retained before helper wait, so a
-post-device wait failure or rejected handshake preserves the mounted session.
-Retained `run` and last-control Drop never launch implicit retirement helpers;
-AutoUnmount is rejected in retained mode. Native callers prepare explicit
-bounded retirement before birth. The original device terminal predicate treats
-kernel POLLERR as disconnected, not evidence of a still-mounted source.
-The ordinary unmount helper propagates spawn and exit failures without discarded
-output buffers. FUSE reply acknowledgement semantics are unchanged; these
-ownership guarantees alone do not establish SDK whole-source retirement.
+Administrative cold recovery accepts its original explicit unbounded acquisition
+and one actual standard-library thread before destination-fence birth. The same
+preallocated command/return slot runs recover and detach on each caller's unchanged
+finite allowance, retaining the original fence identity and actual pending controls
+on failure. LastDrop signals that worker without joining the destructor. Only after
+all real helper/task/directory controls physically retire may its original prebirth
+one-write credit close the actual fence file. It preserves the on-disk marker and
+authored namespace DATA, even when namespace detach failed; physical close is not
+namespace restoration or permission to unlink. Known SDK path, state, and closure
+DATA retain genuine allocation custody until physical drop. Thread stacks, scheduler
+bookkeeping, Arc headers, and standard-library join internals remain opaque exclusions.
+Mounted native-source paths never enter this administrative mechanism.
 
 Darwin's existing bridge retains an accepted interruption before its SDK instance
 exists. The same mutex orders pre-mount stop checks and instance publication;
@@ -223,6 +214,14 @@ original allocation guards retire together inside the capture phase; a returned
 snapshot does not retain quota for already-freed state. Output containers fund
 their own actual capacity before collection. Primary and reconciliation failures
 remain separately typed at the mounted boundary.
+
+Physical mount retirement does not certify authored capture or namespace
+restoration. When Windows retirement preserves uncaptured or nonempty staging
+data, the existing drain proof owns that original namespace metadata. Taking its
+failure moves one whole lifecycle cause containing both capture and distinct
+cleanup failures; it neither discards the retained data nor authorizes deletion
+or publication. Native callers retain the actual completed physical prefix before
+returning that cause, so retry never retires a completed mount again.
 
 Concurrent native read observers share the checkout's semantic proof but admit
 and report their own completed name/path DATA. Weak custody metadata follows

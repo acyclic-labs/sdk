@@ -1200,6 +1200,7 @@ async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_own
     assert!(original_cancelled, "callback preserves original typed harness cancellation");
     Ok(())
 }
+
 async fn process_fixture_with_filesystems<P, A, O>(
     stream: StreamClient<P>,
     directory: tempfile::TempDir,
@@ -1249,8 +1250,8 @@ where
     let source = VolumeRef::new(
         provider.clone(),
         "source",
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
+        if mode == "mixed-issued-view" { VolumeClass::Project } else { VolumeClass::AgentPrivate },
+        if mode == "mixed-issued-view" { VolumeOwner::Project("fixture-project".into()) } else { VolumeOwner::Agent(agent) },
     )?;
     let destination = VolumeRef::new(
         provider.clone(),
@@ -1611,11 +1612,10 @@ where
             let custody = work.claim_allocation(guard_bytes as u64, u64::from(guard_bytes != 0))
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
             let mut guards = (Vec::with_capacity(borrowed.len()), custody);
-            for binding in &borrowed {
-                guards.0.push(context.mount_callback_guard_with_native_work(
-                    Arc::clone(&owner), binding.volume, binding.verifier, binding.scope,
-                    binding.writable, work,
-                )?.await?);
+            for _ in &borrowed {
+                guards.0.push(context.volume_callback_guard_with_native_work(
+                    &owner, work,
+                ).await?);
             }
             let view = if mode == "mixed-issued-view" {
                 let volume_work = work.native_volume_work(options.work_per_volume)?;
@@ -4660,28 +4660,20 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
         let destination = workspace_ref(
             fixture.destination.provider().clone(), &fixture.destination.storage_name()?,
         )?;
-        let opened = fixture.files.open_measured(
-            &destination, work.remaining().map_err(|error| Error::Storage(error.to_string()))?, &cancellation,
-        ).await.map_err(|failure| Error::Storage(failure.to_string()))?;
-        work.spent(opened.work).map_err(|error| Error::Storage(error.to_string()))?;
-        let workspace = opened.value;
+        let workspace = fixture.files.open_volume_with_native_work(&fixture.destination, &work).await?;
         let mapping = fixture.view.manifest().volumes.iter().find(|mapping| mapping.volume == fixture.destination)
             .ok_or_else(|| Error::NotFound("original destination mapping".into()))?;
-        let selected = fixture.files.generation_measured(
-            &workspace, &mapping.generation,
-            work.remaining().map_err(|error| Error::Storage(error.to_string()))?, &cancellation,
-        ).await.map_err(|failure| Error::Storage(failure.to_string()))?;
-        work.spent(selected.work).map_err(|error| Error::Storage(error.to_string()))?;
-        let original_generation = selected.value.id();
+        let selected = fixture.files.generation_with_native_work(&workspace, &mapping.generation, &work).await?;
+        let original_generation = selected.id();
         drop(selected);
         let operation = acyclic_fs::OperationId::from_bytes([91; 16]);
         let before_query = work.receipt().backend_write_operations;
         let missing = fixture.owner.native_view_owner().recover_publication(
-            workspace.clone(), &fixture.destination, original_generation, operation,
+            &workspace, &fixture.destination, original_generation, operation,
             &work, &cancellation, &cleanup_cancellation,
-        ).await.map_err(|failure| Error::Storage(failure.error.to_string()))?;
-        assert!(missing.value.is_none());
-        assert_eq!(missing.work.backend_write_operations, before_query);
+        ).await?;
+        assert!(missing.is_none());
+        assert_eq!(work.receipt().backend_write_operations, before_query);
         let recovery_workspace = workspace.clone();
         if stale {
             fixture.files.write(&destination, "/concurrent.txt", b"new original head").await?;
@@ -4689,11 +4681,13 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
         // The host declares this distinct original filesystem operation before
         // requesting its actual gate; it is neither a task fence nor prep ID.
         let reserved = fixture.owner.native_view_owner().reserve_publication(
-            workspace, &fixture.destination, original_generation, operation,
+            &workspace, &fixture.destination, original_generation, operation,
             &work, &cancellation, &cleanup_cancellation,
         ).await;
         if stale {
             let failed = reserved.err().ok_or_else(|| Error::Storage("stale mapped generation received a permit".into()))?;
+            let failed = crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
+                ::from_error(&failed).expect("whole stale-generation reservation failure");
             assert!(failed.error.to_string().contains("differs from original selection"));
             assert!(failed.cleanup.is_none() && failed.cleanup_error.is_none());
             assert!(failed.unwitnessed_workspace.is_none());
@@ -4702,8 +4696,8 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             // has really been released, not merely marked cleanup-complete.
             fixture.files.write(&destination, "/release-check.txt", b"settled").await?;
         } else {
-            let receipt = reserved.map_err(|failure| Error::Storage(failure.error.to_string()))?;
-            assert!(matches!(receipt.value.permit(), acyclic_fs::PublicationPermit::Reservation {
+            let receipt = reserved?;
+            assert!(matches!(receipt.permit(), acyclic_fs::PublicationPermit::Reservation {
                 operation_id, ..
             } if operation_id == operation.to_bytes()));
             let before_query = work.receipt().backend_write_operations;
@@ -4715,43 +4709,57 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             let other_original_generation = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(source_digest));
             assert_ne!(other_original_generation, original_generation);
             let mismatched = fixture.owner.native_view_owner().recover_publication(
-                recovery_workspace.clone(), &fixture.destination, other_original_generation, operation,
+                &recovery_workspace, &fixture.destination, other_original_generation, operation,
                 &work, &cancellation, &cleanup_cancellation,
             ).await.err().ok_or_else(|| Error::Storage("readonly query adopted a different original generation".into()))?;
-            assert!(matches!(mismatched.error, crate::filesystem::NativeReservationError::Selection(_)));
-            assert!(mismatched.cleanup.is_some());
-            assert_eq!(mismatched.work.backend_write_operations, before_query);
+            let mismatched_failure = crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
+                ::from_error(&mismatched).expect("whole readonly selection failure");
+            assert!(matches!(mismatched_failure.error, crate::filesystem::NativeReservationError::Selection(_)));
+            assert!(mismatched_failure.cleanup.is_some());
+            assert_eq!(mismatched_failure.work.backend_write_operations, before_query);
             // Read-only failure drops no physical gate: the next query still
             // returns the identical real proof held by the original owner.
             drop(mismatched);
             let reopened = fixture.owner.native_view_owner().recover_publication(
-                recovery_workspace.clone(), &fixture.destination, original_generation, operation,
+                &recovery_workspace, &fixture.destination, original_generation, operation,
                 &work, &cancellation, &cleanup_cancellation,
-            ).await.map_err(|failure| Error::Storage(failure.error.to_string()))?;
-            let recovered = reopened.value.ok_or_else(|| Error::NotFound("actual original SDK gate after query".into()))?;
-            assert_eq!(recovered.permit(), receipt.value.permit());
-            assert_eq!(reopened.work.backend_write_operations, before_query);
+            ).await?;
+            let recovered = reopened.ok_or_else(|| Error::NotFound("actual original SDK gate after query".into()))?;
+            assert_eq!(recovered.permit(), receipt.permit());
+            assert_eq!(work.receipt().backend_write_operations, before_query);
             drop(recovered);
             let foreign = fixture.owner.native_view_owner().recover_publication(
-                recovery_workspace, &fixture.destination, original_generation,
+                &recovery_workspace, &fixture.destination, original_generation,
                 acyclic_fs::OperationId::from_bytes([92; 16]),
                 &work, &cancellation, &cleanup_cancellation,
-            ).await.map_err(|failure| Error::Storage(failure.error.to_string()))?;
-            assert!(foreign.value.is_none());
-            assert_eq!(foreign.work.backend_write_operations, before_query);
-            let mut denied_budget = budget;
-            denied_budget.allocation_operations = 1;
-            let denied_work = acyclic_fs::NativeMaterializationWork::new(denied_budget, &cleanup_cancellation)
+            ).await?;
+            assert!(foreign.is_none());
+            assert_eq!(work.receipt().backend_write_operations, before_query);
+            let denied_work = acyclic_fs::NativeMaterializationWork::new(budget, &cleanup_cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let failed = receipt.value.into_cleanup().release(&denied_work, &cleanup_cancellation).await
-                .err().ok_or_else(|| Error::Storage("cleanup frame denial was not exercised".into()))?;
-            assert_eq!(failed.work.backend_write_operations, 0);
-            assert!(matches!(failed.error, crate::filesystem::NativeReservationError::Native(_)));
-            let retained = failed.cleanup.ok_or_else(|| Error::Storage("denied cleanup dropped actual SDK gate custody".into()))?;
-            let cleanup_work = acyclic_fs::NativeMaterializationWork::new(budget, &cleanup_cancellation)
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            retained.release(&cleanup_work, &cleanup_cancellation).await
-                .map_err(|failure| Error::Storage(failure.error.to_string()))?;
+            let mut failed = receipt.into_cleanup().release(&fixture.owner.native_view_owner(), &denied_work, &cleanup_cancellation).await
+                .err().ok_or_else(|| Error::Storage("foreign cleanup family denial was not exercised".into()))?;
+            let retained = crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
+                ::from_error(&failed).expect("whole denied cleanup owner and cause");
+            assert_eq!(retained.work.backend_write_operations, 0);
+            assert!(matches!(retained.error, crate::filesystem::NativeReservationError::Selection(_)));
+            assert!(retained.cleanup.is_some());
+            let original_failed_work = retained.work;
+            let original_before_retry = work.receipt();
+            let foreign_before_retry = denied_work.receipt();
+            assert!(matches!(crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
+                ::retry_cleanup_with_native_work(&mut failed, &fixture.owner.native_view_owner(), &denied_work, &cleanup_cancellation).await,
+                Err(crate::filesystem::NativeReservationError::Selection(_))));
+            assert_eq!(denied_work.receipt(), foreign_before_retry);
+            assert_eq!(work.receipt(), original_before_retry);
+            assert!(crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
+                ::retry_cleanup_with_native_work(&mut failed, &fixture.owner.native_view_owner(), &work, &cleanup_cancellation)
+                .await.expect("actual original gate cleanup"));
+            let retained = crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
+                ::from_error(&failed).expect("original failure retained after actual cleanup");
+            assert!(retained.cleanup.is_none());
+            assert_eq!(retained.work, original_failed_work);
+            assert!(work.receipt().authority_records_read > original_before_retry.authority_records_read);
             fixture.files.write(&destination, "/release-check.txt", b"settled").await?;
         }
     }

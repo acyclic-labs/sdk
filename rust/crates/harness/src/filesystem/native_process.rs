@@ -445,6 +445,7 @@ pub struct NativeProcessPublishedVolume {
     /// Full SDK qualification and actual retained DATA operation, when changed.
     pub snapshot: acyclic_fs::NativePublicationSnapshot,
 }
+
 /// Authenticated original attempt and its durable native diagnostic.
 /// Launch-only receipts retain uncertainty; this observation conveys no authority.
 #[derive(Serialize, Deserialize)]
@@ -531,6 +532,13 @@ where
     /// Observation and recovery do not duplicate its admitted payload custody.
     pub fn original_plan(&self) -> &TaskEffectPlan {
         &self.plan
+    }
+
+    /// Original one-shot task-effect attempt selected by the existing effect
+    /// engine. This observation selector does not authorize dispatch or reads.
+    #[must_use]
+    pub fn original_attempt(&self) -> crate::EffectAttemptId {
+        crate::EffectAttemptId::from_bytes(self.effect_id.into_bytes())
     }
 
     /// Signal only this original owned supervisor. No process joins occur here;

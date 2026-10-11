@@ -74,7 +74,7 @@ struct CaptureSourceSlot {
 }
 
 #[derive(Default)]
-struct CaptureSourceGate {
+pub(super) struct CaptureSourceGate {
     cancelled: bool,
     producers: u64,
     producers_pending: bool,
@@ -84,6 +84,21 @@ struct CaptureSourceGate {
     cancel_next: usize,
     retiring: bool,
     retired: bool,
+    namespace_bound: bool,
+    ever_used: bool,
+}
+
+impl CaptureSourceGate {
+    fn fresh_for_namespace(&self) -> bool {
+        !self.namespace_bound && !self.ever_used && !self.cancelled && !self.retired && !self.retiring
+            && self.producers == 0 && self.active.is_empty()
+    }
+}
+
+#[cfg(windows)]
+pub(super) fn namespace_gate_is_fresh(lineage: &super::NativeMountSourceLineage<'_>) -> bool {
+    lineage.capture_gate.lock().unwrap_or_else(PoisonError::into_inner).fresh_for_namespace()
+        && !lineage.capture_cancellation.is_cancelled()
 }
 
 /// Physical custody of an accepted native Source job, not IO authorization.
@@ -695,7 +710,7 @@ pub(super) fn source_publication_guard(
             if lifetime.as_ref().is_some_and(CancellationToken::is_cancelled) {
                 return Err(super::NativeMountError::Source(MountSourceError::Stale));
             }
-            guard.check(&owned_work)?.await?;
+            guard.check_write(&owned_work)?.await?;
             if lifetime.as_ref().is_some_and(CancellationToken::is_cancelled) {
                 return Err(super::NativeMountError::Source(MountSourceError::Stale));
             }
@@ -1154,6 +1169,51 @@ pub struct CheckoutMountSource<A, O> {
     _source_allocation: Option<crate::NativeAllocation>,
 }
 
+#[cfg(windows)]
+pub(super) fn retain_namespace_lineage(
+    lineage: &super::NativeMountSourceLineage<'_>, work: &super::NativeMountMeterWork,
+    require_fresh: bool,
+) -> Result<super::NativeMountNamespaceBinding, MountSourceError> {
+    let original = work.native_materialization_work();
+    let mut scratch = NativeCaptureScratchAllocation::new(&original)?;
+    let mut names = scratch.vec(lineage.root.components().len())?;
+    for name in lineage.root.components() {
+        scratch.items(1)?;
+        names.push(capture_copy_name_with_scratch(
+            name.encoding(), name.as_bytes(), lineage.limits, &mut scratch,
+        )?);
+    }
+    let root = NamespacePath::new(names, lineage.limits).map_err(|error|
+        MountSourceError::Filesystem(crate::FsError::Path(
+            crate::kernel::PathLookupError::NamespacePath(error),
+        )))?;
+    let lazy_root = match lineage.lazy_root {
+        Some(text) => {
+            let copied = crate::WorkCounters { bytes_copied: text.len() as u64, ..crate::WorkCounters::UNCHARGED };
+            scratch.admit(copied)?;
+            let mut bytes = scratch.vec(text.len())?;
+            bytes.extend_from_slice(text.as_bytes());
+            scratch.record(copied)?;
+            Some(String::from_utf8(bytes).expect("canonical lazy root is UTF-8"))
+        }
+        None => None,
+    };
+    {
+        let mut gate = lineage.capture_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        if require_fresh && (!gate.fresh_for_namespace() || lineage.capture_cancellation.is_cancelled()) {
+            return Err(MountSourceError::Stale);
+        }
+        // Actual one-way constructor bookkeeping, not a namespace grant.
+        gate.namespace_bound = true;
+    }
+    Ok(super::NativeMountNamespaceBinding {
+        owner: lineage.owner.retain(), root,
+        native_original: lineage.native_original.cloned(),
+        lazy_owner: lineage.lazy_owner.map(super::NativeMountLineageAlias::retain),
+        lazy_root, _custody: scratch.retain(),
+    })
+}
+
 /// Blocking bridge from native driver threads into the shared async runtime.
 ///
 /// A callback polls its future on the calling thread inside the runtime's
@@ -1342,6 +1402,23 @@ impl CallbackRuntime {
         &self, guard: &dyn super::NativeMountCallbackGuard,
         work: &super::NativeMountMeterWork,
     ) -> Result<(), NativeMountError> {
+        self.verify_native_callback_role(guard, work, false)
+    }
+
+    /// Checks authored WRITE on the same runtime and original callback binding.
+    /// SDK cache hydration and physical retirement use their distinct original
+    /// namespace permission, never this authored-source grant.
+    pub(super) fn verify_native_callback_write_guard(
+        &self, guard: &dyn super::NativeMountCallbackGuard,
+        work: &super::NativeMountMeterWork,
+    ) -> Result<(), NativeMountError> {
+        self.verify_native_callback_role(guard, work, true)
+    }
+
+    fn verify_native_callback_role(
+        &self, guard: &dyn super::NativeMountCallbackGuard,
+        work: &super::NativeMountMeterWork, authored_write: bool,
+    ) -> Result<(), NativeMountError> {
         let allocation = work.native_materialization_work().claim_allocation(
             std::mem::size_of::<ParkedCallback>() as u64, 1,
         )?;
@@ -1356,7 +1433,8 @@ impl CallbackRuntime {
             bytes: 0,
         };
         self.wait_prepared(prepared, || async {
-            let mut verification = guard.check(work)?;
+            let mut verification = if authored_write { guard.check_write(work)? }
+                else { guard.check(work)? };
             (&mut verification).await
         })
     }
@@ -2370,7 +2448,7 @@ fn grouped_publication_guard(
                 if lifetime.as_ref().is_some_and(CancellationToken::is_cancelled) {
                     return Err(super::NativeMountError::Source(MountSourceError::Stale));
                 }
-                if let Some(guard) = guard { guard.check(&owned_work)?.await?; }
+                if let Some(guard) = guard { guard.check_write(&owned_work)?.await?; }
                 if lifetime.as_ref().is_some_and(CancellationToken::is_cancelled) {
                     return Err(super::NativeMountError::Source(MountSourceError::Stale));
                 }
@@ -10356,6 +10434,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         self.accept_capture_poll(&mut poll_credit)?;
         gate.producers = producers;
         gate.producers_pending = true;
+        gate.ever_used = true;
         let inner = Arc::new(NativeSourceIoLeaseInner {
             owner, binding: self.native_io_binding, _allocation: allocation,
         });
@@ -11275,6 +11354,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             self.accept_capture_poll(&mut poll_credit)?;
             gate.producers = producers;
             gate.producers_pending = true;
+            gate.ever_used = true;
             request.slot.store(gate.active.len(), Ordering::Release);
             gate.active.push(CaptureSourceSlot {
                 request: Arc::downgrade(&request), cancel_visit: Some(cancel_visit),
@@ -11550,6 +11630,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             gate.producers = gate.producers.checked_add(1)
                 .ok_or(MountSourceError::Work(WorkError::Overflow))?;
             gate.producers_pending = true;
+            gate.ever_used = true;
             CaptureProducerLease { gate: &self.capture_gate, quiesced: &self.capture_quiesced }
         };
         let mut view = super::view_ledger::ViewLedgerAdmission::default();
@@ -12442,6 +12523,22 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    fn native_namespace_lineage(&self) -> Option<super::NativeMountSourceLineage<'_>> {
+        Some(super::NativeMountSourceLineage {
+            owner: &self.checkout,
+            root: &self.root,
+            native_original: match self.native_io_binding {
+                NativeSourceIoBinding::Native => self.native_original.as_ref(),
+                NativeSourceIoBinding::Ordinary => None,
+            },
+            lazy_owner: None,
+            lazy_root: None,
+            limits: self.limits,
+            capture_gate: &self.capture_gate,
+            capture_cancellation: &self.cancellation,
+        })
+    }
+
     fn native_callback_guard(&self) -> Option<Arc<dyn super::NativeMountCallbackGuard>> {
         self.native_callback_guard.as_ref().map(Arc::clone)
     }
@@ -15501,7 +15598,8 @@ mod tests {
         let job = incoming.with_source_io_lease(lease)?;
         assert!(job.shares_ledger(&root));
         assert!(job.shares_resource_allowance(&volume));
-        let native_file = NativeRuntimeFile::from_file_measured_owned(file, job.runtime_meter_owner())?;
+        let native_file = NativeRuntimeFile::from_file_measured_owned(file, job.runtime_meter_owner())
+            .map_err(|(error, file)| { drop(file); error })?;
         let before = root.receipt();
         let first = borrowed.runtime.block_on(|| {
             native_file.read_bounded_async(0, 8, job.runtime_meter_owner())
@@ -15547,7 +15645,8 @@ mod tests {
         let source = native_source_io_control(&borrowed, &volume)?;
         let (incoming, local_stop) = root.invocation_view()?;
         let job = incoming.with_source_io_lease(source.native_source_io_lease()?)?;
-        let native_file = NativeRuntimeFile::from_file_measured_owned(file, job.runtime_meter_owner())?;
+        let native_file = NativeRuntimeFile::from_file_measured_owned(file, job.runtime_meter_owner())
+            .map_err(|(error, file)| { drop(file); error })?;
         local_stop.cancel();
         let prefix = root.receipt();
         let error = native_file.read_bounded_async(0, 8, job.runtime_meter_owner())
@@ -15600,7 +15699,8 @@ mod tests {
         assert!(original_work.source_execution_view().is_none());
         assert!(original_work.shares_ledger(&root));
         assert!(original_work.shares_resource_allowance(&volume));
-        let native_file = NativeRuntimeFile::from_file_measured_owned(file, meter.clone())?;
+        let native_file = NativeRuntimeFile::from_file_measured_owned(file, meter.clone())
+            .map_err(|(error, file)| { drop(file); error })?;
         let result = borrowed.runtime.block_on(|| {
             native_file.read_bounded_async(0, 8, meter.clone()).expect("actual read submission")
         })?;

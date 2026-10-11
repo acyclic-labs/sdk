@@ -271,7 +271,9 @@ fn publication_payload_rejects_unknown_and_non_generation_object_kinds() {
     unknown_kind[kind_offset] = u8::MAX;
     assert!(matches!(
         decode_published_generation(&unknown_kind, u64::MAX),
-        Err(CanonicalDecodeError::Invariant(_))
+        Err(CanonicalDecodeError::Invariant(crate::kernel::codec::CanonicalInvariant::Static(
+            "unknown publication object kind",
+        )))
     ));
 }
 
@@ -1280,6 +1282,9 @@ fn historical_publication_evidence_binds_original_memory_commit_not_later_head()
         ),
         Err(PublicationEvidenceError::Mismatch)
     ));
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, thiserror::Error)]
 enum NativePublicationTestError {
@@ -1724,7 +1729,9 @@ fn native_publication_payload_decoder_accounts_actual_completed_field_prefix()
     malformed[PAYLOAD_DOMAIN.len() + 2 + 16] = u8::MAX;
     assert!(matches!(
         decode_published_generation_with_accounting(&malformed, u64::MAX, &mut accounting),
-        Err(crate::FsError::Decode(CanonicalDecodeError::Invariant(_)))
+        Err(crate::FsError::Decode(CanonicalDecodeError::Invariant(super::super::codec::CanonicalInvariant::Static(
+            "unknown publication object kind",
+        ))))
     ));
     assert_eq!(original.receipt().bytes_copied, 2 + 16 + 1);
     assert_eq!(original.receipt().allocation_operations, before.allocation_operations);

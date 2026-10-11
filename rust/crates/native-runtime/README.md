@@ -73,12 +73,6 @@ custody until their payload or file is dropped, rather than until an observer
 stops awaiting. Capacity reconciliation records completed SDK-owned capacity
 before evaluating a late cancellation or quota refusal.
 
-`NativeReadMeter::allocation_owner` can separate a captured request's pending
-activation from its retained payload custody. It returns only the same original
-meter and resource attribution, never a fresh allowance. Accepted jobs retain
-the captured meter until physical terminal completion; returned buffers and
-retired file fences retain the original allocation owner instead. A healthy
-file tail must not keep a completed request's capture activation alive.
 All measured `NativeFile` imports return `(io::Error, File)` on refusal, through
 one canonical importer. No denied import silently closes its incoming handle.
 Owned imports retire their unpublished original-ledger metadata before returning
@@ -104,11 +98,6 @@ submission and actual cleanup prefixes. First polling queues the existing job,
 and `wait_measured` reuses its prepared wake owner without a late allocation.
 Preparation is accounting custody, not namespace authority, and accepted
 observer drop still neither drains nor cancels the physical operation.
-
-`wait_measured(deadline, cancellation, on_deadline)` uses the task's captured
-original meter, not a caller-supplied replacement. Closing allocation admission
-after preparation does not prevent the prepared wake owner from draining an
-accepted physical operation and retiring its original custody.
 
 `NativeFile::write_bounded_async_with_custody` accepts owned `AsRef<[u8]>` payloads
 without converting or copying their backing. The same positional validation and

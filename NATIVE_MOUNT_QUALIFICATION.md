@@ -271,15 +271,16 @@ bash scripts/qualify-native-mount.sh macos-nfs
 powershell -File scripts/qualify-native-mount.ps1 -Backend windows-projfs
 ```
 
-## Projection fix proven by the matrix
+## Historical projection matrix observations
 
-The Windows qualification exposed that orderly `PrjStopVirtualizing` leaves a
-hydrated ProjFS reparse tree at the caller's mount destination. That residue is
-not an ordinary empty directory and prevents reliable reuse. `ProjFsSession`
-now authenticates and removes only that stopped ProjFS cache using the existing
-bounded recovery path, recreates the caller's empty destination, and retains
-cleanup state when cleanup fails so an exact stop retry can finish it. No
-checkout, publication, or distributed-filesystem semantics changed.
+Earlier Windows qualification observed that orderly `PrjStopVirtualizing`
+leaves a hydrated ProjFS reparse tree at the caller's destination. Current
+physical retirement preserves the SDK marker and original user root; it does
+not recursively adopt/delete the stopped path or recreate that root. Only
+genuine original creator capabilities and settled capture permit namespace
+cleanup. Uncaptured authored DATA and namespace cleanup refusals remain in the
+original drain outcome. Reuse is the owned warm continuation described above,
+not authority inferred from that persistent reparse marker.
 
 The Windows metadata case also proved that ProjFS reports a metadata-only
 `FileBasicInfo` change as a handle close without data modification. That close
