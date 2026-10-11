@@ -515,6 +515,28 @@ impl NativeStockExecutor {
         Ok(())
     }
 
+    /// Audits the configured producer while preserving this capsule's work identity.
+    pub(crate) fn supports_native_execution(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
+        self.require_original_work(work)?;
+        self.stock.supports_native_execution(work)
+    }
+
+    /// Copies configuration through its existing admitted typed producer.
+    /// The consumer must bind the original issued context before execution.
+    pub(crate) fn clone_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+        self.require_original_work(work)?;
+        self.stock.clone_with_native_work(work)
+    }
+
+    /// Applies the ordinary sampling configuration without a second executor engine.
+    /// The conservative original config reservation remains held until this capsule drops.
+    pub(crate) fn without_tools_with_native_work(mut self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+        self.require_original_work(work)?;
+        let old = std::mem::replace(&mut self.stock.tools, ToolRegistry::new());
+        drop(old);
+        Ok(self)
+    }
+
     /// Carries the original command's native journal route without altering its issued context.
     pub(crate) fn with_native_interactions(
         mut self, interactions: Arc<dyn crate::runtime::InteractionRouter>,
