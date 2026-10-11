@@ -175,6 +175,9 @@ Derived scope metadata retains original created-resource/extension provenance;
 caller scope metadata supplies restrictions, never a replacement issuer or proof.
 Stock configuration preflight checks against the current tool-local effective
 scope, not merely the wider original task scope, before any candidate allocation.
+`with_native_stock_scope` uses stock grants/run restrictions with its independently
+configured execution limits, preserving ordinary stock scoping when those limits
+differ from the policy scope's limits. Both producers use the same attenuation engine.
 
 `FilesystemForkPreparer::project_creation_operation` exposes the exact derived
 Filesystem creation identity for binding an already-created child to its native

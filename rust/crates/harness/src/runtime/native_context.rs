@@ -201,15 +201,31 @@ impl ToolContext {
     /// Narrows only tool-local authority, preserving the same issued task and
     /// its original metadata, owner bindings and dispatch/read purpose.
     pub fn with_native_scope(
-        mut self, requested: &RuntimeScope, work: &NativeMaterializationWork,
+        self, requested: &RuntimeScope, work: &NativeMaterializationWork,
     ) -> Result<Self> {
-        self.validate_stock_scope_with_native_work(requested, requested.limits, work)?;
+        self.with_native_effective_scope(requested, requested.limits, work)
+    }
+
+    /// Applies stock grants/run restrictions with its separately configured
+    /// execution limits, matching the ordinary stock context's scoped engine.
+    pub fn with_native_stock_scope(
+        self, requested: &RuntimeScope, execution_limits: Limits,
+        work: &NativeMaterializationWork,
+    ) -> Result<Self> {
+        self.with_native_effective_scope(requested, execution_limits, work)
+    }
+
+    fn with_native_effective_scope(
+        mut self, requested: &RuntimeScope, execution_limits: Limits,
+        work: &NativeMaterializationWork,
+    ) -> Result<Self> {
+        self.validate_stock_scope_with_native_work(requested, execution_limits, work)?;
         let original = self.effective_scope();
         // Caller scope metadata is only a restriction specification. The SDK
         // narrow producer inherits proof/extension/created-access provenance
         // from the original (or previously attenuated) scope, never the caller.
         let grants = requested.grants.clone_with_native_work(work)?;
-        let mut narrowed = original.narrow_with_native_work(grants, requested.limits, work)?;
+        let mut narrowed = original.narrow_with_native_work(grants, execution_limits, work)?;
         narrowed.0 = narrowed.0.with_run_limits_with_native_work(requested.run_limits, work)?;
         // Replacing this one tuple drops old scope data before its old guard.
         // An ordinary Clone keeps the restriction data but not native funding.
@@ -779,6 +795,23 @@ mod tests {
             shared.context().scope(), limits, &original,
         ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         assert_eq!(original.receipt(), before);
+        let mut execution_limits = limits;
+        execution_limits.file_bytes = 1;
+        assert!(limits.file_bytes > execution_limits.file_bytes);
+        let stock = ToolContext::new_with_native_work(
+            Arc::clone(&shared), operation, "stock-execution-limits", &original,
+        )?.with_native_stock_scope(&requested, execution_limits, &original)?;
+        assert!(Arc::ptr_eq(stock.native_task().expect("same issued task"), &shared));
+        assert_eq!(stock.effective_scope().limits(), execution_limits);
+        assert_eq!(requested.limits(), limits);
+        assert_eq!(stock.effective_scope().grants(), requested.grants());
+        assert_eq!(stock.effective_scope().run_limits(), requested.run_limits());
+        assert!(stock.native_metadata_matches(&original));
+        let before = original.receipt();
+        assert!(matches!(stock.validate_stock_scope_with_native_work(&requested, limits, &original),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        assert_eq!(original.receipt(), before);
+        drop(stock);
 
         let clone = tool.clone();
         assert_eq!(clone.effective_scope().grants(), tool.effective_scope().grants());
