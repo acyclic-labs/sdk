@@ -8,7 +8,7 @@ use acyclic_fs::{CancellationToken, LazySnapshotRef, WorkCounters};
 use acyclic_harness::{Error, Result, TaskId, OperationId, durable_host::TaskJournalOwner,
     filesystem::{TaskCommandHost, TaskCommandProgress, TaskSourceInspection},
     runtime::{TaskContext, NativeTaskContext}, scheduler::LeaseFence, workflow::WorkflowCommand,
-    conversation::VolumeRef, resources::GenerationRef};
+    conversation::VolumeRef};
 use acyclic_stream::{LocalStream, StreamClient, BoxProviderFuture};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
@@ -39,6 +39,7 @@ const SELECTED_DIAGNOSTIC_LABEL_BYTES: u64 =
         "PiNativeSourceKey", "LazySnapshotRef", "id", "workspace_id",
         "authored_generation", "SourceReference", "identity", "epoch", "overlay", "shadows",
         "an array of length 16", "an array of length 32", "VolumeClass", "VolumeOwner",
+        "ProjectSourceSnapshot", "project", "generation", "native_snapshot",
         "SelectedImportIntent", "source_snapshot", "destination_snapshot", "operation", "writeback",
     ]);
 #[derive(Clone, Serialize, Deserialize)]
@@ -116,11 +117,11 @@ impl<'a> PiSelectedHost<'a> {
             _ => Err(denied("selected Root binding differs from the original protected allocation")),
         }
     }
-    fn project_key(&self, binding: &PiTaskBinding, requested: Option<&str>) -> Result<String> {
+    fn project_key<'b>(&self, binding: &'b PiTaskBinding, requested: Option<&str>) -> Result<&'b str> {
         match requested {
-            Some(key) if binding.project_volumes.contains_key(key) => Ok(key.into()),
+            Some(key) if binding.project_volumes.contains_key(key) => Ok(binding.project_volumes.get_key_value(key).expect("known project").0.as_str()),
             Some(_) => Err(denied("selected project is not in the original source binding")),
-            None if binding.project_volumes.len() == 1 => Ok(binding.project_volumes.keys().next().expect("one project").clone()),
+            None if binding.project_volumes.len() == 1 => Ok(binding.project_volumes.keys().next().expect("one project").as_str()),
             None => Err(invalid("select an explicit root when the source does not have exactly one project")),
         }
     }
@@ -183,46 +184,61 @@ impl<'a> PiSelectedHost<'a> {
     }
     pub(crate) async fn selected(&self, context: &TaskContext, native_context: Option<&Arc<NativeTaskContext>>, owner: &Arc<TaskJournalOwner<LocalStream>>,
         task: TaskId, requested: Option<&str>, pinned: Option<LazySnapshotRef>, operation: OperationId, cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork) -> Result<(String, VolumeRef, Arc<crate::LocalLazyWorkspace>, LazySnapshotRef,
-        TaskSourceInspection<LocalStream, crate::LocalAuthorityBackend, crate::LocalObjectBackend>)> { authorize_selected_source(&self.runtime.runtime, self.protected.policy().root_task,
+        TaskSourceInspection<LocalStream, crate::LocalAuthorityBackend, crate::LocalObjectBackend>, acyclic_fs::NativeAllocation)> { authorize_selected_source(&self.runtime.runtime, self.protected.policy().root_task,
         context, owner, task, self.protected.policy().session_limits.depth, work).await?;
     let decoded = self.admission_input(task, work).await?;
     let input = &decoded.0;
-    let key = self.project_key(&input.binding, requested)?;
-    let volume = input.binding.project_volumes[&key].clone();
+    let mut key = work.display(&format_args!("{}", self.project_key(&input.binding, requested)?)).map_err(native_error)?;
+    let project = &input.binding.project_volumes[&key.0];
     let workspace = if task == self.protected.policy().root_task {
-        Arc::new(self.roots.get(&key).ok_or_else(|| denied("selected Root lost its actual lazy allocation"))?.workspace.clone())
+        self.roots.get(&key.0).ok_or_else(|| denied("selected Root lost its actual lazy allocation"))?
+            .workspace.clone().into_arc_with_native_work(work).map_err(crate::pi_lazy_capture::native_lazy_error)?
     } else { self.native.live_workspace(task).ok_or_else(|| denied("selected child lost its actual creator workspace"))? };
     let frozen = if let Some(pinned) = pinned { pinned } else if task == self.protected.policy().root_task {
-        let actual = self.roots.get(&key).ok_or_else(|| denied("selected Root allocation unavailable"))?;
+        let actual = self.roots.get(&key.0).ok_or_else(|| denied("selected Root allocation unavailable"))?;
         if owner.task_id() == task {
             let shared = native_context.ok_or_else(|| denied("Root capture requires its actual native command context"))?;
             let (snapshot, custody) = crate::pi_fork_host::freeze_created_root_source(
                 Arc::clone(&self.protected), self.resources, Arc::clone(&self.filesystem),
-                self.stream.clone(), shared, owner, input, &key, actual, work).await?;
+                self.stream.clone(), shared, owner, input, &key.0, actual, work).await?;
             drop(custody);
             snapshot
-        } else { *self.root_source_cut.and_then(|cut| cut.snapshots.get(&key))
+        } else { *self.root_source_cut.and_then(|cut| cut.snapshots.get(&key.0))
             .ok_or_else(|| denied("foreign Root source needs its original observe-source ACK"))? }
     } else {
         let (snapshot, custody) = self.native.selection_snapshot(task, work).await?;
         drop(custody);
         snapshot
     };
-    let handle = self.coordinator()?.with_work(work.clone()).authorize_selected_project(context, owner, task, workspace.clone(), frozen,
-        operation, work.remaining().map_err(native_error)?.items_examined, self.protected.policy().limits.file_bytes,
-        work.remaining().map_err(native_error)?, cancellation.clone()).await?;
-    let (native_snapshot, snapshot_custody) = crate::pi_root_provider::guarded_pi_value(
-        &frozen, acyclic_harness::conversation::MAX_CONTROL_BYTES as u64, work)?;
-    let selection = acyclic_harness::source_authorization::ProjectSourceSnapshot {
-        project: volume.clone(), generation: GenerationRef::new(volume.provider().clone(),
-            frozen.authored_generation.digest().into_bytes(), None)?,
-        native_snapshot: Some(native_snapshot),
-    };
-    let inspection = self.runtime.runtime.inspect_project_source_with_native_work(context, owner.clone(), handle,
-        operation, task, &selection, work).await?;
-    drop(selection);
-    drop(snapshot_custody);
-    Ok((key, volume, workspace, frozen, inspection)) }
+    let handle = self.coordinator()?.authorize_selected_project_with_native_work(context, owner, task,
+        Arc::clone(&workspace), frozen, operation, work.remaining().map_err(native_error)?.items_examined,
+        self.protected.policy().limits.file_bytes, work).await?;
+    #[derive(Serialize)]
+    struct Generation<'a> {
+        kind: acyclic_harness::resources::ResourceKind,
+        provider: &'a acyclic_harness::resources::ProviderRef,
+        key: &'a [u8], version: Option<&'a str>,
+    }
+    #[derive(Serialize)]
+    struct Selection<'a> {
+        project: &'a VolumeRef, generation: Generation<'a>, native_snapshot: &'a LazySnapshotRef,
+    }
+    let maximum = self.protected.policy().maximum_payload_bytes;
+    let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(&Selection {
+        project, generation: Generation { kind: acyclic_harness::resources::ResourceKind::Generation,
+            provider: project.provider(), key: frozen.authored_generation.digest().as_bytes(), version: None },
+        native_snapshot: &frozen,
+    }, maximum, work)?;
+    let mut selection = crate::pi_root_provider::guarded_pi_decode::<acyclic_harness::source_authorization::ProjectSourceSnapshot>(
+        &bytes.0, maximum, maximum, acyclic_harness::JsonValueSchema::ProjectSourceAuthorization,
+        SELECTED_DIAGNOSTIC_LABEL_BYTES, work)?;
+    let inspection = self.runtime.runtime.inspect_project_source_with_native_work(context, Arc::clone(owner), handle,
+        operation, task, &selection.0, work).await?;
+    let volume = selection.0.project;
+    drop(selection.0.generation);
+    drop(selection.0.native_snapshot);
+    selection.1.absorb(&mut key.1).map_err(native_error)?;
+    Ok((key.0, volume, workspace, frozen, inspection, selection.1)) }
     async fn run(&self, context: TaskContext, fence: LeaseFence, command: WorkflowCommand,
         payload: Value, reconcile: bool) -> Result<TaskCommandProgress> {
         let current = context.durable_task_id().ok_or_else(|| denied("selected control lacks its actual caller context"))?;
@@ -291,12 +307,13 @@ impl<'a> PiSelectedHost<'a> {
             self.read_import_intent(&context, import_operation, cancellation, work).await?
         } else { None };
         let pinned = pinned.or_else(|| prior_import.as_ref().map(|(intent, _)| intent.source_snapshot));
-        let (key, volume, workspace, frozen, inspection) = self.selected(&context, native_context, &owner, input.source,
+        let selected_custody = self.selected(&context, native_context, &owner, input.source,
             input.root.as_deref(), pinned, operation, cancellation, work).await?;
-        if cursor.is_some_and(|cursor| cursor.root != key) {
+        let (key, volume, workspace, frozen, inspection, _) = &selected_custody;
+        if cursor.is_some_and(|cursor| &cursor.root != key) {
             return Err(denied("selected cursor changed its actual resolved source root"));
         }
-        let selected = PiNativeSelectedSource::select(&inspection, input.source, input.caller, &volume, &workspace, frozen, work)?;
+        let selected = PiNativeSelectedSource::select(inspection, input.source, input.caller, volume, workspace, *frozen, work)?;
         let maximum = input.maximum_entries.unwrap_or(128);
         match command.kind.as_str() {
             "acyclic.pi.inspect" => {
@@ -307,17 +324,18 @@ impl<'a> PiSelectedHost<'a> {
                 let page = consume_root(work, selected.inspect(&context, &owner, &input.directory, continuation, maximum, cancellation, work).await)?;
                 let continuation = page.cursor.as_ref().map(|cursor| self.cursor(input, &key, &command.kind, PageCursorRef::Inspect(cursor), cancellation, work)).transpose()?;
                 ready(&PiPageResponse { source: input.source, root: &key, volume: Some(&volume),
-                    before_root: None, before_snapshot: None, snapshot: frozen, directory: &page.directory,
+                    before_root: None, before_snapshot: None, snapshot: *frozen, directory: &page.directory,
                     entries: &page.entries, cursor: continuation.as_ref().map(|(cursor, _)| cursor.as_str()) }, work)
             }
             "acyclic.pi.diff" => {
                 let baseline = self.native.frozen_source(input.source).ok_or_else(|| denied("diff requires the child's actual ORIGINAL frozen source"))?;
                 let source_task = self.native.selected_source_task(input.source)
                     .ok_or_else(|| denied("diff lost the original authorized selected source task"))?;
-                let (before_key, before_volume, before_workspace, before_frozen, before_inspection) = self.selected(&context, native_context, &owner,
+                let before_custody = self.selected(&context, native_context, &owner,
                     source_task, Some(&key), Some(baseline), operation, cancellation, work).await?;
-                let before = PiNativeSelectedSource::select(&before_inspection, source_task, input.caller,
-                    &before_volume, &before_workspace, before_frozen, work)?;
+                let (before_key, before_volume, before_workspace, before_frozen, before_inspection, _) = &before_custody;
+                let before = PiNativeSelectedSource::select(before_inspection, source_task, input.caller,
+                    before_volume, before_workspace, *before_frozen, work)?;
                 let continuation = match cursor.as_ref().map(|cursor| &cursor.cursor) {
                     Some(PageCursor::Diff(cursor)) => Some(cursor), None => None,
                     _ => return Err(denied("inspection continuation used for diff")),
@@ -325,7 +343,7 @@ impl<'a> PiSelectedHost<'a> {
                 let page = consume_root(work, diff_native(&before, &selected, &context, &owner, &input.directory, continuation, maximum, cancellation, work).await)?;
                 let continuation = page.cursor.as_ref().map(|cursor| self.cursor(input, &key, &command.kind, PageCursorRef::Diff(cursor), cancellation, work)).transpose()?;
                 ready(&PiPageResponse { source: input.source, root: &key, volume: None,
-                    before_root: Some(&before_key), before_snapshot: Some(before_frozen), snapshot: frozen,
+                    before_root: Some(before_key), before_snapshot: Some(*before_frozen), snapshot: *frozen,
                     directory: &page.directory, entries: &page.entries, cursor: continuation.as_ref().map(|(cursor, _)| cursor.as_str()) }, work)
             }
             "acyclic.pi.import" | "acyclic.pi.writeback" => {
