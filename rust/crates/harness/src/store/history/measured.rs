@@ -402,6 +402,9 @@ impl HistoryIo for HistoryWork<'_> {
             JsonCodecCharge::Retain { bytes } => { self.admit_owned(bytes)?; self.retain(bytes) }
             JsonCodecCharge::Release { bytes } => self.release_record(bytes),
             JsonCodecCharge::Copy { bytes } => self.copy_bytes(bytes),
+            JsonCodecCharge::AllocationOperation { .. } => self.planned(WorkCounters {
+                allocation_operations: 1, ..WorkCounters::default()
+            }),
             JsonCodecCharge::Read { .. } => Ok(()),
             JsonCodecCharge::Admission { maximum_owned_bytes } => {
                 self.admit_owned(maximum_owned_bytes)?;

@@ -135,6 +135,9 @@ impl HistoryIo for NativeHistoryIo<'_> {
             JsonCodecCharge::Retain { bytes } => { self.admit_owned(bytes)?; self.retain(bytes) }
             JsonCodecCharge::Admission { maximum_owned_bytes } => { self.admit_owned(maximum_owned_bytes)?; self.retain(maximum_owned_bytes) }
             JsonCodecCharge::Copy { bytes } => self.copy_bytes(bytes),
+            JsonCodecCharge::AllocationOperation { .. } => self.charge(WorkCounters {
+                allocation_operations: 1, ..WorkCounters::default()
+            }),
             JsonCodecCharge::Read { .. } => Ok(()),
             JsonCodecCharge::Release { bytes } => self.release_owned(bytes),
         }
@@ -243,6 +246,35 @@ mod tests {
             }), custody: None,
         })));
         assert_eq!(work.receipt(), prefix);
+    }
+
+    #[test]
+    fn original_codec_reserve_is_denied_without_counting_retention_as_allocation() {
+        let cancellation = CancellationToken::new();
+        let mut budget = control_budget();
+        budget.peak_allocation_bytes += 4096;
+        budget.bytes_copied = 128;
+        budget.bytes_encoded = 128;
+        budget.items_examined = 8;
+        let work = NativeMaterializationWork::new(budget, &cancellation)
+            .expect("original meter control allocation");
+        let mut io = native_work_io(&work).expect("original codec custody");
+        let prefix = work.receipt();
+        let encoded = crate::contract::canonical_json_bytes_bounded(
+            &"borrowed original payload",
+            crate::contract::JsonBounds {
+                maximum_bytes: 128, maximum_items: 8, maximum_depth: 4,
+            },
+            &mut |charge| io.codec_charge(charge),
+        );
+        assert!(matches!(encoded, Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "allocation_operations", ..
+            }), custody: None,
+        })));
+        assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
+        assert_eq!(work.receipt().backend_read_operations, prefix.backend_read_operations);
+        assert_eq!(work.receipt().backend_write_operations, prefix.backend_write_operations);
     }
 
     #[test]
