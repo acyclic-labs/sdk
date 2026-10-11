@@ -183,6 +183,19 @@ A cancelled cleanup wait retains unattempted handles. Consumed failed SDK
 shutdowns remain failures, not absence or cleanup-complete evidence. These are
 SDK-observable control attempts, not inferred transport acknowledgements or RSS.
 
+Linux uses the pinned upstream `fuser` 0.18.0 sources in
+`rust/vendor/fuser-0.18.0` (upstream commit
+`9c957f74efe715112049298cdf1d601781829c8d`, original license retained).
+The three-file ownership correction adds pure-Rust `try_umount`: kernel refusal
+retains the original mount and join handle instead of consuming them.
+Retained session construction transfers the actual mounted prefix before
+handshake, including a rejected handshake; retained `run` never consumes that
+mount from its destructor. The existing callable owns explicit retirement.
+It launches no implicit helper; native callers must prepare their own bounded
+helper before mount birth. The ordinary helper now propagates spawn and exit
+failures without allocating discarded output buffers. This does not change FUSE
+reply acknowledgement semantics or establish SDK whole-source retirement.
+
 Concurrent native read observers share the checkout's semantic proof but admit
 and report their own completed name/path DATA. Weak custody metadata follows
 the actual owned keys, including weak-only map moves, and retires when those
