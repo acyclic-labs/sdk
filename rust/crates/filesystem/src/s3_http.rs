@@ -6,6 +6,7 @@
 //! Ordinary HTTP response framing retains the canonical byte carrier as its
 //! wire owner. This unbounded transport control is not a native admission.
 
+use crate::WorkBudget;
 use crate::kernel::{AsyncBlobSource, ClosureLimits, DecodeLimits};
 use crate::model::FilesystemProfile;
 use crate::{
@@ -716,7 +717,7 @@ where
         match provider
             .append(acyclic_stream::AppendRequest {
                 path: Self::multipart_path(workspace, upload_id)?,
-                records: vec![record],
+                records: vec![record.into()],
                 if_tail: Some(expected_tail),
                 idempotency_key: Some(operation),
             })
@@ -978,11 +979,11 @@ where
                     mutations: vec![
                         acyclic_stream::CommitMutation::Append {
                             path: registry.clone(),
-                            records: vec![Bytes::copy_from_slice(path.as_str().as_bytes())],
+                            records: vec![Bytes::copy_from_slice(path.as_str().as_bytes()).into()],
                         },
                         acyclic_stream::CommitMutation::Append {
                             path: path.clone(),
-                            records: vec![record.clone()],
+                            records: vec![record.clone().into()],
                         },
                     ],
                     idempotency_key: attempt,
@@ -2188,7 +2189,7 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
 /// Decodes and validates the leading `created` record of a multipart record
 /// stream, returning the upload's key and its negotiated part bounds.
 fn decode_multipart_header(
-    created: &Bytes,
+    created: &acyclic_stream::OwnedBytes,
     limits: FilesystemS3Limits,
 ) -> S3Result<(String, u32, u64, u64)> {
     let mut cursor = RecordCursor::new(created);
@@ -2216,7 +2217,7 @@ fn decode_multipart_header(
 }
 
 fn decode_multipart(
-    records: Vec<Bytes>,
+    records: Vec<acyclic_stream::OwnedBytes>,
     tail: u64,
     limits: FilesystemS3Limits,
 ) -> S3Result<MultipartSnapshot> {

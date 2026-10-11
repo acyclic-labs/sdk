@@ -214,7 +214,7 @@ impl MemoryAuthorityStore {
         Ok(DurableCommit {
             epoch: actual.epoch, sequence, operation_id: commit.operation_id,
             fingerprint: commit.fingerprint, previous_digest: actual.digest,
-            digest, payload: commit.payload,
+            digest, payload: commit.payload, settled_at_micros: None,
         })
     }
 

@@ -1,3 +1,4 @@
+use acyclic_stream::OwnedBytes;
 use super::*;
 use crate::model::{Lifecycle, VolumeConfig};
 use crate::{CancellationToken, Fs, WorkBudget};
@@ -373,7 +374,7 @@ proptest::proptest! {
         let result: Result<(), Box<dyn Error>> = futures::executor::block_on(async {
             let fs = Fs::memory();
             let parent = fs.create_workspace("hardlink-parent").await?;
-            parent.write("/file", Bytes::copy_from_slice(&bytes)).await?;
+            parent.write("/file", bytes::Bytes::copy_from_slice(&bytes)).await?;
             let mut transaction = parent.begin_transaction(IdempotencyKey::new()).await?;
             transaction.hard_link("/file", "/alias").await?;
             transaction.commit().await?;
@@ -383,7 +384,7 @@ proptest::proptest! {
             assert_eq!(child.read("/file", 64).await?.as_ref(), bytes.as_slice());
             if carry_alias { assert_eq!(child.read("/alias", 64).await?.as_ref(), bytes.as_slice()); }
             else { assert!(child.read("/alias", 64).await.is_err()); }
-            child.write("/file", Bytes::from_static(b"changed")).await?;
+            child.write("/file", bytes::Bytes::from_static(b"changed")).await?;
             if carry_alias { assert_eq!(child.read("/alias", 64).await?.as_ref(), b"changed"); }
             assert_eq!(parent.read("/alias", 64).await?.as_ref(), bytes.as_slice());
             Ok(())
@@ -599,7 +600,7 @@ async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
     transaction
         .create_file(
             "/tree/tracked",
-            Bytes::from_static(b"committed"),
+            bytes::Bytes::from_static(b"committed"),
             FileMetadata::default(),
         )
         .await?;
@@ -635,15 +636,15 @@ async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
     assert!(matches!(outcome, TransactionCommit::Committed(_)));
     assert_eq!(
         workspace.read("/tree/tracked", 64).await?,
-        Bytes::from_static(b"committed")
+        OwnedBytes::from_static(b"committed")
     );
     assert_eq!(
         workspace.read("/tree/ignored-link", 64).await?,
-        Bytes::from_static(b"committed")
+        OwnedBytes::from_static(b"committed")
     );
     assert_eq!(
         workspace.read("/ignored", 64).await?,
-        Bytes::from_static(b"still-live")
+        OwnedBytes::from_static(b"still-live")
     );
     let tracked = workspace.stat("/tree/tracked").await?;
     let linked = workspace.stat("/tree/ignored-link").await?;
@@ -681,7 +682,7 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
     ));
     assert_eq!(
         workspace.read("/file", 64).await?,
-        Bytes::from_static(b"source")
+        OwnedBytes::from_static(b"source")
     );
 
     let conflicting = fs.create_workspace("apply-paths-conflict").await?;
@@ -1323,7 +1324,7 @@ async fn workspace_forks_an_unpublished_checkpoint_without_mutating_its_source()
 
     assert_eq!(
         child.read("/candidate-only", 64).await?,
-        Bytes::from_static(b"candidate")
+        OwnedBytes::from_static(b"candidate")
     );
     assert!(source.read("/candidate-only", 64).await.is_err());
     Ok(())
@@ -1344,12 +1345,12 @@ async fn transaction_is_atomic_idempotent_and_visible_to_forks() -> Result<(), B
     };
     assert_eq!(
         workspace.read("/output/nested/status", 64).await?,
-        Bytes::from_static(b"ready")
+        OwnedBytes::from_static(b"ready")
     );
     let reopened = workspace.generation(generation.id()).await?;
     assert_eq!(
         reopened.read("/output/nested/status", 64).await?,
-        Bytes::from_static(b"ready")
+        OwnedBytes::from_static(b"ready")
     );
     let fork = workspace
         .fork(
@@ -1359,7 +1360,7 @@ async fn transaction_is_atomic_idempotent_and_visible_to_forks() -> Result<(), B
         .await?;
     assert_eq!(
         fork.read("/output/nested/status", 64).await?,
-        Bytes::from_static(b"ready")
+        OwnedBytes::from_static(b"ready")
     );
 
     let mut exact_retry = workspace.begin_transaction(key).await?;
@@ -1411,11 +1412,11 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
     ));
     assert_eq!(
         workspace.read("/first", 8).await?,
-        Bytes::from_static(b"one")
+        OwnedBytes::from_static(b"one")
     );
     assert_eq!(
         workspace.read("/second", 8).await?,
-        Bytes::from_static(b"two")
+        OwnedBytes::from_static(b"two")
     );
 
     let mut winner = workspace.begin_transaction(IdempotencyKey::new()).await?;
@@ -1441,7 +1442,7 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
     assert!(!truncated);
     assert_eq!(
         workspace.read("/first", 8).await?,
-        Bytes::from_static(b"winner")
+        OwnedBytes::from_static(b"winner")
     );
     Ok(())
 }
@@ -1472,11 +1473,11 @@ async fn exact_generation_transaction_is_stateless_and_rebases_safely() -> Resul
     ));
     assert_eq!(
         workspace.read("/upstream", 8).await?,
-        Bytes::from_static(b"one")
+        OwnedBytes::from_static(b"one")
     );
     assert_eq!(
         workspace.read("/local", 8).await?,
-        Bytes::from_static(b"two")
+        OwnedBytes::from_static(b"two")
     );
 
     let other = fs.create_workspace("other-exact-transaction").await?;
@@ -1498,19 +1499,19 @@ async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
     transaction.create_directory("/tree").await?;
     transaction
-        .write("/tree/source", Bytes::from_static(b"abcdef"))
+        .write("/tree/source", bytes::Bytes::from_static(b"abcdef"))
         .await?;
     transaction
-        .write("/tree/destination", Bytes::from_static(b"......"))
+        .write("/tree/destination", bytes::Bytes::from_static(b"......"))
         .await?;
     transaction
-        .create_symbolic_link("/tree/symlink", Bytes::from_static(b"source"))
+        .create_symbolic_link("/tree/symlink", bytes::Bytes::from_static(b"source"))
         .await?;
     transaction
         .hard_link("/tree/source", "/tree/hard-link")
         .await?;
     transaction
-        .write_range("/tree/source", 1, Bytes::from_static(b"Z"))
+        .write_range("/tree/source", 1, bytes::Bytes::from_static(b"Z"))
         .await?;
     transaction
         .zero_range(
@@ -1544,12 +1545,12 @@ async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
         transaction.commit().await?,
         TransactionCommit::Committed(_)
     ));
-    let source = Bytes::from_static(b"aZ\0\0ef");
+    let source = OwnedBytes::from_static(b"aZ\0\0ef");
     assert_eq!(workspace.read("/tree/source", 32).await?, source);
     assert_eq!(workspace.read("/tree/hard-link", 32).await?, source);
     assert_eq!(
         workspace.read("/tree/destination", 32).await?,
-        Bytes::from_static(b".aZ\0\0e\0\0")
+        OwnedBytes::from_static(b".aZ\0\0e\0\0")
     );
     Ok(())
 }
@@ -1562,14 +1563,14 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
     transaction.create_directory("/tree").await?;
     transaction
-        .write("/tree/a", Bytes::from_static(b"abcdef"))
+        .write("/tree/a", bytes::Bytes::from_static(b"abcdef"))
         .await?;
     transaction
-        .write("/tree/sparse", Bytes::from(vec![1; 300]))
+        .write("/tree/sparse", bytes::Bytes::from(vec![1; 300]))
         .await?;
     transaction.hard_link("/tree/a", "/tree/b").await?;
     transaction
-        .create_symbolic_link("/tree/link", Bytes::from_static(b"a"))
+        .create_symbolic_link("/tree/link", bytes::Bytes::from_static(b"a"))
         .await?;
     transaction
         .zero_range(
@@ -1614,7 +1615,7 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
 
     assert_eq!(
         workspace.read_range("/tree/a", 1, 5).await?,
-        Bytes::from_static(b"b\0\0ef")
+        OwnedBytes::from_static(b"b\0\0ef")
     );
     let a = workspace.stat("/tree/a").await?;
     let b = workspace.stat("/tree/b").await?;
@@ -1624,7 +1625,7 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
     assert_eq!(a.kind, FileKind::Regular);
     assert_eq!(
         workspace.read_symbolic_link("/tree/link").await?,
-        Bytes::from_static(b"a")
+        OwnedBytes::from_static(b"a")
     );
 
     let listing = workspace.sync().await?.into_generation();
@@ -1655,11 +1656,11 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
     workspace.write_text("/tree/a", "changed").await?;
     assert_eq!(
         exact.read("/tree/a", 16).await?,
-        Bytes::from_static(b"ab\0\0ef\0\0")
+        OwnedBytes::from_static(b"ab\0\0ef\0\0")
     );
     assert_eq!(
         workspace.read("/tree/a", 16).await?,
-        Bytes::from_static(b"changed")
+        OwnedBytes::from_static(b"changed")
     );
     Ok(())
 }
@@ -1773,12 +1774,12 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
             .await?
             .is_none()
     );
-    assert_eq!(joined.read("/base", 16).await?, Bytes::from_static(b"base"));
-    assert_eq!(main.read("/agent", 16).await?, Bytes::from_static(b"agent"));
-    assert_eq!(main.read("/main", 16).await?, Bytes::from_static(b"main"));
+    assert_eq!(joined.read("/base", 16).await?, OwnedBytes::from_static(b"base"));
+    assert_eq!(main.read("/agent", 16).await?, OwnedBytes::from_static(b"agent"));
+    assert_eq!(main.read("/main", 16).await?, OwnedBytes::from_static(b"main"));
     assert_eq!(
         agent.read("/agent", 16).await?,
-        Bytes::from_static(b"agent")
+        OwnedBytes::from_static(b"agent")
     );
     assert!(matches!(
         plan.apply(ApplyOptions {
@@ -1928,11 +1929,11 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
     };
     assert_eq!(
         first.read("/agent", 16).await?,
-        Bytes::from_static(b"local")
+        OwnedBytes::from_static(b"local")
     );
     assert_eq!(
         first.read("/upstream", 16).await?,
-        Bytes::from_static(b"first")
+        OwnedBytes::from_static(b"first")
     );
     assert!(matches!(
         agent.live_rebase(first_key, 128, 128, 32).await?,
@@ -1948,11 +1949,11 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
     ));
     assert_eq!(
         agent.read("/later", 16).await?,
-        Bytes::from_static(b"second")
+        OwnedBytes::from_static(b"second")
     );
     assert_eq!(
         agent.read("/agent", 16).await?,
-        Bytes::from_static(b"local")
+        OwnedBytes::from_static(b"local")
     );
     Ok(())
 }
@@ -1983,7 +1984,7 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
     assert_eq!(agent.head().await?.id(), before);
     assert_eq!(
         agent.read("/shared", 16).await?,
-        Bytes::from_static(b"local")
+        OwnedBytes::from_static(b"local")
     );
     assert!(matches!(
         main.live_rebase(IdempotencyKey::new(), 128, 128, 32).await,
@@ -1997,7 +1998,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let main = fs.create_workspace("main-ranges").await?;
-    main.write("/shared", Bytes::from(vec![b'a'; 128])).await?;
+    main.write("/shared", bytes::Bytes::from(vec![b'a'; 128])).await?;
     let agent = main
         .fork(
             "agent-ranges",
@@ -2006,7 +2007,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
         .await?;
     let mut local = agent.begin_transaction(IdempotencyKey::new()).await?;
     local
-        .write_range("/shared", 1, Bytes::from_static(b"XY"))
+        .write_range("/shared", 1, bytes::Bytes::from_static(b"XY"))
         .await?;
     assert!(matches!(
         local.commit().await?,
@@ -2014,7 +2015,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
     ));
     let mut upstream = main.begin_transaction(IdempotencyKey::new()).await?;
     upstream
-        .write_range("/shared", 64, Bytes::from_static(b"UV"))
+        .write_range("/shared", 64, bytes::Bytes::from_static(b"UV"))
         .await?;
     assert!(matches!(
         upstream.commit().await?,
@@ -2064,7 +2065,7 @@ async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Er
     assert!(main.read("/agent", 16).await.is_err());
     assert_eq!(
         main.read("/raced", 16).await?,
-        Bytes::from_static(b"winner")
+        OwnedBytes::from_static(b"winner")
     );
     Ok(())
 }
@@ -2102,7 +2103,7 @@ async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<
             ..
         }
     ));
-    assert_eq!(main.read("/shared", 16).await?, Bytes::from_static(b"main"));
+    assert_eq!(main.read("/shared", 16).await?, OwnedBytes::from_static(b"main"));
     Ok(())
 }
 
@@ -2169,7 +2170,7 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
     );
     assert_eq!(
         main.read("/shared", 16).await?,
-        Bytes::from_static(b"agent")
+        OwnedBytes::from_static(b"agent")
     );
     Ok(())
 }
@@ -2267,16 +2268,16 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
     let mut initial = workspace.begin_transaction(IdempotencyKey::new()).await?;
     initial.create_dir_all("/nested/deep").await?;
     initial
-        .write("/rename", Bytes::from_static(b"same"))
+        .write("/rename", bytes::Bytes::from_static(b"same"))
         .await?;
     initial
-        .write("/remove", Bytes::from_static(b"gone"))
+        .write("/remove", bytes::Bytes::from_static(b"gone"))
         .await?;
     initial
-        .write("/linked", Bytes::from_static(b"links"))
+        .write("/linked", bytes::Bytes::from_static(b"links"))
         .await?;
     initial
-        .write("/modified", Bytes::from_static(b"before"))
+        .write("/modified", bytes::Bytes::from_static(b"before"))
         .await?;
     assert!(matches!(
         initial.commit().await?,
@@ -2289,10 +2290,10 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
     changed.remove("/remove").await?;
     changed.hard_link("/linked", "/nested/link").await?;
     changed
-        .write("/nested/deep/added", Bytes::from_static(b"new"))
+        .write("/nested/deep/added", bytes::Bytes::from_static(b"new"))
         .await?;
     changed
-        .write("/modified", Bytes::from_static(b"after"))
+        .write("/modified", bytes::Bytes::from_static(b"after"))
         .await?;
     let TransactionCommit::Committed(after) = changed.commit().await? else {
         return Err("changed paths did not commit".into());
@@ -2425,7 +2426,7 @@ async fn changed_path_queries_reuse_the_sdk_generation_index() -> Result<(), Box
             initial
                 .write(
                     &format!("/unrelated-{index:04}"),
-                    Bytes::from_static(b"unchanged"),
+                    bytes::Bytes::from_static(b"unchanged"),
                 )
                 .await?;
         }
@@ -2436,7 +2437,7 @@ async fn changed_path_queries_reuse_the_sdk_generation_index() -> Result<(), Box
     }
     let mut initial = workspace.begin_transaction(IdempotencyKey::new()).await?;
     initial
-        .write("/selected", Bytes::from_static(b"before"))
+        .write("/selected", bytes::Bytes::from_static(b"before"))
         .await?;
     assert!(matches!(
         initial.commit().await?,
@@ -2529,7 +2530,7 @@ async fn measured_workspace_helpers_retain_lookup_and_planning_failure_work()
 
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
     let authored = transaction
-        .create_file_measured("/missing/child", Bytes::new(), budget, &cancellation).await;
+        .create_file_measured("/missing/child", OwnedBytes::new(), budget, &cancellation).await;
     let authored = match authored {
         Err(failure) => failure,
         Ok(_) => return Err("absent parent unexpectedly accepted".into()),
@@ -2608,13 +2609,13 @@ async fn bounded_path_index_hit_never_substitutes_a_false_empty_result()
         .namespace_records_for_file_ids([file_id], 16)
         .await?;
     assert!(complete.complete);
-    assert_eq!(complete.records.get(&file_id).map(Vec::len), Some(2));
+    assert_eq!(complete.records.iter().find(|(id, _)| **id == file_id).map(|(_, records)| records.len()), Some(2));
 
     let bounded = generation
         .namespace_records_for_file_ids([file_id], 1)
         .await?;
     assert!(!bounded.complete);
-    assert_eq!(bounded.records.get(&file_id).map(Vec::len), Some(1));
+    assert_eq!(bounded.records.iter().find(|(id, _)| **id == file_id).map(|(_, records)| records.len()), Some(1));
     Ok(())
 }
 
@@ -3019,7 +3020,7 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
                     .await?
                     .read("/after.txt", 16)
                     .await?,
-                Bytes::from_static(b"after")
+                OwnedBytes::from_static(b"after")
             );
         }
     }
@@ -3090,7 +3091,7 @@ async fn assert_fork_lineage_exact(
     if inherits_base {
         assert_eq!(
             grandchild.read("/base.txt", 16).await?,
-            Bytes::from_static(b"base")
+            OwnedBytes::from_static(b"base")
         );
     } else {
         assert!(grandchild.read("/base.txt", 16).await.is_err());
@@ -3173,7 +3174,7 @@ async fn fork_through_every_cut(
             if inherits_base {
                 assert_eq!(
                     retried.read("/base.txt", 16).await?,
-                    Bytes::from_static(b"base")
+                    OwnedBytes::from_static(b"base")
                 );
             } else {
                 assert!(retried.read("/base.txt", 16).await.is_err());
@@ -3330,7 +3331,7 @@ async fn a_local_fork_survives_power_loss_at_every_journal_cut() -> Result<(), B
             assert_eq!(agent.head().await?.id(), forked_head);
             assert_eq!(
                 agent.read("/base.txt", 16).await?,
-                Bytes::from_static(b"base")
+                OwnedBytes::from_static(b"base")
             );
         }
         let retried = main
@@ -3339,7 +3340,7 @@ async fn a_local_fork_survives_power_loss_at_every_journal_cut() -> Result<(), B
         assert_eq!(retried.head().await?.id(), forked_head);
         assert_eq!(
             retried.read("/base.txt", 16).await?,
-            Bytes::from_static(b"base")
+            OwnedBytes::from_static(b"base")
         );
         drop((main, retried));
         close_local(fs).await?;
@@ -3390,7 +3391,7 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
         assert!(collected.removed >= 1, "{collected:?}");
         let again = fs.collect_local_garbage(None, &cancellation).await?;
         assert_eq!(again.removed, 0);
-        assert_eq!(main.read("/base.txt", 64).await?, "base");
+        assert_eq!(main.read("/base.txt", 64).await?.as_ref(), b"base");
         drop((main, agent));
         close_local(fs).await?;
     }
@@ -3402,7 +3403,7 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
         "the fork base went with its fork"
     );
     let main = fs.open_workspace("repo").await?;
-    assert_eq!(main.read("/base.txt", 64).await?, "base");
+    assert_eq!(main.read("/base.txt", 64).await?.as_ref(), b"base");
     // Content the collection removed is stored again when written again.
     let content = "only the agent ".repeat(8_192);
     main.write_text("/again.txt", &content).await?;
@@ -3410,7 +3411,7 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
     close_local(fs).await?;
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
     let main = fs.open_workspace("repo").await?;
-    assert_eq!(main.read("/again.txt", 1 << 20).await?, content.as_str());
+    assert_eq!(main.read("/again.txt", 1 << 20).await?.as_ref(), content.as_bytes());
     Ok(())
 }
 
@@ -3463,8 +3464,8 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
     let main = fs.open_workspace("repo").await?;
     assert_eq!(
-        main.read("/churn.txt", 1 << 20).await?,
-        "23".repeat(20_000).as_str()
+        main.read("/churn.txt", 1 << 20).await?.as_ref(),
+        "23".repeat(20_000).as_bytes()
     );
     assert_eq!(
         fs.collect_local_garbage(None, &cancellation).await?.removed,
@@ -3587,7 +3588,7 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
         ));
         assert_eq!(
             main.read("/README.md", 64).await?,
-            Bytes::from_static(b"first\n")
+            OwnedBytes::from_static(b"first\n")
         );
     }
     {
@@ -3616,7 +3617,7 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
         ));
         assert_eq!(
             main.read("/README.md", 64).await?,
-            Bytes::from_static(b"first\n")
+            OwnedBytes::from_static(b"first\n")
         );
     }
     Ok(())
@@ -3664,11 +3665,11 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
         };
         assert!(applied, "{label} join did not apply");
     }
-    assert_eq!(main.read("/a.rs", 16).await?, Bytes::from_static(b"a\n"));
-    assert_eq!(main.read("/b.rs", 16).await?, Bytes::from_static(b"b\n"));
+    assert_eq!(main.read("/a.rs", 16).await?, OwnedBytes::from_static(b"a\n"));
+    assert_eq!(main.read("/b.rs", 16).await?, OwnedBytes::from_static(b"b\n"));
     assert_eq!(
         main.read("/README.md", 16).await?,
-        Bytes::from_static(b"base\n")
+        OwnedBytes::from_static(b"base\n")
     );
     Ok(())
 }
@@ -3725,7 +3726,7 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
         let name = path.rsplit('/').next().expect("file name");
         assert_eq!(
             main.read(path, 16).await?,
-            Bytes::copy_from_slice(name.as_bytes())
+            OwnedBytes::copy_from_slice(name.as_bytes())
         );
     }
     Ok(())
@@ -3808,11 +3809,11 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
     }
     assert_eq!(
         main.read("/same.rs", 16).await?,
-        Bytes::from_static(b"same\n")
+        OwnedBytes::from_static(b"same\n")
     );
     assert_eq!(
         main.read("/other.rs", 16).await?,
-        Bytes::from_static(b"first\n")
+        OwnedBytes::from_static(b"first\n")
     );
     Ok(())
 }
@@ -3875,11 +3876,11 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
     }
     assert_eq!(
         main.read("/pkg/a.rs", 16).await?,
-        Bytes::from_static(b"x\n")
+        OwnedBytes::from_static(b"x\n")
     );
     assert_eq!(
         main.read("/pkg/b.rs", 16).await?,
-        Bytes::from_static(b"x\n")
+        OwnedBytes::from_static(b"x\n")
     );
     assert_eq!(main.stat("/pkg").await?.metadata.modified_ns, Some(30));
 
@@ -4135,12 +4136,12 @@ async fn measured_selected_transaction_composes_one_finite_pinned_import()
     ).await?;
     work = work.checked_add(parents)?;
     let written = transaction.write_measured(
-        "/nested/file", Bytes::from_static(b"original owned input"),
+        "/nested/file", OwnedBytes::from_static(b"original owned input"),
         work.remaining(budget)?, &cancellation,
     ).await?;
     work = work.checked_add(written)?;
     let replaced = transaction.write_measured(
-        "/nested/file", Bytes::from_static(b"replacement"),
+        "/nested/file", OwnedBytes::from_static(b"replacement"),
         work.remaining(budget)?, &cancellation,
     ).await?;
     work = work.checked_add(replaced)?;
@@ -4171,9 +4172,9 @@ async fn measured_selected_transaction_failure_preserves_work_and_pending_candid
     let cancellation = CancellationToken::new();
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
     transaction.create_dir_all("/dir").await?;
-    transaction.write("/dir/child", Bytes::from_static(b"pending")).await?;
+    transaction.write("/dir/child", bytes::Bytes::from_static(b"pending")).await?;
     let failed_write = transaction.write_measured(
-        "/dir/child", Bytes::from_static(b"must not replace"),
+        "/dir/child", OwnedBytes::from_static(b"must not replace"),
         WorkBudget { bytes_copied: 2, ..WorkBudget::UNBOUNDED }, &cancellation,
     ).await.expect_err("canonical path copying is bounded before mutation");
     assert!(matches!(failed_write.error, WorkspaceError::Work(_)));
@@ -4203,7 +4204,7 @@ async fn measured_selected_transaction_failure_preserves_work_and_pending_candid
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let denied_write = transaction.write_measured(
-        "/dir/child", Bytes::from_static(b"cancelled"), WorkBudget::UNBOUNDED, &cancelled,
+        "/dir/child", OwnedBytes::from_static(b"cancelled"), WorkBudget::UNBOUNDED, &cancelled,
     ).await.expect_err("cold cancellation");
     let denied_remove = transaction.remove_measured(
         "/dir/child", WorkBudget::UNBOUNDED, &cancelled,
@@ -4256,19 +4257,19 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     let workspace = fs.create_workspace("guarded-selected-restore").await?;
     let mut seed = workspace.begin_transaction(IdempotencyKey::new()).await?;
     seed.create_dir_all("/tree").await?;
-    seed.write("/tree/file", Bytes::from_static(b"source")).await?;
+    seed.write("/tree/file", bytes::Bytes::from_static(b"source")).await?;
     seed.hard_link("/tree/file", "/tree/alias").await?;
     seed.set_metadata("/tree/file", FileMetadata {
         posix_mode: MetadataField::Value(0o640), ..FileMetadata::default()
     }).await?;
-    seed.write("/outside", Bytes::from_static(b"base")).await?;
+    seed.write("/outside", bytes::Bytes::from_static(b"base")).await?;
     seed.commit().await?;
     let source = workspace.head().await?;
     let source_metadata = source.stat("/tree/file").await?.metadata;
     let mut live = workspace.begin_transaction(IdempotencyKey::new()).await?;
-    live.write("/tree/file", Bytes::from_static(b"dirty")).await?;
-    live.write("/removed", Bytes::from_static(b"remove me")).await?;
-    live.write("/outside", Bytes::from_static(b"user")).await?;
+    live.write("/tree/file", bytes::Bytes::from_static(b"dirty")).await?;
+    live.write("/removed", bytes::Bytes::from_static(b"remove me")).await?;
+    live.write("/outside", bytes::Bytes::from_static(b"user")).await?;
     live.commit().await?;
     let dirty = workspace.head().await?;
     let selected = vec!["tree/file".to_owned(), "removed".to_owned()];
@@ -4387,12 +4388,12 @@ async fn guarded_stale_exact_retry_resolves_committed_without_owner_reseal()
     let base = workspace.head().await?;
     let key = IdempotencyKey::new();
     let mut first = workspace.begin_transaction(key).await?;
-    first.write("/file", Bytes::from_static(b"same input")).await?;
+    first.write("/file", bytes::Bytes::from_static(b"same input")).await?;
     let TransactionCommit::Committed(committed) = first.commit().await? else {
         return Err("initial original commit did not publish".into());
     };
     let mut retry = workspace.begin_transaction_at(&base, key).await?;
-    retry.write("/file", Bytes::from_static(b"same input")).await?;
+    retry.write("/file", bytes::Bytes::from_static(b"same input")).await?;
     let cancellation = CancellationToken::new();
     let budget = selected_transaction_budget();
     let mut owner_calls = 0;
@@ -4436,7 +4437,7 @@ async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
     let base = workspace.head().await?;
     let cancellation = CancellationToken::new();
     let mut candidate = workspace.begin_transaction(IdempotencyKey::new()).await?;
-    candidate.write("/file", Bytes::from_static(b"candidate")).await?;
+    candidate.write("/file", bytes::Bytes::from_static(b"candidate")).await?;
     let callback_work = crate::WorkCounters {
         backend_read_operations: 3,
         ..crate::WorkCounters::UNCHARGED
@@ -4466,7 +4467,7 @@ async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
     assert!(matches!(candidate.commit().await?, TransactionCommit::Committed(_)));
     assert_eq!(workspace.read("/file", 32).await?.as_ref(), b"candidate");
     let mut cancelled_candidate = workspace.begin_transaction(IdempotencyKey::new()).await?;
-    cancelled_candidate.write("/cancelled", Bytes::from_static(b"not published")).await?;
+    cancelled_candidate.write("/cancelled", bytes::Bytes::from_static(b"not published")).await?;
     cancellation.cancel();
     let sdk_failure = cancelled_candidate.commit_with_permit_guarded(
         crate::PublicationPermit::Unrestricted, &cancellation,
@@ -4518,15 +4519,15 @@ async fn measured_directory_record_restore_preserves_original_ignored_descendant
     seed.set_metadata("/tree", FileMetadata {
         posix_mode: MetadataField::Value(0o700), ..FileMetadata::default()
     }).await?;
-    seed.write("/tree/tracked", Bytes::from_static(b"base")).await?;
+    seed.write("/tree/tracked", bytes::Bytes::from_static(b"base")).await?;
     seed.commit().await?;
     let source = workspace.head().await?;
     let mut live = workspace.begin_transaction(IdempotencyKey::new()).await?;
     live.set_metadata("/tree", FileMetadata {
         posix_mode: MetadataField::Value(0o755), ..FileMetadata::default()
     }).await?;
-    live.write("/tree/tracked", Bytes::from_static(b"dirty")).await?;
-    live.write("/tree/ignored", Bytes::from_static(b"live ignored")).await?;
+    live.write("/tree/tracked", bytes::Bytes::from_static(b"dirty")).await?;
+    live.write("/tree/ignored", bytes::Bytes::from_static(b"live ignored")).await?;
     live.commit().await?;
     let current = workspace.head().await?;
     let cancellation = CancellationToken::new();
@@ -4603,15 +4604,15 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     source_tx.set_metadata("/hot", FileMetadata {
         posix_mode: MetadataField::Value(0o750), ..FileMetadata::default()
     }).await?;
-    source_tx.write("/hot/value", Bytes::from_static(b"selected source")).await?;
+    source_tx.write("/hot/value", bytes::Bytes::from_static(b"selected source")).await?;
     source_tx.hard_link("/hot/value", "/hot/alias").await?;
     source_tx.commit().await?;
     let source = source_workspace.head().await?;
     let workspace = fs.create_workspace("target-selected-directory-shape").await?;
     let mut target_tx = workspace.begin_transaction(IdempotencyKey::new()).await?;
-    target_tx.write("/hot", Bytes::from_static(b"original file")).await?;
+    target_tx.write("/hot", bytes::Bytes::from_static(b"original file")).await?;
     target_tx.hard_link("/hot", "/outside-linked").await?;
-    target_tx.write("/outside", Bytes::from_static(b"user")).await?;
+    target_tx.write("/outside", bytes::Bytes::from_static(b"user")).await?;
     target_tx.commit().await?;
     let original = workspace.head().await?;
     let paths = vec![
@@ -4668,15 +4669,15 @@ async fn selected_record_restore_removes_directory_descendants_before_file_repla
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let source_workspace = fs.create_workspace("source-selected-file-shape").await?;
-    source_workspace.write("/hot", Bytes::from_static(b"replacement file")).await?;
+    source_workspace.write("/hot", bytes::Bytes::from_static(b"replacement file")).await?;
     let source = source_workspace.head().await?;
     let workspace = fs.create_workspace("target-selected-file-shape").await?;
     let mut seed = workspace.begin_transaction(IdempotencyKey::new()).await?;
     seed.create_dir_all("/hot/nested/empty").await?;
-    seed.write("/hot/nested/old", Bytes::from_static(b"retained outside alias")).await?;
+    seed.write("/hot/nested/old", bytes::Bytes::from_static(b"retained outside alias")).await?;
     seed.hard_link("/hot/nested/old", "/outside-linked").await?;
-    seed.write("/hot/top", Bytes::from_static(b"old top")).await?;
-    seed.write("/outside", Bytes::from_static(b"user")).await?;
+    seed.write("/hot/top", bytes::Bytes::from_static(b"old top")).await?;
+    seed.write("/outside", bytes::Bytes::from_static(b"user")).await?;
     seed.commit().await?;
     let original = workspace.head().await?;
     let paths = vec![
@@ -4765,7 +4766,7 @@ async fn native_permanent_pin_consumes_the_original_shared_publication_custody()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = fs.create_workspace("native-permanent-original-pin").await?;
-    let committed = match workspace.write("/value", Bytes::from_static(b"original")).await? {
+    let committed = match workspace.write("/value", bytes::Bytes::from_static(b"original")).await? {
         TransactionCommit::Committed(generation) => generation,
         _ => return Err("the original publication did not commit".into()),
     };
@@ -4819,12 +4820,12 @@ async fn native_whole_file_read_rejects_a_prefix_bound_on_the_exact_generation()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = fs.create_workspace("native-original-whole-file-read").await?;
-    let committed = match workspace.write("/value", Bytes::from_static(b"complete")).await? {
+    let committed = match workspace.write("/value", bytes::Bytes::from_static(b"complete")).await? {
         TransactionCommit::Committed(generation) => generation,
         _ => return Err("the original publication did not commit".into()),
     };
     let retained = committed.publication_retained_bytes();
-    let _ = workspace.write("/value", Bytes::from_static(b"changed-current-head")).await?;
+    let _ = workspace.write("/value", bytes::Bytes::from_static(b"changed-current-head")).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
         selected_transaction_budget(), &cancellation,
@@ -4839,7 +4840,7 @@ async fn native_whole_file_read_rejects_a_prefix_bound_on_the_exact_generation()
     let bytes = committed.read_with_native_work(
         "/value", 8, &original, &cancellation,
     ).await.map_err(|(error, _)| error)?;
-    assert_eq!(bytes, Bytes::from_static(b"complete"));
+    assert_eq!(bytes, OwnedBytes::from_static(b"complete"));
     assert_eq!(committed.publication_retained_bytes(), retained);
     original.receipt().verify(selected_transaction_budget())?;
     Ok(())
@@ -4851,12 +4852,12 @@ async fn native_public_fork_retains_the_original_selected_generation_and_operati
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = fs.create_workspace("native-selected-original-parent").await?;
-    workspace.write("/selected", Bytes::from_static(b"original")).await?;
-    let frozen = match workspace.write("/unselected", Bytes::from_static(b"private")).await? {
+    workspace.write("/selected", bytes::Bytes::from_static(b"original")).await?;
+    let frozen = match workspace.write("/unselected", bytes::Bytes::from_static(b"private")).await? {
         TransactionCommit::Committed(generation) => generation,
         _ => return Err("the original publication did not commit".into()),
     };
-    workspace.write("/selected", Bytes::from_static(b"advanced-parent")).await?;
+    workspace.write("/selected", bytes::Bytes::from_static(b"advanced-parent")).await?;
     let key = IdempotencyKey::new();
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
@@ -4868,10 +4869,10 @@ async fn native_public_fork_retains_the_original_selected_generation_and_operati
             .inherit_paths(vec!["/selected".to_owned()]),
         &original, &cancellation,
     ).await.map_err(|(error, _)| error)?;
-    assert_eq!(forked.read("/selected", 8).await?, Bytes::from_static(b"original"));
+    assert_eq!(forked.read("/selected", 8).await?, OwnedBytes::from_static(b"original"));
     assert!(matches!(forked.read("/unselected", 8).await, Err(WorkspaceError::NotFound)));
-    forked.write("/selected", Bytes::from_static(b"advanced-child")).await?;
-    workspace.write("/selected", Bytes::from_static(b"another-parent-head")).await?;
+    forked.write("/selected", bytes::Bytes::from_static(b"advanced-child")).await?;
+    workspace.write("/selected", bytes::Bytes::from_static(b"another-parent-head")).await?;
     let retried = workspace.fork_with_native_work(
         "native-selected-original-child",
         ForkOptions::from_generation(frozen, key)
@@ -4879,7 +4880,7 @@ async fn native_public_fork_retains_the_original_selected_generation_and_operati
         &original, &cancellation,
     ).await.map_err(|(error, _)| error)?;
     assert_eq!(retried.id(), forked.id());
-    assert_eq!(retried.read("/selected", 14).await?, Bytes::from_static(b"advanced-child"));
+    assert_eq!(retried.read("/selected", 14).await?, OwnedBytes::from_static(b"advanced-child"));
     assert_eq!(original.receipt().authority_records_appended, 2);
     original.receipt().verify(selected_transaction_budget())?;
     Ok(())
@@ -5145,7 +5146,7 @@ async fn native_guarded_creation_preserves_original_callback_error_and_prepared_
         std::future::ready(Err(NativeCreationGuardTestError::Denied(23)))
     };
     let failure = fs.create_workspace_with_operation_guarded_with_native_work(
-        "native-guarded-creation-denied", VolumeConfig::portable(Lifecycle::Persistent),
+        "native-guarded-creation-denied", VolumeConfig::portable(Lifecycle::Durable),
         IdempotencyKey::new().operation_id(), &original, &cancellation, &mut deny,
     ).await.err().ok_or("the owner denial unexpectedly created a workspace")?;
     assert!(matches!(failure, NativeCreationGuardTestError::Denied(23)));
@@ -5163,7 +5164,7 @@ async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_auth
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = fs.create_workspace("native-guarded-fork-source").await?;
-    workspace.write("/selected", Bytes::from_static(b"original")).await?;
+    workspace.write("/selected", bytes::Bytes::from_static(b"original")).await?;
     let frozen = workspace.head().await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
@@ -5197,9 +5198,9 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = fs.create_workspace("native-selected-reservation").await?;
-    workspace.write("/selected", Bytes::from_static(b"frozen")).await?;
+    workspace.write("/selected", bytes::Bytes::from_static(b"frozen")).await?;
     let frozen = workspace.head().await?;
-    workspace.write("/selected", Bytes::from_static(b"current")).await?;
+    workspace.write("/selected", bytes::Bytes::from_static(b"current")).await?;
     let current = workspace.head().await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
@@ -5218,7 +5219,7 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
     ).await;
     assert!(!matches!(denied, Ok(TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_))));
     assert_eq!(workspace.head().await?.id(), current.id());
-    assert_eq!(workspace.read("/selected", 7).await?, Bytes::from_static(b"current"));
+    assert_eq!(workspace.read("/selected", 7).await?, OwnedBytes::from_static(b"current"));
     assert_eq!(original.receipt().authority_records_appended, before.authority_records_appended);
     let permit = crate::PublicationPermit::Reservation {
         operation_id: reservation.operation_id.into_bytes(),
@@ -5229,7 +5230,7 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
         &frozen, &paths, current.id(), key, permit, &original, &cancellation, &mut allow,
     ).await?;
     assert!(matches!(restored, TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_)));
-    assert_eq!(workspace.read("/selected", 6).await?, Bytes::from_static(b"frozen"));
+    assert_eq!(workspace.read("/selected", 6).await?, OwnedBytes::from_static(b"frozen"));
     workspace.release_publication_with_native_work(reservation, &original, &cancellation)
         .await.map_err(|(error, _)| error)?;
     original.receipt().verify(selected_transaction_budget())?;
@@ -5242,7 +5243,7 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = fs.create_workspace("native-fork-reserved-source").await?;
-    workspace.write("/value", Bytes::from_static(b"frozen")).await?;
+    workspace.write("/value", bytes::Bytes::from_static(b"frozen")).await?;
     let frozen = workspace.head().await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
@@ -5282,7 +5283,7 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     let original_evidence: &'static [u8] = b"opaque original SDK operation witness";
     let context = crate::Digest::from_bytes([0xc7; 32]);
     let mut transaction = workspace.begin_transaction(key).await?;
-    transaction.write("/original", Bytes::from_static(b"original generation")).await?;
+    transaction.write("/original", bytes::Bytes::from_static(b"original generation")).await?;
     let committed = transaction.commit_with_context_with_permit_measured_guarded(
         context, acyclic_stream::OwnedBytes::from_static(original_evidence),
         crate::PublicationPermit::Unrestricted,
@@ -5295,7 +5296,7 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
         TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
         _ => return Err("the original contextual operation did not publish".into()),
     };
-    workspace.write("/later", Bytes::from_static(b"later unrelated generation")).await?;
+    workspace.write("/later", bytes::Bytes::from_static(b"later unrelated generation")).await?;
     let current = workspace.head().await?;
     assert_ne!(current.id(), original_generation.id());
     let observed = workspace.operation_generation_record_measured(
@@ -5337,7 +5338,7 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
     let evidence = acyclic_stream::OwnedBytes::from_static(b"the original frozen SDK witness");
     let historical_permit = crate::PublicationPermit::Unrestricted;
     let mut transaction = workspace.begin_transaction(key).await?;
-    transaction.write("/original", Bytes::from_static(b"original content")).await?;
+    transaction.write("/original", bytes::Bytes::from_static(b"original content")).await?;
     let first = workspace.reserve_publication(IdempotencyKey::new().operation_id()).await?;
     let current_permit = crate::PublicationPermit::Reservation {
         operation_id: first.operation_id.into_bytes(), gate_tail: first.gate_tail, expected: first.expected,
@@ -5399,7 +5400,7 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         Some(acyclic_stream::OwnedBytes::from_static(b"a changed SDK witness")), Some(historical_permit),
     ).await?;
     assert!(matches!(changed_evidence.value, Some(crate::CheckoutCommitOutcome::IdempotencyConflict { .. })));
-    transaction.write("/original", Bytes::from_static(b"changed candidate content")).await?;
+    transaction.write("/original", bytes::Bytes::from_static(b"changed candidate content")).await?;
     let changed_payload = transaction.checkout.retry_stale_commit_guarded(
         key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation,
         &mut allow, None, Some(context), Some(evidence), Some(historical_permit),
@@ -5420,7 +5421,7 @@ async fn original_fingerprint_metadata_never_authorizes_a_foreign_current_reserv
     let original_head = workspace.head().await?;
     let key = IdempotencyKey::new();
     let mut transaction = workspace.begin_transaction(key).await?;
-    transaction.write("/value", Bytes::from_static(b"the genuine candidate")).await?;
+    transaction.write("/value", bytes::Bytes::from_static(b"the genuine candidate")).await?;
     let target_reservation = workspace.reserve_publication(IdempotencyKey::new().operation_id()).await?;
     let foreign_reservation = foreign.reserve_publication(IdempotencyKey::new().operation_id()).await?;
     let foreign_permit = crate::PublicationPermit::Reservation {

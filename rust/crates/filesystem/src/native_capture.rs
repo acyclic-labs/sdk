@@ -83,7 +83,7 @@ impl NativeViewBaseline {
         read_only: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>, crate::NativeTreeMaterializationError> {
-        let allocation = work.allocate(std::mem::size_of::<Self>() as u64)?;
+        let allocation = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1)?;
         Ok(std::sync::Arc::new(Self {
             root_identity, read_only, _allocation: Some(allocation),
         }))
@@ -1801,11 +1801,11 @@ where
         |claim, bytes| {
             let (allocated, completed) = {
                 let mut work = capture_ledger_meter(&claim.meter);
-                (if bytes != 0 { capture_allocate(&mut work, bytes) } else { Ok(()) }, work.work)
+                (if bytes != 0 { capture_allocate(&mut *work, bytes) } else { Ok(()) }, work.work)
             };
             allocated.map_err(|error| OperationFailure::new(error, completed))?;
             claim.bytes = Some(bytes);
-            Ok(())
+            Ok::<(), OperationFailure<CaptureError>>(())
         },
         |_| create(),
     )?;
@@ -3199,7 +3199,7 @@ mod host_observation_tests {
         let mut meter = DemandWork::new(budget, &CancellationToken::new());
         let failure = match crate::heap_future::in_heap_admitted(
             &mut meter,
-            |meter, bytes| capture_allocate(meter, bytes)
+            |meter, bytes| capture_allocate(*meter, bytes)
                 .map_err(|error| OperationFailure::new(error, meter.work)),
             |meter| {
                 constructed.set(true);
@@ -3227,7 +3227,7 @@ mod host_observation_tests {
         meter.adopt(caller_bytes)?;
         let failure = match crate::heap_future::in_heap_admitted(
             &mut meter,
-            |meter, bytes| capture_allocate(meter, bytes)
+            |meter, bytes| capture_allocate(*meter, bytes)
                 .map_err(|error| OperationFailure::new(error, meter.work)),
             |meter| {
                 constructed.set(true);
@@ -3261,7 +3261,7 @@ mod host_observation_tests {
         let mut meter = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let (mut future, heap_bytes) = crate::heap_future::in_heap_admitted(
             &mut meter,
-            |meter, bytes| capture_allocate(meter, bytes)
+            |meter, bytes| capture_allocate(*meter, bytes)
                 .map_err(|error| OperationFailure::new(error, meter.work)),
             |meter| async move {
                 let observed = capture_stat(&root, &path, meter);
@@ -4983,7 +4983,7 @@ mod shared_watch_capture_tests {
 
     impl AsyncObjectStore for ReenteringObjects {
         async fn put(
-            &self, object_id: ObjectId, bytes: bytes::Bytes, budget: WorkBudget,
+            &self, object_id: ObjectId, bytes: acyclic_stream::OwnedBytes, budget: WorkBudget,
             cancellation: &CancellationToken,
         ) -> ObjectResult<()> {
             self.reenter().await;
@@ -5982,7 +5982,7 @@ fn append_final_state<W: CaptureNativeWork>(
                         mutations.push(AuthoredMutation::Remove { path: clone_capture_path(&path, meter)?, expected_file_id: None });
                     }
                     let target = capture_link_target(target, meter)?;
-                    mutations.push(AuthoredMutation::CreateSymbolicLink { path, target, metadata: canonical_metadata });
+                    mutations.push(AuthoredMutation::CreateSymbolicLink { path, target: target.into(), metadata: canonical_metadata });
                 }
                 FileKind::Fifo | FileKind::Socket => mutations.push(if exists_with_kind {
                     AuthoredMutation::SetMetadata { path, metadata: canonical_metadata }
@@ -6279,7 +6279,7 @@ fn append_staged_regular_state(
             mutations.push(AuthoredMutation::Resize { path: clone_capture_path(&path, meter)?, logical_bytes: 0 });
         } else {
             mutations.push(AuthoredMutation::CreateFile { path: clone_capture_path(&path, meter)?,
-                bytes: bytes::Bytes::new(), metadata: canonical_metadata });
+                bytes: acyclic_stream::OwnedBytes::new(), metadata: canonical_metadata });
         }
         if logical_bytes != 0 {
             mutations.push(AuthoredMutation::Resize { path: clone_capture_path(&path, meter)?, logical_bytes });
@@ -7707,7 +7707,7 @@ mod windows_sparse_tests {
     ) -> std::io::Result<Vec<(u64, u64)>> {
         let root = HostRoot::open(directory)?;
         let file = root.open_file_positional(Path::new(name))?;
-        let metadata = test_host_stat(&root, Path::new(name))?;
+        let metadata = test_host_stat(&root, Path::new(name)).map_err(std::io::Error::other)?;
         let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -7796,7 +7796,7 @@ mod windows_sparse_tests {
         // once cancelled.
         let root = HostRoot::open(directory.path())?;
         let file = root.open_file_positional(Path::new("sparse.bin"))?;
-        let metadata = test_host_stat(&root, Path::new("sparse.bin"))?;
+        let metadata = test_host_stat(&root, Path::new("sparse.bin")).map_err(std::io::Error::other)?;
         let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
         let scan = |budget: WorkBudget, cancellation: CancellationToken| {
             let (native, metadata) = (std::sync::Arc::clone(&native), metadata.clone());

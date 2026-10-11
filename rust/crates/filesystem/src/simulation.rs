@@ -15,7 +15,7 @@ use crate::storage::{
     ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt,
     ObjectResult, ObjectStoreError, PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
 };
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use thiserror::Error;
@@ -182,7 +182,7 @@ struct State {
     trace: Vec<SimulationTrace>,
     #[cfg(not(target_arch = "wasm32"))]
     trace_native: Option<crate::materializer::NativeAllocation>,
-    pending_objects: BTreeMap<ObjectId, Bytes>,
+    pending_objects: BTreeMap<ObjectId, OwnedBytes>,
     pending_object_bytes: u64,
 }
 
@@ -430,7 +430,7 @@ impl<A, O: AsyncObjectStore> Simulation<A, O> {
     /// Publishes delayed immutable objects in canonical identity order.
     ///
     /// Only one pending entry is retained outside the simulator lock at a time,
-    /// so flushing does not allocate or copy the delayed object set. `Bytes`
+    /// so flushing does not allocate or copy the delayed object set. `OwnedBytes`
     /// cloning retains the same immutable allocation until backend admission.
     ///
     /// # Errors
@@ -606,19 +606,19 @@ impl SimulationWriteWork<'_> {
 }
 
 enum SimulationWrite {
-    Plain(ObjectId, Bytes),
+    Plain(ObjectId, OwnedBytes),
     Hashed(crate::storage::HashedObject),
 }
 
 impl SimulationWrite {
-    fn parts(&self) -> (ObjectId, &Bytes, bool) {
+    fn parts(&self) -> (ObjectId, &OwnedBytes, bool) {
         match self {
             Self::Plain(id, bytes) => (*id, bytes, false),
             Self::Hashed(object) => (object.object_id(), object.bytes(), true),
         }
     }
 
-    fn into_parts(self) -> (ObjectId, Bytes) {
+    fn into_parts(self) -> (ObjectId, OwnedBytes) {
         match self {
             Self::Plain(id, bytes) => (id, bytes),
             Self::Hashed(object) => object.into_parts(),
@@ -690,7 +690,7 @@ impl<O: AsyncObjectStore> SimulatedObjectStore<O> {
                 return Err(ObjectFailure::new(accounting.simulation_error(
                     "simulation delayed-object bound exhausted"), work));
             }
-            // The map node is opaque simulator storage. Moving Bytes preserves
+            // The map node is opaque simulator storage. Moving OwnedBytes preserves
             // its physical owner's intrinsic guard, including all later aliases.
             let (_, bytes) = object.into_parts();
             state.pending_objects.insert(object_id, bytes);
@@ -1232,9 +1232,9 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> 
         guard: &mut F,
     ) -> Result<(AppendOutcome, crate::NativeAllocation), E>
     where
-        F: FnMut(crate::NativeMaterializationWork) -> Fut + Send,
-        Fut: Future<Output = Result<(), E>> + Send,
-        E: From<AuthorityStoreError> + Send,
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: From<AuthorityStoreError> + Send + 'static,
     {
         cancellation.check().map_err(|_| E::from(AuthorityStoreError::Cancelled))?;
         original.admit(WorkCounters::UNCHARGED)
@@ -1391,7 +1391,7 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> 
                 .ok_or(NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?;
             let old_bytes = records.capacity().checked_mul(std::mem::size_of::<DurableCommit>())
                 .ok_or(NativeTreeMaterializationError::Work(crate::WorkError::Overflow))? as u64;
-            // Both metadata buffers are live during this copy. Payload Bytes
+            // Both metadata buffers are live during this copy. Payload OwnedBytes
             // keep their existing owners; no payload allocation or copy occurs.
             let (mut replacement, mut replacement_custody) = work.with_owned_allocations(
                 |ledger, counters, budget, cancellation| {
@@ -1528,18 +1528,20 @@ fn altered_read_data(
         && let Some(first) = bytes.value.first_mut() { *first ^= 0x80; }
     let logical_bytes = u64::try_from(bytes.value.capacity()).map_err(|_| crate::WorkError::Overflow)?;
     let SimulationAlteredBytes { value: bytes, allocation } = bytes;
-    let value = ObjectRead {
-        bytes: Bytes::from(bytes),
-        retention: ObjectReadRetention::Owned { logical_bytes },
-    };
-    match allocation {
-        crate::kernel::allocation::KernelOwnedAllocation::Standalone => Ok(Some(value)),
+    let bytes = match allocation {
+        crate::kernel::allocation::KernelOwnedAllocation::Standalone => OwnedBytes::from(bytes),
         #[cfg(not(target_arch = "wasm32"))]
         crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
-            crate::async_storage::NativeObjectRead::owned(value, allocation)
-                .map(|read| Some(read.into_read())).map_err(Into::into)
+            let original = accounting.native_work().ok_or(ObjectStoreError::Corrupt)?;
+            OwnedBytes::from_vec_with_guard(bytes, allocation, original.runtime_meter_owner())
+                .map_err(|failure| match failure.into_error() {
+                    acyclic_stream::PreparedOwnedBytesError::Admission(error) =>
+                        crate::FsError::from(original.runtime_error(error)),
+                    _ => ObjectStoreError::Corrupt.into(),
+                })?
         }
-    }
+    };
+    Ok(Some(ObjectRead { bytes, retention: ObjectReadRetention::Owned { logical_bytes } }))
 }
 
 impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
@@ -1570,7 +1572,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
@@ -1599,7 +1601,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn put_with_native_work(
-        &self, object_id: ObjectId, bytes: Bytes,
+        &self, object_id: ObjectId, bytes: OwnedBytes,
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<(), ObjectStoreError> {
@@ -1775,7 +1777,7 @@ mod native_write_controls {
     #[tokio::test]
     async fn native_read_trace_denial_and_cancellation_precede_interceptor_and_backend() {
         let memory = crate::memory::MemoryObjectStore::default();
-        let object = HashedObject::new(ObjectKind::TreePage, Bytes::from_static(b"body"));
+        let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
         crate::storage::ObjectStore::put(
             &memory, object.object_id(), object.bytes().clone(), WorkBudget::UNBOUNDED,
         ).expect("seed memory");
@@ -1802,7 +1804,7 @@ mod native_write_controls {
     #[tokio::test]
     async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias() {
         let memory = crate::memory::MemoryObjectStore::default();
-        let object = HashedObject::new(ObjectKind::TreePage, Bytes::from_static(b"body"));
+        let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
         crate::storage::ObjectStore::put(
             &memory, object.object_id(), object.bytes().clone(), WorkBudget::UNBOUNDED,
         ).expect("seed memory");
@@ -1835,7 +1837,7 @@ mod native_write_controls {
     #[tokio::test]
     async fn native_read_batch_preserves_one_real_memory_frontier_with_fault_custody() {
         let memory = crate::memory::MemoryObjectStore::default();
-        let object = HashedObject::new(ObjectKind::TreePage, Bytes::from_static(b"body"));
+        let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
         crate::storage::ObjectStore::put(
             &memory, object.object_id(), object.bytes().clone(), WorkBudget::UNBOUNDED,
         ).expect("seed memory");
@@ -1910,7 +1912,7 @@ mod native_write_controls {
         simulation.schedule_next(SimulationOperation::ObjectPut,
             SimulationFault::DelayObjectVisibility).expect("delay schedule");
         let (_, store) = simulation.stores();
-        let object = HashedObject::new(ObjectKind::TreePage, Bytes::from_static(b"body"));
+        let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
         let before = work.receipt();
         assert!(store.put_with_native_work(object.object_id(), object.bytes().clone(),
             &work, &cancellation).await.is_err());
@@ -1933,7 +1935,7 @@ mod native_write_controls {
         simulation.schedule_next(SimulationOperation::ObjectPut,
             SimulationFault::RejectBefore).expect("rejection schedule");
         let (_, store) = simulation.stores();
-        let object = HashedObject::new(ObjectKind::TreePage, Bytes::from_static(b"body"));
+        let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
         assert!(matches!(store.put_with_native_work(object.object_id(), object.bytes().clone(),
             &work, &cancellation).await, Err(ObjectStoreError::Simulation("scheduled rejection"))));
         assert_eq!(work.receipt().bytes_hashed, 0);
@@ -1962,7 +1964,7 @@ mod native_write_cancellation_controls {
         let simulation = Simulation::default();
         let (_, store) = simulation.stores();
         let object = crate::storage::HashedObject::new(
-            crate::storage::ObjectKind::TreePage, Bytes::from_static(b"body"));
+            crate::storage::ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
         assert!(store.put_with_native_work(object.object_id(), object.bytes().clone(),
             &work, &argument).await.is_err());
         assert!(store.put_hashed_with_native_work(object.clone(), &work, &argument).await.is_err());

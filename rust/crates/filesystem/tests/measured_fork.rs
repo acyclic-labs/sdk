@@ -12,7 +12,7 @@ use acyclic_fs::{
     MemoryAuthorityBackend, MemoryObjectBackend, ObjectId, ObjectRead, ObjectReadRequest,
     ObjectResult, WorkBudget, WorkCounters, WorkspaceError,
 };
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::error::Error;
 use std::sync::{
     Arc,
@@ -77,7 +77,7 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
     assert_eq!(retried.value.head().await?.id(), generation);
     assert_eq!(
         retried.value.read("/kept.txt", 32).await?,
-        Bytes::from_static(b"original")
+        OwnedBytes::from_static(b"original")
     );
     assert_eq!(parent.head().await?.id(), pinned.id());
     assert!(
@@ -152,7 +152,7 @@ impl AsyncObjectStore for CancelAfterPut {
     async fn put(
         &self,
         id: ObjectId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
@@ -259,7 +259,7 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
     assert_eq!(retried.value.head().await?.id(), initial);
     assert_eq!(
         retried.value.read("/kept.txt", 32).await?,
-        Bytes::from_static(b"pinned")
+        OwnedBytes::from_static(b"pinned")
     );
     Ok(())
 }
