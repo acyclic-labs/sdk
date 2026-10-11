@@ -1101,10 +1101,11 @@ impl BlobIndexBuilder {
         self.push_child(store, 0, BlobChild { first_offset, end_offset, page }, accounting, cancellation).await
     }
 
-    async fn push_child<S: AsyncObjectStore>(
-        &mut self, store: &mut BlobBatchStore<'_, S>, mut level: usize, mut child: BlobChild,
-        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
-    ) -> Result<(), FsError> {
+    fn push_child<'a, 'store, 'accounting, S: AsyncObjectStore>(
+        &'a mut self, store: &'a mut BlobBatchStore<'store, S>, mut level: usize, mut child: BlobChild,
+        accounting: &'a mut KernelAccounting<'accounting>, cancellation: &'a CancellationToken,
+    ) -> impl Future<Output = Result<(), FsError>> + crate::async_storage::StorageFuture + 'a {
+        async move {
         loop {
             while self.levels.value.len() <= level {
                 let capacity = self.levels.value.len().checked_add(1).ok_or(WorkError::Overflow)?;
@@ -1117,6 +1118,7 @@ impl BlobIndexBuilder {
             if items.value.len() < self.width { return Ok(()); }
             child = self.flush_internal(store, level, accounting, cancellation).await?;
             level = level.checked_add(1).ok_or(WorkError::Overflow)?;
+        }
         }
     }
 

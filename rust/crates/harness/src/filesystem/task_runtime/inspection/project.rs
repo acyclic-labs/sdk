@@ -25,17 +25,6 @@ impl<P, A, O> ProjectSourceReader<P, A, O>
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
     pub(super) async fn open(
         host: Arc<FilesystemHost<A, O>>, owner: Arc<TaskJournalOwner<P>>,
-        handle: ProjectSourceReadHandle, limits: Limits, budget: WorkBudget,
-    ) -> Result<Self> {
-        let cancellation = owner.invocation_cancellation().ok_or_else(|| {
-            Error::Unauthorized("selected source has no original invocation token".into())
-        })?;
-        let io = PreparationIo::from_budget(budget, cancellation)?;
-        Self::open_with_io(host, owner, handle, limits, io).await
-    }
-
-    pub(super) async fn open_with_io(
-        host: Arc<FilesystemHost<A, O>>, owner: Arc<TaskJournalOwner<P>>,
         handle: ProjectSourceReadHandle, limits: Limits, io: PreparationIo,
     ) -> Result<Self> {
         limits.validate()?;

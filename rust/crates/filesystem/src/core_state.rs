@@ -4330,7 +4330,7 @@ impl LazyNode for LazyOverlay {
         meter: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(Self, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
         meter.with_owned_allocations(|allocations, work, budget, cancellation| {
-            Ok(self.clone_measured(allocations, work, budget, cancellation)?)
+            Ok(crate::lazy_workspace::clone_lazy_node(self, allocations, work, budget, cancellation)?)
         })
     }
 
@@ -4373,7 +4373,7 @@ impl LazyNode for crate::LazyShadow {
         meter: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(Self, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
         meter.with_owned_allocations(|allocations, work, budget, cancellation| {
-            Ok(self.clone_measured(allocations, work, budget, cancellation)?)
+            Ok(crate::lazy_workspace::clone_lazy_node(self, allocations, work, budget, cancellation)?)
         })
     }
 

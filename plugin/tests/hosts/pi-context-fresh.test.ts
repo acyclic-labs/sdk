@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
-import test from "node:test";
+import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
@@ -90,7 +90,7 @@ function lastNativeReport(session: SessionManager) {
   return JSON.parse(text);
 }
 
-test("actual first native turns are fresh by default and explicit foreign-workspace context inherits only the caller", { timeout: 240_000 }, async () => {
+test("actual first native turns are fresh by default and explicit foreign-workspace context inherits only the caller", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-context-fresh-", import.meta.url)));
   let fixture: InstalledNativeFixture | undefined;
   try {
@@ -136,4 +136,4 @@ test("actual first native turns are fresh by default and explicit foreign-worksp
     if (fixture) await fixture.close();
     rmSync(directory, { recursive: true });
   }
-});
+}, { timeout: 240_000 });

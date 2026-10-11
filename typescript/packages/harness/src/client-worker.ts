@@ -1,8 +1,6 @@
 import { SnapshotStore, type ClientSnapshot } from "./client-snapshot.js";
 
-/** Encode only the selected reference-oriented view. decode returns immutable data.
- * This is a same-host snapshot channel, never an evidence or journal transport.
- */
+/** Encode selected references and decode immutable data; carry no commands or evidence. */
 export interface SnapshotCodec<Value> {
   encode(value: Value): Uint8Array;
   decode(bytes: Uint8Array): Value;
@@ -13,10 +11,7 @@ function bound(maximumBytes: number): void {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) throw new RangeError("snapshot byte bound required");
 }
 
-/** Explicitly attach a publisher to an owned MessagePort. At most one in-flight
- * snapshot plus the latest source reference is retained; intermediate UI snapshots
- * may coalesce. Commands and authoritative evidence stay with the single kernel.
- */
+/** Publish bounded snapshots on an owned port; coalesce while one snapshot is in flight. */
 export function publishClientSnapshots<Value>(store: ClientSnapshot<Value>, port: MessagePort,
   codec: SnapshotCodec<Value>, maximumBytes: number, onError: (error: unknown) => void): () => void {
   bound(maximumBytes);

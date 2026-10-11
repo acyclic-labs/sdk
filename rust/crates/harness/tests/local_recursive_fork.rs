@@ -268,7 +268,7 @@ where
     });
     assert_eq!(
         captured.first().map(Vec::as_slice),
-        Some(PreparedModelRequest::prepare(expected, Limits::default())?.bytes())
+        Some(PreparedModelRequest::prepare(expected, Limits::default(), None)?.bytes())
     );
     assert_eq!(captured.get(1).map(Vec::as_slice), Some(completed.bytes()));
     drop(captured);
@@ -931,7 +931,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 },
                 &model_head,
                 &denied,
-                Limits::default()
+                Limits::default(),
+                None,
             )
             .await
             .is_err()

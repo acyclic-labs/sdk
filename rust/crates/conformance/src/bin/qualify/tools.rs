@@ -906,7 +906,7 @@ fn with_lazy_mount<T>(
             let state = LocalCoreStateStore::open_owned(work.join("core-state"))
                 .map_err(engine_err("open core state"))?;
             let distributed = DistributedFs::new(engine, state);
-            let demand = NativeDemandSource::open(source, profile, VolumeLimits::default())
+            let demand = NativeDemandSource::open(source, profile, VolumeLimits::default(), None, None)
                 .await
                 .map_err(engine_err("open source"))?;
             let workspace = distributed

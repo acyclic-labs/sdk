@@ -634,53 +634,6 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Returns unplaced dependency-ready operations whose requests fit capacity.
-    #[must_use]
-    pub fn ready(&self, capacity: &ResourceSnapshot) -> Vec<OperationId> {
-        self.ready_for(capacity, &BTreeMap::new())
-    }
-
-    /// Returns ready operations whose required placement labels match a worker.
-    #[must_use]
-    pub fn ready_for(
-        &self,
-        capacity: &ResourceSnapshot,
-        labels: &BTreeMap<String, String>,
-    ) -> Vec<OperationId> {
-        let mut owned = BTreeMap::<OperationId, u64>::new();
-        for (id, state) in &self.operations {
-            if state.reservation.is_some()
-                && let Ok((root, _)) = self.session_root(*id, &mut None)
-            {
-                *owned.entry(root).or_default() += 1;
-            }
-        }
-        self.operations
-            .values()
-            .filter(|operation| {
-                self.resources_ready(operation, capacity, labels)
-                    && self
-                        .session_root(operation.spec.operation_id, &mut None)
-                        .is_ok_and(|(root, _)| {
-                            operation.reservation.is_some()
-                                || self.sessions.get(&root).is_none_or(|limits| {
-                                    owned.get(&root).copied().unwrap_or(0) < limits.active_tasks
-                                })
-                        })
-            })
-            .map(|operation| operation.spec.operation_id)
-            .collect()
-    }
-
-    pub(crate) fn next_ready_for(
-        &self,
-        capacity: &ResourceSnapshot,
-        labels: &BTreeMap<String, String>,
-        owner: Option<&Authority>,
-    ) -> Option<OperationId> {
-        self.ready_operations(capacity, labels, owner).next()
-    }
-
     pub(crate) fn operation_ready_for(
         &self,
         operation_id: OperationId,
@@ -707,7 +660,8 @@ impl Scheduler {
                 .is_ok()
     }
 
-    fn ready_operations<'a>(
+    /// Iterates placement- and owner-matched operations that can acquire capacity.
+    pub fn ready<'a>(
         &'a self,
         capacity: &'a ResourceSnapshot,
         labels: &'a BTreeMap<String, String>,
@@ -738,14 +692,8 @@ impl Scheduler {
             && remaining_resources_fit(operation, capacity)
     }
 
-    /// Subtracts active reservations for one placement from advertised capacity.
-    #[must_use]
-    pub fn available_for(&self, placement: &str, advertised: &ResourceSnapshot) -> ResourceSnapshot {
-        self.available_for_with_work(placement, advertised, &mut None)
-            .expect("unobserved borrowed resource subtraction cannot fail")
-    }
-
-    pub(crate) fn available_for_with_work(
+    /// Subtracts held placement resources on the optional observer.
+    pub fn available_for(
         &self, placement: &str, advertised: &ResourceSnapshot,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<ResourceSnapshot> {
@@ -801,8 +749,6 @@ impl Scheduler {
     }
 
     /// The original deterministic validators for every scheduler event.
-    #[allow(clippy::too_many_lines, clippy::cognitive_complexity,
-        reason = "one shared validation arm per original lifecycle event")]
     pub(crate) fn validate_event_with_work(
         &self, event: &SchedulerEvent,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -837,7 +783,7 @@ impl Scheduler {
             }
             SchedulerEvent::ModelDispatchClaimed { attempt_id, step, request_digest, fence, ceiling, .. } => {
                 let operation = self.validated_operation(primary, work)?;
-                require_execution_owner_with_work(operation, fence, false, work)?;
+                require_execution_owner(operation, fence, false, work)?;
                 if *request_digest == [0; 32] || *ceiling == 0 {
                     return Err(diagnostic(work, Invalid, "model dispatch claim is invalid or cancelled"));
                 }
@@ -945,7 +891,7 @@ impl Scheduler {
             }
             SchedulerEvent::WorkflowSuspended { fence, workflow_revision, .. } => {
                 let operation = self.validated_operation(primary, work)?;
-                require_execution_owner_with_work(operation, fence, false, work)?;
+                require_execution_owner(operation, fence, false, work)?;
                 if *workflow_revision == 0 || operation.workflow.as_ref().is_some_and(|previous| {
                     *workflow_revision < previous.revision
                         || (*workflow_revision == previous.revision && previous.input.is_none())
@@ -1386,14 +1332,8 @@ impl Scheduler {
             })
     }
 
-    /// Computes the original deterministic decision, cloning only emitted metadata.
-    #[must_use]
-    pub fn orchestration(&self, parent: OperationId) -> OrchestrationDecision {
-        self.orchestration_with_work(parent, &mut None)
-            .expect("unobserved orchestration metadata cannot exceed resident fields")
-    }
-
-    pub(crate) fn orchestration_with_work(
+    /// Plans orchestration on the optional observer.
+    pub fn orchestration(
         &self, parent: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<OrchestrationDecision> {
@@ -1656,19 +1596,6 @@ impl Scheduler {
         Ok(frontier)
     }
 
-    /// Returns operations made impossible by a terminal non-success dependency.
-    #[must_use]
-    pub fn blocked_by_dependencies(&self) -> Vec<OperationId> {
-        self.blocked_operations(None).collect()
-    }
-
-    pub(crate) fn next_blocked_by_dependencies(
-        &self,
-        owner: Option<&Authority>,
-    ) -> Option<OperationId> {
-        self.blocked_operations(owner).next()
-    }
-
     pub(crate) fn operation_blocked_by_dependencies(
         &self,
         operation_id: OperationId,
@@ -1693,7 +1620,8 @@ impl Scheduler {
             })
     }
 
-    fn blocked_operations<'a>(
+    /// Iterates owner-matched operations with failed dependencies.
+    pub fn blocked_by_dependencies<'a>(
         &'a self,
         owner: Option<&'a Authority>,
     ) -> impl Iterator<Item = OperationId> + 'a {
@@ -1703,12 +1631,8 @@ impl Scheduler {
             .map(|operation| operation.spec.operation_id)
     }
 
-    /// Reads the immutable root session ceilings for an admitted task.
-    pub fn session_limits(&self, operation_id: OperationId) -> Result<SessionLimits> {
-        self.session_limits_with_work(operation_id, &mut None)
-    }
-
-    pub(crate) fn session_limits_with_work(
+    /// Returns the pinned session ceilings on the optional observer.
+    pub fn session_limits(
         &self, operation_id: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<SessionLimits> {
@@ -2114,17 +2038,7 @@ fn require_phase(
     else { Err(diagnostic(work, crate::wire::ErrorCode::Conflict, "operation phase differs from the required phase")) }
 }
 
-pub(crate) fn require_model_owner(operation: &OperationState, fence: &LeaseFence) -> Result<()> {
-    require_execution_owner(operation, fence, false)
-}
-
 pub(crate) fn require_execution_owner(
-    operation: &OperationState, fence: &LeaseFence, settlement: bool,
-) -> Result<()> {
-    require_execution_owner_with_work(operation, fence, settlement, &mut None)
-}
-
-pub(crate) fn require_execution_owner_with_work(
     operation: &OperationState, fence: &LeaseFence, settlement: bool,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
@@ -2508,13 +2422,13 @@ mod tests {
                 execution_duration_ns: None,
             })?;
             if op == 3 {
-                assert_eq!(scheduler.orchestration(id(1)), OrchestrationDecision::Wait);
+                assert_eq!(scheduler.orchestration(id(1), &mut None)?, OrchestrationDecision::Wait);
             }
         }
         let values = vec![("a".into(), a), ("b".into(), b)];
         assert_eq!(scheduler.completion_order, vec![id(3), id(2)]);
         assert_eq!(
-            scheduler.orchestration(id(1)),
+            scheduler.orchestration(id(1), &mut None)?,
             OrchestrationDecision::Assemble {
                 assembly: AssemblyKind::Join,
                 values: values.clone(),
@@ -2575,7 +2489,7 @@ mod tests {
             scheduler.operation(id(3)).map(|child| child.phase),
             Some(OperationPhase::Running)
         );
-        assert_eq!(scheduler.orchestration(id(1)), OrchestrationDecision::Wait);
+        assert_eq!(scheduler.orchestration(id(1), &mut None)?, OrchestrationDecision::Wait);
         let failure = Outcome::Failed {
             message: "quorum is no longer reachable".into(),
         };
@@ -2606,7 +2520,7 @@ mod tests {
             execution_duration_ns: None,
         })?;
         assert_eq!(
-            scheduler.orchestration(id(1)),
+            scheduler.orchestration(id(1), &mut None)?,
             OrchestrationDecision::Complete {
                 outcome: failure.clone(),
                 cancel: Vec::new(),
@@ -2758,7 +2672,7 @@ mod tests {
                 let Some(parent) = scheduler.operation(id(op)) else {
                     return Ok(None);
                 };
-                let (outcome, cancel, reduction_digest) = match scheduler.orchestration(id(op)) {
+                let (outcome, cancel, reduction_digest) = match scheduler.orchestration(id(op), &mut None)? {
                     OrchestrationDecision::Complete { outcome, cancel } => (outcome, cancel, None),
                     OrchestrationDecision::Assemble {
                         assembly,
@@ -3069,94 +2983,6 @@ mod tests {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
-    fn all_native_event_variants_and_cancel_ack_use_original_reducer_and_cache_custody() -> Result<()> {
-        let mut root = spec(id(80), Orchestration::Join)?;
-        root.resources = ResourceRequest(BTreeMap::from([("cpu".into(), 2)]));
-        let mut child = spec(id(81), Orchestration::Leaf)?;
-        child.owner = root.owner.clone();
-        child.owner_scope = root.owner_scope.clone();
-        child.parent = Some(ParentLink { operation_id: id(80), slot: "child".into() });
-        let checkpoint = CheckpointRef::new(ProviderRef::new("example", "machines", "1")?, vec![1, 2, 3], None)?;
-        let events = vec![
-            SchedulerEvent::Declared { spec: Box::new(root) },
-            SchedulerEvent::SessionConfigured { operation_id: id(80), limits: SessionLimits {
-                active_tasks: 2, total_tasks: 4, depth: 1, model_steps: 4,
-            } },
-            SchedulerEvent::WaitingForCapacity { operation_id: id(80) },
-            SchedulerEvent::PartiallyAdmitted { operation_id: id(80), reservation: reservation(1, 1) },
-            SchedulerEvent::Admitted { operation_id: id(80), reservation: reservation(1, 2) },
-            SchedulerEvent::Started { operation_id: id(80), fence: fence(1) },
-            SchedulerEvent::ModelDispatchClaimed { operation_id: id(80), attempt_id: id(90), step: 0,
-                request_digest: [7; 32], fence: fence(1), ceiling: 2 },
-            SchedulerEvent::Checkpointed { operation_id: id(80), checkpoint, fence: fence(1) },
-            SchedulerEvent::WorkflowSuspended { operation_id: id(80), fence: fence(1),
-                workflow_revision: 1, waiting_command: Some(id(91)) },
-            SchedulerEvent::WorkflowResumed { operation_id: id(80), workflow_revision: 1, input: result_ref(b"1")? },
-            SchedulerEvent::Admitted { operation_id: id(80), reservation: reservation(2, 2) },
-            SchedulerEvent::Started { operation_id: id(80), fence: fence(2) },
-            SchedulerEvent::Completed { operation_id: id(80), outcome: Outcome::Indeterminate { operation_id: id(80) },
-                fence: Some(fence(2)), execution_duration_ns: None },
-            SchedulerEvent::ReconciliationResumed { operation_id: id(80), fence: fence(2) },
-            SchedulerEvent::LeaseReleased { operation_id: id(80), fence: fence(2) },
-            SchedulerEvent::Admitted { operation_id: id(80), reservation: reservation(3, 2) },
-            SchedulerEvent::Started { operation_id: id(80), fence: fence(3) },
-            SchedulerEvent::WaitingForChildren { operation_id: id(80), fence: fence(3) },
-            SchedulerEvent::Declared { spec: Box::new(child) },
-            SchedulerEvent::Rejected { operation_id: id(81), reason: "rejected".into() },
-        ];
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(native_scheduler_budget(), &cancellation)
-            .expect("finite original scheduler ledger");
-        let mut native = Scheduler::new();
-        let mut ordinary = Scheduler::new();
-        let mut families = std::collections::HashSet::new();
-        for event in events {
-            ordinary.apply(event.clone())?;
-            native_apply_event(&mut native, &event, &work)?;
-            families.insert(std::mem::discriminant(&event));
-            assert_eq!(native, ordinary, "{event:?}");
-            assert!(work.live_allocation_bytes() > acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
-                "cache owns its original guards after each query IO drops");
-        }
-        let orchestrated = SchedulerEvent::Orchestrated {
-            operation_id: id(80), expected_revision: ordinary.operation(id(80)).expect("parent").revision,
-            outcome: Outcome::Failed { message: "child child failed: rejected".into() },
-            cancel: Vec::new(), reducer: None, reduction_digest: None,
-        };
-        ordinary.apply(orchestrated.clone())?;
-        native_apply_event(&mut native, &orchestrated, &work)?;
-        families.insert(std::mem::discriminant(&orchestrated));
-        let cancelled = SchedulerEvent::CancellationRequested { operation_id: id(80), recursive: true };
-        ordinary.apply(cancelled.clone())?;
-        native_apply_event(&mut native, &cancelled, &work)?;
-        families.insert(std::mem::discriminant(&cancelled));
-        // The original wire enum has 17 variants; cancellation ACK is the eighteenth lifecycle form, carried by Completed(Outcome::Cancelled).
-        assert_eq!(families.len(), 17);
-        for event in [
-            SchedulerEvent::Declared { spec: Box::new(spec(id(85), Orchestration::Leaf)?) },
-            SchedulerEvent::Admitted { operation_id: id(85), reservation: reservation(8, 1) },
-            SchedulerEvent::Started { operation_id: id(85), fence: fence(8) },
-            SchedulerEvent::CancellationRequested { operation_id: id(85), recursive: false },
-            SchedulerEvent::Completed { operation_id: id(85), outcome: Outcome::Cancelled,
-                fence: Some(fence(8)), execution_duration_ns: None },
-        ] {
-            ordinary.apply(event.clone())?;
-            native_apply_event(&mut native, &event, &work)?;
-            assert_eq!(native, ordinary, "{event:?}");
-        }
-        assert_eq!(native.operation(id(85)).expect("cancel ACK task").outcome, Some(Outcome::Cancelled));
-        assert_eq!(native, ordinary);
-        assert!(work.receipt().allocation_operations > 1);
-        assert!(work.receipt().bytes_copied > 0);
-        assert_eq!(work.receipt().backend_read_operations, 0);
-        assert_eq!(work.receipt().backend_write_operations, 0);
-        drop(native);
-        assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
     fn native_phase_fence_capacity_quota_and_precancel_controls_leave_state_unchanged() -> Result<()> {
         let mut scheduler = Scheduler::new();
         scheduler.apply(SchedulerEvent::Declared { spec: Box::new(spec(id(82), Orchestration::Leaf)?) })?;
@@ -3234,333 +3060,6 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_entrypoint_clone_keeps_existing_unbounded_depth() -> Result<()> {
-        let mut result_schema = Value::Null;
-        for _ in 0..300 { result_schema = Value::Array(vec![result_schema]); }
-        let entrypoint = EntrypointRef { name: "ordinary".into(), version: "1".into(),
-            digest: [1; 32], result_schema };
-        assert_eq!(entrypoint.clone_with_work(&mut None)?, entrypoint);
-        assert!(entrypoint.logical_owned_bytes()? > 0);
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn ordinary_observer_is_not_native_policy_and_keeps_deep_clone() -> Result<()> {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let mut io = crate::store::history::HistoryWork::new(native_scheduler_budget(), &cancellation);
-        let invalid = SessionLimits { active_tasks: 0, total_tasks: 1, depth: 1, model_steps: 1 };
-        assert!(matches!(invalid.validate_with_work(&mut Some(&mut io)), Err(Error::Invalid(_))));
-        let mut result_schema = Value::Null;
-        for _ in 0..300 { result_schema = Value::Array(vec![result_schema]); }
-        let entrypoint = EntrypointRef { name: "observed".into(), version: "1".into(),
-            digest: [1; 32], result_schema };
-        assert_eq!(entrypoint.clone_with_work(&mut Some(&mut io))?, entrypoint);
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_field_copy_denial_retires_prior_fields_and_depth_is_native_only() -> Result<()> {
-        let entrypoint = EntrypointRef { name: "first".into(), version: "second".into(),
-            digest: [1; 32], result_schema: Value::Null };
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let mut budget = native_scheduler_budget();
-        budget.bytes_copied = entrypoint.name.len() as u64;
-        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .expect("original partial-field ledger");
-        let mut io = crate::store::history::native_work_io(&work).expect("original field observer");
-        let error = entrypoint.clone_with_work(&mut Some(&mut io)).expect_err("second field is denied");
-        assert!(error.is_native_failure());
-        assert_eq!(work.receipt().bytes_copied, entrypoint.name.len() as u64);
-        drop(error);
-        drop(io);
-        assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
-        let mut result_schema = Value::Null;
-        for _ in 0..300 { result_schema = Value::Array(vec![result_schema]); }
-        let deep = EntrypointRef { result_schema, ..entrypoint };
-        let work = acyclic_fs::NativeMaterializationWork::new(native_scheduler_budget(), &cancellation)
-            .expect("original depth-bound ledger");
-        let mut io = crate::store::history::native_work_io(&work).expect("original depth observer");
-        let error = deep.clone_with_work(&mut Some(&mut io)).expect_err("native depth bound");
-        assert!(error.is_native_failure());
-        assert_eq!(work.receipt().bytes_copied, 0);
-        drop(error);
-        drop(io);
-        assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_session_lookup_and_scalar_validation_use_static_denials() -> Result<()> {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(native_scheduler_budget(), &cancellation)
-            .expect("original scalar session ledger");
-        let mut io = crate::store::history::native_work_io(&work).expect("original session observer");
-        let scheduler = Scheduler::new();
-        assert!(matches!(scheduler.session_limits_with_work(id(88), &mut Some(&mut io)),
-            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::NotFound, .. })));
-        let invalid = SessionLimits { active_tasks: 0, total_tasks: 1, model_steps: 1, depth: 1 };
-        assert!(matches!(invalid.validate_with_work(&mut Some(&mut io)),
-            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
-        assert!(invalid.validate().is_err());
-        assert_eq!(work.receipt().bytes_copied, 0);
-        assert_eq!(work.receipt().allocation_attempts, 1);
-        let receipt = work.receipt();
-        cancellation.cancel();
-        assert!(scheduler.session_limits_with_work(id(88), &mut Some(&mut io))
-            .expect_err("precancel preserves original first cause").is_native_failure());
-        assert_eq!(work.receipt(), receipt);
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_orchestration_uses_original_ordered_tuple_and_output_custody() -> Result<()> {
-        let reducer = EntrypointRef {
-            name: "native.reducer".into(), version: "1".into(), digest: [8; 32],
-            result_schema: Value::Object(Default::default()),
-        };
-        for orchestration in [
-            Orchestration::Join, Orchestration::Quorum { required: 1 },
-            Orchestration::Reduce { reducer: reducer.clone() },
-        ] {
-            let mut scheduler = two_slot_parent(orchestration)?;
-            for op in [3, 2] {
-                scheduler.apply(SchedulerEvent::Completed { operation_id: id(op),
-                    outcome: Outcome::Succeeded(result_ref(if op == 3 { b"3" } else { b"2" })?),
-                    fence: Some(fence(0)), execution_duration_ns: None })?;
-            }
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let work = acyclic_fs::NativeMaterializationWork::new(native_scheduler_budget(), &cancellation)
-                .expect("original ordered source ledger");
-            let mut io = crate::store::history::native_work_io(&work).expect("original decision observer");
-            let decision = scheduler.orchestration_with_work(id(1), &mut Some(&mut io))?;
-            assert_eq!(decision, scheduler.orchestration(id(1)));
-            let event = match &decision {
-                OrchestrationDecision::Assemble { assembly, values, cancel } => SchedulerEvent::Orchestrated {
-                    operation_id: id(1), expected_revision: scheduler.operation(id(1)).expect("parent").revision,
-                    outcome: Outcome::Succeeded(result_ref(b"[]")?), cancel: cancel.clone(), reducer: None,
-                    reduction_digest: Some(assembly_invocation_digest(*assembly, values)?),
-                },
-                OrchestrationDecision::Reduce { reducer, values } => SchedulerEvent::Orchestrated {
-                    operation_id: id(1), expected_revision: scheduler.operation(id(1)).expect("parent").revision,
-                    outcome: Outcome::Succeeded(result_ref(b"[]")?), cancel: Vec::new(), reducer: Some(reducer.clone()),
-                    reduction_digest: Some(reduction_invocation_digest(reducer, values)?),
-                },
-                _ => panic!("completed original children produce ordered materialization"),
-            };
-            scheduler.validate_event_with_work(&event, &mut Some(&mut io))?;
-            assert!(work.receipt().bytes_hashed > 0);
-            assert!(work.receipt().bytes_encoded > 0);
-            let owned = decision.logical_owned_bytes()?;
-            let guard = io.into_custody();
-            assert_eq!(guard.bytes(), owned, "canonical tuple scratch retired before returning the decision");
-            drop(decision);
-            drop(guard);
-            assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
-        }
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_work_lease_does_not_clone_unreturned_workflow_input() -> Result<()> {
-        let mut scheduler = Scheduler::new();
-        scheduler.apply(SchedulerEvent::Declared { spec: Box::new(spec(id(87), Orchestration::Leaf)?) })?;
-        for event in [
-            SchedulerEvent::Admitted { operation_id: id(87), reservation: reservation(11, 1) },
-            SchedulerEvent::Started { operation_id: id(87), fence: fence(11) },
-            SchedulerEvent::WorkflowSuspended { operation_id: id(87), fence: fence(11), workflow_revision: 1, waiting_command: None },
-        ] { scheduler.apply(event)?; }
-        let file = result_ref(b"1")?;
-        let input = FileRef::new(file.volume().clone(), file.path(), file.version(),
-            file.descriptor().clone(), "input".repeat(16_384))?;
-        for event in [
-            SchedulerEvent::WorkflowResumed { operation_id: id(87), workflow_revision: 1, input },
-            SchedulerEvent::Admitted { operation_id: id(87), reservation: reservation(12, 1) },
-            SchedulerEvent::Started { operation_id: id(87), fence: fence(12) },
-        ] { scheduler.apply(event)?; }
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let mut budget = native_scheduler_budget();
-        budget.bytes_copied = 4_096;
-        budget.peak_allocation_bytes = 16_384;
-        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .expect("finite selected lease metadata ledger");
-        let mut io = crate::store::history::native_work_io(&work).expect("original selected-field observer");
-        let state = scheduler.operation(id(87)).expect("running original state");
-        let lease = state.work_lease_with_work(&mut Some(&mut io))?.expect("current reservation");
-        assert_eq!(lease.operation, state.spec);
-        assert_eq!(lease.reservation, *state.reservation.as_ref().expect("current allocation"));
-        assert_eq!(lease.checkpoint, state.checkpoint);
-        assert!(state.clone_with_work(&mut Some(&mut io)).expect_err("unreturned input cannot fit the same quota").is_native_failure());
-        let guard = io.into_custody();
-        drop(lease);
-        drop(guard);
-        assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_workflow_replacement_retires_the_original_query_guard_after_payload_drop() -> Result<()> {
-        let mut scheduler = Scheduler::new();
-        scheduler.apply(SchedulerEvent::Declared { spec: Box::new(spec(id(86), Orchestration::Leaf)?) })?;
-        let lease_token = acyclic_fs::CancellationToken::new();
-        let lease_work = acyclic_fs::NativeMaterializationWork::new(native_scheduler_budget(), &lease_token)
-            .expect("original admission ledger");
-        for event in [
-            SchedulerEvent::Admitted { operation_id: id(86), reservation: reservation(9, 1) },
-            SchedulerEvent::Started { operation_id: id(86), fence: fence(9) },
-            SchedulerEvent::WorkflowSuspended { operation_id: id(86), fence: fence(9), workflow_revision: 1, waiting_command: None },
-        ] { native_apply_event(&mut scheduler, &event, &lease_work)?; }
-        let input_token = acyclic_fs::CancellationToken::new();
-        let input_work = acyclic_fs::NativeMaterializationWork::new(native_scheduler_budget(), &input_token)
-            .expect("original wake ledger");
-        native_apply_event(&mut scheduler, &SchedulerEvent::WorkflowResumed {
-            operation_id: id(86), workflow_revision: 1, input: result_ref(b"1")?,
-        }, &input_work)?;
-        let held = scheduler.native_custody.operations[&id(86)].workflow.as_ref().expect("intrinsic input custody");
-        assert!(held.work().shares_ledger(&input_work));
-        assert!(!held.work().shares_ledger(&lease_work));
-        assert_eq!(input_work.live_allocation_bytes(),
-            acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + held.bytes());
-        let next_token = acyclic_fs::CancellationToken::new();
-        let next_work = acyclic_fs::NativeMaterializationWork::new(native_scheduler_budget(), &next_token)
-            .expect("new original recovery query ledger");
-        for event in [
-            SchedulerEvent::Admitted { operation_id: id(86), reservation: reservation(10, 1) },
-            SchedulerEvent::Started { operation_id: id(86), fence: fence(10) },
-        ] { native_apply_event(&mut scheduler, &event, &next_work)?; }
-        input_token.cancel();
-        let before = input_work.receipt();
-        native_apply_event(&mut scheduler, &SchedulerEvent::WorkflowSuspended {
-            operation_id: id(86), fence: fence(10), workflow_revision: 2, waiting_command: None,
-        }, &next_work)?;
-        assert!(scheduler.operation(id(86)).expect("current operation").workflow.as_ref().expect("new slot").input.is_none());
-        assert!(scheduler.native_custody.operations[&id(86)].workflow.is_none());
-        assert_eq!(input_work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
-        assert_eq!(input_work.receipt(), before, "already-held custody release does not consult old cancellation or charge work");
-        drop(scheduler);
-        assert_eq!(lease_work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
-        assert_eq!(next_work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_resource_output_and_fence_clone_use_logical_original_custody() -> Result<()> {
-        let mut scheduler = Scheduler::new();
-        scheduler.apply(SchedulerEvent::Declared { spec: Box::new(spec(id(84), Orchestration::Leaf)?) })?;
-        scheduler.apply(SchedulerEvent::Admitted { operation_id: id(84), reservation: reservation(7, 3) })?;
-        let advertised = ResourceSnapshot(BTreeMap::from([("cpu".into(), 4), ("memory".into(), 9)]));
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(native_scheduler_budget(), &cancellation)
-            .expect("original logical resource ledger");
-        let mut io = crate::store::history::native_work_io(&work).expect("original resource observer");
-        let available = scheduler.available_for_with_work("worker", &advertised, &mut Some(&mut io))?;
-        assert_eq!(available, scheduler.available_for("worker", &advertised));
-        assert_eq!(available.0["cpu"], 1);
-        assert_eq!(available.0["memory"], 9);
-        let guard = io.into_custody();
-        assert_eq!(guard.bytes(), available.logical_owned_bytes()?);
-        drop(available);
-        drop(guard);
-        let source = fence(7);
-        let (cloned, guard) = source.clone_with_native_work(&work)?;
-        assert_eq!(source, cloned);
-        assert_eq!(guard.bytes(), std::mem::size_of::<LeaseFence>() as u64 + cloned.logical_owned_bytes()?);
-        assert!(guard.work().shares_ledger(&work));
-        cancellation.cancel();
-        drop(cloned);
-        drop(guard);
-        assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
-        Ok(())
-    }
-
-    #[cfg(feature = "filesystem")]
-    #[test]
-    fn finite_release_preflight_reuses_original_validators_without_projection_copy() -> Result<()> {
-        let mut scheduler = Scheduler::new();
-        scheduler.apply(scheduler.declare(spec(id(93),Orchestration::Leaf)?)?)?;
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id:id(93),reservation:reservation(3,0),
-        })?;
-        scheduler.apply(SchedulerEvent::Started {operation_id:id(93),fence:fence(3)})?;
-        for event in [
-            SchedulerEvent::LeaseReleased {operation_id:id(93),fence:fence(3)},
-            SchedulerEvent::LeaseReleased {operation_id:id(93),fence:fence(4)},
-            SchedulerEvent::WorkflowSuspended {operation_id:id(93),fence:fence(3),
-                workflow_revision:0,waiting_command:None},
-            SchedulerEvent::WorkflowSuspended {operation_id:id(93),fence:fence(3),
-                workflow_revision:1,waiting_command:Some(id(94))},
-        ] {
-            let original = scheduler.clone();
-            let expected = scheduler.clone().apply(event.clone()).is_ok();
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let mut work = crate::store::history::HistoryWork::new(
-                acyclic_fs::WorkBudget {items_examined:3,..Default::default()},&cancellation,
-            );
-            let result = scheduler.validate_event_with_work(&event,&mut Some(&mut work));
-            assert_eq!(result.is_ok(),expected);
-            assert_eq!(scheduler,original);
-            let receipt = work.finish(result);
-            let counters = match receipt {
-                Ok(receipt) => receipt.work,
-                Err(failure) => *failure.work,
-            };
-            assert_eq!(counters.allocation_operations,0);
-            assert_eq!(counters.peak_allocation_bytes,0);
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "filesystem")]
-    #[test]
-    fn finite_declared_replay_uses_same_reducer_and_releases_clone_envelope() -> Result<()> {
-        let mut scheduler = Scheduler::new();
-        scheduler.apply(scheduler.declare(spec(id(95),Orchestration::Join)?)?)?;
-        let mut child = spec(id(96),Orchestration::Leaf)?;
-        child.parent = Some(ParentLink {operation_id:id(95),slot:"bounded-child".into()});
-        let declared = scheduler.declare(child)?;
-        let before = scheduler.clone();
-        let mut expected = before.clone();
-        expected.apply(declared.clone())?;
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::WorkBudget {
-            items_examined:8_192,bytes_copied:1_048_576,bytes_encoded:1_048_576,
-            bytes_hashed:1_048_576,allocation_operations:1_024,peak_allocation_bytes:1_048_576,
-            ..Default::default()
-        };
-        let mut work = crate::store::history::HistoryWork::new(budget,&cancellation);
-        scheduler.validate_event_with_work(&declared,&mut Some(&mut work))?;
-        let cloned = declared.clone_with_work(&mut Some(&mut work))?;
-        assert!(cloned.logical_owned_bytes()? > cloned.retained_clone_owned_bytes()?);
-        let cloned_owned = cloned.logical_owned_bytes()?;
-        drop(cloned);
-        crate::store::history::HistoryIo::release_owned(&mut work,cloned_owned)?;
-        scheduler.apply_with_work(&declared,&mut Some(&mut work))?;
-        assert_eq!(scheduler,expected);
-        let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
-        assert!(receipt.work.bytes_copied > 0);
-        assert!(receipt.work.peak_allocation_bytes > 0);
-        assert!(receipt.work.items_examined > 0);
-
-        let mut denied = crate::store::history::HistoryWork::new(
-            acyclic_fs::WorkBudget {items_examined:8_192,..Default::default()},&cancellation,
-        );
-        let mut unchanged = before.clone();
-        assert!(unchanged.apply_with_work(&declared,&mut Some(&mut denied)).is_err());
-        assert_eq!(unchanged,before);
-        cancellation.cancel();
-        let mut cancelled = crate::store::history::HistoryWork::new(budget,&cancellation);
-        assert!(unchanged.apply_with_work(&declared,&mut Some(&mut cancelled)).is_err());
-        assert_eq!(unchanged,before);
-        Ok(())
-    }
-
-    #[test]
     fn workflow_suspension_releases_shared_capacity_and_fences_wakes() -> Result<()> {
         let mut scheduler = Scheduler::new();
         let root = spec(id(91), Orchestration::Leaf)?;
@@ -3603,7 +3102,7 @@ mod tests {
         })?;
         assert!(
             !scheduler
-                .ready(&ResourceSnapshot::default())
+                .ready(&ResourceSnapshot::default(), &BTreeMap::new(), None).collect::<Vec<_>>()
                 .contains(&id(92))
         );
         let stale = LeaseFence {
@@ -3651,12 +3150,12 @@ mod tests {
         );
         assert!(
             scheduler
-                .ready(&ResourceSnapshot::default())
+                .ready(&ResourceSnapshot::default(), &BTreeMap::new(), None).collect::<Vec<_>>()
                 .contains(&id(92))
         );
         assert!(
             !scheduler
-                .ready(&ResourceSnapshot::default())
+                .ready(&ResourceSnapshot::default(), &BTreeMap::new(), None).collect::<Vec<_>>()
                 .contains(&id(91))
         );
         let input = result_ref(b"7")?;
@@ -3918,7 +3417,7 @@ mod tests {
             execution_duration_ns: None,
         })?;
         assert_eq!(
-            scheduler.orchestration(id(1)),
+            scheduler.orchestration(id(1), &mut None)?,
             OrchestrationDecision::Complete {
                 outcome: Outcome::Succeeded(result_ref(b"\"winner\"")?),
                 cancel: vec![id(2)],
@@ -4029,7 +3528,7 @@ mod tests {
             operation_id: id(40),
             fence: root_fence.clone(),
         })?;
-        assert!(scheduler.ready(&ResourceSnapshot::default()).is_empty());
+        assert!(scheduler.ready(&ResourceSnapshot::default(), &BTreeMap::new(), None).collect::<Vec<_>>().is_empty());
         let child_reservation = Reservation {
             id: "child-lease".into(),
             placement: "two".into(),
@@ -4117,7 +3616,7 @@ mod tests {
             fence: Some(child_fence),
             execution_duration_ns: None,
         })?;
-        assert!(scheduler.ready(&ResourceSnapshot::default()).is_empty());
+        assert!(scheduler.ready(&ResourceSnapshot::default(), &BTreeMap::new(), None).collect::<Vec<_>>().is_empty());
         assert_eq!(
             scheduler
                 .model_claims
@@ -4306,7 +3805,7 @@ mod tests {
             })?;
         }
         let advertised = ResourceSnapshot(BTreeMap::from([("cpu".into(), 2)]));
-        let available = scheduler.available_for("worker", &advertised);
+        let available = scheduler.available_for("worker", &advertised, &mut None)?;
         assert_eq!(
             available,
             ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)]))
@@ -4314,16 +3813,16 @@ mod tests {
         let labels = BTreeMap::from([("zone".into(), "a".into())]);
         // Partial ownership already occupies the session's sole slot.
         assert_eq!(
-            scheduler.next_ready_for(&available, &labels, None),
+            scheduler.ready(&available, &labels, None).next(),
             Some(id(2))
         );
-        assert_eq!(scheduler.ready_for(&available, &labels), vec![id(2), id(3)]);
+        assert_eq!(scheduler.ready(&available, &labels, None).collect::<Vec<_>>(), vec![id(2), id(3)]);
         assert_eq!(
-            scheduler.next_ready_for(&available, &BTreeMap::new(), None),
+            scheduler.ready(&available, &BTreeMap::new(), None).next(),
             Some(id(3))
         );
         let less = ResourceSnapshot(BTreeMap::from([("cpu".into(), 0)]));
-        assert_eq!(scheduler.next_ready_for(&less, &labels, None), None);
+        assert_eq!(scheduler.ready(&less, &labels, None).next(), None);
         Ok(())
     }
 
@@ -4363,7 +3862,7 @@ mod tests {
         );
         let capacity = ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)]));
         assert_eq!(
-            scheduler.available_for("worker", &capacity).0.get("cpu"),
+            scheduler.available_for("worker", &capacity, &mut None)?.0.get("cpu"),
             Some(&0)
         );
         let replayed: Scheduler = serde_json::from_value(
@@ -4388,12 +3887,12 @@ mod tests {
             fence: fence.clone(),
         })?;
         assert_eq!(
-            resumed.available_for("worker", &capacity).0.get("cpu"),
+            resumed.available_for("worker", &capacity, &mut None)?.0.get("cpu"),
             Some(&0)
         );
         assert!(
             resumed
-                .ready(&capacity)
+                .ready(&capacity, &BTreeMap::new(), None).collect::<Vec<_>>()
                 .iter()
                 .all(|operation| *operation != id(32))
         );
@@ -4450,7 +3949,7 @@ mod tests {
             fence: Some(fence.clone()),
             execution_duration_ns: None,
         })?;
-        assert_eq!(scheduler.available_for("worker", &capacity), capacity);
+        assert_eq!(scheduler.available_for("worker", &capacity, &mut None)?, capacity);
         assert!(
             scheduler
                 .apply(SchedulerEvent::Completed {
@@ -4701,7 +4200,7 @@ mod tests {
             fence: Some(child_fence),
             execution_duration_ns: None,
         })?;
-        let OrchestrationDecision::Reduce { values, .. } = scheduler.orchestration(id(11)) else {
+        let OrchestrationDecision::Reduce { values, .. } = scheduler.orchestration(id(11), &mut None)? else {
             return Err(Error::Conflict("reducer not ready".into()));
         };
         let expected_revision = scheduler
@@ -4764,7 +4263,7 @@ mod tests {
         let mut dependent = spec(id(2), Orchestration::Leaf)?;
         dependent.dependencies.insert(id(1));
         scheduler.apply(scheduler.declare(dependent)?)?;
-        assert_eq!(scheduler.blocked_by_dependencies(), vec![id(2)]);
+        assert_eq!(scheduler.blocked_by_dependencies(None).collect::<Vec<_>>(), vec![id(2)]);
         scheduler.apply(SchedulerEvent::Rejected {
             operation_id: id(2),
             reason: "dependency failed".into(),
@@ -4795,7 +4294,7 @@ mod tests {
             },
         })?;
         assert_eq!(
-            scheduler.ready(&ResourceSnapshot(BTreeMap::from([("cpu".into(), 2)]))),
+            scheduler.ready(&ResourceSnapshot(BTreeMap::from([("cpu".into(), 2)])), &BTreeMap::new(), None).collect::<Vec<_>>(),
             vec![id(5)]
         );
         assert!(matches!(
