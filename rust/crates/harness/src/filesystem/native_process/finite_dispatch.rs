@@ -293,7 +293,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
     ) -> NativeResult<(EffectObservation, Option<NativeAllocation>)> {
         let dispatch = &payload.dispatch;
         self.require_dispatch_original(dispatch, work).await?;
-        if let Some(receipt) = self.receipt_original(dispatch.attempt_id, work).await? {
+        if let Some(receipt) = self.receipt_original(dispatch.attempt_id, work, None).await? {
             return effect_result(receipt, work.is_some());
         }
         let (task, fence) = self.owner.task_binding();
@@ -310,7 +310,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         };
         if !append_receipt_original(&self.owner, &path, 0,
             &ReceiptWrite::Launch(&launch), JournalWrite::Fresh, work).await? {
-            let receipt = self.receipt_original(dispatch.attempt_id, work).await?
+            let receipt = self.receipt_original(dispatch.attempt_id, work, None).await?
                 .ok_or(NativeReceiptError::Record("native launch receipt changed"))?;
             return effect_result(receipt, work.is_some());
         }

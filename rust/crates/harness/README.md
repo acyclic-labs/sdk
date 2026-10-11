@@ -165,6 +165,8 @@ retains cleanup outcome and its original effect identity rather than launching a
 `NativeProcessProvider::new_with_native_work` uses the ordinary binding engine with
 the prepared view's original ledger: request/schema reads, closed DTO decoding,
 schema validation, approvals and provider-owned Arc payloads retain that custody.
+Native immutable content keeps its intrinsic `OwnedBytes` custody while the
+same decoder borrows its slice; no raw Vec extraction or later adoption is used.
 Its native entry borrows the plan; the admitted future copies closed metadata
 through the existing measured String/FileRef producer, never a caller-side clone.
 Legacy views and different ledger families are rejected before binding I/O;
@@ -206,6 +208,14 @@ Cold receipts never adopt process control. Every finite publication failure reta
 the original typed cause and cleanup ownership, completed destinations and staged
 diagnostic in a preadmitted error context; formatting never replaces that cause.
 Unfunded observation stays pending or uncertain rather than claiming a recorded result.
+`NativeProcessProvider::drain_with_native_work` requires the same existing prepared
+view Arc and issues an opaque `NativeProcessDrainProof`, never a caller boolean.
+Warm cleanup waits for the original supervisor and physical process/stdio quiescence;
+cold cleanup authenticates the original accepted receipt, approval and pinned quiet
+result. Missing or launch-only cold receipts remain uncertain. A separately admitted
+cleanup span does not reset the cancelled execution token or migrate its custody.
+The proof retains its actual view, request, receipt and guards; it is not namespace
+write, retirement or deletion authority.
 `NativeProcessResult::decode_with_native_work` reads pinned result bytes through
 the same closed-record codec and retains the actual stdout, stderr and diagnostic
 capacities on the original ledger. Its source-byte custody remains with the caller;
