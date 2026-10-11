@@ -20,6 +20,9 @@ use tracing::field::Empty;
 
 use crate::DaytonaConfig;
 
+/// Real retained-session, PTY and pinned execution-server transports.
+pub mod session;
+
 /// Header carrying the organization to act in when a credential spans several.
 const ORGANIZATION_HEADER: &str = "X-Daytona-Organization-ID";
 /// Largest page `GET /sandbox` accepts.
@@ -254,6 +257,7 @@ impl DaytonaApi {
         }
         let http = reqwest::Client::builder()
             .timeout(config.request_timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| ProviderError::Invalid(format!("HTTP client: {error}")))?;
         Ok(Self {
