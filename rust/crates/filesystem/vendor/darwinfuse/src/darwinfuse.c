@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <sys/mount.h>
 #include <sys/wait.h>
 
@@ -124,7 +125,7 @@ struct fuse {
     size_t                        ops_size;
     void                         *user_data;
     void                         *init_result;
-    volatile int                  exited;
+    _Atomic int                   exited;
     void                        (*mounted)(void *arg);
     void                         *mounted_arg;
 };
@@ -327,6 +328,7 @@ struct fuse *fuse_new(struct fuse_chan *ch, struct fuse_args *args,
 
     struct fuse *f = calloc(1, sizeof(*f));
     if (!f) return NULL;
+    atomic_init(&f->exited, 0);
 
     f->chan = ch;
     f->ops = op;
@@ -343,18 +345,22 @@ struct fuse *fuse_new(struct fuse_chan *ch, struct fuse_args *args,
     return f;
 }
 
+void fuse_chan_destroy(struct fuse_chan *ch)
+{
+    if (!ch) return;
+    if (ch->server)
+        nfs4_server_destroy(ch->server);
+    if (ch->inode_table)
+        dfuse_itable_destroy(ch->inode_table);
+    free(ch->mountpoint);
+    free(ch);
+}
+
 void fuse_destroy(struct fuse *f)
 {
     if (!f) return;
 
-    if (f->chan) {
-        if (f->chan->server)
-            nfs4_server_destroy(f->chan->server);
-        if (f->chan->inode_table)
-            dfuse_itable_destroy(f->chan->inode_table);
-        free(f->chan->mountpoint);
-        free(f->chan);
-    }
+    fuse_chan_destroy(f->chan);
 
     free(f);
 }
@@ -406,7 +412,7 @@ int fuse_loop(struct fuse *f)
         if (f->mounted)
             f->mounted(f->mounted_arg);
         nfs4_server_restart(f->chan->server);
-        if (!f->exited) {
+        if (!atomic_load_explicit(&f->exited, memory_order_acquire)) {
             DFUSE_LOG("fuse_loop: running event loop (pid=%d)", getpid());
             rc = nfs4_server_run(f->chan->server);
             DFUSE_LOG("fuse_loop: server exited");
@@ -430,7 +436,7 @@ int fuse_loop_mt(struct fuse *f)
 void fuse_exit(struct fuse *f)
 {
     if (!f) return;
-    f->exited = 1;
+    atomic_store_explicit(&f->exited, 1, memory_order_release);
     if (f->chan && f->chan->server)
         nfs4_server_stop(f->chan->server);
 }

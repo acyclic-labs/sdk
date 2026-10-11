@@ -368,7 +368,12 @@ static const struct fuse_operations bridge_operations = {
 struct acyclic_fs_darwin_mount_session {
   pthread_mutex_t mutex;
   struct fuse *instance;
+  int stop_requested;
 };
+
+size_t acyclic_fs_darwin_mount_session_allocation_size(void) {
+  return sizeof(struct acyclic_fs_darwin_mount_session);
+}
 
 struct acyclic_fs_darwin_mount_session *acyclic_fs_darwin_mount_session_new(void) {
   struct acyclic_fs_darwin_mount_session *session = calloc(1, sizeof(*session));
@@ -397,10 +402,19 @@ void acyclic_fs_darwin_mount_session_free(struct acyclic_fs_darwin_mount_session
    mounted. */
 int acyclic_fs_darwin_mount_run(struct acyclic_fs_darwin_mount_session *session, int argc, char **argv,
                           const char *mountpoint, uintptr_t context,
-                          void (*mounted)(void *arg), void *mounted_arg) {
+                          void (*mounted)(void *arg), void *mounted_arg,
+                          int *interrupted_before_namespace) {
   if (session == NULL) {
     return 4;
   }
+  *interrupted_before_namespace = 0;
+  pthread_mutex_lock(&session->mutex);
+  if (session->stop_requested) {
+    pthread_mutex_unlock(&session->mutex);
+    *interrupted_before_namespace = 1;
+    return 0;
+  }
+  pthread_mutex_unlock(&session->mutex);
   struct fuse_args arguments = FUSE_ARGS_INIT(argc, argv);
   struct fuse_chan *channel = fuse_mount(mountpoint, &arguments);
   if (channel == NULL) {
@@ -410,11 +424,18 @@ int acyclic_fs_darwin_mount_run(struct acyclic_fs_darwin_mount_session *session,
       fuse_new(channel, &arguments, &bridge_operations, sizeof(bridge_operations),
                (void *)context);
   if (instance == NULL) {
-    fuse_unmount(NULL, channel);
+    fuse_chan_destroy(channel);
     return 1;
   }
   fuse_set_mounted_callback(instance, mounted, mounted_arg);
   pthread_mutex_lock(&session->mutex);
+  if (session->stop_requested) {
+    pthread_mutex_unlock(&session->mutex);
+    fuse_unmount(NULL, channel);
+    fuse_destroy(instance);
+    *interrupted_before_namespace = 1;
+    return 0;
+  }
   if (session->instance != NULL) {
     pthread_mutex_unlock(&session->mutex);
     fuse_unmount(NULL, channel);
@@ -460,6 +481,7 @@ void acyclic_fs_darwin_mount_interrupt(struct acyclic_fs_darwin_mount_session *s
     return;
   }
   pthread_mutex_lock(&session->mutex);
+  session->stop_requested = 1;
   struct fuse *instance = session->instance;
   if (instance != NULL) {
     fuse_exit(instance);

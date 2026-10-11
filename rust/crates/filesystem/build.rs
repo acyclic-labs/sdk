@@ -52,7 +52,7 @@ fn build_darwin_mount() {
         .include("vendor/darwinfuse/include")
         .include("vendor/darwinfuse/src")
         .define("_FILE_OFFSET_BITS", "64")
-        .flag_if_supported("-std=c11")
+        .flag("-std=c11")
         .flag_if_supported("-Wno-unused-parameter")
         .warnings(true)
         .compile("acyclic_fs_darwin_mount");
