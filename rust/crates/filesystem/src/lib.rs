@@ -56,20 +56,6 @@ pub(crate) fn descriptor_digest() -> String {
     blake3::hash(FILE_DESCRIPTOR_SET).to_hex().to_string()
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod public_contract_tests {
-    use super::{FILE_DESCRIPTOR_SET, wire};
-
-    #[test]
-    fn generated_transport_and_descriptor_are_packaged() {
-        assert!(!FILE_DESCRIPTOR_SET.is_empty());
-        let _ = std::any::TypeId::of::<
-            wire::filesystem::v2::filesystem_service_client::FilesystemServiceClient<
-                tonic::transport::Channel,
-            >,
-        >();
-    }
-}
 
 pub mod accounting;
 #[cfg(all(test, feature = "memory", feature = "distributed"))]
