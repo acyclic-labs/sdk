@@ -12,6 +12,7 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 

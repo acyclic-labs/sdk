@@ -599,29 +599,13 @@ pub(crate) fn place_messages(
     place_messages_with_io(context, messages, placement, limits, None)
 }
 
-#[cfg_attr(not(feature = "filesystem"), allow(unused_mut))]
 pub(crate) fn place_messages_with_io(
-    mut context: Context, messages: Vec<ModelMessage>, placement: ContextPlacement,
+    context: Context, messages: Vec<ModelMessage>, placement: ContextPlacement,
     limits: Limits, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Context> {
-    let mut contribution = Context { messages, ..Context::default() };
-    let marker = preflight_context_composition_with_io(&context, &contribution, placement, limits, io)?;
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let (destination, additional) = match placement {
-            ContextPlacement::Append => (&mut context.messages, contribution.messages.len()),
-            ContextPlacement::Prepend => (&mut contribution.messages, context.messages.len()),
-        };
-        let needed = destination.len().checked_add(additional)
-            .ok_or_else(|| Error::Invalid("context composition count overflow".into()))?;
-        if needed > destination.capacity() {
-            let bytes = ((needed - destination.capacity()) * std::mem::size_of::<ModelMessage>()) as u64;
-            io.claim(bytes)?;
-            io.allocation_attempt(bytes)?;
-            destination.reserve_exact(additional);
-        }
-    }
-    Ok(compose_context(context, contribution, placement, marker))
+    place_context_with_io(
+        context, Context { messages, ..Context::default() }, placement, limits, io,
+    )
 }
 
 pub(super) fn place_context(

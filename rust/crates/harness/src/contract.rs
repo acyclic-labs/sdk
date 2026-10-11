@@ -1440,6 +1440,26 @@ pub enum Error {
         /// Existing custody, released after the original cause is dropped.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// An actual local core lineage failure with its original diagnostic custody.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeLineage {
+        /// The complete lineage and local core log cause.
+        #[source]
+        source: acyclic_fs::WorkspaceLineageError<acyclic_fs::LocalCoreStateStoreError>,
+        /// Existing custody, released after the original cause.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
+    /// An actual local workspace-context registration failure.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeContext {
+        /// The complete context and local core log cause.
+        #[source]
+        source: acyclic_fs::WorkspaceContextError<acyclic_fs::LocalCoreStateStoreError>,
+        /// Existing custody, released after the original cause.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
     /// A native reservation failure retaining its original physical cleanup owner.
     ///
     /// Its concrete source slot is admitted and allocated before reservation IO.
@@ -1567,6 +1587,8 @@ impl Error {
             | Self::NativeEncode { code, .. }
             | Self::NativeStream { code, .. } | Self::NativeSchema { code, .. }
             | Self::NativeReservation { code, .. } => *code,
+            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+            Self::NativeLineage { .. } | Self::NativeContext { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeConstruction { .. }
             | Self::NativeSupervisor { .. }
@@ -1599,6 +1621,7 @@ impl Error {
             | Self::NativeBoundary { .. }
             | Self::NativeDiagnostic { .. }
             | Self::NativeDecode { .. }
+            | Self::NativeProstDecode { .. }
             | Self::NativeEncode { .. }
             | Self::NativeSchema { .. }
             | Self::NativeStream { .. }
@@ -1606,7 +1629,10 @@ impl Error {
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
             | Self::NativeWorkspace { .. }
+            | Self::NativeReservation { .. }
             | Self::NativeFilesystem { .. } => true,
+            #[cfg(feature = "filesystem-local")]
+            Self::NativeLineage { .. } | Self::NativeContext { .. } => true,
             #[cfg(feature = "mcp-http")]
             Self::NativeMcpHttp { .. } => true,
             #[cfg(feature = "native-execution")]

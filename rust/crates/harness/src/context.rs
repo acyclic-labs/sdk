@@ -1300,31 +1300,6 @@ pub(crate) fn validate_compaction_native(
     Ok(())
 }
 
-pub(crate) fn validate_projected_context_with_io(
-    context: &Context, limits: Limits, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let _workspace = crate::executor::reserve_preparation_workspace(context, io)?;
-        let _encoded_hold;
-        let encoded = io.encode_json(context, limits.render_bytes, false)?;
-        _encoded_hold = io.guard_owned(encoded.len() as u64)?;
-        for message in &context.messages {
-            message.content.validate_limits_with_io(limits, Some(io))?;
-        }
-        for file in context.metadata.values() {
-            preparation_step(Some(io))?;
-            limits.validate_file(file)?;
-        }
-        limits.validate()?;
-        context.validate_current_input()?;
-        if context.messages.len() > limits.context_messages || context.metadata.len() > limits.attachments {
-            return Err(crate::Error::Invalid("context projection exceeded declared bounds".into()));
-        }
-        return Ok(());
-    }
-    validate_projected_context(context, limits)
-}
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn validate_projected_context_native(
