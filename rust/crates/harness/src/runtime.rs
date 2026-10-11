@@ -4138,7 +4138,7 @@ pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
         })
     }
 
-    /// Returns the implementation identity with custody for its owned strings.
+    /// Returns the owned identity with custody for its inline Self and strings.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn identity_with_native_work(
         &self, _work: &acyclic_fs::NativeMaterializationWork,
@@ -4448,7 +4448,9 @@ struct PaidPolicyValue<T> {
 fn validate_native_policy_identity(
     paid: &PaidPolicyValue<ComponentIdentity>, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    let bytes = (paid.value.name.capacity() as u64).checked_add(paid.value.version.capacity() as u64);
+    let bytes = (std::mem::size_of::<ComponentIdentity>() as u64)
+        .checked_add(paid.value.name.capacity() as u64)
+        .and_then(|bytes| bytes.checked_add(paid.value.version.capacity() as u64));
     if !paid.custody.as_ref().is_some_and(|custody| custody.work().shares_ledger(work)
         && bytes.is_some_and(|bytes| custody.bytes() >= bytes))
     {
@@ -10951,6 +10953,8 @@ mod tests {
     ) -> Result<(ComponentIdentity, acyclic_fs::NativeAllocation)> {
         use crate::store::history::HistoryIo;
         let mut io = crate::store::history::native_work_io(work)?;
+        // Logical inline metadata needs custody, not a heap allocator attempt.
+        io.retain_owned(std::mem::size_of::<ComponentIdentity>() as u64)?;
         let name = io.clone_text(&identity.name)?;
         let version = io.clone_text(&identity.version)?;
         Ok((ComponentIdentity { name, version, digest: identity.digest }, io.into_custody()))
@@ -10984,6 +10988,12 @@ mod tests {
             .expect("original policy ledger");
         let (policy, definition, invocation) = native_policy_fixture_inputs();
         let scope = RuntimeScope::new(Capabilities::new(["tool:call:test.echo"]), Limits::default())?;
+        let before = work.receipt().allocation_operations;
+        let (identity, custody) = policy.identity_with_native_work(&work)?;
+        assert_eq!(custody.bytes(), std::mem::size_of::<ComponentIdentity>() as u64
+            + identity.name.capacity() as u64 + identity.version.capacity() as u64);
+        assert_eq!(work.receipt().allocation_operations, before + 2);
+        drop(NativePolicyPayload { value: identity, custody });
         let (decision, custody) = policy.evaluate_with_native_work(&invocation, &scope, &work)?.await?;
         let ToolPolicyDecision::RequireApproval { prompt } = decision else { panic!("fixture approval"); };
         assert_eq!(custody.bytes(), prompt.capacity() as u64);
