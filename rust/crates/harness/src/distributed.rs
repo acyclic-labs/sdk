@@ -2146,24 +2146,27 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             PreparedNativeRecovery, acyclic_fs::NativeAllocation, crate::store::history::AcceptedCompletionIo,
         )>() as u64)
         .max(size_of::<acyclic_fs::MaterializationJournal>() as u64);
-    let mut prepared = commit_request(template.key().clone(), 0, &mut work);
-    reserve_prepared_vector(
-        &mut prepared.0.conditions, 2, &mut prepared.1,
-    )?;
-    prepared.0.conditions.push(owner_condition);
-    prepared.0.conditions.push(target);
-    add_record(&mut prepared, template.path().clone(), acyclic_stream::OwnedBytes::new())?;
-    if let Some(io) = prepared.1.work().as_deref_mut() {
-        io.admit_owned(pool_bytes)?;
-        io.retain_owned(pool_bytes)?;
-    }
-    prepared.1.adopt(pool_bytes)?;
-    let retained = prepared.1.retained();
-    let custody = prepared.1.work().as_deref_mut().expect("checked native observer")
-        .take_native_custody(retained)?;
-    prepared.1.transfer();
-    let (request, quota) = prepared;
-    drop(quota);
+    let (request, custody) = {
+        let mut prepared = commit_request(template.key().clone(), 0, &mut work);
+        reserve_prepared_vector(
+            &mut prepared.0.conditions, 2, &mut prepared.1,
+        )?;
+        prepared.0.conditions.push(owner_condition);
+        prepared.0.conditions.push(target);
+        add_record(&mut prepared, template.path().clone(), acyclic_stream::OwnedBytes::new())?;
+        if let Some(io) = prepared.1.work().as_deref_mut() {
+            io.admit_owned(pool_bytes)?;
+            io.retain_owned(pool_bytes)?;
+        }
+        prepared.1.adopt(pool_bytes)?;
+        let retained = prepared.1.retained();
+        let custody = prepared.1.work().as_deref_mut().expect("checked native observer")
+            .take_native_custody(retained)?;
+        prepared.1.transfer();
+        let (request, quota) = prepared;
+        drop(quota);
+        (request, custody)
+    };
     let observer = match crate::store::history::AcceptedCompletionIo::new(original, reservation, custody) {
         Ok(observer) => observer,
         Err(error) => {
@@ -2211,10 +2214,18 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             let key = template.key().clone();
             template.set_completed_work(counters)?;
             let (value, output, maximum_bytes) = template.codec_parts();
-            let written = crate::contract::canonical_json_value_into_prepaid_native_trusted(
-                value, output, maximum_bytes, wire::ErrorCode::Storage,
-                &mut |charge| observer.codec_charge(charge),
-            )?;
+            // The accepted reservation covers every write within this fixed buffer.
+            let mut output = std::io::Cursor::new(&mut output[..maximum_bytes as usize]);
+            let serialized = serde_json::to_writer(&mut output, value);
+            let written = output.position() as usize;
+            let charged = observer.record_completed(acyclic_fs::WorkCounters {
+                bytes_encoded: written as u64, bytes_copied: written as u64,
+                ..acyclic_fs::WorkCounters::default()
+            });
+            serialized.map_err(|source| Error::NativeEncode {
+                code: wire::ErrorCode::Storage, source, custody: None,
+            })?;
+            charged?;
             let (journal, output, mut custody) = template.into_completed_parts();
             if let Err(cause) = sdk_custody.absorb(&mut custody) {
                 drop(output);
