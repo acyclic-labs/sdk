@@ -116,7 +116,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
     let task_scope = issuer.issue(&owner.policy.root_task.to_string(), &owner.policy.grants, Some(owner.policy.agent), None, &mut None).expect("scope proof");
     let read = ContentGrant::verify_read(&authority.verifier, &task_scope, &reference).unwrap();
     let original = filesystem
-        .read_content(&reference, &read, owner.policy.maximum_payload_bytes)
+        .read_content(&reference, &read, owner.policy.maximum_payload_bytes, None)
         .await
         .unwrap();
     assert_eq!(original.as_ref(), serde_json::to_vec(&request).unwrap());
@@ -168,7 +168,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
     assert_eq!(workspace.head(&observation, observation.cancellation()).await.unwrap().id(), original_head);
     assert_eq!(
         filesystem
-            .read_content(&reference, &read, owner.policy.maximum_payload_bytes)
+            .read_content(&reference, &read, owner.policy.maximum_payload_bytes, None)
             .await
             .unwrap(),
         original
@@ -221,7 +221,7 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
     .unwrap();
     let plan: TaskEffectPlan = serde_json::from_slice(
         &filesystem
-            .read_content(&command.payload, &read, owner.policy.maximum_payload_bytes)
+            .read_content(&command.payload, &read, owner.policy.maximum_payload_bytes, None)
             .await
             .unwrap(),
     )
@@ -246,7 +246,7 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
                 &plan.result_schema,
                 &read,
                 owner.policy.maximum_payload_bytes,
-            )
+             None)
             .await
             .unwrap(),
     )
@@ -261,7 +261,7 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
     );
     let retained: PiRootRequest = serde_json::from_slice(
         &filesystem
-            .read_content(&plan.request, &read, owner.policy.maximum_payload_bytes)
+            .read_content(&plan.request, &read, owner.policy.maximum_payload_bytes, None)
             .await
             .unwrap(),
     )

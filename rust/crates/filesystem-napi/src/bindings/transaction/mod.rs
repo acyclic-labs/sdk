@@ -22,8 +22,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Creates exactly one empty directory.
@@ -39,8 +38,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Creates one symbolic link with an opaque target.
@@ -57,8 +55,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Creates or replaces one complete file inside this transaction.
@@ -75,8 +72,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Removes one existing namespace binding inside this transaction.
@@ -92,8 +88,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Clones one complete regular file without copying its body.
@@ -122,8 +117,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Creates one same-workspace hard link.
@@ -140,8 +134,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Replaces one sparse regular-file range.
@@ -159,8 +152,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Changes one regular file's logical length.
@@ -273,10 +265,8 @@ impl NativeWorkspaceTransaction {
                 },
             )
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map(workspace_commit)
-            .map_err(napi_error)
+            .map(|receipt| workspace_commit(receipt.value))
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Safely advances this retained candidate and sparsely replays its work.
@@ -391,10 +381,7 @@ pub(in crate::bindings) fn native_transaction_conflict(
         DependencyRegion::DirectoryName { directory_id, name } => {
             "directory-name".clone_into(&mut result.region);
             result.directory_id = Some(Buffer::from(directory_id.into_bytes().to_vec()));
-            result.name = Some(NativeWorkspaceName {
-                encoding: name.encoding().as_str().to_owned(),
-                bytes: Buffer::from(name.as_bytes().to_vec()),
-            });
+            result.name = Some(native_workspace_name_value(name));
         }
         DependencyRegion::DirectoryRange {
             directory_id,
@@ -403,10 +390,7 @@ pub(in crate::bindings) fn native_transaction_conflict(
         } => {
             "directory-range".clone_into(&mut result.region);
             result.directory_id = Some(Buffer::from(directory_id.into_bytes().to_vec()));
-            result.name = after.map(|name| NativeWorkspaceName {
-                encoding: name.encoding().as_str().to_owned(),
-                bytes: Buffer::from(name.as_bytes().to_vec()),
-            });
+            result.name = after.map(native_workspace_name_value);
             result.maximum_entries = Some(maximum_entries);
         }
     }

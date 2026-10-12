@@ -157,9 +157,8 @@ impl NativeFs {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Creates or opens one workspace and attaches an exact native directory source.
@@ -216,9 +215,8 @@ impl NativeFs {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Creates one independently configured volume.

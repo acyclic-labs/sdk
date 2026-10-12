@@ -12,8 +12,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::wasm_bindgen_test;
 
 #[wasm_bindgen_test]
-fn transaction_conflicts_preserve_full_width_integers_bytes_and_undefined()
--> Result<(), JsValue> {
+fn transaction_conflicts_preserve_full_width_integers_bytes_and_undefined() -> Result<(), JsValue> {
     for offset in [3, 9_007_199_254_740_993, u64::MAX] {
         let result = test_transaction_rebase_js(offset)?;
         assert!(Reflect::get(&result, &"generationId".into())?.is_undefined());
@@ -29,8 +28,7 @@ fn transaction_conflicts_preserve_full_width_integers_bytes_and_undefined()
             length.to_string(10)?.as_string(),
             Some(u64::MAX.to_string())
         );
-        let file =
-            Reflect::get(&conflict, &"fileId".into())?.dyn_into::<js_sys::Uint8Array>()?;
+        let file = Reflect::get(&conflict, &"fileId".into())?.dyn_into::<js_sys::Uint8Array>()?;
         assert_eq!(file.to_vec(), vec![7; 16]);
         assert!(Reflect::get(&conflict, &"directoryId".into())?.is_undefined());
         assert!(Reflect::get(&conflict, &"expected".into())?.is_undefined());
@@ -67,8 +65,8 @@ fn workspace_extent_plan_preserves_u64_as_bigint() -> Result<(), JsValue> {
 #[wasm_bindgen_test]
 fn checkout_dtos_preserve_bytes_options_bigints_and_work_counters() -> Result<(), JsValue> {
     let mutation = test_checkout_mutation_result_js()?;
-    let file_id = Reflect::get(&mutation, &JsValue::from_str("fileId"))?
-        .dyn_into::<js_sys::Uint8Array>()?;
+    let file_id =
+        Reflect::get(&mutation, &JsValue::from_str("fileId"))?.dyn_into::<js_sys::Uint8Array>()?;
     assert_eq!(file_id.length(), 16);
 
     let metadata = test_checkout_metadata_result_js()?;
@@ -77,8 +75,7 @@ fn checkout_dtos_preserve_bytes_options_bigints_and_work_counters() -> Result<()
     assert_eq!(canonical.to_vec(), vec![0, 255, 1]);
 
     let manifest = test_checkout_export_manifest_result_js()?;
-    let objects =
-        Reflect::get(&manifest, &JsValue::from_str("objects"))?.dyn_into::<Array>()?;
+    let objects = Reflect::get(&manifest, &JsValue::from_str("objects"))?.dyn_into::<Array>()?;
     assert_eq!(objects.length(), 2);
 
     let commit = test_checkout_commit_result_js()?;
@@ -88,8 +85,7 @@ fn checkout_dtos_preserve_bytes_options_bigints_and_work_counters() -> Result<()
         Some("9007199254740993")
     );
     let work = Reflect::get(&commit, &JsValue::from_str("work"))?;
-    let copied =
-        Reflect::get(&work, &JsValue::from_str("bytesCopied"))?.dyn_into::<BigInt>()?;
+    let copied = Reflect::get(&work, &JsValue::from_str("bytesCopied"))?.dyn_into::<BigInt>()?;
     assert_eq!(copied.to_string(10)?.as_string().as_deref(), Some("17"));
     assert!(Reflect::get(&commit, &JsValue::from_str("sequence"))?.is_undefined());
     Ok(())
@@ -98,14 +94,12 @@ fn checkout_dtos_preserve_bytes_options_bigints_and_work_counters() -> Result<()
 #[wasm_bindgen_test]
 fn transfer_and_residency_dtos_preserve_bigints_and_bytes() -> Result<(), JsValue> {
     let transfer = test_transfer_and_residency_results_js()?;
-    let first =
-        Reflect::get(&transfer, &JsValue::from_str("firstObject"))?.dyn_into::<BigInt>()?;
+    let first = Reflect::get(&transfer, &JsValue::from_str("firstObject"))?.dyn_into::<BigInt>()?;
     assert_eq!(
         first.to_string(10)?.as_string().as_deref(),
         Some("9007199254740993")
     );
-    let objects =
-        Reflect::get(&transfer, &JsValue::from_str("objects"))?.dyn_into::<Array>()?;
+    let objects = Reflect::get(&transfer, &JsValue::from_str("objects"))?.dyn_into::<Array>()?;
     assert_eq!(
         objects.get(0).dyn_into::<js_sys::Uint8Array>()?.to_vec(),
         vec![1, 2, 3]

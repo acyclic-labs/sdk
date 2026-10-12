@@ -483,8 +483,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let box_slots = std::mem::size_of::<ForkSeed>() as u64;
         if let Some(observer) = custody.work().as_deref_mut() {
             observer.admit_allocation(box_slots)?;
+            observer.retain_owned(box_slots)?;
         }
-        custody.retain(box_slots)?;
+        custody.adopt(box_slots)?;
         let seed = Box::new(seed);
         let command = Command {
             operation_id: seed.operation_id,
@@ -3529,10 +3530,8 @@ mod tests {
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(agent), None, &mut None).expect("scope proof");
-        let publisher = FilesystemContentPublisher::new(
-            host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?);
+        let publisher = FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
+        let reader = FilesystemContentVerifier::new(host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
         let request = Interaction::question("original published prompt".into(), json!({"type": "string"}))?;
         let published = crate::contract::canonical_json_bytes(&request)?;
         let reference = publisher.stage_once(OperationId::from_bytes([95; 16]),

@@ -430,7 +430,7 @@ impl PiSession {
         let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
         let reader = FilesystemContentVerifier::new(self.filesystem.clone(), &authority.verifier,
             &authority.signed, maximum, Some(&io))?;
-        let bytes = acyclic_harness::conversation::ContentResidencyVerifier::read(&reader, &reference, maximum, Some(&io))?.await?;
+        let bytes = acyclic_harness::conversation::ContentResidencyVerifier::read(reader.as_ref(), &reference, maximum, Some(&io))?.await?;
         let owned = std::mem::size_of::<T>() as u64;
         let (value, custody) = pi_root_provider::guarded_pi_decode(
             &bytes, maximum, owned, acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,

@@ -464,8 +464,9 @@ impl PiForkCoordinator {
         let snapshot = source_snapshot.0;
         request_custody.absorb(&mut source_snapshot.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let input_read = {
+            let journal = &self.owner.policy().journal;
             let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
-            let value = self.owner.policy().journal.directory_read_capability(crate::pi_root_inputs::ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
+            let value = journal.directory_read_capability(crate::pi_root_inputs::ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
             (value, io.into_custody())
         };
         if !context.scope().grants().contains(&input_read.0) { return Err(Error::NativeBoundary {
@@ -572,8 +573,9 @@ impl PiForkCoordinator {
 
     fn require_input_read(&self, context: &acyclic_harness::runtime::TaskContext) -> Result<()> {
         let native = {
+            let journal = &self.owner.policy().journal;
             let mut io = acyclic_harness::store::history::native_work_io(&self.work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
-            let value = self.owner.policy().journal.directory_read_capability(crate::pi_root_inputs::ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
+            let value = journal.directory_read_capability(crate::pi_root_inputs::ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
             (value, io.into_custody())
         };
         let capability = native.0.as_str();
@@ -993,8 +995,7 @@ impl PiForkCoordinator {
             let _seed_custody = seed_io.into_custody();
             let capture = PiLazyCapture::new(source, plan.frozen, self.remaining(budget)?, work).await?;
             let filesystem: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
-                acyclic_harness::filesystem::FilesystemForkVerifier::new_with_native_work(self.filesystem.clone(),
-                    plan.request.maximum_bytes, &verifier.0, &authority.0.2, work)?.into_native_shared(work)?;
+                acyclic_harness::filesystem::FilesystemForkVerifier::new(self.filesystem.clone(), plan.request.maximum_bytes, None, Some((&verifier.0, &authority.0.2, &acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
             let stream_provider = acyclic_harness::resources::ProviderRef::new_with_native_work("local", "stream", "1", work)?;
             let history: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
                 acyclic_harness::fork::StreamHistoryForkVerifier::new(&stream_provider.0, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?

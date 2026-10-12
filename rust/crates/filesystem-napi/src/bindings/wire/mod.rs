@@ -336,10 +336,7 @@ pub(in crate::bindings) fn encode_namespace_path(path: &NamespacePath) -> Native
         components: path
             .components()
             .iter()
-            .map(|component| NativePathComponent {
-                encoding: component.encoding().as_str().to_owned(),
-                bytes: Buffer::from(component.as_bytes().to_vec()),
-            })
+            .map(encode_name_component)
             .collect(),
     }
 }

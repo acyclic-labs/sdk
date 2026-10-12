@@ -91,8 +91,8 @@ fn test_config() -> VolumeConfig {
 fn string_paths_and_directory_cursors_use_native_profile() -> Result<()> {
     let mut config = test_config();
     config.profile = FilesystemProfile::Windows;
-    let path = native_path("/ÃƒÂ©.txt", config)?;
-    let cursor = native_name("ÃƒÂ©.txt", config)?;
+    let path = native_path("/ÃƒÆ’Ã‚Â©.txt", config)?;
+    let cursor = native_name("ÃƒÆ’Ã‚Â©.txt", config)?;
     assert_eq!(path.components(), &[cursor]);
     assert_eq!(
         path.components().first().map(LogicalName::encoding),
@@ -810,7 +810,9 @@ async fn shared_publication_fence_blocks_napi_mutation_and_reconcile_recovers()
         acquisition_work: acyclic_fs::WorkCounters::default(),
     };
     let unresolved = OperationId::new();
-    Box::pin(shared.lock()).await.retain_operation_id(unresolved)?;
+    Box::pin(shared.lock())
+        .await
+        .retain_operation_id(unresolved)?;
     assert!(
         native
             .create_file("/blocked.txt".to_owned(), Buffer::from(b"blocked".to_vec()))
@@ -841,7 +843,9 @@ async fn shared_publication_fence_blocks_napi_mutation_and_reconcile_recovers()
             .await
             .is_err()
     );
-    Box::pin(shared.lock()).await.clear_retained_operation(unresolved);
+    Box::pin(shared.lock())
+        .await
+        .clear_retained_operation(unresolved);
     Box::pin(watcher.reconcile(NapiU32(64), NapiU32(64))).await?;
     Ok(())
 }
