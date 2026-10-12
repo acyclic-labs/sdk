@@ -243,11 +243,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     ) -> Result<S3ObjectHead, S3Error> {
         let mut checkout = self
             .workspace
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Exact(generation.id()),
-                CheckoutMode::read_only_pinned(),
-            )
-            .await?;
+                CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let path = key_path(key, checkout.volume_config())?;
         let record = checkout
             .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -311,11 +309,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     ) -> Result<OwnedBytes, S3Error> {
         let mut checkout = self
             .workspace
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Exact(generation.id()),
-                CheckoutMode::read_only_pinned(),
-            )
-            .await?;
+                CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let path = key_path(key, checkout.volume_config())?;
         checkout
             .read_file_range(
@@ -492,11 +488,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         };
         let mut checkout = self
             .workspace
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Exact(generation.id()),
-                CheckoutMode::read_only_pinned(),
-            )
-            .await?;
+                CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let limits = checkout.volume_config().limits;
         let (frontier, frontier_key, frontier_name_prefix) =
             listing_frontier(&options.prefix, checkout.volume_config())?;
@@ -1162,7 +1156,7 @@ mod tests {
         s3.copy_object("src/a.bin", "copy/a.bin", IdempotencyKey::new())
             .await?;
         assert_eq!(
-            workspace.read("/copy/a.bin", 16).await?.as_slice(),
+            workspace.read("/copy/a.bin", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_slice(),
             b"abcdef".as_slice()
         );
 
@@ -1660,7 +1654,7 @@ mod tests {
             .await?;
         upload.upload_part(2, Bytes::from_static(b"second")).await?;
         upload.upload_part(1, Bytes::from_static(b"first-")).await?;
-        assert_eq!(workspace.head().await?.id(), before);
+        assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), before);
         assert!(matches!(
             upload.complete(&[1, 2]).await?,
             TransactionCommit::Committed(_)
@@ -1670,7 +1664,7 @@ mod tests {
             TransactionCommit::AlreadyCommitted(_)
         ));
         assert_eq!(
-            workspace.read("/large/value.bin", 64).await?.as_slice(),
+            workspace.read("/large/value.bin", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_slice(),
             b"first-second".as_slice()
         );
 

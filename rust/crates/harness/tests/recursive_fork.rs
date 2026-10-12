@@ -1264,7 +1264,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 step: 0,
                 prior_messages: Vec::new(),
             };
-            let assembled = pipeline.run_bounded(&input, Limits::default()).await?;
+            let assembled = pipeline.run(&input, Limits::default(), None).await?;
             assert_eq!(&assembled.messages[..2], projected.messages.as_slice());
             assert_eq!(assembled.current_input_index, Some(2));
             assert_eq!(assembled.messages[2].content, input.input);

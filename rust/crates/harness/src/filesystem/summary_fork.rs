@@ -27,7 +27,7 @@ pub(super) fn split_references(prepared: &PreparedSummaryFork, io: Option<&Prepa
     let mut references = BTreeMap::new();
     visit_references(prepared.context(), |file| {
         fork_preparer_io::item(io, std::mem::size_of::<([u8; 32], FileRef)>() as u64)?;
-        let key = reference_digest(file, io)?;
+        let key = super::task_runtime::observed::digest(file, io, u64::MAX)?;
         let file = fork_preparer_io::clone_file(file, io)?;
         if crate::conversation::is_internal_path(file.path())
             && !crate::conversation::is_inherited_context_path(file.path()) {
@@ -69,27 +69,9 @@ fn visit_references(context: &Context, mut visit: impl FnMut(&FileRef) -> Result
     Ok(())
 }
 
-fn reference_digest(file: &FileRef, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
-    let Some(io) = io else { return crate::contract::canonical_json_digest(file); };
-    let encoded_hold;
-    let encoded = io.encode(file, io.remaining()?.bytes_encoded, true)?;
-    encoded_hold = io.guard_bytes(&encoded)?;
-    let work = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
-    io.preflight(work)?;
-    let digest = *blake3::hash(&encoded).as_bytes();
-    io.charge(work)?;
-    drop(encoded);
-    drop(encoded_hold);
-    Ok(digest)
-}
-
-fn validate_context(context: &Context, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
-    crate::context::validate_projected_context_with_io(context, limits, io)
-}
-
 fn rewritten_context(context: &Context, replacements: &References, io: Option<&PreparationIo>) -> Result<Context> {
     fn replace(file: &mut FileRef, replacements: &References, io: Option<&PreparationIo>) -> Result<()> {
-        if let Some(copy) = replacements.get(&reference_digest(file, io)?) {
+        if let Some(copy) = replacements.get(&super::task_runtime::observed::digest(file, io, u64::MAX)?) {
             *file = fork_preparer_io::clone_file(copy, io)?;
         }
         Ok(())
@@ -136,10 +118,6 @@ fn copy_references(payloads: &References, child: &VolumeRef, generation: &str, i
         copies.insert(*key, crate::conversation::FileRef::new_with_io(child, &path, generation, source.descriptor(), source.display_name(), io)?);
     }
     Ok(copies)
-}
-
-fn descriptor(bytes: &[u8], io: Option<&PreparationIo>) -> Result<FileDescriptor> {
-    FileDescriptor::from_bytes_with_io(bytes, "application/json", io)
 }
 
 pub(super) fn clone_selection(selection: &crate::fork::SummaryForkSelection, io: Option<&PreparationIo>) -> Result<crate::fork::SummaryForkSelection> {
@@ -268,7 +246,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "summary fork capture allowance must be positive"));
         }
         let limits = prepared.selection().limits;
-        validate_context(prepared.context(), limits, io)?;
+        crate::context::validate_projected_context_with_io(prepared.context(), limits, io)?;
         let (payloads, references) = split_references(prepared, io)?;
         if payloads
             .len()
@@ -295,7 +273,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         const ZERO_VERSION: &str = "0000000000000000000000000000000000000000000000000000000000000000";
         let planned = copy_references(&payloads, child_private, ZERO_VERSION, io)?;
         let context = rewritten_context(prepared.context(), &planned, io)?;
-        validate_context(&context, limits, io)?;
+        crate::context::validate_projected_context_with_io(&context, limits, io)?;
         let planned_bytes = match io {
             Some(io) => io.encode(&context, maximum_bytes.saturating_sub(body_bytes), true)?,
             None => crate::contract::canonical_json_bytes(&context)?.into(),
@@ -309,14 +287,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let planned_capture = SummaryForkCapture {
             selection: clone_selection(prepared.selection(), io)?,
             context: crate::conversation::FileRef::new_with_io(child_private, ".system/inherited-conversation/summary-context.json",
-                ZERO_VERSION, &descriptor(&planned_bytes, io)?, "summary-context.json", io)?,
+                ZERO_VERSION, &FileDescriptor::from_bytes_with_io(&planned_bytes, "application/json", io)?, "summary-context.json", io)?,
             payloads: into_files(planned, io)?,
             references: cloned_files(&references, io)?,
         };
         validate_capture(&planned_capture, child_private, io)?;
         if let Some(io) = io {
             for file in references.values() {
-                io.receive_content(resolver.verify_measured(file, limits.file_bytes, io.remaining()?, &io.cancellation).await)?;
+                io.receive_content(resolver.verify_measured(file, limits.file_bytes, io.remaining()?, io.cancellation()).await)?;
             }
         }
         let keys = summary_keys(key, io)?;
@@ -355,7 +333,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                         journal.load_with_native_work(file, original)?.await?
                     }
                     Some(io) => {
-                        let bytes = io.receive_content(journal.load_measured(file, io.remaining()?, &io.cancellation).await)?;
+                        let bytes = io.receive_content(journal.load_measured(file, io.remaining()?, io.cancellation()).await)?;
                         io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
                         bytes
                     }
@@ -382,7 +360,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         )?;
         for file in copies.values() { self.host.read_pinned_io(file, maximum_bytes, io).await?; }
         let context = rewritten_context(prepared.context(), &copies, io)?;
-        validate_context(&context, limits, io)?;
+        crate::context::validate_projected_context_with_io(&context, limits, io)?;
         let bytes = match io {
             Some(io) => io.encode(&context, maximum_bytes.saturating_sub(body_bytes), true)?,
             None => crate::contract::canonical_json_bytes(&context)?.into(),
@@ -404,7 +382,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let context_version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
         let context = crate::conversation::FileRef::new_with_io(child_private,
             ".system/inherited-conversation/summary-context.json",
-            &context_version, &descriptor(&bytes, io)?,
+            &context_version, &FileDescriptor::from_bytes_with_io(&bytes, "application/json", io)?,
             "summary-context.json", io)?;
         let committed = self.host.read_pinned_io(&context, maximum_bytes, io).await?;
         if committed.as_ref() != bytes.as_ref() {

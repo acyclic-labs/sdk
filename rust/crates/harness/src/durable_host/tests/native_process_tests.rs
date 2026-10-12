@@ -162,17 +162,13 @@ fn assert_native_receipt_binding<P: StreamProvider>(
 #[tokio::test]
 async fn original_native_prepared_binding_preserves_approval_and_cancellation_before_launch() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work = test_work(test_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
     let fixture = process_fixture_with_native_work(
         StreamClient::new(Arc::new(MemoryStream::default())), "write", &work,
     ).await?;
     assert!(fixture.view.original_native_work().is_some_and(|original| original.shares_ledger(&work)));
     let foreign_cancellation = acyclic_fs::CancellationToken::new();
-    let foreign = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &foreign_cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let foreign = test_work(test_budget(1_000_000_000, 1_000_000_000), &foreign_cancellation)?;
     let foreign_prefix = foreign.receipt();
     let original_prefix = work.receipt();
     assert!(matches!(Process::new_with_native_work(
@@ -210,9 +206,7 @@ async fn original_native_prepared_binding_preserves_approval_and_cancellation_be
 #[tokio::test]
 async fn original_native_success_hands_effect_and_receipt_custody_through_cancel_and_reconcile() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work = test_work(test_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
     let fixture = process_fixture_with_native_work(
         StreamClient::new(Arc::new(MemoryStream::default())), "write", &work,
     ).await?;
@@ -275,9 +269,7 @@ async fn original_native_success_hands_effect_and_receipt_custody_through_cancel
 async fn cold_unchanged_project_keeps_the_actual_sdk_snapshot_without_relaunch() -> Result<()> {
     initialize_issued_view_fixture_services()?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let original = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let original = test_work(test_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
     let fixture = process_fixture_with_native_work(
         StreamClient::new(Arc::new(MemoryStream::default())), "mixed-issued-view", &original,
     ).await?;
@@ -307,9 +299,7 @@ async fn cold_unchanged_project_keeps_the_actual_sdk_snapshot_without_relaunch()
     cancellation.cancel();
     let original_prefix = original.receipt();
     let query_cancellation = acyclic_fs::CancellationToken::new();
-    let query = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &query_cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let query = test_work(test_budget(1_000_000_000, 1_000_000_000), &query_cancellation)?;
     let recovered = Process::recover_with_native_work(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
         fixture.authority(), &query,
@@ -356,17 +346,13 @@ async fn cold_unchanged_project_keeps_the_actual_sdk_snapshot_without_relaunch()
 #[tokio::test]
 async fn native_process_drain_factory_rejects_other_attempt_before_admission() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let original = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let original = test_work(test_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
     let fixture = process_fixture_with_native_work(
         StreamClient::new(Arc::new(MemoryStream::default())), "write", &original,
     ).await?;
     let process = fixture.provider_with_native_work(&original).await?;
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
-    let cleanup = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &cleanup_cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let cleanup = test_work(test_budget(1_000_000_000, 1_000_000_000), &cleanup_cancellation)?;
     let before = cleanup.receipt();
     assert!(matches!(process.drain_with_native_work(
         crate::EffectAttemptId::from_bytes([255; 16]), &fixture.view, &cleanup, &cleanup_cancellation,
@@ -389,9 +375,7 @@ async fn native_process_drain_factory_rejects_other_attempt_before_admission() -
 #[tokio::test]
 async fn cold_native_drain_proof_authenticates_terminal_result_without_relaunch() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let original = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let original = test_work(test_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
     let fixture = process_fixture_with_native_work(
         StreamClient::new(Arc::new(MemoryStream::default())), "write", &original,
     ).await?;
@@ -405,9 +389,7 @@ async fn cold_native_drain_proof_authenticates_terminal_result_without_relaunch(
     cancellation.cancel();
     let original_prefix = original.receipt();
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
-    let cleanup = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &cleanup_cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let cleanup = test_work(test_budget(1_000_000_000, 1_000_000_000), &cleanup_cancellation)?;
     let recovered = Process::recover_with_native_work(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
         fixture.authority(), &cleanup,
@@ -438,9 +420,7 @@ async fn cold_native_drain_proof_authenticates_terminal_result_without_relaunch(
 #[tokio::test]
 async fn warm_native_drain_keeps_original_tree_and_accepts_authorized_cleanup_span() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let original = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let original = test_work(test_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
     let fixture = process_fixture_with_native_work(
         StreamClient::new(Arc::new(MemoryStream::default())), "wait", &original,
     ).await?;
@@ -460,9 +440,7 @@ async fn warm_native_drain_keeps_original_tree_and_accepts_authorized_cleanup_sp
         }
     }).await.map_err(|error| Error::Storage(error.to_string()))?;
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
-    let cleanup = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &cleanup_cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let cleanup = test_work(test_budget(1_000_000_000, 1_000_000_000), &cleanup_cancellation)?;
     assert!(!cleanup.shares_ledger(&original));
     let recovered = Process::recover_with_native_work(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
@@ -492,9 +470,7 @@ async fn original_native_receipt_commit_faults_reconcile_the_same_slot_without_r
         ("launch", false), ("launch", true), ("observed", false), ("observed", true),
     ] {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            process_work_budget(1_000_000_000)?, &cancellation,
-        ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let work = test_work(test_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
         let stream = Arc::new(ReceiptFaultStream::default());
         let fixture = process_fixture_with_native_work(
             StreamClient::new(stream.clone()), "write", &work,
@@ -555,9 +531,7 @@ async fn original_native_receipt_commit_faults_reconcile_the_same_slot_without_r
 #[tokio::test]
 async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_without_new_allowance() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work = test_work(test_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
     let stream = Arc::new(ReceiptFaultStream::default());
     let fixture = process_fixture_with_native_work(
         StreamClient::new(stream.clone()), "write", &work,
@@ -576,9 +550,7 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
     assert!(process.reconcile_with_native_work(attempt, &work).is_err());
     assert_eq!(work.receipt(), prefix);
     let query_cancellation = acyclic_fs::CancellationToken::new();
-    let query = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &query_cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let query = test_work(test_budget(1_000_000_000, 1_000_000_000), &query_cancellation)?;
     let receipt = process.receipt_with_native_work(attempt, &query).await.unwrap().unwrap();
     assert!(!receipt.observed);
     assert_eq!(receipt.effect.status, EffectStatus::Indeterminate);
@@ -605,8 +577,7 @@ async fn finite_native_binding_rejects_legacy_view_before_future_or_content_read
     let fixture = process_fixture("write", true).await?;
     let budget = fixture.request().await?.view.options.work_per_volume;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work = test_work(budget, &cancellation)?;
     let before = work.receipt();
     let result = Process::new_with_native_work(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.view.clone(),
@@ -778,15 +749,7 @@ async fn process_fixture_on<P: StreamProvider + 'static>(
         .await
 }
 
-fn process_work_budget(allowance: u64) -> Result<acyclic_fs::WorkBudget> {
-    let mut budget = serde_json::to_value(acyclic_fs::WorkBudget::UNBOUNDED)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    for value in budget.as_object_mut()
-        .ok_or_else(|| Error::Invalid("work counters".into()))?.values_mut() {
-        *value = serde_json::json!(allowance);
-    }
-    serde_json::from_value(budget).map_err(|error| Error::Invalid(error.to_string()))
-}
+
 
 async fn process_fixture_with_native_work<P: StreamProvider + 'static>(
     stream: StreamClient<P>, mode: &str,
@@ -810,7 +773,7 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     use std::path::Path;
     initialize_issued_view_fixture_services()?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(process_work_budget(100_000_000)?, &cancellation)
+    let work = acyclic_fs::NativeMaterializationWork::new(test_budget(100_000_000, 100_000_000), &cancellation)
         .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
     let fixture = process_fixture_with_native_work(
         StreamClient::new(Arc::new(MemoryStream::default())), "mixed-issued-view", &work,
@@ -838,13 +801,13 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     assert!(issued.write_builtin_file(operation, Path::new("results/denied.txt"), "denied",
         true, None, &work)?.await.is_err());
     assert_eq!(work.receipt().backend_write_operations, before);
-    let foreign = acyclic_fs::NativeMaterializationWork::new(process_work_budget(100_000_000)?, &cancellation)
+    let foreign = acyclic_fs::NativeMaterializationWork::new(test_budget(100_000_000, 100_000_000), &cancellation)
         .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
     assert!(issued.read_builtin_file(operation, Path::new("src/cold.txt"), 64, &foreign).is_err());
     assert_eq!(foreign.receipt().source_bytes_read, 0);
     fixture.owner.verify_with_native_work(false, &work).await?;
     fixture.lazy_mount.as_ref().expect("actual fixture lazy mount")
-        .abandon_with_work(&fixture.lazy_work.as_ref().expect("original seeded volume work").native_mount_work())?;
+        .abandon_with_work(&fixture.lazy_work.as_ref().expect("original seeded volume work").clone())?;
     Ok(())
 }
 
@@ -852,9 +815,7 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
 async fn genuine_view_retirement_preserves_cached_proof_on_admission_and_wait_denial() -> Result<()> {
     initialize_issued_view_fixture_services()?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let original = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let original = test_work(test_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
     let fixture = process_fixture_with_native_work(
         StreamClient::new(Arc::new(MemoryStream::default())), "write", &original,
     ).await?;
@@ -863,18 +824,15 @@ async fn genuine_view_retirement_preserves_cached_proof_on_admission_and_wait_de
         .run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan, &original).await?;
     assert!(matches!(status, EffectStatus::Succeeded { .. }));
     let cleanup_wait = acyclic_fs::CancellationToken::new();
-    let cleanup = acyclic_fs::NativeMaterializationWork::new(
-        process_work_budget(1_000_000_000)?, &cleanup_wait,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let cleanup = test_work(test_budget(1_000_000_000, 1_000_000_000), &cleanup_wait)?;
     let proof = process.drain_with_native_work(
         process.original_attempt(), &fixture.view, &cleanup, &cleanup_wait,
     )?.await?;
     let mut cached_process = Some(proof);
     let mut cached_partial = None;
-    let mut denied_budget = process_work_budget(1_000_000_000)?;
+    let mut denied_budget = test_budget(1_000_000_000, 1_000_000_000);
     denied_budget.allocation_operations = 1;
-    let denied = acyclic_fs::NativeMaterializationWork::new(denied_budget, &cleanup_wait)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let denied = test_work(denied_budget, &cleanup_wait)?;
     assert!(fixture.view.cleanup_mounts_with_native_work(
         &fixture.owner, &mut cached_process, &mut cached_partial,
         &original, &denied, &cleanup_wait,
@@ -923,13 +881,13 @@ async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_own
     use std::path::Path;
     initialize_issued_view_fixture_services()?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(process_work_budget(100_000_000)?, &cancellation)
+    let work = acyclic_fs::NativeMaterializationWork::new(test_budget(100_000_000, 100_000_000), &cancellation)
         .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
     let fixture = process_fixture_with_native_work(
         StreamClient::new(Arc::new(MemoryStream::default())), "write", &work,
     ).await?;
     let issued = fixture.view.task_working_view_with_native_work(&fixture.owner, &work)?.await?;
-    let foreign_work = acyclic_fs::NativeMaterializationWork::new(process_work_budget(100_000_000)?, &cancellation)
+    let foreign_work = acyclic_fs::NativeMaterializationWork::new(test_budget(100_000_000, 100_000_000), &cancellation)
         .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
     assert!(matches!(issued.verify_with_native_work(&foreign_work),
         Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, .. })));
@@ -945,10 +903,10 @@ async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_own
     let guard = context.volume_callback_guard_with_native_work(&fixture.owner, &work).await?;
     let callback = guard.for_volume(&fixture.owner, &fixture.source, false, &work)?;
     let writable_callback = guard.for_volume(&fixture.owner, &fixture.destination, true, &work)?;
-    let mount_work = work.native_mount_work();
+    let mount_work = work.clone();
     assert!(callback.check(&mount_work).expect("original callback admission").await.is_ok());
     assert!(writable_callback.check(&mount_work).expect("original writable callback admission").await.is_ok());
-    let foreign_mount_work = foreign_work.native_mount_work();
+    let foreign_mount_work = foreign_work.clone();
     assert!(callback.check(&foreign_mount_work).expect("paid foreign callback frame").await.is_err());
     let before_guards = work.receipt();
     assert!(guard.for_volume(&fixture.owner, &fixture.source, true, &work).is_err());
@@ -1290,7 +1248,7 @@ where
         .generation;
     let root = directory.path().join("view");
     std::fs::create_dir(&root).map_err(|error| Error::Storage(error.to_string()))?;
-    let work = process_work_budget(10_000_000)?;
+    let work = test_budget(10_000_000, 10_000_000);
     let operation_directory = directory.path().join("preparation");
     for path in [&operation_directory, &operation_directory.join("target"), &operation_directory.join("backup")] {
         std::fs::create_dir(path).map_err(|error| Error::Storage(error.to_string()))?;
@@ -1398,7 +1356,7 @@ where
                 std::mem::size_of::<crate::runtime::NativeVolumeCallbackGuard<P>>(),
             ).ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "native source guard slot count overflow" })?;
-            let custody = work.claim_allocation(guard_bytes as u64, u64::from(guard_bytes != 0))?;
+            let custody = work.claim_allocation(guard_bytes as u64, u64::from(guard_bytes != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
             let mut guards = (Vec::with_capacity(borrowed.len()), custody);
             for _ in &borrowed {
                 guards.0.push(context.volume_callback_guard_with_native_work(
@@ -1420,18 +1378,18 @@ where
                     .map_err(|error| Error::Storage(error.to_string()))?;
                 let lazy = lazy.into_arc_with_native_work(work)?;
                 let callback = guards.0[0].for_volume(&owner, &source, false, &volume_work)?;
-                let (path, _path_custody) = volume_work.join_path(&options.root, std::path::Path::new("src"))?;
+                let (path, _path_custody) = volume_work.path(&options.root, Some(std::path::Path::new("src")))?;
                 volume_work.create_owned_directory(&options.root, preparation_root.expected_identity,
                     std::path::Path::new("src"), true)?;
                 let mut allocation = volume_work.claim_allocation(std::mem::size_of::<acyclic_fs::LazyMount<
-                    A, O, acyclic_fs::NativeDemandSource, acyclic_fs::MemoryLazyWorkspaceStore>>() as u64, 1)?;
+                    A, O, acyclic_fs::NativeDemandSource, acyclic_fs::MemoryLazyWorkspaceStore>>() as u64, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
                 let mut mount = lazy.mount_with_work(&path, acyclic_fs::MountOptions::read_only()
                     .publication(acyclic_fs::MountPublication::Manual), Some(callback),
-                    &volume_work.native_mount_work(), volume_work.cancellation(), Some(&volume_work))
+                    &volume_work, volume_work.cancellation(), Some(&volume_work))
                     .await?;
                 mount.retain_payload_allocation(&mut allocation)?;
                 let mount = Arc::new(mount);
-                let snapshot = mount.snapshot_with_work(&volume_work.native_mount_work(), volume_work.cancellation())
+                let snapshot = mount.snapshot_with_work(&volume_work, volume_work.cancellation())
                     .await?;
                 let native_source = crate::filesystem::FsRootNativeSource::from_lazy_with_native_work(
                     Arc::clone(&lazy), work,
@@ -4045,8 +4003,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
         let cancellation = acyclic_fs::CancellationToken::new();
         let cleanup_cancellation = acyclic_fs::CancellationToken::new();
         let budget = fixture.view.manifest().validation_budget()?;
-        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let work = test_work(budget, &cancellation)?;
         let destination = workspace_ref(
             fixture.destination.provider().clone(), &fixture.destination.storage_name()?,
         )?;
@@ -4119,8 +4076,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             ).await?;
             assert!(foreign.is_none());
             assert_eq!(work.receipt().backend_write_operations, before_query);
-            let denied_work = acyclic_fs::NativeMaterializationWork::new(budget, &cleanup_cancellation)
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let denied_work = test_work(budget, &cleanup_cancellation)?;
             let mut failed = receipt.into_cleanup().release(&fixture.owner, &denied_work, &cleanup_cancellation).await
                 .err().ok_or_else(|| Error::Storage("foreign cleanup family denial was not exercised".into()))?;
             let retained = crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
@@ -4169,8 +4125,7 @@ async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_nati
     );
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
     let budget = fixture.view.manifest().validation_budget()?;
-    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cleanup_cancellation)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work = test_work(budget, &cleanup_cancellation)?;
     assert!(matches!(
         process.signal_stop(crate::EffectAttemptId::from_bytes([255; 16]), &work, &cleanup_cancellation).await,
         Err(Error::NativeBoundary { .. }),
@@ -4185,8 +4140,7 @@ async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_nati
     ));
     let mut denied_budget = budget;
     denied_budget.items_examined = 0;
-    let denied = acyclic_fs::NativeMaterializationWork::new(denied_budget, &cleanup_cancellation)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let denied = test_work(denied_budget, &cleanup_cancellation)?;
     assert!(matches!(
         process.signal_stop(attempt, &denied, &cleanup_cancellation).await,
         Err(Error::NativeWork { .. }),
@@ -4244,9 +4198,7 @@ async fn original_warm_supervisor_stop_settles_after_real_task_cancellation() ->
     );
     fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        fixture.view.manifest().validation_budget()?, &cleanup_cancellation,
-    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work = test_work(fixture.view.manifest().validation_budget()?, &cleanup_cancellation)?;
     process.signal_stop(attempt, &work, &cleanup_cancellation).await
         .map_err(|error| Error::Storage(error.to_string()))?;
     let receipt = process.request_stop(attempt, &work, &cleanup_cancellation).await

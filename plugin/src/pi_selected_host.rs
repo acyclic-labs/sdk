@@ -228,7 +228,7 @@ impl<'a> PiSelectedHost<'a> {
         if input.caller != owner.task_id() || input.sdk_operation.is_empty() {
             return Err(denied("selected control changed its actual caller or SDK operation"));
         }
-        let operation = original_operation(self.protected.policy().root_task, input.caller, &input.sdk_operation);
+        let operation = original_operation(self.protected.policy().root_task, input.caller, &input.sdk_operation, &work)?;
         let role = match command.kind.as_str() {
             "acyclic.pi.inspect" => "selected-inspect", "acyclic.pi.diff" => "selected-diff",
             "acyclic.pi.import" => "selected-import",
@@ -236,7 +236,7 @@ impl<'a> PiSelectedHost<'a> {
             "acyclic.pi.writeback" => "selected-writeback",
             _ => return Err(Error::Unsupported("not a selected Pi command".into())),
         };
-        if command.operation_id != derived(operation, role) { return Err(denied("selected command changed its original effect operation")); }
+        if command.operation_id != derived(operation, role, &work)? { return Err(denied("selected command changed its original effect operation")); }
         let cursor_custody = input.cursor.as_deref().map(|cursor| decode_cursor::<CursorEnvelope>(cursor, cancellation, work)).transpose()?;
         let cursor = cursor_custody.as_ref().map(|(cursor, _)| cursor);
         if let Some(cursor) = &cursor {
@@ -249,9 +249,9 @@ impl<'a> PiSelectedHost<'a> {
             PageCursor::Inspect(cursor) => Some(cursor.snapshot), PageCursor::Diff(cursor) => Some(cursor.after_snapshot()),
         });
         let base_selection_operation = derived(operation, if command.kind == "acyclic.pi.writeback" {
-            "selected-writeback" } else { "selected-import" });
+            "selected-writeback" } else { "selected-import" }, &work)?;
         let import_operation = if command.kind == "acyclic.pi.writeback" {
-            derived(base_selection_operation, "writeback-import") } else { base_selection_operation };
+            derived(base_selection_operation, "writeback-import", &work)? } else { base_selection_operation };
         let prior_import = if matches!(command.kind.as_str(), "acyclic.pi.import" | "acyclic.pi.writeback") {
             self.read_import_intent(&context, import_operation, cancellation, work).await?
         } else { None };
@@ -271,7 +271,7 @@ impl<'a> PiSelectedHost<'a> {
                     _ => return Err(denied("diff continuation used for inspection")),
                 };
                 let page = selected.inspect(&context, &owner, &input.directory, continuation, maximum, cancellation, work).await?;
-                let continuation = page.cursor.as_ref().map(|cursor| self.cursor(input, &key, &command.kind, PageCursorRef::Inspect(cursor), cancellation, work)).transpose()?;
+                let continuation = page.cursor.as_ref().map(|cursor| self.cursor(input, &key, &command.kind, PageCursor::Inspect(cursor), cancellation, work)).transpose()?;
                 ready(&PiPageResponse { source: input.source, root: &key, volume: Some(&volume),
                     before_root: None, before_snapshot: None, snapshot: *frozen, directory: &page.directory,
                     entries: &page.entries, cursor: continuation.as_ref().map(|(cursor, _)| cursor.as_str()) }, work)
@@ -290,7 +290,7 @@ impl<'a> PiSelectedHost<'a> {
                     _ => return Err(denied("inspection continuation used for diff")),
                 };
                 let page = diff_native(&before, &selected, &context, &owner, &input.directory, continuation, maximum, cancellation, work).await?;
-                let continuation = page.cursor.as_ref().map(|cursor| self.cursor(input, &key, &command.kind, PageCursorRef::Diff(cursor), cancellation, work)).transpose()?;
+                let continuation = page.cursor.as_ref().map(|cursor| self.cursor(input, &key, &command.kind, PageCursor::Diff(cursor), cancellation, work)).transpose()?;
                 ready(&PiPageResponse { source: input.source, root: &key, volume: None,
                     before_root: Some(before_key), before_snapshot: Some(*before_frozen), snapshot: *frozen,
                     directory: &page.directory, entries: &page.entries, cursor: continuation.as_ref().map(|(cursor, _)| cursor.as_str()) }, work)
@@ -300,38 +300,27 @@ impl<'a> PiSelectedHost<'a> {
                     return Err(denied("writeback destination must be the ORIGINAL Root caller"));
                 }
                 self.publish_selection(&context, native_context, &owner, &caller.binding, &input, &key, &selected,
-                    derived(operation, if command.kind == "acyclic.pi.writeback" { "selected-writeback" } else { "selected-import" }),
+                    derived(operation, if command.kind == "acyclic.pi.writeback" { "selected-writeback" } else { "selected-import" }, &work)?,
                     command.kind == "acyclic.pi.writeback", reconcile, cancellation, work).await
             }
             _ => unreachable!("kind checked above"),
         }
     }
-    fn cursor(&self, input: &PiSelectedCommand, root: &str, kind: &str, cursor: PageCursorRef<'_>,
+    fn cursor(&self, input: &PiSelectedCommand, root: &str, kind: &str, cursor: PageCursor<&PiNativeInspectionCursor<&VolumeRef>, &PiNativeDiffCursor<&VolumeRef>>,
         cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork) -> Result<(String, acyclic_fs::NativeAllocation)> {
-        encode_cursor(&CursorEnvelopeRef { caller: input.caller, source: input.source, root,
-            kind, directory: &input.directory, cursor: &cursor }, cancellation, work)
+        encode_cursor(&CursorEnvelope { caller: input.caller, source: input.source, root,
+            kind, directory: input.directory.as_str(), cursor: &cursor }, cancellation, work)
     }
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CursorEnvelope {
-    caller: TaskId, source: TaskId, root: String, kind: String, directory: String, cursor: PageCursor,
-}
-#[derive(Serialize)]
-struct CursorEnvelopeRef<'a> {
-    caller: TaskId, source: TaskId, root: &'a str, kind: &'a str, directory: &'a str, cursor: &'a PageCursorRef<'a>,
+struct CursorEnvelope<S = String, C = PageCursor> {
+    caller: TaskId, source: TaskId, root: S, kind: S, directory: S, cursor: C,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value")]
-enum PageCursor { Inspect(PiNativeInspectionCursor), Diff(PiNativeDiffCursor) }
-
-#[derive(Serialize)]
-#[serde(tag = "kind", content = "value")]
-enum PageCursorRef<'a> {
-    Inspect(&'a crate::pi_inspection::PiNativeInspectionCursorRef<'a>),
-    Diff(&'a crate::pi_inspection::PiNativeDiffCursorRef<'a>),
-}
+enum PageCursor<I = PiNativeInspectionCursor, D = PiNativeDiffCursor> { Inspect(I), Diff(D) }
 
 fn encode_cursor<T: Serialize>(value: &T, cancellation: &CancellationToken,
     work: &acyclic_fs::NativeMaterializationWork) -> Result<(String, acyclic_fs::NativeAllocation)> {
@@ -440,7 +429,7 @@ impl PiSelectedHost<'_> {
     }
     let destination = input.destination.unwrap_or(input.caller);
     let foreign_binding = if destination != input.caller && destination != self.protected.policy().root_task {
-        Some(self.native.binding_with_work(destination, work)?
+        Some(self.native.binding(destination, work)?
             .ok_or_else(|| denied("explicit destination has no actual creator binding"))?)
     } else { None };
     let destination_binding = if destination == input.caller { binding }
@@ -497,7 +486,7 @@ impl PiSelectedHost<'_> {
     } else if destination == self.protected.policy().root_task {
         acyclic_fs::PublicationPermit::Unrestricted
     } else { return Err(denied("destination live owner unavailable")); };
-    let import_operation = if writeback { derived(operation, "writeback-import") } else { operation };
+    let import_operation = if writeback { derived(operation, "writeback-import", &work)? } else { operation };
     let prior = self.read_import_intent(context, import_operation, cancellation, work).await?;
     let resuming_import = prior.is_some();
     let intent_custody = if let Some((intent, _custody)) = &prior {
@@ -540,7 +529,7 @@ impl PiSelectedHost<'_> {
     owner.native_view_owner().verify_with_native_work(work).await?;
     destination_owner.native_view_owner().verify_with_native_work(work).await?;
     let completed = if let Some(mount) = &mount {
-        let result = mount.selected_import_snapshot_with_work(fs_operation, &publication_work.native_mount_work(), cancellation).await;
+        let result = mount.selected_import_snapshot_with_work(fs_operation, &publication_work, cancellation).await;
         if let Err(acyclic_fs::NativeMountError::Source(error)) = &result {
             if matches!(error.semantic_error(), acyclic_fs::MountSourceError::OriginalSnapshotUnavailable
                 | acyclic_fs::MountSourceError::Indeterminate) {
@@ -746,7 +735,7 @@ pub(crate) async fn read_imported_selected_files(
         || receipt.paths != descriptor.command.paths || receipt.selected_snapshot != descriptor.selected_snapshot
         || receipt.imported.authored_generation != descriptor.imported
         || receipt.imported.workspace_id != root.workspace.workspace().id()
-        || receipt.operation != derived(descriptor.operation, "writeback-import")
+        || receipt.operation != derived(descriptor.operation, "writeback-import", &work)?
         || created.repository_workspace_id != root.workspace.workspace().id().into_bytes()
         || created.native_root_identity != root.physical.source.inner().root_identity().to_bytes()
         || storage_name.0 != root.workspace.workspace().name().as_str() {
@@ -834,7 +823,7 @@ pub(crate) async fn read_imported_selected_files(
         let length = stat.logical_bytes.ok_or_else(|| denied("regular candidate evidence lacks an authenticated length"))?;
         if offset > length { return Err(invalid("file evidence cursor exceeds its immutable file")); }
         if remaining == 0 && offset < length {
-            *cursor = Some(PiOperatorFileCursorRef { operation: &descriptor.command.sdk_operation,
+            *cursor = Some(crate::pi_operator::PiOperatorFileCursor { operation: descriptor.command.sdk_operation.as_str(),
                 root: key, generation: descriptor.imported, path, offset });
             break;
         }
@@ -852,7 +841,7 @@ pub(crate) async fn read_imported_selected_files(
         drop(bytes);
         remaining -= count;
         if offset + count < length {
-            *cursor = Some(PiOperatorFileCursorRef { operation: &descriptor.command.sdk_operation,
+            *cursor = Some(crate::pi_operator::PiOperatorFileCursor { operation: descriptor.command.sdk_operation.as_str(),
                 root: key, generation: descriptor.imported, path, offset: offset + count });
             break;
         }
@@ -917,20 +906,12 @@ struct PiWritebackResponse<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     receipt: Option<&'a acyclic_fs::MaterializationJournal>,
 }
-#[derive(Serialize)]
-struct PiOperatorFileCursorRef<'a> {
-    operation: &'a str,
-    root: &'a str,
-    generation: acyclic_fs::GenerationId,
-    path: &'a str,
-    offset: u64,
-}
 
 #[derive(Serialize)]
 struct PiFileEvidenceProjection<'a> {
     #[serde(serialize_with = "serialize_evidence_files")]
     files: &'a [(&'a str, Option<String>)],
-    cursor: Option<&'a PiOperatorFileCursorRef<'a>>,
+    cursor: Option<&'a crate::pi_operator::PiOperatorFileCursor<&'a str>>,
     complete: bool,
 }
 fn serialize_evidence_files<S: serde::Serializer>(

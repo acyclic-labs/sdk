@@ -22,15 +22,16 @@ impl PiSession {
                 &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), work.clone())?;
             let (payload, _payload_custody) = pi_root_provider::guarded_pi_value(&request,
                 MAXIMUM_BUILTIN_BYTES * 2, &work)?;
+            let operation = request.operation(owner.policy().root_task, &work)?;
             let staged = pi_root_provider::stage_pi_input(owner, &self.filesystem,
-                request.operation(owner.policy().root_task), "command", &payload, &work).await?;
+                operation, "command", &payload, &work).await?;
             let _reference_custody = staged.1;
             let reference = staged.0;
             let command_kind = work.display(PI_BUILTIN_COMMAND_KIND).map_err(native_error)?;
             let _kind_custody = command_kind.1;
             let kind = command_kind.0;
             let command = acyclic_harness::workflow::WorkflowCommand {
-                operation_id: request.operation(owner.policy().root_task),
+                operation_id: operation,
                 kind, payload: reference,
             };
             pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
@@ -82,7 +83,7 @@ impl PiSession {
             arguments: request,
         }, MAXIMUM_BUILTIN_BYTES * 2, work)?;
         let _payload_custody = payload.1;
-        let operation = request.operation(owner.policy().root_task);
+        let operation = request.operation(owner.policy().root_task, &work)?;
         let staged = pi_root_provider::stage_pi_input(
             owner, &self.filesystem, operation, "command", &payload.0, work).await?;
         let _reference_custody = staged.1;

@@ -197,10 +197,9 @@ where
         volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
         maximum_payload_bytes: u64, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        owner.validate_storage_with_native_work(verifier, maximum_payload_bytes, work)?;
-        let original_stream = owner.stream_with_native_work(work)?;
+        owner.validate_storage(verifier, maximum_payload_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        let stream = owner.stream();
         let io = PreparationIo::from_native_work(work)?;
-        let stream = original_stream.clone();
         ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Read, &io)?;
         ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Write, &io)?;
         let (verifier, verifier_custody) = verifier.clone_with_native_work(work)?;
@@ -321,7 +320,7 @@ where
         let bytes = self.read_bound_content(reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let record: WorkflowRecord = match io {
-            Some(io) => io.decode_preparation::<WorkflowRecord>(&bytes)?.into_retained(),
+            Some(io) => io.decode_preparation::<WorkflowRecord>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?,
         };
@@ -403,7 +402,7 @@ where
             let reference_hold;
             let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
             let reference: FileRef = match io {
-                Some(io) => io.decode_preparation::<FileRef>(&entry.value)?.into_retained(),
+                Some(io) => io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?.into_retained(),
                 None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                     Error::Storage(format!("workflow reference is invalid: {error}"))
                 })?,
@@ -814,7 +813,7 @@ where
         let _reference_hold;
         let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
         let reference: FileRef = match io {
-            Some(io) => io.decode_preparation::<FileRef>(&entry.value)?.into_retained(),
+            Some(io) => io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?.into_retained(),
             None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                 Error::Storage(format!("workflow admission reference is invalid: {error}"))
             })?,
@@ -840,7 +839,7 @@ where
         let bytes = self.read_bound_content(&reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let admission: WorkflowAdmission = match io {
-            Some(io) => io.decode_preparation::<WorkflowAdmission>(&bytes)?.into_retained(),
+            Some(io) => io.decode_preparation::<WorkflowAdmission>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
         };
@@ -949,9 +948,9 @@ where
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append_keyed(
-                    (&stream, &self.stream), bytes, Some(revision), key, operation,
-                    identity, &mut Some(&mut borrowed),
+                crate::distributed::append(
+                    (&stream, &self.stream), [bytes], 0, Some(revision), key, operation,
+                    &mut Some(&mut borrowed),
                 ).await
             }
             None => stream.append_batch(vec![bytes], Some(revision), Some(key)).await.map_err(|error| match error {
@@ -1171,7 +1170,7 @@ where
             let _pinned;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let pinned: WorkflowAdmission = match io {
-                Some(io) => io.decode_preparation::<WorkflowAdmission>(&pinned_bytes)?.into_retained(),
+                Some(io) => io.decode_preparation::<WorkflowAdmission>(&pinned_bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
                 None => crate::contract::json_from_slice(&pinned_bytes)
                     .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
             };

@@ -1104,7 +1104,7 @@ impl BlobIndexBuilder {
     fn push_child<'a, 'store, 'accounting, S: AsyncObjectStore>(
         &'a mut self, store: &'a mut BlobBatchStore<'store, S>, mut level: usize, mut child: BlobChild,
         accounting: &'a mut KernelAccounting<'accounting>, cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<(), FsError>> + crate::async_storage::StorageFuture + 'a {
+    ) -> impl Future<Output = Result<(), FsError>> + acyclic_stream::ProviderTask + 'a {
         let cancellation = cancellation.clone();
         async move {
         loop {
