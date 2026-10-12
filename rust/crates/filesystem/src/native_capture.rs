@@ -849,7 +849,7 @@ async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: AsyncObjectSt
         }
         meter.native.with_original_leaf(|work| work.cancellation().clone())
     };
-    capture_in_heap_with_meter(|| async move {
+    (async move {
         let source_root = open_source_root(options, meter)?;
         let (mut receipt, mut candidate, unique) = {
             let mut unique = clone_capture_paths(paths, None, meter)
@@ -906,7 +906,7 @@ async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: AsyncObjectSt
         cancellation.commit_if_live(|| { *checkout = candidate; })
             .map_err(|_| CaptureError::Cancelled)?;
         Ok(receipt)
-    }, &meter.native).await
+    }).await
 }
 
 /// Reconciles one host directory and every descendant as one authored transaction.
@@ -1099,38 +1099,7 @@ fn capture_scope_result<T>(
     }
 }
 
-async fn capture_in_heap_with_meter<F, T>(
-    create: impl FnOnce() -> F,
-    meter: &crate::NativeMaterializationWork,
-) -> Result<T, CaptureError>
-where
-    F: std::future::Future<Output = Result<T, CaptureError>>,
-{
-    let mut claim = None;
-    let (mut future, _) = crate::heap_future::in_heap_admitted(
-        &mut claim,
-        |claim, bytes| {
-            if bytes != 0 {
-                **claim = Some(meter.claim(bytes).map_err(|error| {
-                    let error = match error {
-                        crate::NativeTreeMaterializationError::Work(error) => CaptureError::Work(error),
-                        crate::NativeTreeMaterializationError::Cancelled => CaptureError::Cancelled,
-                        error => CaptureError::NativeKernel(error),
-                    };
-                    error
-                })?);
-            }
-            Ok::<(), CaptureError>(())
-        },
-        |_| create(),
-    )?;
-    let result = future.as_mut().await;
-    drop(future);
-    drop(claim);
-    result
-}
-
-async fn capture_sdk_in_heap_with_meter<'a, F, T>(
+async fn capture_sdk<'a, F, T>(
     create: impl FnOnce(&'a crate::NativeMaterializationWork) -> F,
     meter: &'a CaptureWorkScope,
     cancellation: &CancellationToken,
@@ -1138,17 +1107,12 @@ async fn capture_sdk_in_heap_with_meter<'a, F, T>(
 where
     F: std::future::Future<Output = Result<T, crate::FsError>>,
 {
-    capture_in_heap_with_meter(
-        || async {
-            cancellation.check().map_err(|_| CaptureError::Cancelled)?;
-            meter.native.admit(WorkCounters::UNCHARGED).map_err(CaptureError::NativeKernel)?;
-            let value = create(&meter.native).await.map_err(CaptureError::Kernel)?;
-            cancellation.check().map_err(|_| CaptureError::Cancelled)?;
-            meter.native.admit(WorkCounters::UNCHARGED).map_err(CaptureError::NativeKernel)?;
-            Ok(value)
-        },
-        &meter.native,
-    ).await
+    cancellation.check().map_err(|_| CaptureError::Cancelled)?;
+    meter.native.admit(WorkCounters::UNCHARGED).map_err(CaptureError::NativeKernel)?;
+    let value = create(&meter.native).await.map_err(CaptureError::Kernel)?;
+    cancellation.check().map_err(|_| CaptureError::Cancelled)?;
+    meter.native.admit(WorkCounters::UNCHARGED).map_err(CaptureError::NativeKernel)?;
+    Ok(value)
 }
 
 pub(crate) async fn capture_subtrees_with_native_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1189,7 +1153,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         meter.native.with_original_leaf(|work| work.cancellation().clone())
     };
-    capture_in_heap_with_meter(|| async move {
+    (async move {
         let limits = checkout.volume_config().limits;
         let profile = checkout.volume_config().profile;
         let (canonical, mut paths, host_roots, host_policy, source_path, source_path_bytes, maximum) = {
@@ -1264,7 +1228,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         };
         let (source_root, observed) = result.map_err(capture_demand_error)??;
         let lookup_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
-        let current = capture_sdk_in_heap_with_meter(
+        let current = capture_sdk(
             |native| checkout.lookup_batch_no_follow_with_native_work(&canonical, native, &lookup_cancellation),
             meter, &lookup_cancellation,
         ).await?;
@@ -1299,7 +1263,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     baseline,
     meter,
 ).await
-    }, &meter.native).await
+    }).await
 }
 
 fn capture_demand_error(error: DemandError) -> CaptureError {
@@ -2219,7 +2183,7 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
     baseline: Option<&NativeViewBaseline>,
     meter: &CaptureWorkScope,
 ) -> Result<CaptureReceipt, CaptureError> {
-    capture_in_heap_with_meter(|| async move {
+    (async move {
         let states = lookup_capture_states(checkout, observed, usize::MAX, meter).await?;
         let mut host_links = CaptureMap::new();
         let captured = capture_ranked_paths_from_root(checkout,
@@ -2236,7 +2200,7 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
             Ok(captured) => { cleanup?; Ok(captured) }
             Err(error) => Err(error),
         }
-    }, &meter.native).await
+    }).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2321,7 +2285,7 @@ async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     while paths.len() != 0 {
         let count = paths.len().min(page_size);
         let page = &paths.as_slice()[..count];
-        let lookup = capture_sdk_in_heap_with_meter(
+        let lookup = capture_sdk(
             |native| checkout.lookup_batch_no_follow_with_native_work(page, native, &cancellation),
             meter, &cancellation,
         ).await?;
@@ -2423,7 +2387,7 @@ pub(crate) async fn capture_baseline_with_native_work<A: AsyncAuthorityStore, O:
     checked.map_err(|error| OperationFailure::new(capture_demand_error(error), completed))?;
     let scope = CaptureWorkScope::new(work)?;
     let meter = &scope;
-    let result = capture_in_heap_with_meter(|| async {
+    let result = (async {
         let maximum = usize::try_from(options.maximum_paths)
             .map_err(|_| CaptureError::InvalidOptions)?;
         let source_root = open_source_root(options, meter)?;
@@ -2455,7 +2419,7 @@ pub(crate) async fn capture_baseline_with_native_work<A: AsyncAuthorityStore, O:
     None,
     meter,
 ).await
-    }, &meter.native).await;
+    }).await;
     capture_scope_result(scope, result)
 }
 
@@ -2589,7 +2553,7 @@ async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(che
     cancellation: &CancellationToken,
     meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
-    let result = capture_in_heap_with_meter(|| {
+    let result = ({
         async move {
             let root = NamespacePath::new(Vec::new(), limits).map_err(|error| {
                 CaptureError::Path(error)
@@ -2605,7 +2569,7 @@ async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(che
 ).await?;
             Ok(())
         }
-    }, &meter.native).await;
+    }).await;
 
     result.map(|_| ())
 }
@@ -2634,7 +2598,7 @@ async fn collect_checkout_subtree_paths<
         let mut after = None;
         loop {
             let page_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
-            let page = capture_sdk_in_heap_with_meter(
+            let page = capture_sdk(
                 |native| checkout.list_directory_records_with_native_work(
                     &directory, after.as_ref(), PAGE_ENTRIES, native, &page_cancellation,
                 ),
@@ -2855,7 +2819,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
         }
         meter.native.with_original_leaf(|work| work.cancellation().clone())
     };
-    capture_in_heap_with_meter(|| async move {
+    (async move {
         let WatchBatch::Changes {
             original: incoming,
             epoch,
@@ -2984,7 +2948,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                     {
                         None
                     } else {
-                        let source = capture_sdk_in_heap_with_meter(
+                        let source = capture_sdk(
                             |native| checkout.lookup_no_follow_with_native_work(&from, native, &cancellation),
                             meter, &cancellation,
                         ).await?;
@@ -3068,7 +3032,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
             }
         }
         if !lookup_paths.is_empty() {
-            let lookup = capture_sdk_in_heap_with_meter(
+            let lookup = capture_sdk(
                 |native| checkout.lookup_batch_no_follow_with_native_work(&lookup_paths, native, &cancellation),
                 meter, &cancellation,
             ).await?;
@@ -3081,7 +3045,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                         &path, &renamed_directories, checkout.volume_config().limits, meter,
                     ) }?
                 {
-                    let prior = capture_sdk_in_heap_with_meter(
+                    let prior = capture_sdk(
                         |native| checkout.lookup_no_follow_with_native_work(&prior_path, native, &cancellation),
                         meter, &cancellation,
                     ).await?;
@@ -3279,7 +3243,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                 next_sequence,
                 capture: receipt,
             })
-    }, &meter.native).await
+    }).await
 }
 
 #[cfg(test)]
@@ -3504,7 +3468,7 @@ async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObjectStore>(ch
     cancellation: &CancellationToken,
     meter: &CaptureWorkScope,
 ) -> Result<Vec<NamespacePath>, CaptureError> {
-    capture_in_heap_with_meter(|| async {
+    (async {
     let mut missing = Vec::new();
     let mut replaced = Vec::new();
     let ancestors_bytes = ancestors.capacity() as u64 * std::mem::size_of::<NamespacePath>() as u64;
@@ -3513,7 +3477,7 @@ async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObjectStore>(ch
         let current = if below_replaced {
             None
         } else {
-            let lookup = capture_sdk_in_heap_with_meter(
+            let lookup = capture_sdk(
                 |native| checkout.lookup_no_follow_with_native_work(&path, native, cancellation),
                 meter, cancellation,
             ).await?;
@@ -3566,7 +3530,7 @@ async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObjectStore>(ch
     }
     release_capture_paths(replaced, meter)?;
     Ok(missing)
-    }, &meter.native).await
+    }).await
 }
 
 fn remap_renamed_directory_path(
@@ -3636,7 +3600,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(che
     cancellation: &CancellationToken,
     meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
-    capture_in_heap_with_meter(|| async {
+    (async {
     let maximum = usize::try_from(maximum_paths)
         .map_err(|_| CaptureError::InvalidOptions)?;
     if ordinary.len() > maximum {
@@ -3682,7 +3646,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(che
     &mut paths,
     meter,
 )?;
-        let lookup = capture_sdk_in_heap_with_meter(
+        let lookup = capture_sdk(
             |native| checkout.lookup_no_follow_with_native_work(&volume_path, native, cancellation),
             meter, cancellation,
         ).await?;
@@ -3712,7 +3676,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(che
     }
     meter.source().release(paths_bytes).map_err(capture_demand_error)?;
     Ok(())
-    }, &meter.native).await
+    }).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3739,7 +3703,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(checkou
         CurrentRecord::Known(record) => record,
         CurrentRecord::Lookup => {
             let lookup_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
-            let lookup = capture_sdk_in_heap_with_meter(
+            let lookup = capture_sdk(
                 |native| checkout.lookup_no_follow_with_native_work(&path, native, &lookup_cancellation),
                 meter, &lookup_cancellation,
             ).await?;
@@ -3832,7 +3796,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(checkou
                     && (host_kind != FileKind::SymbolicLink || cfg!(windows))
             }) {
                 let lookup_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
-                let prior = capture_sdk_in_heap_with_meter(
+                let prior = capture_sdk(
                     |native| checkout.read_metadata_by_id_with_native_work(record.file_id, native, &lookup_cancellation),
                     meter, &lookup_cancellation,
                 ).await?;
@@ -3972,7 +3936,7 @@ async fn push_subtree_removals<A: AsyncAuthorityStore, O: AsyncObjectStore>(chec
         let mut after: Option<LogicalName> = None;
         loop {
             let page_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
-            let page = capture_sdk_in_heap_with_meter(
+            let page = capture_sdk(
                 |native| checkout.list_directory_records_with_native_work(&directory, after.as_ref(), PAGE, native, &page_cancellation),
                 meter, &page_cancellation,
             ).await?;
@@ -4086,7 +4050,7 @@ async fn apply_capture_transaction<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         mutation_bytes, meter.custody.as_ref().expect("capture scope is live"),
     ).map_err(CaptureError::NativeKernel)?);
     let apply_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
-    capture_sdk_in_heap_with_meter(
+    capture_sdk(
         |native| {
             checkout.apply_authored_bulk_transaction_with_native_work(
                 input.0, input.1, native, &apply_cancellation,
@@ -4636,7 +4600,7 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager: 
             meter,
         );
         let stage_cancellation = meter.native.cancellation().clone();
-        let content = capture_sdk_in_heap_with_meter(
+        let content = capture_sdk(
             |original| stager.stage(&mut bounded, range.length, original, &stage_cancellation),
             meter, &stage_cancellation,
         ).await;
@@ -4694,7 +4658,7 @@ async fn settled_sparse_ranges(native: &std::sync::Arc<acyclic_native_runtime::N
         let mut report_stands = false;
         while position < end {
             let wanted = (CHUNK - position % CHUNK).min(end - position);
-            let read = capture_in_heap_with_meter(|| async {
+            let read = (async {
                 cancellation.check().map_err(|_| CaptureError::Cancelled)?;
                 meter.native.admit(WorkCounters { source_bytes_read: wanted,
                     ..WorkCounters::UNCHARGED })
@@ -4714,7 +4678,7 @@ async fn settled_sparse_ranges(native: &std::sync::Arc<acyclic_native_runtime::N
                         cause
                     })?;
                 Ok(value)
-            }, &meter.native).await?;
+            }).await?;
 
             let chunk = read;
             let read_end = position + chunk.bytes.len() as u64;
