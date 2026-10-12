@@ -2703,7 +2703,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         let plan_custody;
         let (plan, custody) = source_workspace.join_into(&target_workspace)
             .plan_at(&source_generation, &target_generation, work, work.cancellation()).await
-            .and_then(|plan| work.claim_allocation(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map(|custody| (plan, custody)).map_err(|error| acyclic_fs::WorkspaceError::from(acyclic_fs::FsError::from(error))))
+            .and_then(|plan| work.claim_allocation(0, 0, acyclic_fs::WorkCounters::default()).map(|custody| (plan, custody)).map_err(|error| acyclic_fs::WorkspaceError::from(acyclic_fs::FsError::from(error))))
             .map_err(|source| Error::NativeWorkspace { source, custody: None })?;
         plan_custody = custody;
         guard().await?;
