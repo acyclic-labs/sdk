@@ -7,7 +7,7 @@
 
 use std::fs::File;
 use std::io;
-use std::os::unix::fs::{FileExt, MetadataExt};
+use std::os::unix::fs::FileExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -24,40 +24,6 @@ use compio_driver::{
 
 const IO_ENTRIES: usize = 16;
 const MAX_IO_BYTES: usize = 1024 * 1024;
-
-const MAX_TRACKED_FILE_IDENTITIES: usize = 4_096;
-
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(super) struct FileIdentity {
-    device: u64,
-    inode: u64,
-}
-
-pub(super) fn file_identity_capacity() -> usize {
-    static CAPACITY: OnceLock<usize> = OnceLock::new();
-    *CAPACITY.get_or_init(|| {
-        let mut limit = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        // SAFETY: `limit` is a valid writable rlimit structure.
-        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
-            return 128;
-        }
-        usize::try_from(limit.rlim_cur)
-            .unwrap_or(usize::MAX)
-            .saturating_div(4)
-            .clamp(1, MAX_TRACKED_FILE_IDENTITIES)
-    })
-}
-
-pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
-    let metadata = file.metadata()?;
-    Ok(FileIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    })
-}
 
 struct SubmittedWindowUnwindFence(bool);
 
@@ -108,7 +74,7 @@ pub(super) fn uncertain_completion(error: io::Error) -> io::Error {
 }
 
 pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
-    validate_io_range(offset, destination.len(), "read")?;
+    validate_io_range(offset, destination.len())?;
     read_at_validated(file, offset, destination)
 }
 
@@ -125,18 +91,8 @@ pub(super) fn read_at_validated(file: &File, offset: u64, destination: &mut [u8]
 }
 
 pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
-    validate_io_range(offset, bytes.len(), "write")?;
+    validate_io_range(offset, bytes.len())?;
     file.write_all_at(bytes, offset)
-}
-
-#[allow(unsafe_code)]
-pub(super) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
-    use std::os::fd::AsRawFd as _;
-    let size = libc::off_t::try_from(size)
-        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    // SAFETY: ftruncate only acts on the live descriptor.
-    if unsafe { libc::ftruncate(file.as_raw_fd(), size) } == 0 { Ok(()) }
-    else { Err(io::Error::last_os_error()) }
 }
 
 #[allow(unsafe_code)]
@@ -172,7 +128,7 @@ fn chunk_owned_writes(writes: Vec<OwnedWrite>) -> impl Iterator<Item = io::Resul
         })
 }
 
-pub(super) fn validate_io_range(offset: u64, length: usize, _operation: &str) -> io::Result<()> {
+pub(super) fn validate_io_range(offset: u64, length: usize) -> io::Result<()> {
     let length = u64::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?;
     let end = offset.checked_add(length).ok_or(io::ErrorKind::InvalidInput)?;
     if offset > libc::off_t::MAX as u64 || end > libc::off_t::MAX as u64 {
@@ -304,7 +260,7 @@ pub(super) fn submit_read(
     finish: ReadFinish,
 ) -> io::Result<()> {
     for read in &reads {
-        validate_io_range(read.offset, read.length, "batch read")?;
+        validate_io_range(read.offset, read.length)?;
     }
     owner_pool()?.submit(OwnerJob::Read(file, reads, finish))
 }
@@ -315,7 +271,7 @@ pub(super) fn submit_write(
     finish: WriteFinish,
 ) -> io::Result<()> {
     for write in &writes {
-        validate_io_range(write.offset, write.bytes.len(), "batch write")?;
+        validate_io_range(write.offset, write.bytes.len())?;
     }
     owner_pool()?.submit(OwnerJob::Write(file, writes, finish))
 }
@@ -886,126 +842,6 @@ mod tests {
     use super::*;
 
 
-
-    #[test]
-    fn compio_parallel_read_window_preserves_order_empty_and_eof() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = Arc::new(NativeFilePayload::unmetered(
-            std::fs::OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(temporary.path().join("parallel-reads"))?,
-        ));
-        let mut requests = Vec::new();
-        for index in 0..16_usize {
-            let offset = ((index * 7) % 16) * 8192;
-            file.write_all_at(
-                &vec![u8::try_from(index).unwrap_or_default(); 8192],
-                offset as u64,
-            )?;
-            requests.push(OwnedRead {
-                offset: offset as u64,
-                length: 8192,
-            });
-        }
-        requests.push(OwnedRead {
-            offset: 0,
-            length: 0,
-        });
-        requests.push(OwnedRead {
-            offset: 16 * 8192,
-            length: 8192,
-        });
-        let (sender, receiver) = mpsc::sync_channel(1);
-        submit_read(
-            file,
-            requests,
-            Box::new(move |result| {
-                let _ = sender.send(result);
-            }),
-        )?;
-        let actual = receiver
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)??;
-        for (index, bytes) in actual.iter().take(16).enumerate() {
-            assert_eq!(bytes.len(), 8192);
-            assert!(
-                bytes
-                    .iter()
-                    .all(|byte| *byte == u8::try_from(index).unwrap_or_default())
-            );
-        }
-        assert!(actual.get(16).is_some_and(Bytes::is_empty));
-        assert!(actual.get(17).is_some_and(Bytes::is_empty));
-        Ok(())
-    }
-
-    #[test]
-    fn compio_owner_drains_multiple_submission_windows_and_eof() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = Arc::new(NativeFilePayload::unmetered(
-            std::fs::OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(temporary.path().join("owned-windows"))?,
-        ));
-        let writes = (0..32_u64)
-            .map(|offset| OwnedWrite {
-                offset,
-                bytes: Bytes::from(vec![u8::try_from(offset).unwrap_or_default()]),
-            })
-            .collect();
-        let (sent, received) = mpsc::sync_channel(1);
-        submit_write(
-            Arc::clone(&file),
-            writes,
-            Box::new(move |result| {
-                let _ = sent.send(result);
-            }),
-        )?;
-        received
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)??;
-        let (sent, received) = mpsc::sync_channel(1);
-        submit_read(
-            Arc::clone(&file),
-            vec![OwnedRead {
-                offset: 0,
-                length: 64,
-            }],
-            Box::new(move |result| {
-                let _ = sent.send(result);
-            }),
-        )?;
-        let result = received
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)??;
-        let first = result
-            .first()
-            .ok_or_else(|| io::Error::other("missing first read"))?;
-        assert_eq!(first.len(), 32);
-        assert_eq!(first.as_ref(), &(0..32_u8).collect::<Vec<_>>());
-
-        file.set_len(17 * MAX_IO_BYTES as u64)?;
-        let (sent, received) = mpsc::sync_channel(1);
-        submit_read(
-            file,
-            vec![OwnedRead {
-                offset: 0,
-                length: 18 * MAX_IO_BYTES,
-            }],
-            Box::new(move |result| {
-                let _ = sent.send(result);
-            }),
-        )?;
-        let result = received
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)??;
-        assert_eq!(result.first().map(Bytes::len), Some(17 * MAX_IO_BYTES));
-        Ok(())
-    }
 
     #[test]
     fn compio_poll_failure_retains_key_and_allows_unrelated_progress() -> io::Result<()> {

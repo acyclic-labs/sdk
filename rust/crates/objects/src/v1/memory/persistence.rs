@@ -359,7 +359,7 @@ pub(super) fn put_record_bytes(query: &wire::PutObjectHeader, body: &OwnedBytes)
 }
 
 fn sync(file: &File, limits: LocalObjectsLimits) -> std::io::Result<()> {
-    acyclic_native_runtime::sync_file(file, native_durability(limits.durability))
+    acyclic_native_runtime::sync_file(file, native_durability(limits.durability), None)
 }
 fn corrupt<T>(_: T) -> LocalOpenError {
     LocalOpenError::Corrupt

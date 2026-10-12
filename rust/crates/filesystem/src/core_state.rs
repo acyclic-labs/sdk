@@ -44,7 +44,7 @@ const OWNER_LOCK: &str = "owner.lock";
 async fn run_local_transaction<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, LocalCoreStateStoreError> + Send + 'static,
 ) -> Result<T, LocalCoreStateStoreError> {
-    acyclic_native_runtime::run_blocking_io(operation).await?
+    acyclic_native_runtime::run_blocking_io(operation, None).expect("unmetered task construction cannot fail").await?
 }
 
 /// One journaled private namespace shared by core control-plane state.
@@ -672,8 +672,6 @@ pub enum LocalCoreStateStoreError {
     #[error("core state log holds an undecodable intact frame: {}", .0.display())]
     Corrupt(PathBuf),
 }
-
-
 
 impl WorkspaceLineageStore for LocalCoreStateStore {
     type Error = LocalCoreStateStoreError;
@@ -3689,7 +3687,6 @@ fn measured_decode_slice<T: DeserializeOwned>(bytes: &[u8], work: &crate::materi
     measured_decode_reader(std::io::Cursor::new(bytes), work, std::marker::PhantomData::<T>)
 }
 
-
 fn measured_read_record<T: DeserializeOwned>(paths: &RecordPaths, work: &crate::materializer::NativeMaterializationWork) -> Result<Option<(T, crate::materializer::NativeAllocation)>, LocalCoreStateStoreError> {
     match measured_read_file(&paths.current, work) {
         Ok(Some(value)) => Ok(Some(value)),
@@ -4238,7 +4235,6 @@ fn lazy_digest<T: Serialize>(
     }).map(|(value, _allocation)| value)
 }
 
-
 fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyWorkspaceError {
     use crate::LazyWorkspaceError as Lazy;
     match error {
@@ -4292,15 +4288,6 @@ fn unbounded_lazy_work() -> Result<crate::materializer::NativeMaterializationWor
 
 impl LocalCoreStateStore {
     async fn load_node<T: LazyNode>(
-        &self,
-        id: T::Id,
-        meter: crate::materializer::NativeMaterializationWork,
-    ) -> Result<Option<T>, LocalCoreStateStoreError> {
-        Ok(self.load_node_owned::<T>(id, meter).await?
-            .map(|owned| owned.into_parts().0))
-    }
-
-    async fn load_node_owned<T: LazyNode>(
         &self,
         id: T::Id,
         meter: crate::materializer::NativeMaterializationWork,
@@ -4435,7 +4422,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         &self,
         overlay: LazyOverlayId,
     ) -> Result<Option<LazyOverlay>, Self::Error> {
-        self.load_node(overlay, unbounded_lazy_work()?).await
+        self.load_node(overlay, unbounded_lazy_work()?).await.map(|value| value.map(|owned| owned.into_parts().0))
     }
 
     async fn put_lazy_overlay(
@@ -4450,7 +4437,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         &self,
         shadow: crate::LazyShadowId,
     ) -> Result<Option<crate::LazyShadow>, Self::Error> {
-        self.load_node(shadow, unbounded_lazy_work()?).await
+        self.load_node(shadow, unbounded_lazy_work()?).await.map(|value| value.map(|owned| owned.into_parts().0))
     }
 
     async fn put_lazy_shadow(
@@ -4496,7 +4483,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
     ) -> Result<crate::OperationReceipt<Option<LazyOverlay>>, crate::LazyWorkspaceError> {
         let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
             .map_err(lazy_native_failure)?;
-        finish_lazy_receipt(self.load_node(overlay, work.clone()).await, &work)
+        finish_lazy_receipt(self.load_node(overlay, work.clone()).await.map(|value| value.map(|owned| owned.into_parts().0)), &work)
     }
 
     async fn put_lazy_overlay_measured(
@@ -4519,7 +4506,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
     ) -> Result<crate::OperationReceipt<Option<crate::LazyShadow>>, crate::LazyWorkspaceError> {
         let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
             .map_err(lazy_native_failure)?;
-        finish_lazy_receipt(self.load_node(shadow, work.clone()).await, &work)
+        finish_lazy_receipt(self.load_node(shadow, work.clone()).await.map(|value| value.map(|owned| owned.into_parts().0)), &work)
     }
 
     async fn put_lazy_shadow_measured(
@@ -4571,7 +4558,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         id: LazyOverlayId,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<Option<NativeOwnedCoreState<LazyOverlay>>, crate::LazyWorkspaceError> {
-        self.load_node_owned::<LazyOverlay>(id, work.clone()).await.map_err(native_core_error)
+        self.load_node::<LazyOverlay>(id, work.clone()).await.map_err(native_core_error)
     }
 
     async fn put_lazy_overlay_with_native_work(
@@ -4588,7 +4575,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         id: crate::LazyShadowId,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<Option<NativeOwnedCoreState<crate::LazyShadow>>, crate::LazyWorkspaceError> {
-        self.load_node_owned::<crate::LazyShadow>(id, work.clone()).await.map_err(native_core_error)
+        self.load_node::<crate::LazyShadow>(id, work.clone()).await.map_err(native_core_error)
     }
 
     async fn put_lazy_shadow_with_native_work(
@@ -4964,7 +4951,6 @@ mod tests {
     use crate::{
         Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceName, WorkspaceRootId,
     };
-
 
     #[test]
     fn local_transactions_work_without_a_tokio_runtime() {
@@ -5834,7 +5820,6 @@ mod tests {
         ));
         assert_eq!(work.receipt(), before);
     }
-
 
     #[tokio::test]
     async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {

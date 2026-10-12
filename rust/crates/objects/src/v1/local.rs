@@ -38,7 +38,7 @@ fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> acyclic_native_runtime::NativeCompletion<T> {
     let span = tracing::Span::current();
-    acyclic_native_runtime::run_blocking_io(move || span.in_scope(work))
+    acyclic_native_runtime::run_blocking_io(move || span.in_scope(work), None).expect("unmetered task construction cannot fail")
 }
 
 fn blocking_with_meter<T: Send + 'static>(
@@ -49,7 +49,7 @@ fn blocking_with_meter<T: Send + 'static>(
         None => Ok(blocking(work)),
         Some(meter) => {
             let span = tracing::Span::current();
-            Ok(acyclic_native_runtime::run_blocking_io_measured(move || span.in_scope(work), meter)?)
+            Ok(acyclic_native_runtime::run_blocking_io(move || span.in_scope(work), Some((meter, false)))?)
         }
     }
 }

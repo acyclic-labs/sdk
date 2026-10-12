@@ -157,8 +157,8 @@ pub(crate) fn sync_segment_directory(
             options.write(true).share_mode(7).custom_flags(0x0200_0000);
         }
         let directory = options.open(&parent)?;
-        acyclic_native_runtime::sync_file_measured(
-            &directory, native_durability(durability), meter.as_ref(),
+        acyclic_native_runtime::sync_file(
+            &directory, native_durability(durability), Some(meter.as_ref()),
         )?;
 
         Ok(())
@@ -173,8 +173,8 @@ pub(crate) fn sync_publication(
     publication: &Publication,
 ) -> Result<(), NativeObjectsError> {
     match &publication.meter {
-        Some(meter) => acyclic_native_runtime::sync_file_measured(
-            file, native_durability(durability), meter.as_ref(),
+        Some(meter) => acyclic_native_runtime::sync_file(
+            file, native_durability(durability), Some(meter.as_ref()),
         )?,
         None => sync_file(file, durability)?,
     }
@@ -189,7 +189,7 @@ pub(crate) fn write_publication(
     publication: &mut Publication,
 ) -> Result<(), NativeObjectsError> {
     if let Some(meter) = &publication.meter {
-        acyclic_native_runtime::write_all_at_measured(file, offset, bytes, meter.as_ref())?;
+        acyclic_native_runtime::write_all_at(file, offset, bytes, Some((meter.as_ref(), false)))?;
         let end = offset.checked_add(bytes.len() as u64)
             .ok_or_else(|| std::io::Error::other("publication offset overflow"))?;
         loop {
@@ -392,14 +392,14 @@ fn write_segment_inner<B: AsRef<[u8]>>(
     let (temporary, mut file) = opened.ok_or_else(invalid)?;
     let write_result = (|| -> Result<(), NativeObjectsError> {
         if let Some(meter) = &publication.meter {
-            acyclic_native_runtime::write_all_at_measured_held(&file, 0, &metadata, meter.as_ref())?;
+            acyclic_native_runtime::write_all_at(&file, 0, &metadata, Some((meter.as_ref(), true)))?;
             for ((_, body), offset) in bodies.iter().zip(&offsets) {
-                acyclic_native_runtime::write_all_at_measured_held(
-                    &file, *offset, body.as_ref(), meter.as_ref(),
+                acyclic_native_runtime::write_all_at(
+                    &file, *offset, body.as_ref(), Some((meter.as_ref(), true)),
                 )?;
             }
-            acyclic_native_runtime::sync_file_measured(
-                &file, native_durability(durability), meter.as_ref(),
+            acyclic_native_runtime::sync_file(
+                &file, native_durability(durability), Some(meter.as_ref()),
             )?;
         } else {
             file.write_all(&metadata)?;
@@ -415,10 +415,10 @@ fn write_segment_inner<B: AsRef<[u8]>>(
     }
     // Use the same no-replace engine with original pathname custody.
     let published = match &publication.meter {
-        Some(meter) => acyclic_native_runtime::publish_new_measured(
-            &temporary, &destination, meter,
+        Some(meter) => acyclic_native_runtime::publish_new(
+            &temporary, &destination, Some(meter),
         ),
-        None => acyclic_native_runtime::publish_new(&temporary, &destination),
+        None => acyclic_native_runtime::publish_new(&temporary, &destination, None),
     }.map_err(NativeObjectsError::Admission);
     match published {
         Ok(()) => {}
@@ -744,7 +744,7 @@ async fn read_body_at_inner_async(
             let (root, offset, digest) = (Arc::clone(root), *offset, *expected_digest);
             let body = acyclic_native_runtime::run_blocking_io(move || {
                 root.read_journal_body(offset, &digest, expected_length)
-            })
+            }, None).expect("unmetered task construction cannot fail")
             .await
             .map_err(|_| Error::from(Unavailable))??;
             return Ok(body.slice(start..end));
@@ -755,7 +755,7 @@ async fn read_body_at_inner_async(
         let file = File::open(segment)?;
         let length = file.metadata()?.len();
         Ok::<_, std::io::Error>((file, length))
-    })
+    }, None).expect("unmetered task construction cannot fail")
     .await
     .map_err(|_| Error::from(Unavailable))?
     .map_err(|_| Error::from(Unavailable))?;
@@ -877,7 +877,7 @@ async fn read_body_at_native_inner(
     };
     let (root, location) = (Arc::clone(root), location.clone());
     let open_meter = Arc::clone(&meter);
-    let opened = acyclic_native_runtime::run_blocking_io_measured(move || {
+    let opened = acyclic_native_runtime::run_blocking_io(move || {
         open_meter.check()?;
         let file = match &location {
             LocalBodyLocation::Journal { .. } => {
@@ -915,10 +915,10 @@ async fn read_body_at_native_inner(
         };
         open_meter.admit_read(0)?;
         let file_length = file.metadata()?.len();
-        let file = acyclic_native_runtime::NativeFile::from_file_measured_owned(file, open_meter)
+        let file = acyclic_native_runtime::NativeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(open_meter)))
             .map_err(|(error, file)| { drop(file); error })?;
         Ok::<_, NativeObjectsError>((file, file_length, location))
-    }, Arc::clone(&meter))?;
+    }, Some((Arc::clone(&meter), false)))?;
     let (file, file_length, location) = opened.await.map_err(|_| unavailable())??;
     match location {
         LocalBodyLocation::Journal { offset } => {
@@ -1073,7 +1073,7 @@ fn hex(bytes: &[u8]) -> String {
 
 /// Splits a hex-encoded digest `identity` into its two-character storage-directory prefix and the remaining suffix used as the file stem.
 fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
-    acyclic_native_runtime::sync_file(file, native_durability(durability))
+    acyclic_native_runtime::sync_file(file, native_durability(durability), None)
 }
 
 

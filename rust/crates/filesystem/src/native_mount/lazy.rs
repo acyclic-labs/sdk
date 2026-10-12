@@ -796,7 +796,7 @@ fn mount_record_copy(
     carrier: &mut super::adapter::NativeDemandCarrier<'_>, bytes: u64, copy: impl FnOnce(),
 ) -> Result<(), MountSourceError> {
     if let Some(original) = carrier.original_native_work() {
-        let mut reserved = original.reserve_copy(bytes).map_err(MountSourceError::NativeWork)?;
+        let reserved = original.reserve_copy(bytes).map_err(MountSourceError::NativeWork)?;
         copy();
         reserved.record(bytes).map_err(MountSourceError::NativeWork)
     } else {
@@ -939,7 +939,7 @@ where
                 &original, &cancellation,
             ).await.map_err(native_lazy_error)?
         } else {
-            let result = lazy.stage_into_checkout_measured(
+            let result = lazy.stage_into_checkout(
                 &mut candidate.checkout, None, path, expected_source, MAXIMUM_PROMOTION_BYTES,
                 work.remaining().map_err(mount_demand_error)?, &cancellation,
             ).await;
@@ -3395,7 +3395,7 @@ where
                 self.lazy.mount_removal_publication_with_work(original, cancellation).await.map_err(native_lazy_error)?
             } else {
                 let (budget, prior_live) = work.sdk_scope()?;
-                let result = self.lazy.mount_removal_publication_measured(budget, cancellation).await;
+                let result = self.lazy.mount_removal_publication(budget, cancellation).await;
                 work.accept_sdk(result, prior_live, lazy_error)?
             };
             if let Some(custody) = custody {
@@ -3411,7 +3411,7 @@ where
                             ).await.map_err(native_lazy_error)?;
                         } else {
                             let (budget, prior_live) = work.sdk_scope()?;
-                            let result = self.lazy.prepare_mount_removals_measured(
+                            let result = self.lazy.prepare_mount_removals(
                                 &paths.value, &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()),
                                 budget, cancellation,
                             ).await;
@@ -3451,7 +3451,7 @@ where
                         self.lazy.finish_mount_removals_with_work(original, cancellation).await.map_err(native_lazy_error)?
                     } else {
                         let (budget, prior_live) = work.sdk_scope()?;
-                        let result = self.lazy.finish_mount_removals_measured(budget, cancellation).await;
+                        let result = self.lazy.finish_mount_removals(budget, cancellation).await;
                         work.accept_sdk(result, prior_live, lazy_error)?
                     };
                     if !finished { return Err(E::from(MountSourceError::Stale)); }
@@ -3469,7 +3469,7 @@ where
                     self.lazy.finish_mount_removals_with_work(original, cancellation).await.map_err(native_lazy_error)?
                 } else {
                     let (budget, prior_live) = work.sdk_scope()?;
-                    let result = self.lazy.finish_mount_removals_measured(budget, cancellation).await;
+                    let result = self.lazy.finish_mount_removals(budget, cancellation).await;
                     work.accept_sdk(result, prior_live, lazy_error)?
                 };
                 if (committed || retained) && !published { return Err(E::from(MountSourceError::Stale)); }
@@ -4180,7 +4180,7 @@ where
             ).await.map_err(native_lazy_error)?;
         } else {
             let (budget, prior_live) = work.sdk_scope()?;
-            let result = self.lazy.prepare_mount_removals_measured(
+            let result = self.lazy.prepare_mount_removals(
                 paths, &records.value, IdempotencyKey::from_bytes(operation_id.into_bytes()),
                 budget, cancellation,
             ).await;
@@ -4217,7 +4217,7 @@ where
             self.lazy.finish_mount_removals_with_work(original, cancellation).await.map_err(native_lazy_error)?
         } else {
             let (budget, prior_live) = work.sdk_scope()?;
-            let result = self.lazy.finish_mount_removals_measured(budget, cancellation).await;
+            let result = self.lazy.finish_mount_removals(budget, cancellation).await;
             work.accept_sdk(result, prior_live, lazy_error)?
         };
         if !finished { return Err(E::from(MountSourceError::Stale)); }
@@ -6161,7 +6161,7 @@ where
             carrier.with_work(|work| {
                 mount_items(work, 1)?;
                 let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-                let removed = removals.paths.contains_key(text.text.as_str());
+                let removed = removals.paths.contains_key(text.value.as_str());
                 Ok::<_, MountSourceError>(crate::WorkCounters {
                     items_examined: 1 + u64::from(removed), ..crate::WorkCounters::UNCHARGED
                 })
@@ -8896,7 +8896,7 @@ mod tests {
             assert_eq!(removals.records.len(), 1);
             assert!(removals.records.contains_key(&old_b));
         }
-        view.sync_async().await?;
+        view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
         assert_eq!(lazy.read_range("/a", 0, 5).await?.as_ref(), b"new-a");
         assert!(matches!(
             lazy.lookup("/b").await,
@@ -9043,7 +9043,7 @@ mod tests {
         let rejected_prefix = inspections.lock().expect("owner inspection evidence")[0];
         assert!(failure.work.authority_records_read >= rejected_prefix.2);
         assert!(failure.work.backend_read_operations >= rejected_prefix.3);
-        assert_eq!(view.lazy.mount_removal_publication().await?, Some(false));
+        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
         assert_eq!(view.authored.shared_checkout().lock().await.retained_operation_id(), original);
         let mut snapshot_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
         let snapshot_failure = view.snapshot(
@@ -9084,7 +9084,7 @@ mod tests {
         assert!(failure.work.backend_read_operations >= evidence[1].3 + evidence[2].3);
         drop(evidence);
         assert!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(original.into_bytes())).await?.is_some());
-        assert_eq!(view.lazy.mount_removal_publication().await?, Some(false));
+        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
         assert_eq!(view.authored.shared_checkout().lock().await.retained_operation_id(), next);
         {
             let identities = view.detached.lock().map_err(|_| "poisoned identities")?;
@@ -9110,7 +9110,7 @@ mod tests {
         assert!(checks.load(std::sync::atomic::Ordering::Relaxed) > 0);
         assert!(completed.work.authority_records_appended > 0);
         assert!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(next.into_bytes())).await?.is_some());
-        assert_eq!(view.lazy.mount_removal_publication().await?, None);
+        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         assert_eq!(held.read_range(0, 9)?.as_ref(), b"epoch-two");
         assert_eq!(held.lookup()?.node.file_id, identity);
         assert_eq!(std::fs::read(root.path().join("source-only"))?, b"source");
@@ -9144,7 +9144,7 @@ mod tests {
         assert!(failure.work.items_examined > 0);
         assert!(failure.work.backend_read_operations > 0);
         let operation = view.authored.shared_checkout().lock().await.retained_operation_id();
-        assert_eq!(view.lazy.mount_removal_publication().await?, Some(false));
+        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
         let stopped = crate::CancellationToken::new();
         stopped.cancel();
         let cancelled = view.sync_async_with_permit_measured(
@@ -9160,7 +9160,7 @@ mod tests {
         assert!(view.lazy.workspace().operation_generation(
             IdempotencyKey::from_bytes(operation.into_bytes()),
         ).await?.is_some());
-        assert!(view.lazy.mount_removal_publication().await?.is_none());
+        assert!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_none());
         assert!(matches!(view.lazy.lookup("/source-only").await,
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)));
         assert_eq!(open.read_range(0, 8)?.as_ref(), b"detached");
@@ -9207,7 +9207,7 @@ mod tests {
         assert_eq!(failure.work.authority_records_appended, 0);
         let mut prepared = store.load_lazy_workspace(view.lazy.workspace().id()).await?
             .ok_or("missing actual prepared binding")?;
-        let recovered = view.lazy.finish_mount_removals_measured(
+        let recovered = view.lazy.finish_mount_removals(
             crate::WorkBudget::UNBOUNDED, &cancellation,
         ).await?;
         assert!(!recovered.value);
@@ -9222,7 +9222,7 @@ mod tests {
         assert!(matches!(denied.semantic_error(), LazyWorkspaceError::Work(_)));
         assert!(denied.spent_work().items_examined > 0);
         assert_eq!(denied.spent_work().bytes_copied, 0);
-        assert_eq!(view.lazy.mount_removal_publication().await?, None);
+        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         let original_operation = view.removals.lock().map_err(|_| "poisoned removals")?
             .publication.ok_or("missing original custody")?.operation;
         held.write_range(0, Bytes::from_static(b"epoch-two"))?;
@@ -9243,7 +9243,7 @@ mod tests {
         assert!(view.lazy.workspace().operation_generation(
             IdempotencyKey::from_bytes(original_operation.into_bytes()),
         ).await?.is_some());
-        assert_eq!(view.lazy.mount_removal_publication().await?, None);
+        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         {
             let identities = view.detached.lock().map_err(|_| "poisoned identities")?;
             let entry = detached_entry(&identities, identity).ok_or("missing live identity")?;
@@ -9284,11 +9284,11 @@ mod tests {
         )?;
         work.sync_authored(&view.authored, crate::PublicationPermit::Unrestricted, true, &cancellation).await?;
         view.mark_mount_published(operation)?;
-        let result = view.lazy.finish_mount_removals_measured(
+        let result = view.lazy.finish_mount_removals(
             work.remaining().map_err(mount_demand_error)?, &cancellation,
         ).await;
         assert!(work.accept(result, lazy_error)?);
-        assert_eq!(view.lazy.mount_removal_publication().await?, None);
+        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         let original_generation = view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("original operation was not physically published")?;
         held.write_range(0, Bytes::from_static(b"epoch-two"))?;
         view.remove(&next, None)?;
@@ -9537,7 +9537,7 @@ mod tests {
             ),
             "a native fsync under manual publication publishes nothing"
         );
-        view.sync_async().await?;
+        view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
         assert_eq!(
             lazy.read_range("/written", 0, 7).await?.as_ref(),
             b"fsynced"
@@ -9606,15 +9606,15 @@ mod tests {
         old.write_range(0, Bytes::from_static(b"update"))?;
         assert_eq!(view.read_range(&c, 0, 6)?.as_ref(), b"source");
         assert_eq!(view.read_range(&d, 0, 6)?.as_ref(), b"update");
-        view.sync_async().await?;
+        view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
         assert_eq!(lazy.read_range("/c", 0, 6).await?.as_ref(), b"source");
         assert_eq!(lazy.read_range("/d", 0, 6).await?.as_ref(), b"update");
         old.write_range(0, Bytes::from_static(b"second!"))?;
-        view.sync_async().await?;
+        view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
         assert_eq!(lazy.read_range("/c", 0, 6).await?.as_ref(), b"source");
         assert_eq!(lazy.read_range("/d", 0, 7).await?.as_ref(), b"second!");
         view.allocate_range(&d, 0, 1, MountRangeAllocation::PunchHole)?;
-        view.sync_async().await?;
+        view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
         assert_eq!(lazy.read_range("/d", 0, 7).await?.as_ref(), b"\0econd!");
         let current = view.open_file(&c)?;
         let current_id = current.lookup()?.node.file_id;
@@ -9627,7 +9627,7 @@ mod tests {
             .write("/external", Bytes::from_static(b"unrelated"))
             .await?;
         external.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        view.sync_async().await?;
+        view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
         assert!(matches!(
             lazy.lookup("/c").await,
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)
@@ -9692,7 +9692,7 @@ mod tests {
             .await?;
         conflicting.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(matches!(
-            view.sync_async().await,
+            view.sync_async(, None).expect("unmetered unit construction cannot fail").await,
             Err(MountSourceError::Stale)
         ));
         assert!(
@@ -9705,7 +9705,7 @@ mod tests {
         );
         view.recover_pending_mount_change(crate::PublicationPermit::Unrestricted)
             .await?;
-        assert!(lazy.mount_removal_publication().await?.is_none());
+        assert!(lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_none());
         Ok(())
     }
 
@@ -10004,7 +10004,7 @@ mod tests {
             if let Some(alias) = &existing_alias {
                 assert_eq!(alias.read_range(0, 6)?.as_ref(), first);
             }
-            view.sync_async().await?;
+            view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
             assert!(
                 view.lookup(&a)?.is_none(),
                 "sync must not restore removed name"
@@ -10031,7 +10031,7 @@ mod tests {
             drop(existing_alias);
             drop(open);
             assert!(view.open_sources.lock().expect("open handles").is_empty());
-            view.sync_async().await?;
+            view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
             assert!(
                 view.detached
                     .lock()
