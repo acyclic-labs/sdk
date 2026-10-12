@@ -129,7 +129,7 @@ Use the high-level Inference API against an authenticated service. Placement,
 batching, KV movement, and rebalancing remain service internals:
 
 ```rust,no_run
-use acyclic_inference::Inference;
+use acyclic_inference::{Inference, text_item, wire};
 
 # async fn example() -> Result<(), acyclic_inference::Error> {
 let inference = Inference::connect(
@@ -137,13 +137,16 @@ let inference = Inference::connect(
     "account-token",
     include_bytes!("trusted-ca.pem"),
 ).await?;
-let base = inference
-    .context("model/revision")
-    .instructions("Answer from the supplied evidence.")
-    .create()
-    .await?;
-let branch = base.fork().send().await?;
-let run = branch.generate("Summarize the findings.", 1_024).send().await?;
+let mut creation = inference.context("model/revision");
+creation.items.push(text_item(wire::ItemKind::Instruction, "Answer from the supplied evidence.".into()));
+let base = inference.create_context(&creation).await?;
+let fork = wire::MutateContextRequest {
+    identity: Some(inference.identity()), source: base.to_vec(),
+    action: Some(wire::mutate_context_request::Action::Fork(wire::Empty {})),
+};
+let mutation = inference.mutate_context(&fork).await?;
+let branch = mutation.revision.try_into().map_err(|_| acyclic_inference::Error::Invalid("invalid revision"))?;
+let run = inference.generate(branch, "Summarize the findings.", 1_024).send().await?;
 let run_id = run.id();
 let result = run.inspect().await?;
 let recovered = inference.recover_run(run_id);

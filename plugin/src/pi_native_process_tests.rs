@@ -121,7 +121,7 @@ impl Fixture {
             results_volume.capability(VolumeOperation::Read)?, results_volume.capability(VolumeOperation::Write)?,
         ]);
         let issuer = AuthorityIssuer::new("pi-native-provider-test", [25; 32], Authority { kind: AggregateKind::Conversation, id: "pi-native-provider-test".into() });
-        let scope = issuer.root_for_agent(agent, "owner", grants.clone());
+        let scope = issuer.issue("owner", &grants, Some(agent), None, &mut None).expect("scope proof");
         let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path().join("filesystem"))).await.map_err(|error| invalid(&error.to_string()))?;
         let files = Arc::new(FilesystemHost::new(filesystem.clone(), provider)?);
         files.create_volume(&scratch).await?; files.create_volume(&results_volume).await?;
@@ -133,7 +133,7 @@ impl Fixture {
         let WorkPull::Claimed(lease) = runtime.task_host().pull_work(&Worker { id: "pi-native-worker".into(), available: Default::default(), labels: BTreeMap::new() }).await? else {
             return Err(invalid("actual native task lease was not admitted"));
         };
-        runtime.task_host().start_task(&lease).await?;
+        runtime.task_host().start_task(&lease, None).await?;
         let fence = LeaseFence::from(&lease.reservation);
         let mut aggregate = StreamAggregate::open(&stream, issuer.verifier().audience().clone(), issuer.verifier(), SchemaRegistry::new()).await?;
         aggregate.execute(Command { operation_id: OperationId::from_bytes([26; 16]), idempotency_key: IdempotencyKey::new("pi-native-bind")?,
@@ -153,7 +153,7 @@ impl Fixture {
         let owner = runtime.task_host().journal_owner_with_native_work(task, &fence, &work).await?
             .into_native_shared(&work)?;
         let context = runtime.task_context_with_native_work(task, &fence, &work).await?;
-        let allocation = NativePreparationRoot::witness_with_native_work(&native, &operation_directory, &work)?.await?;
+        let allocation = NativePreparationRoot::witness(&native, &operation_directory, &work)?.await?;
         let cwd = native.join("scratch");
         let source_entries = json!([{"type":"message","id":"original","parentId":null,"timestamp":"2026-10-09T00:00:00.000Z",
             "message":{"role":"user","content":"original native instruction","timestamp":1}}]);
@@ -239,7 +239,7 @@ impl Fixture {
             self.approval, self.authority(&self.work)?, &self.work)?.await?.into_arc_with_native_work(&self.work)
     }
     fn effects(&self, provider: &Arc<NativeProcessProvider<LocalStream>>, work: &NativeMaterializationWork) -> Result<ConversationEffectHost<LocalStream>> {
-        let mut registry = acyclic_harness::effects::EffectRegistry::new_with_native_work(work)?
+        let mut registry = acyclic_harness::effects::EffectRegistry::new(Some(work))?
             .with_result_resolver_with_native_work(self.content.clone(), work)?;
         registry.register_with_native_work(provider.clone(), work)?;
         let audience_id = work.display("pi-native-provider-test").map_err(native_error)?;

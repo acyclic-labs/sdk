@@ -127,7 +127,7 @@ async fn sealed_summary_preparation(
         }
     }
     let grants = Capabilities::new(grants);
-    let signed = issuer.root_for_agent(agent, "summary-preparation", grants.clone());
+    let signed = issuer.issue("summary-preparation", &grants, Some(agent), None, &mut None).expect("scope proof");
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?
         .with_run_limits(crate::runtime::TaskRunLimits {
             concurrency: Some(4), max_steps: Some(4), deadline_unix_millis: None,
@@ -154,8 +154,8 @@ async fn sealed_summary_preparation(
         Arc::new(acyclic_stream::SystemUnixMillisClock),
     )?.with_session_limits(crate::scheduler::SessionLimits {
         active_tasks: 4, total_tasks: 4, depth: 2, model_steps: 4,
-    })?.with_resource_creation_providers(vec![Arc::new(
-        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), issuer)?)])?);
+    }, None)?.with_resource_creation_providers(&[Arc::new(
+        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?)], None)?);
     let admission = |operation_id, parent, input| TaskAdmissionRecord {
         resource_proofs: Vec::new(), operation_id, task: identity.clone(), machine: machine.clone(),
         input, input_schema: schema.clone(), output_schema: schema.clone(), parent,
@@ -172,16 +172,16 @@ async fn sealed_summary_preparation(
     let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker).await? else {
         return Err(Error::NotFound("Summary root lease missing".into()));
     };
-    host.start_task(&root_lease).await?;
+    host.start_task(&root_lease, None).await?;
     let prep_op = OperationId::new();
     let prep_task = crate::TaskId::from_bytes(prep_op.into_bytes());
-    let child = admission(OperationId::new(), Some(root), serde_json::json!({}))
-        .with_resource_proofs(preparer.creation_proofs(fork, prep_task, None)?)?;
+    let (resources, proofs) = preparer.creation_allocations(fork, prep_task, None)?;
+    let child = admission(OperationId::new(), Some(root), serde_json::json!({})).with_resource_proofs(proofs)?;
     let command_payload = payloads.stage(fork.operation_id, "summary-fork-request",
         &crate::contract::canonical_json_bytes(fork)?).await?;
     let request = crate::resource_preparation::ResourcePreparationRequest {
         provider: storage.volume.provider().clone(), child,
-        resources: preparer.creation_resources(fork, None)?, creation_grant: "fork:publish".into(),
+        resources, creation_grant: "fork:publish".into(),
         maximum_resources: 2, maximum_work, maximum_bytes,
         payload: serde_json::to_value(fork).map_err(|error| Error::Invalid(error.to_string()))?,
         command: Some(crate::workflow::WorkflowCommand {
@@ -196,7 +196,7 @@ async fn sealed_summary_preparation(
     let crate::distributed::WorkPull::Claimed(lease) = host.pull_work(&worker).await? else {
         return Err(Error::NotFound("Summary preparation lease missing".into()));
     };
-    host.start_task(&lease).await?;
+    host.start_task(&lease, None).await?;
     let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
     let owner = Arc::new(host.journal_owner(prep_task, (&lease.reservation).into()).await?
         .with_invocation_cancellation(&invocation.0));
@@ -363,8 +363,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             ]),
     );
     let scope = storage
-        .issuer
-        .root_for_agent(agent, "summary-parent", grants);
+        .issuer.issue("summary-parent", &grants, Some(agent), None, &mut None).expect("scope proof");
     let stream_provider = ProviderRef::new("local", "stream", "2")?;
     let archived = history.fork_history(
         aggregate.reducer(), 4,
@@ -378,8 +377,8 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         project.clone(),
         stream_provider.clone(),
         storage.content_verifier.clone(),
+        Some(archived), None, #[cfg(not(target_arch = "wasm32"))] None,
     )?
-    .with_history_context(archived)?
     .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor, None)?;
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
@@ -623,7 +622,7 @@ async fn assert_summary_child_import(
                 .capability(VolumeOperation::Read)?,
         ]),
     );
-    let scope = issuer.root_for_agent(seed.child_agent, "child", grants);
+    let scope = issuer.issue("child", &grants, Some(seed.child_agent), None, &mut None).expect("scope proof");
     let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 262_144, None)?);
     let mut child = StreamAggregate::open(
         &storage.stream,
@@ -658,15 +657,11 @@ async fn assert_summary_child_import(
         .summary
         .as_ref()
         .ok_or_else(|| Error::Invalid("no Summary capture".into()))?;
-    let denied = issuer.root_for_agent(
-        seed.child_agent,
-        "denied",
-        scope.capabilities().without(&Capabilities::new([
+    let denied = issuer.issue("denied", &scope.capabilities().without(&Capabilities::new([
             capture.context.read_capability()?,
             seed.child_private_volume
                 .capability(VolumeOperation::Read)?,
-        ])),
-    );
+        ])), Some(seed.child_agent), None, &mut None).expect("scope proof");
     assert!(matches!(
         child_history
             .summary_fork_stage(
@@ -1221,13 +1216,14 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     let project = VolumeRef::new(provider.clone(), "full-parent-project",
         VolumeClass::Project, VolumeOwner::Project("full-project".into()))?;
     let project_head = storage.host.create_volume(&project).await?;
-    let scope = storage.issuer.root_for_agent(agent, "full-parent",
-        Capabilities::new(storage.scope.capabilities().iter().map(str::to_owned)
-            .chain(["fork:publish".to_owned(), project.capability(VolumeOperation::Read)?])));
+    let scope = storage.issuer.issue("full-parent", &Capabilities::new(storage.scope.capabilities().iter().map(str::to_owned)
+            .chain(["fork:publish".to_owned(), project.capability(VolumeOperation::Read)?])), Some(agent), None, &mut None).expect("scope proof");
     let stream_provider = ProviderRef::new("local", "stream", "2")?;
     let preparer = FilesystemForkPreparer::new(storage.host.clone(), parent.reducer().clone(),
         storage.verifier(&mut None).expect("verifier copy"), scope.clone(), project.clone(), stream_provider.clone(),
-        storage.content_verifier.clone())?.with_history_context(archived)?;
+        storage.content_verifier.clone(),
+        Some(archived), None, #[cfg(not(target_arch = "wasm32"))] None,
+    )?;
     let child_agent = AgentId::new();
     let request = ForkRequest {
         authorized_source: None,

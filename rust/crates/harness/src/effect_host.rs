@@ -802,10 +802,7 @@ mod native_metadata_controls {
             id: "native-effect-metadata-control".into(),
         };
         let issuer = AuthorityIssuer::new("original-effect-issuer", [41; 32], authority.clone());
-        let scope = issuer.root_for_agent(
-            crate::AgentId::from_bytes([42; 16]), "original-effect-scope",
-            crate::Capabilities::new([capability::EFFECT_RUN]),
-        );
+        let scope = issuer.issue("original-effect-scope", &crate::Capabilities::new([capability::EFFECT_RUN]), Some(crate::AgentId::from_bytes([42; 16])), None, &mut None).expect("scope proof");
         let files = Arc::new(crate::filesystem::FilesystemHost::new(
             acyclic_fs::Fs::memory(),
             crate::resources::ProviderRef::new("effect-metadata-control", "filesystem", "2")?,
@@ -815,7 +812,7 @@ mod native_metadata_controls {
         )?);
         ConversationEffectHost::new(
             Arc::new(MemoryStream::default()),
-            authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(),
+            authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(None)?,
         )
     }
 
@@ -852,14 +849,14 @@ mod native_metadata_controls {
         let work = NativeMaterializationWork::new(denied, &cancellation)
             .expect("only meter backing is admitted");
         let before = work.receipt().allocation_operations;
-        assert!(matches!(EffectRegistry::new_with_native_work(&work), Err(Error::NativeWork { .. })));
+        assert!(matches!(EffectRegistry::new(Some(&work)), Err(Error::NativeWork { .. })));
         assert_eq!(work.receipt().allocation_operations, before);
 
         let work = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original cancellable ledger");
         cancellation.cancel();
         let before = work.receipt().allocation_operations;
-        assert!(matches!(EffectRegistry::new_with_native_work(&work), Err(Error::NativeWork { .. })));
+        assert!(matches!(EffectRegistry::new(Some(&work)), Err(Error::NativeWork { .. })));
         assert_eq!(work.receipt().allocation_operations, before);
     }
 
@@ -871,10 +868,7 @@ mod native_metadata_controls {
         let baseline = work.remaining().expect("original allowance").peak_allocation_bytes;
         let mut host = ordinary_host()?;
         let foreign = AuthorityIssuer::new("foreign-effect-issuer", [43; 32], host.authority.clone());
-        host.scope = foreign.root_for_agent(
-            crate::AgentId::from_bytes([42; 16]), "foreign-effect-scope",
-            crate::Capabilities::new([capability::EFFECT_RUN]),
-        );
+        host.scope = foreign.issue("foreign-effect-scope", &crate::Capabilities::new([capability::EFFECT_RUN]), Some(crate::AgentId::from_bytes([42; 16])), None, &mut None).expect("scope proof");
         assert!(host.clone_with_native_work(&work).is_err());
         assert_eq!(work.remaining().expect("rejected clone dropped").peak_allocation_bytes, baseline);
         cancellation.cancel();

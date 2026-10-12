@@ -481,7 +481,7 @@ mod tests {
             input: serde_json::json!({}), input_schema: serde_json::json!({"type":"object"}),
             output_schema: serde_json::json!({"type":"object"}), parent: None,
             resource_proofs: Vec::new(),
-            grants: crate::Capabilities::new([project.capability(VolumeOperation::Read)?]),
+            grants: crate::Capabilities::new([project.capability(VolumeOperation::Read, &mut None)?]),
             limits: Limits::default(), run_limits: TaskRunLimits::default(),
             policy: None, extensions: None, execution: None,
         })

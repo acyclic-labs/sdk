@@ -21,7 +21,7 @@ const BUDGET: WorkBudget = acyclic_fs::performance::work_budget(32768, 67108864)
 fn binding(authority: &Authority, agent: AgentId, grants: &Capabilities) -> Value {
     let issuer = AuthorityIssuer::new("browser-recursive-owner", [77; 32], authority.clone());
     serde_json::json!({"authority":authority,"issuer":"browser-recursive-owner","key":vec![77;32],
-        "scope":issuer.root_for_agent(agent,"configured",grants.clone())})
+        "scope":issuer.issue("configured", &grants, Some(agent), None, &mut None).expect("scope proof")})
 }
 fn child(template: &TaskAdmissionRecord, operation: OperationId, parent: TaskId, msg: &str, grants: Capabilities) -> TaskAdmissionRecord {
     let mut record = template.clone();
@@ -34,7 +34,7 @@ async fn claim(runtime: &WasmTaskRuntime, operation: OperationId, worker: &Worke
         WorkPull::Claimed(lease) => lease,
         _ => return Err(JsValue::from_str("original browser caller lease unavailable")),
     };
-    runtime.runtime.task_host().start_task(&lease).await.map_err(js_error)?;
+    runtime.runtime.task_host().start_task(&lease, None).await.map_err(js_error)?;
     Ok(lease)
 }
 async fn settle_tools(runtime: &WasmTaskRuntime, execution: &super::super::headless::WasmHeadlessExecution,
@@ -119,7 +119,7 @@ async fn browser_defaults_root_two_children_grandchild_and_foreign_project_use_a
         bootstrap_grants.push(volume.capability(VolumeOperation::Write).map_err(js_error)?);
     }
     let bootstrap_grants = Capabilities::new(bootstrap_grants);
-    let runtime_scope = owner.issuer.root_for_agent(bootstrap_agent, "runtime", bootstrap_grants.clone());
+    let runtime_scope = owner.issuer.issue("runtime", &bootstrap_grants, Some(bootstrap_agent), None, &mut None).expect("scope proof");
     let mut registry = WasmTaskRegistry::new();
     registry.register_fork_preparation()?;
     registry.register_machine(wire(&serde_json::json!({"name":"test.recursive","version":"1","digest":vec![79;32],
@@ -140,7 +140,7 @@ async fn browser_defaults_root_two_children_grandchild_and_foreign_project_use_a
     runtime.initialize_volume().await?;
     runtime.filesystem.create_volume(&bootstrap_project).await.map_err(js_error)?;
     let bootstrap_issuer = AuthorityIssuer::new("browser-recursive-owner",[77;32],bootstrap_authority.clone());
-    let bootstrap_scope = bootstrap_issuer.root_for_agent(bootstrap_agent,"configured",bootstrap_grants.clone());
+    let bootstrap_scope = bootstrap_issuer.issue("configured", &bootstrap_grants, Some(bootstrap_agent), None, &mut None).expect("scope proof");
     let mut aggregate = StreamAggregate::open(&runtime.stream,bootstrap_authority.clone(),bootstrap_issuer.verifier(&mut None).expect("verifier copy"),SchemaRegistry::default()).await.map_err(js_error)?;
     aggregate.execute(Command { operation_id:OperationId::new(),idempotency_key:IdempotencyKey::new("bind-bootstrap").map_err(js_error)?,expected_revision:0,
         scope:bootstrap_scope,causal_parent:None,action:Action::BindConversation {agent:bootstrap_agent} }, #[cfg(feature = "filesystem")] None, &mut None).await.map_err(js_error)?;
@@ -176,7 +176,7 @@ async fn browser_defaults_root_two_children_grandchild_and_foreign_project_use_a
     assert!(!root_admission.resource_proofs.is_empty());
     assert!(!root_admission.grants.contains(&service_volume.capability(VolumeOperation::Read).map_err(js_error)?));
     assert!(!root_admission.grants.contains(&service_volume.capability(VolumeOperation::Write).map_err(js_error)?));
-    let root_scope = AuthorityIssuer::new("browser-recursive-owner",[77;32],authorities[0].clone()).root_for_agent(agents[0],"configured",scopes[0].clone());
+    let root_scope = AuthorityIssuer::new("browser-recursive-owner",[77;32],authorities[0].clone()).issue("configured", &scopes[0], Some(agents[0]), None, &mut None).expect("scope proof");
     let root_file = append(&runtime,&authorities[0],agents[0],root_scope,&private[0],"ROOT ORIGINAL").await?;
     let notice = ConversationMessage {id:uuid::Uuid::new_v4(),sequence:3,kind:MessageKind::User,content:root_file.clone(),attachments:Default::default(),reply_to:None,tool_call_id:None,extensions:Default::default()};
     options["recursive_tools"]["merges"] = serde_json::json!([{"caller":tasks[1],"source":tasks[2],"notice":notice}]);
@@ -210,9 +210,9 @@ async fn browser_defaults_root_two_children_grandchild_and_foreign_project_use_a
     let root_published = StreamAggregate::open(&runtime.stream,authorities[0].clone(),root_issuer.verifier(&mut None).expect("verifier copy"),SchemaRegistry::default()).await.map_err(js_error)?;
     let left_seed = root_published.reducer().fork(&authorities[1]).unwrap();
     assert!(left_seed.reference_grants.iter().any(|grant| grant.reader==agents[1] && grant.file==root_file));
-    let left_scope = AuthorityIssuer::new("browser-recursive-owner",[77;32],authorities[1].clone()).root_for_agent(agents[1],"configured",scopes[1].clone());
+    let left_scope = AuthorityIssuer::new("browser-recursive-owner",[77;32],authorities[1].clone()).issue("configured", &scopes[1], Some(agents[1]), None, &mut None).expect("scope proof");
     let left_file = append(&runtime,&authorities[1],agents[1],left_scope,&private[1],"LEFT PRIVATE ORIGINAL").await?;
-    let right_scope = AuthorityIssuer::new("browser-recursive-owner",[77;32],authorities[2].clone()).root_for_agent(agents[2],"configured",scopes[2].clone());
+    let right_scope = AuthorityIssuer::new("browser-recursive-owner",[77;32],authorities[2].clone()).issue("configured", &scopes[2], Some(agents[2]), None, &mut None).expect("scope proof");
     append(&runtime,&authorities[2],agents[2],right_scope,&private[2],"RIGHT FOREIGN TRANSCRIPT MUST NOT IMPORT").await?;
     let left_lease = claim(&runtime,operations[1],&worker).await?;
     let edit_events = serde_json::json!([

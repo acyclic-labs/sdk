@@ -919,7 +919,7 @@ impl PiNativeRootSeed {
         owner.verify_with_native_work(false, meter).await?;
         if owner.task_id() != self.task || binding.task_id != self.task
             || shared.context().durable_task_id() != Some(self.task) || binding.scratch.volume != self.scratch
-            || options.root != self.view_root || self.operation != NativePreparationRoot::operation(owner)
+            || options.root != self.view_root || self.operation != NativePreparationRoot::operation(owner.task_id(), meter)?
             || self.packet.operation_id() != self.operation || !self._metadata_custody.matches_work(meter)
             || bindings.len() != 1 || bindings[0].volume != &self.scratch
             || bindings[0].path != "scratch" || !bindings[0].writable
@@ -956,7 +956,7 @@ impl PiNativeRootSeed {
         }
         self.service_identity = Some(meter.root_identity(&self.service_root).map_err(native_error)?);
         if self.allocation.is_some() { return Ok(()); }
-        let mut recovered = NativeVolumeView::<A, O>::recover_allocation_with_native_work(owner, options, meter)?.await?;
+        let mut recovered = NativeVolumeView::<A, O>::recover_allocation(owner, options, meter)?.await?;
         if let Some(allocation) = recovered.0.as_ref() {
             if allocation.root != self.view_root || allocation.operation_directory != self.operation_root {
                 return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
@@ -980,7 +980,7 @@ impl PiNativeRootSeed {
             reason: "Pi native creator has not confirmed every original directory identity",
         })?;
         creator.authorize_settlement_with_native_work(owner, meter).await?;
-        let mut witnessed = NativePreparationRoot::witness_with_native_work(&self.view_root, &self.operation_root, meter)?.await?;
+        let mut witnessed = NativePreparationRoot::witness(&self.view_root, &self.operation_root, meter)?.await?;
         let observed = witnessed.0.expected_preparation_identity;
         if witnessed.0.expected_identity != identities[0]
             || acyclic_fs::NativeRootIdentity::from_bytes(observed.operation) != identities[1]
@@ -1139,12 +1139,9 @@ impl PiNativeRootSeed {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi mixed declaration differs from its retained original creator" });
         }
-        let view = NativeVolumeView::prepare_mixed_with_native_work(
+        let view = NativeVolumeView::prepare(
             owner, guards, allocation, options, bindings, existing_lazy, meter)?.await?;
-        let prepared = view.preparation_receipts().first().ok_or(Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Conflict,
-            reason: "Pi mixed view has no original preparation journal",
-        })?;
+        let prepared = view.preparation();
         if prepared.task != seed.task || prepared.journal.plan.operation_id != seed.operation {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
                 reason: "Pi mixed view belongs to another original preparation operation" });
@@ -1169,7 +1166,7 @@ impl PiNativeRootSeed {
           D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
     {
         if owner.task_id() != self.task || proof.original_task() != self.task || proof.volume() != &self.scratch
-            || self.operation != NativePreparationRoot::operation(owner) || self.packet.operation_id() != self.operation
+            || self.operation != NativePreparationRoot::operation(owner.task_id(), meter)? || self.packet.operation_id() != self.operation
             || !self._metadata_custody.matches_work(meter)
         {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -1177,7 +1174,7 @@ impl PiNativeRootSeed {
         }
         proof.authorize_settlement_with_native_work(owner, meter).await?;
         if let Some(allocation) = self.allocation.as_ref() {
-            if let Some(receipt) = NativeVolumeView::<A, O>::inspect_preparation_with_native_work(owner, allocation, meter)?.await? {
+            if let Some(receipt) = NativeVolumeView::<A, O>::inspect_preparation(owner, allocation, meter, false)?.await? {
                 verify_original_native_rollback(&receipt, self.task, self.operation, allocation)?;
             }
         }
@@ -1202,14 +1199,14 @@ impl<A, O> PiPreparedScratch<A, O> {
     {
         if owner.task_id() != self.task || context.durable_task_id() != Some(self.task)
             || proof.original_task() != self.task || proof.volume() != &self.scratch
-            || self.operation != NativePreparationRoot::operation(owner)
+            || self.operation != NativePreparationRoot::operation(owner.task_id(), meter)?
             || self._creator_packet.operation_id() != self.operation || !self._metadata_custody.matches_work(meter)
         {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi prepared rollback differs from its original creator and current child" });
         }
         proof.authorize_settlement_with_native_work(owner, meter).await?;
-        let receipt = NativeVolumeView::<A, O>::inspect_preparation_with_native_work(owner, &self.allocation, meter)?.await?
+        let receipt = NativeVolumeView::<A, O>::inspect_preparation(owner, &self.allocation, meter, false)?.await?
             .ok_or(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Indeterminate,
                 reason: "Pi prepared rollback has no original recorded SDK rollback" })?;
         verify_original_native_rollback(&receipt, self.task, self.operation, &self.allocation)?;
@@ -1231,7 +1228,7 @@ impl<A, O> PiPreparedScratch<A, O> {
     {
         if owner.task_id() != self.task || context.durable_task_id() != Some(self.task)
             || proof.original_task() != self.task || proof.volume() != &self.scratch
-            || self.operation != NativePreparationRoot::operation(owner)
+            || self.operation != NativePreparationRoot::operation(owner.task_id(), meter)?
             || self._creator_packet.operation_id() != self.operation
             || !self._metadata_custody.matches_work(original)
         {
@@ -1342,7 +1339,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
             reason: "Pi seed session selection differs from its immutable native cut" });
     }
     let service = native_service_root(&resources.data, root_session, owner.task_id(), &options.root, meter)?;
-    let operation = NativePreparationRoot::operation(owner);
+    let operation = NativePreparationRoot::operation(owner.task_id(), meter)?;
     let task_directory = options.root.parent().ok_or(Error::NativeBoundary {
         code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi native view has no original task namespace",
     })?;

@@ -40,6 +40,8 @@ mod wasm;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_meter;
 mod owned_bytes;
 pub use owned_bytes::OwnedBytes;
 #[cfg(not(target_arch = "wasm32"))]

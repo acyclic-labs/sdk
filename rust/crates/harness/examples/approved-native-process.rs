@@ -283,15 +283,11 @@ where
             "tool:call:mcp.example.echo".into(),
         ]);
     }
-    let scope = issuer.root_for_agent(agent, "owner", Capabilities::new(grants));
+    let scope = issuer.issue("owner", &Capabilities::new(grants), Some(agent), None, &mut None).expect("scope proof");
     for volume in [&source, &destination, &results_volume] {
         files.create_volume(volume).await?;
     }
-    let setup_scope = issuer.root_for_agent(
-        agent,
-        "setup",
-        Capabilities::new([source.capability(VolumeOperation::Write)?]),
-    );
+    let setup_scope = issuer.issue("setup", &Capabilities::new([source.capability(VolumeOperation::Write)?]), Some(agent), None, &mut None).expect("scope proof");
     let setup = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
         &setup_scope,
@@ -329,7 +325,7 @@ where
     else {
         return Err("missing task lease".into());
     };
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     let owner = Arc::new(
         runtime
             .task_host()

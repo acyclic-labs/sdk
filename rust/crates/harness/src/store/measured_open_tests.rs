@@ -85,7 +85,7 @@ mod measured_open_tests {
             return Err(Error::Invalid("fresh original command must apply".into()));
         };
         let publication = operations::IndexedPublication::new(
-            &authority(), &event, encode_event(&authority(), &event)?, &mut None)?;
+            &authority(), &event, encode_event(&authority(), &event, &mut None)?, &mut None)?;
         let cancellation = CancellationToken::new();
         let mut denied = budget();
         denied.allocation_operations = 0;
@@ -415,7 +415,7 @@ mod measured_open_tests {
         let mut writer = StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?.with_content_verifier(content_verifier);
         let effect_id = EffectId::from_bytes([41; 16]);
         let attempt_id = EffectAttemptId::from_bytes([42; 16]);
-        let scope = issuer().root("effects", Capabilities::new(["effect:run", "effect:plan", "effect:provider:test.effects"]));
+        let scope = issuer().issue("effects", &Capabilities::new(["effect:run", "effect:plan", "effect:provider:test.effects"]), None, None, &mut None).expect("scope proof");
         let fresh = |identity: u8, revision, action| Command {
             operation_id: OperationId::from_bytes([identity; 16]),
             idempotency_key: IdempotencyKey::new(format!("measured-effect-{identity}")).expect("finite key"),

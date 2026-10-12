@@ -1685,7 +1685,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let (bytes, claim) = Self::read_admission_content_with_work(
                 verifier.as_ref(), result_schema, scratch.work()).await?;
             scratch.adopt(claim)?;
-            let validated = crate::effects::validate_effect_schema_bytes_with_work(
+            let validated = crate::effects::validate_schema_bytes(
                 result_schema, &bytes, scratch.work());
             drop(bytes);
             let released = scratch.relinquish(claim);
@@ -1711,7 +1711,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let (schema_bytes, schema_claim) = Self::read_admission_content_with_work(
                 verifier.as_ref(), &effect.result_schema, scratch.work()).await?;
             scratch.adopt(schema_claim)?;
-            let validated = crate::effects::validate_effect_result_bytes_with_work(
+            let validated = crate::effects::validate_result_bytes(
                 &effect.result_schema, &schema_bytes, reference, &bytes, scratch.work());
             drop(schema_bytes);
             drop(bytes);
@@ -1948,7 +1948,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             })?;
             verified_content_bytes(verifier.as_ref(), request, (request).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
             let schema_bytes = verifier.read(result_schema, result_schema.descriptor().byte_length(), None)?.await?;
-            validate_schema_bytes(result_schema, &schema_bytes)?;
+            validate_schema_bytes(result_schema, &schema_bytes, &mut None)?;
         }
         if let crate::core::Action::ResolveEffect { observation } = action
             && let EffectStatus::Succeeded { result } = &observation.status
@@ -1962,8 +1962,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
             let bytes = verifier.read(result, result.descriptor().byte_length(), None)?.await?;
             let schema_bytes = verifier.read(&effect.result_schema, effect.result_schema.descriptor().byte_length(), None)?.await?;
-            let schema = validate_schema_bytes(&effect.result_schema, &schema_bytes)?;
-            validate_result_bytes(&schema, result, &bytes)?;
+            validate_result_bytes(&effect.result_schema, &schema_bytes, result, &bytes, &mut None)?;
         }
         if let crate::core::Action::PublishProjectMerge { receipt } = action {
             let verifier = self
@@ -2181,7 +2180,7 @@ mod tests {
             operation_id: OperationId::from_bytes([identity; 16]),
             idempotency_key: IdempotencyKey(format!("append-conversation-1-{identity}")),
             expected_revision: 0,
-            scope: issuer().root("root", Capabilities::new(["event:append"])),
+            scope: issuer().issue("root", &Capabilities::new(["event:append"]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::AppendCustom {
                 schema: "example.message".into(),
@@ -2484,15 +2483,11 @@ mod tests {
         );
         let agent = crate::AgentId::from_bytes([8; 16]);
         let file = content()?;
-        let scope = issuer().root_for_agent(
-            agent,
-            "head-writer",
-            Capabilities::new([
+        let scope = issuer().issue("head-writer", &Capabilities::new([
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
                 file.read_capability()?,
-            ]),
-        );
+            ]), Some(agent), None, &mut None).expect("scope proof");
         let bind = Command {
             operation_id: OperationId::from_bytes([101; 16]),
             idempotency_key: IdempotencyKey::new("head-bind")?,
@@ -2529,7 +2524,7 @@ mod tests {
         let publication = operations::IndexedPublication::new(
             &authority(),
             &event,
-            encode_event(&authority(), &event)?,
+            encode_event(&authority(), &event, &mut None)?,
          &mut None)?;
         *provider
             .message_head_race
@@ -2577,7 +2572,7 @@ mod tests {
         let (ApplyResult::Applied { event } | ApplyResult::Replayed { event }) =
             reducer.plan(&bind)?;
         acyclic_stream::Stream::new(std::sync::Arc::clone(&incomplete), authority().stream_path(&mut None)?)?
-            .append(encode_event(&authority(), &event)?)
+            .append(encode_event(&authority(), &event, &mut None)?)
             .await?;
         let incomplete_reader = HistoryReader::new(&incomplete, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
         assert!(matches!(
@@ -2600,16 +2595,12 @@ mod tests {
         );
         let agent = crate::AgentId::from_bytes([8; 16]);
         let file = content()?;
-        let scope = issuer().root_for_agent(
-            agent,
-            "message-writer",
-            Capabilities::new([
+        let scope = issuer().issue("message-writer", &Capabilities::new([
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
                 "conversation:select_context".to_owned(),
                 file.read_capability()?,
-            ]),
-        );
+            ]), Some(agent), None, &mut None).expect("scope proof");
         writer
             .execute(Command {
                 operation_id: OperationId::from_bytes([101; 16]),
@@ -3003,14 +2994,10 @@ mod tests {
                 crate::conversation::VolumeOwner::Agent(agent),
             )?;
             host.create_volume(&private).await?;
-            let journal_scope = issuer().root_for_agent(
-                agent,
-                "cold-selection-journal",
-                Capabilities::new([
+            let journal_scope = issuer().issue("cold-selection-journal", &Capabilities::new([
                     private.capability(crate::conversation::VolumeOperation::Read)?,
                     private.capability(crate::conversation::VolumeOperation::Write)?,
-                ]),
-            );
+                ]), Some(agent), None, &mut None).expect("scope proof");
             let journal = crate::filesystem::FilesystemExecutionJournal::new(
                 client.clone(),
                 host,
@@ -3386,7 +3373,7 @@ mod tests {
         };
         acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path(&mut None)?)?
             .append_batch(
-                vec![OwnedBytes::from(encode_event(&authority(), &event)?)],
+                vec![OwnedBytes::from(encode_event(&authority(), &event, &mut None)?)],
                 Some(0),
                 None,
             )
@@ -3424,7 +3411,7 @@ mod tests {
             }
             acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path(&mut None)?)?
                 .append_batch(
-                    vec![OwnedBytes::from(encode_event(&wire_authority, &event)?)],
+                    vec![OwnedBytes::from(encode_event(&wire_authority, &event, &mut None)?)],
                     Some(0),
                     None,
                 )
@@ -3531,7 +3518,7 @@ mod tests {
                 .any(|window| window == b"hello")
         );
         assert!(matches!(
-            decode_event(&records[0].value)?.1.payload,
+            decode_event(&records[0].value, &mut None)?.0.1.payload,
             crate::core::EventPayload::Custom { record } if record.content == content()?
         ));
         Ok(())
@@ -3581,16 +3568,12 @@ mod tests {
             operation_id: OperationId::from_bytes([2; 16]),
             idempotency_key: IdempotencyKey::new("migrate-extension-state")?,
             expected_revision: 1,
-            scope: issuer().root_for_agent(
-                crate::AgentId::from_bytes([8; 16]),
-                "owner",
-                Capabilities::new([
+            scope: issuer().issue("owner", &Capabilities::new([
                     "extension:migrate".to_owned(),
                     content()?
                         .volume()
                         .capability(crate::conversation::VolumeOperation::Write)?,
-                ]),
-            ),
+                ]), Some(crate::AgentId::from_bytes([8; 16])), None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::MigrateExtensionState {
                 name: "example.message".into(),
@@ -3731,50 +3714,34 @@ mod tests {
             stages: std::sync::atomic::AtomicUsize::new(0),
             files: files.clone(),
         };
-        let scope = issuer().root_for_agent(
-            crate::AgentId::from_bytes([9; 16]),
-            "child-owner",
-            Capabilities::new([
+        let scope = issuer().issue("child-owner", &Capabilities::new([
                 "extension:migrate".to_owned(),
                 publisher
                     .volume
                     .capability(crate::conversation::VolumeOperation::Write)?,
-            ]),
-        );
-        let unauthorized = issuer().root_for_agent(
-            crate::AgentId::from_bytes([9; 16]),
-            "child-unauthorized",
-            Capabilities::new([publisher
+            ]), Some(crate::AgentId::from_bytes([9; 16])), None, &mut None).expect("scope proof");
+        let unauthorized = issuer().issue("child-unauthorized", &Capabilities::new([publisher
                 .volume
-                .capability(crate::conversation::VolumeOperation::Write)?]),
-        );
+                .capability(crate::conversation::VolumeOperation::Write)?]), Some(crate::AgentId::from_bytes([9; 16])), None, &mut None).expect("scope proof");
         assert!(matches!(
             aggregate
                 .migrate_extension_state(request.clone(), unauthorized, &publisher)
                 .await,
             Err(Error::Unauthorized(_))
         ));
-        let no_destination_write = issuer().root_for_agent(
-            crate::AgentId::from_bytes([9; 16]),
-            "child-no-write",
-            Capabilities::new(["extension:migrate"]),
-        );
+        let no_destination_write = issuer().issue("child-no-write", &Capabilities::new(["extension:migrate"]), Some(crate::AgentId::from_bytes([9; 16])), None, &mut None).expect("scope proof");
         assert!(matches!(
             aggregate
                 .migrate_extension_state(request.clone(), no_destination_write, &publisher)
                 .await,
             Err(Error::Unauthorized(_))
         ));
-        let foreign_writer = issuer().root_for_agent(
-            crate::AgentId::from_bytes([8; 16]),
-            "foreign-writer",
-            Capabilities::new([
+        let foreign_writer = issuer().issue("foreign-writer", &Capabilities::new([
                 "extension:migrate".to_owned(),
                 publisher
                     .volume
                     .capability(crate::conversation::VolumeOperation::Write)?,
-            ]),
-        );
+            ]), Some(crate::AgentId::from_bytes([8; 16])), None, &mut None).expect("scope proof");
         assert!(matches!(
             aggregate
                 .migrate_extension_state(request.clone(), foreign_writer, &publisher)
@@ -3849,7 +3816,7 @@ mod tests {
             operation_id: OperationId::from_bytes([32; 16]),
             idempotency_key: IdempotencyKey("configure-extension".into()),
             expected_revision: 0,
-            scope: issuer.root("owner", Capabilities::new(["extension:configure"])),
+            scope: issuer.issue("owner", &Capabilities::new(["extension:configure"]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::ConfigureExtension {
                 extension,
@@ -3904,10 +3871,10 @@ mod tests {
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider)?);
         host.create_volume(&volume).await?;
         let issuer = issuer();
-        let scope = issuer.root_for_agent(agent, "content-owner", Capabilities::new([
+        let scope = issuer.issue("content-owner", &Capabilities::new([
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]));
+        ]), Some(agent), None, &mut None).expect("scope proof");
         let publisher = FilesystemContentPublisher::new(
             host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
@@ -4009,7 +3976,7 @@ mod tests {
                 operation_id: OperationId::from_bytes([9; 16]),
                 idempotency_key: IdempotencyKey("bind-interaction-owner".into()),
                 expected_revision: 0,
-                scope: issuer().root("owner", Capabilities::new(["conversation:bind"])),
+                scope: issuer().issue("owner", &Capabilities::new(["conversation:bind"]), None, None, &mut None).expect("scope proof"),
                 causal_parent: None,
                 action: Action::BindConversation {
                     agent: crate::AgentId::from_bytes([8; 16]),
@@ -4020,7 +3987,7 @@ mod tests {
             operation_id: OperationId::from_bytes([10; 16]),
             idempotency_key: IdempotencyKey("open-interaction".into()),
             expected_revision: 1,
-            scope: issuer().root("opener", Capabilities::new(["interaction:open"])),
+            scope: issuer().issue("opener", &Capabilities::new(["interaction:open"]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::OpenInteraction {
                 ticket: ticket.clone(),
@@ -4039,10 +4006,7 @@ mod tests {
             operation_id: OperationId::from_bytes([11; 16]),
             idempotency_key: IdempotencyKey("resolve-interaction".into()),
             expected_revision: 2,
-            scope: issuer().root(
-                "responder",
-                Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]),
-            ),
+            scope: issuer().issue("responder", &Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::ResolveInteraction {
                 resolution: resolution.clone(),
@@ -4086,7 +4050,7 @@ mod tests {
                 operation_id: OperationId::from_bytes([12; 16]),
                 idempotency_key: IdempotencyKey("open-future-interaction".into()),
                 expected_revision: 3,
-                scope: issuer().root("opener", Capabilities::new(["interaction:open"])),
+                scope: issuer().issue("opener", &Capabilities::new(["interaction:open"]), None, None, &mut None).expect("scope proof"),
                 causal_parent: None,
                 action: Action::OpenInteraction {
                     ticket: future.clone(),
@@ -4097,10 +4061,7 @@ mod tests {
             operation_id: OperationId::from_bytes([13; 16]),
             idempotency_key: IdempotencyKey("premature-expiry".into()),
             expected_revision: 4,
-            scope: issuer().root(
-                "responder",
-                Capabilities::new(["interaction:resolve", future.responder_grant().as_str()]),
-            ),
+            scope: issuer().issue("responder", &Capabilities::new(["interaction:resolve", future.responder_grant().as_str()]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::ResolveInteraction {
                 resolution: InteractionResolution {
@@ -4323,7 +4284,7 @@ mod tests {
             )
             .await?;
         let suffix_bytes = suffix.events.iter().try_fold(0_u64, |sum, event| {
-            Ok::<_, Error>(sum + encode_event(&authority(), event)?.len() as u64)
+            Ok::<_, Error>(sum + encode_event(&authority(), event, &mut None)?.len() as u64)
         })?;
         let exact = HistoryReadLimits {
             maximum_events: 6,

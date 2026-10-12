@@ -82,12 +82,12 @@ pub(crate) async fn lookup_tree_entries_async_with_accounting<S: AsyncObjectStor
 ) -> Result<(Vec<Option<TreeEntry>>, super::allocation::KernelOwnedAllocation), crate::FsError> {
     persistent_batch::lookup_async_with_accounting::<S, TreeFormat>(
         store, root, names, maximum_queries, limits, accounting, cancellation, data_custody,
-    ).await.map(|(receipt, allocation)| (receipt.values, allocation)).map_err(map_accounting_failure)
+    ).await.map(|(receipt, allocation)| (receipt.value, allocation)).map_err(map_accounting_failure)
 }
 
-fn to_batch(receipt: persistent_batch::Receipt<TreeEntry>) -> TreeBatchLookup {
+fn to_batch(receipt: crate::OperationReceipt<Vec<Option<TreeEntry>>>) -> TreeBatchLookup {
     TreeBatchLookup {
-        entries: receipt.values,
+        entries: receipt.value,
         work: receipt.work,
     }
 }

@@ -26,7 +26,7 @@ fn validate_scope_attenuation(
 pub struct NativeTaskContext {
     context: TaskContext,
     #[cfg(feature = "native-execution")]
-    working_view: std::sync::OnceLock<Arc<crate::filesystem::NativeTaskWorkingView>>,
+    working_view: std::sync::OnceLock<Arc<dyn crate::filesystem::NativeTaskWorkingView>>,
     custody: NativeAllocation,
 }
 
@@ -246,30 +246,27 @@ impl NativeTaskContext {
     /// Attaches one genuinely prepared working view to its original issued dispatch context.
     #[cfg(feature = "native-execution")]
     pub async fn bind_working_view_with_native_work(
-        &self, view: crate::filesystem::NativeTaskWorkingView,
+        &self, view: Arc<dyn crate::filesystem::NativeTaskWorkingView>,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         self.context.require_original_native_dispatch(work)?;
         let (task, fence) = self.context.owned_task_binding_with_native_work(work)?;
-        if view.original_task() != task || view.original_fence() != fence
+        if view.task_binding() != (task, fence)
             || !view.original_native_work().shares_allocation_context(work)
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "working view differs from its original issued task"));
         }
-        if self.working_view.get().is_some_and(|installed| !installed.same_identity(&view)) {
+        if self.working_view.get().is_some_and(|installed| !installed.same_identity(view.as_ref())) {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "working view cannot be rebound to a different preparation"));
         }
         view.verify_with_native_work(work)?.await?;
         if self.working_view.get().is_some() { return Ok(()); }
-        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let view = Arc::new(view);
         match self.working_view.set(view) {
             Ok(()) => Ok(()),
             Err(loser) => {
-                let same = self.working_view.get().is_some_and(|winner| winner.same_identity(&loser));
+                let same = self.working_view.get().is_some_and(|winner| winner.same_identity(loser.as_ref()));
                 drop(loser);
                 if same { Ok(()) } else {
                     Err(boundary(crate::wire::ErrorCode::Unauthorized,
@@ -344,7 +341,15 @@ impl NativeTaskContext {
 }
 
 impl ToolContext {
-    /// Records protected ToolStarted acceptance.
+    /// Records this invocation's committed ToolStarted acceptance.
+    pub(crate) fn record_native_tool_acceptance(&self, work: &NativeMaterializationWork) -> Result<()> {
+        self.validate_native_mcp_context(work)?;
+        self.accepted_native_tool.get_or_init(|| (
+            self.task().durable_task_id().expect("validated original durable task"), self.operation_id,
+        ));
+        Ok(())
+    }
+
     fn accepted_native_context(&self, work: &NativeMaterializationWork) -> Result<&TaskContext> {
         let context = self.validate_native_bound_context(work)?;
         if !context.native_metadata_source.as_ref()
@@ -388,13 +393,14 @@ impl ToolContext {
     #[cfg(feature = "native-execution")]
     fn accepted_native_working_view(
         &self, work: &NativeMaterializationWork,
-    ) -> Result<(&TaskContext, &crate::filesystem::NativeTaskWorkingView)> {
+    ) -> Result<(&TaskContext, &dyn crate::filesystem::NativeTaskWorkingView)> {
         let context = self.accepted_native_context(work)?;
         let shared = self.native_task().expect("validated original native tool context");
         let view = shared.working_view.get().ok_or_else(|| boundary(
             crate::wire::ErrorCode::NotFound, "issued task has no prepared working view",
         ))?;
-        if !context.original_task_binding_matches(view.original_task(), view.original_fence())
+        let (task, fence) = view.task_binding();
+        if !context.original_task_binding_matches(task, fence)
             || !view.original_native_work().shares_allocation_context(work)
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
@@ -413,7 +419,7 @@ impl ToolContext {
 
     #[cfg(feature = "native-execution")]
     fn check_native_working_permission(
-        &self, view: &crate::filesystem::NativeTaskWorkingView,
+        &self, view: &dyn crate::filesystem::NativeTaskWorkingView,
         relative: &std::path::Path, operation: crate::conversation::VolumeOperation,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
@@ -436,7 +442,7 @@ impl ToolContext {
         &'a self, relative: &'a std::path::Path,
         operation: crate::conversation::VolumeOperation,
         work: &'a NativeMaterializationWork,
-    ) -> Result<&'a crate::filesystem::NativeTaskWorkingView> {
+    ) -> Result<&'a dyn crate::filesystem::NativeTaskWorkingView> {
         let (context, view) = self.accepted_native_working_view(work)?;
         self.check_native_working_permission(view, relative, operation, work)?;
         context.verify_original_execution_owner_with_native_work(work)?.await?;
@@ -497,7 +503,9 @@ impl ToolContext {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "tool context differs from its original native metadata ledger"));
         }
-        crate::tool::ToolInvocation::validate_call_id_with_native_work(call_id, work)?;
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        crate::executor::with_history_io(Some(&io), |work|
+            crate::tool::ToolInvocation::validate_identity(call_id, None, work))?;
         let mut slot = work.retain_owned(std::mem::size_of::<Self>() as u64)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut output = work.display(call_id)
@@ -807,6 +815,26 @@ mod tests {
     fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializationWork> {
         NativeMaterializationWork::new(BUDGET, cancellation)
             .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })
+    }
+
+    #[tokio::test]
+    async fn protected_tool_acceptance_enables_original_admission() -> Result<()> {
+        use crate::durable_host::tests::created_resource_access::{NativeCustomerFixture, NativeCustomerRuntime};
+        let fixture = NativeCustomerFixture::new_with_grants(&[], crate::tool::ToolRegistry::default()).await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let original = work(&cancellation)?;
+        let io = crate::filesystem::PreparationIo::from_native_work(&original)?;
+        let fence = NativeCustomerRuntime::original_lease_fence_with_io(&fixture.creation.root_lease, &io)?;
+        let shared = fixture.runtime.task_context_with_native_work(fixture.creation.root, &fence, &original).await?;
+        let tool = ToolContext::new_with_native_work(
+            shared, crate::OperationId::from_bytes([122; 16]), "protected-admission", &original,
+        )?;
+        assert!(matches!(tool.original_admission_with_native_work(&original),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        tool.record_native_tool_acceptance(&original)?;
+        let (admission, _custody) = tool.original_admission_with_native_work(&original)?.await?;
+        assert_eq!(admission.operation_id, fixture.creation.root_lease.operation.operation_id);
+        Ok(())
     }
 
     #[tokio::test]

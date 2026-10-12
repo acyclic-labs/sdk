@@ -81,14 +81,10 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             id: "counter".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        AgentId::from_bytes([4; 16]),
-        "owner",
-        Capabilities::new([
+    let scope = issuer.issue("owner", &Capabilities::new([
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(AgentId::from_bytes([4; 16])), None, &mut None).expect("scope proof");
     let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
     let command_payload = host
         .put_content(

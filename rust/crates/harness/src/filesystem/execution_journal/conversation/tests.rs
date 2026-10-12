@@ -66,13 +66,13 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
     if initialize { host.create_volume(&volume).await?; }
     let authority = Authority { kind: AggregateKind::Conversation, id: "durable-10k".into() };
     let issuer = AuthorityIssuer::new("durable-continuation", [58; 32], authority.clone());
-    let read = volume.capability(VolumeOperation::Read)?;
-    let write = volume.capability(VolumeOperation::Write)?;
-    let scope = issuer.root_for_agent(agent, "owner", Capabilities::new([
+    let read = volume.capability(VolumeOperation::Read, &mut None)?;
+    let write = volume.capability(VolumeOperation::Write, &mut None)?;
+    let scope = issuer.issue("owner", &Capabilities::new([
         capability::CONVERSATION_BIND.to_owned(), capability::CONVERSATION_APPEND.to_owned(),
         capability::CONVERSATION_SELECT_CONTEXT.to_owned(), "model:generate".to_owned(),
         read.clone(), write.clone(),
-    ]));
+    ]), Some(agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(acyclic_stream::LocalStream::open(
         root.join("stream"), Default::default()).await
         .map_err(|error| Error::Storage(error.to_string()))?);

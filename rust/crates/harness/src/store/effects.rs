@@ -675,9 +675,9 @@ mod native_effect_paid_point_tests {
             operation_id: OperationId::from_bytes([92; 16]),
             idempotency_key: CommandKey::new("paid-effect-point")?,
             expected_revision: 0,
-            scope: issuer.root("effects", Capabilities::new([
+            scope: issuer.issue("effects", &Capabilities::new([
                 "effect:run", "effect:plan", "effect:provider:test.effects",
-            ])),
+            ]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::PlanEffect {
                 effect_id: effect, provider: "test.effects".into(),

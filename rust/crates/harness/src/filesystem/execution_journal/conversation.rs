@@ -30,9 +30,7 @@ where
         self.host
             .put_internal_content(
                 &self.volume,
-                &ContentGrant::verify(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write,
-                )?,
+                &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?,
                 "turns/.canonical/payload",
                 bytes,
                 media_type,
@@ -74,7 +72,7 @@ where
             let manifest = self.host
                 .put_internal_content(
                     &self.volume,
-                    &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write)?,
+                    &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?,
                     "turns/.canonical/payload",
                     &bytes,
                     "application/vnd.acyclic.harness.attachments+json",
@@ -360,7 +358,7 @@ where
             let manifest = self.host
                 .put_internal_content(
                     &self.volume,
-                    &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write)?,
+                    &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?,
                     "turns/.canonical/payload",
                     &bytes,
                     "application/vnd.acyclic.harness.attachments+json",

@@ -1887,7 +1887,7 @@ mod native_publication_custody_tests {
             operation_id: OperationId::from_bytes([91; 16]),
             idempotency_key: crate::IdempotencyKey("publication-custody".into()),
             expected_revision: 0,
-            scope: issuer.root("root", crate::Capabilities::new(["lifecycle:manage"])),
+            scope: issuer.issue("root", &crate::Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::TransitionLifecycle { to: LifecycleState::Active, reason: None },
         };
@@ -2101,14 +2101,14 @@ mod native_only_provider_tests {
             operation_id: OperationId::from_bytes([31; 16]),
             idempotency_key: crate::IdempotencyKey("native-only-reader".into()),
             expected_revision: 0,
-            scope: issuer.root("root", crate::Capabilities::new(["lifecycle:manage"])),
+            scope: issuer.issue("root", &crate::Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::TransitionLifecycle { to: LifecycleState::Active, reason: None },
         };
         let ApplyResult::Applied { event } = reducer.plan(&command)? else {
             panic!("fresh lifecycle event")
         };
-        let encoded = crate::wire_codec::encode_event(&authority, &event)?;
+        let encoded = crate::wire_codec::encode_event(&authority, &event, &mut None)?;
         let event_bytes = encoded.len() as u64;
         let publication = IndexedPublication::new(&authority, &event, encoded, &mut None)?;
         let request = publication.request(&ordinary,

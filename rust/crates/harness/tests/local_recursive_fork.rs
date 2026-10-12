@@ -159,11 +159,7 @@ where
     for file in approved {
         capabilities.push(file.read_capability()?);
     }
-    let read_scope = issuer.root_for_agent(
-        agent,
-        "prefix-owner-approved-reader",
-        Capabilities::new(capabilities),
-    );
+    let read_scope = issuer.issue("prefix-owner-approved-reader", &Capabilities::new(capabilities), Some(agent), None, &mut None).expect("scope proof");
     let reader = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
         &issuer.verifier(&mut None).expect("verifier copy"),
@@ -384,10 +380,7 @@ fn scope(
         project.owner().clone(),
     )?;
     let source_reads = [selected.capability(VolumeOperation::Read)?];
-    Ok(issuer.root_for_agent(
-        agent,
-        format!("agent-{agent:?}"),
-        Capabilities::new(
+    Ok(issuer.issue(&format!("agent-{agent:?}"), &Capabilities::new(
             [
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
@@ -400,8 +393,7 @@ fn scope(
             ]
             .into_iter()
             .chain(source_reads),
-        ),
-    ))
+        ), Some(agent), None, &mut None).expect("scope proof"))
 }
 
 fn command(
@@ -629,6 +621,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             project.clone(),
             stream_provider.clone(),
             parent_reader,
+            None, None, #[cfg(not(target_arch = "wasm32"))] None,
         )?;
         let parent_workspaces = (level == DEPTH)
             .then(|| {
@@ -820,6 +813,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 project.clone(),
                 stream_provider.clone(),
                 reader,
+                None, None, #[cfg(not(target_arch = "wasm32"))] None,
             )?;
             let report = aggregate
                 .prepare_fork(&sibling_preparer, sibling_request)
@@ -1138,14 +1132,10 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
 
         if level == 1 {
             let reference_issuer = child_issuer.clone();
-            let child_scope_with_reference = reference_issuer.root_for_agent(
-                child_agent,
-                "child-root-reference-reader",
-                Capabilities::new([
+            let child_scope_with_reference = reference_issuer.issue("child-root-reference-reader", &Capabilities::new([
                     child_private.capability(VolumeOperation::Read)?,
                     child_attachment_capability,
-                ]),
-            );
+                ]), Some(child_agent), None, &mut None).expect("scope proof");
             let exact = ContentGrant::verify_read(
                 &reference_issuer.verifier(&mut None).expect("verifier copy"),
                 &child_scope_with_reference,
@@ -1421,6 +1411,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             project.clone(),
             stream_provider.clone(),
             reader,
+            None, None, #[cfg(not(target_arch = "wasm32"))] None,
         )?;
         let request = ForkRequest {
             authorized_source: None,
@@ -1539,14 +1530,10 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                 .await
                 .is_err()
         );
-        let reference_scope = child_issuer.root_for_agent(
-            child_agent,
-            format!("deep-reference-reader-{level}"),
-            Capabilities::new([
+        let reference_scope = child_issuer.issue(&format!("deep-reference-reader-{level}"), &Capabilities::new([
                 child_private.capability(VolumeOperation::Read)?,
                 reference_capability,
-            ]),
-        );
+            ]), Some(child_agent), None, &mut None).expect("scope proof");
         let child_reference_read = ContentGrant::verify_read(
             &child_issuer.verifier(&mut None).expect("verifier copy"),
             &reference_scope,

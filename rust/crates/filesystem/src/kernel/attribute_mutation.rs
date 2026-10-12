@@ -247,7 +247,7 @@ pub(crate) async fn apply_attribute_mutations_with_accounting<S: crate::AsyncObj
     let receipt = persistent_btree::apply_with_accounting::<S, AttributeFormat, AttributeMutation>(
         store, root, mutations, maximum_mutations, limits, accounting, cancellation,
     ).await?;
-    Ok(AttributeMutationReceipt { root: receipt.root, work: receipt.work })
+    Ok(AttributeMutationReceipt { root: receipt.value, work: receipt.work })
 }
 
 fn standalone_error(error: crate::FsError) -> AttributeMutationError {
