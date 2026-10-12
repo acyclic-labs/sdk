@@ -24,7 +24,7 @@ async fn native_host_rejects_missing_original_pinned_bootstrap() {
 #[tokio::test]
 async fn native_host_rejects_replacement_owner_before_opening_native_handles() {
     let fixture = Fixture::new().await;
-    let replacement = PiOwnerConfig::new(fixture.owner.policy().clone()).unwrap();
+    let replacement = PiOwnerConfig::new(&fixture.owner.policy(), None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
     assert!(fixture.runtime.verify_owner(&replacement).is_err());
     assert!(native_host(&fixture, Some(replacement)).is_err());
 }
@@ -47,7 +47,7 @@ fn installed_runtime() -> PiNativeHostRuntime {
         executable_prefix: vec![cli.to_str().unwrap().into()],
         extension: required_path("ACYCLIC_PI_TEST_EXTENSION"), provider_extension: None,
         environment: std::env::vars().collect::<BTreeMap<_, _>>() }
-        .sanitize().unwrap()
+        .sanitize(&acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap()).unwrap()
 }
 
 #[tokio::test]

@@ -26,6 +26,12 @@ fn startup_work() -> acyclic_fs::NativeMaterializationWork {
         crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
     ).unwrap()
 }
+pub(crate) fn publish_owner(owner: &PiOwnerConfig, path: &Path, work: &acyclic_fs::NativeMaterializationWork) -> acyclic_harness::Result<()> {
+    let root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, work)
+        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    owner.save_new_with_native_work(&root, Path::new(""), work)
+}
+
 fn policy() -> PiOwnerPolicy {
     let agent = AgentId::from_bytes([81; 16]);
     let provider = ProviderRef::new("pi-owner-test", "filesystem", "1").unwrap();
@@ -156,8 +162,8 @@ async fn root_input_fixture_on_fs(
             )]),
         },
     };
-    let owner = PiOwnerConfig::new(policy).unwrap();
-    owner.save_new(session).unwrap();
+    let owner = PiOwnerConfig::new(&policy, None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), session, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
     let filesystem =
         FilesystemHost::new(raw.clone(), owner.policy.journal.provider().clone()).unwrap();
     filesystem
@@ -353,8 +359,8 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
     )
     .await
     .unwrap();
-    let admission = runtime.admit_root_with_native_work(
-        request.binding.clone(), request.root.clone(), command.clone(), &work,
+    let admission = runtime.admit_root(
+        &request.binding, &request.root, &command, &work,
     ).await.unwrap();
     assert!(matches!(admission.0, Admission::Accepted(_)));
     drop(admission.0);
@@ -363,7 +369,7 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
     changed.operation_id = OperationId::from_bytes([91; 16]);
     assert!(
         runtime
-            .admit_root_with_native_work(request.binding.clone(), request.root.clone(), changed, &work)
+            .admit_root(&request.binding, &request.root, &changed, &work)
             .await
             .is_err()
     );
@@ -455,9 +461,9 @@ async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_
 #[test]
 fn pi_owner_reopen_retains_original_key_policy_and_signed_authority() {
     let directory = tempfile::tempdir().unwrap();
-    let owner = PiOwnerConfig::new(policy()).unwrap();
+    let owner = PiOwnerConfig::new(&policy(), None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
     let original = owner.authority().unwrap();
-    owner.save_new(directory.path()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), directory.path(), &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
     let saved = fs::read(directory.path().join(OWNER_FILE)).unwrap();
     assert!(saved.starts_with(OWNER_MAGIC));
     #[cfg(windows)]
@@ -474,7 +480,7 @@ fn pi_owner_reopen_retains_original_key_policy_and_signed_authority() {
         assert_eq!(authority.scope.run_limits(), original.scope.run_limits());
         assert!(fs::read(directory.path().join(OWNER_FILE)).unwrap() == saved);
     }
-    let replacement = PiOwnerConfig::new(policy()).unwrap();
+    let replacement = PiOwnerConfig::new(&policy(), None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
     assert!(
         replacement
             .authority()
@@ -483,7 +489,12 @@ fn pi_owner_reopen_retains_original_key_policy_and_signed_authority() {
             .verify(&original.signed)
             .is_err()
     );
-    assert!(replacement.save_new(directory.path()).is_err());
+    assert!({
+        let work = &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), work)
+            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })
+            .and_then(|root| (replacement).save_new_with_native_work(&root, std::path::Path::new(""), work))
+    }.is_err());
     assert!(fs::read(directory.path().join(OWNER_FILE)).unwrap() == saved);
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
 }
@@ -493,8 +504,8 @@ fn pi_owner_concurrent_initialization_publishes_one_original_owner() {
     use std::sync::{Arc, Barrier};
     let directory = tempfile::tempdir().unwrap();
     let owners = [
-        PiOwnerConfig::new(policy()).unwrap(),
-        PiOwnerConfig::new(policy()).unwrap(),
+        PiOwnerConfig::new(&policy(), None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap(),
+        PiOwnerConfig::new(&policy(), None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap(),
     ];
     let barrier = Arc::new(Barrier::new(2));
     let accepted = std::thread::scope(|threads| {
@@ -505,7 +516,7 @@ fn pi_owner_concurrent_initialization_publishes_one_original_owner() {
                 let session = directory.path();
                 threads.spawn(move || {
                     barrier.wait();
-                    owner.save_new(session).is_ok()
+                    crate::pi_owner::tests::publish_owner(&(owner), session, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).is_ok()
                 })
             })
             .collect::<Vec<_>>();
@@ -531,8 +542,8 @@ fn pi_owner_reopen_retains_expired_bounds_for_original_attempt_reconciliation() 
     let directory = tempfile::tempdir().unwrap();
     let mut policy = policy();
     policy.run_limits.deadline_epoch_ms = Some(1);
-    let owner = PiOwnerConfig::new(policy).unwrap();
-    owner.save_new(directory.path()).unwrap();
+    let owner = PiOwnerConfig::new(&policy, None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), directory.path(), &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
     let reopened = PiOwnerConfig::load(directory.path()).unwrap();
     assert!(reopened == owner);
     assert_eq!(
@@ -551,8 +562,8 @@ fn pi_owner_missing_torn_corrupt_or_oversized_file_never_regenerates_credentials
     let directory = tempfile::tempdir().unwrap();
     assert!(PiOwnerConfig::load(directory.path()).is_err());
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
-    let owner = PiOwnerConfig::new(policy()).unwrap();
-    owner.save_new(directory.path()).unwrap();
+    let owner = PiOwnerConfig::new(&policy(), None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), directory.path(), &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
     let path = directory.path().join(OWNER_FILE);
     let valid = fs::read(&path).unwrap();
     let mut corrupt = valid.clone();
@@ -567,7 +578,12 @@ fn pi_owner_missing_torn_corrupt_or_oversized_file_never_regenerates_credentials
         fs::write(&path, &invalid).unwrap();
         assert!(PiOwnerConfig::load(directory.path()).is_err());
         assert!(fs::read(&path).unwrap() == invalid);
-        assert!(owner.save_new(directory.path()).is_err());
+        assert!({
+        let work = &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), work)
+            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })
+            .and_then(|root| (owner).save_new_with_native_work(&root, std::path::Path::new(""), work))
+    }.is_err());
         assert!(fs::read(&path).unwrap() == invalid);
     }
     let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
@@ -588,8 +604,8 @@ fn replace_plain(session: &Path, plain: &[u8]) {
 #[test]
 fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants() {
     let directory = tempfile::tempdir().unwrap();
-    let owner = PiOwnerConfig::new(policy()).unwrap();
-    owner.save_new(directory.path()).unwrap();
+    let owner = PiOwnerConfig::new(&policy(), None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), directory.path(), &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
     let original = serde_json::to_value(&owner).unwrap();
     let mut invalids = Vec::new();
     for version in [0, 4, 5] {
@@ -671,8 +687,8 @@ fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants(
 #[test]
 fn pi_owner_windows_dpapi_rejects_unprotected_payload_even_with_matching_envelope_digest() {
     let directory = tempfile::tempdir().unwrap();
-    let owner = PiOwnerConfig::new(policy()).unwrap();
-    owner.save_new(directory.path()).unwrap();
+    let owner = PiOwnerConfig::new(&policy(), None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), directory.path(), &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
     let plain = serde_json::to_vec(&owner).unwrap();
     let mut bytes = Vec::from(OWNER_MAGIC.as_slice());
     bytes.extend_from_slice(blake3::hash(&plain).as_bytes());
@@ -687,9 +703,8 @@ fn pi_owner_windows_dpapi_rejects_unprotected_payload_even_with_matching_envelop
 fn pi_owner_unix_rejects_public_permissions_links_and_nonregular_files() {
     use std::os::unix::fs::{PermissionsExt as _, symlink};
     let directory = tempfile::tempdir().unwrap();
-    PiOwnerConfig::new(policy())
-        .unwrap()
-        .save_new(directory.path())
+    crate::pi_owner::tests::publish_owner(&(PiOwnerConfig::new(&policy(), None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap())
+        .unwrap()), directory.path(), &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap())
         .unwrap();
     let path = directory.path().join(OWNER_FILE);
     assert_eq!(
@@ -819,8 +834,8 @@ async fn native_owner_authority_denial_does_not_write_original_storage() {
 #[test]
 fn native_owner_rooted_readonly_preserves_record_without_durability_writes() {
     let directory = tempfile::tempdir().unwrap();
-    let owner = PiOwnerConfig::new(policy()).unwrap();
-    owner.save_new(directory.path()).unwrap();
+    let owner = PiOwnerConfig::new(&policy(), None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), directory.path(), &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
     let original = fs::read(directory.path().join(OWNER_FILE)).unwrap();
     let work = startup_work();
     let root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
@@ -841,8 +856,8 @@ fn native_owner_rooted_readonly_preserves_record_without_durability_writes() {
 fn native_owner_rooted_cancellation_precedes_record_read_or_publication() {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError};
     let directory = tempfile::tempdir().unwrap();
-    let owner = PiOwnerConfig::new(policy()).unwrap();
-    owner.save_new(directory.path()).unwrap();
+    let owner = PiOwnerConfig::new(&policy(), None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), directory.path(), &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
     let original = fs::read(directory.path().join(OWNER_FILE)).unwrap();
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(

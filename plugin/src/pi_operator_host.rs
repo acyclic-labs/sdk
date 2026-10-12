@@ -4,7 +4,7 @@ use crate::{PiTaskBinding, pi_owner::PiOwnerConfig,
     pi_operator::{self, PiPreparedApproval, PiOperatorRequest, PiOperatorBody, PiOperatorDecision},
     pi_fork::{original_operation, derived}};
 use acyclic_fs::{NativeMaterializationWork, MaterializationPhase};
-use acyclic_harness::{Error, Result, Capabilities, OperationId, InteractionId, NativeTaskContext,
+use acyclic_harness::{Error, Result, Capabilities, OperationId, NativeTaskContext,
     durable_host::TaskJournalOwner, scheduler::LeaseFence,
     filesystem::{FilesystemExecutionJournal, TaskCommandProgress},
     core::SchemaRegistry, executor::ExecutionJournal,
@@ -47,16 +47,6 @@ fn denied(reason: &'static str) -> Error {
     Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized, reason }
 }
 fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error { Error::NativeWork { cause, custody: None } }
-fn interaction_id(task: acyclic_harness::TaskId, operation: OperationId, work: &NativeMaterializationWork) -> Result<InteractionId> {
-    // The SDK's ordinary task interaction identity, not a second approval index.
-    const DOMAIN: &[u8] = b"harness/v2/task-interaction\0";
-    work.admit(acyclic_fs::WorkCounters { bytes_hashed: DOMAIN.len() as u64 + 32,
-        ..acyclic_fs::WorkCounters::default() }).map_err(native_error)?;
-    let mut hash = blake3::Hasher::new();
-    hash.update(DOMAIN); hash.update(&task.into_bytes()); hash.update(&operation.into_bytes());
-    let mut bytes = [0; 16]; bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    Ok(InteractionId::from_bytes(bytes))
-}
 fn validate_descriptor(protected: &PiOwnerConfig, descriptor: &PiPreparedApproval<&'_ str, &'_ acyclic_harness::conversation::VolumeRef, &'_ [String], &'_ acyclic_fs::MaterializationJournal>, work: &NativeMaterializationWork) -> Result<()> {
     let root = protected.policy().root_task;
     let original = original_operation(root, root, descriptor.command.sdk_operation, work)?;
@@ -108,7 +98,7 @@ pub(crate) async fn open_prepared_approval(runtime: &PiNativeRuntime, filesystem
         .map_err(native_error)?;
     let interaction = Interaction::Approval { prompt, operation_id: descriptor.operation,
         action_digest: pi_operator::parse_digest(descriptor.approval_digest)? };
-    journal.open_interaction_with_native_work(interaction_id(binding.task_id, descriptor.operation, work)?, &interaction, work)?.await?;
+    journal.open_interaction_with_native_work(acyclic_harness::durable_host::task_interaction_id_with_native_work(binding.task_id, descriptor.operation, work)?, &interaction, work)?.await?;
     owner.verify_with_native_work(false, work).await?;
     let _staged = crate::pi_root_provider::stage_pi_input(protected, filesystem, descriptor.operation,
         "operator-approval", descriptor, work).await?;
@@ -119,7 +109,7 @@ pub(crate) async fn require_resolved_approval<'a>(filesystem: &Arc<PiNativeFiles
     protected: &PiOwnerConfig, descriptor: impl Into<PiPreparedApproval<&'a str, &'a acyclic_harness::conversation::VolumeRef, &'a [String], &'a acyclic_fs::MaterializationJournal>>, work: &NativeMaterializationWork) -> Result<()> {
     let descriptor = descriptor.into();
     let journal = conversation_journal(filesystem, stream, protected, descriptor, work)?;
-    ToolApprovalVerifier::verify_with_native_work(&journal, interaction_id(protected.policy().root_task, descriptor.operation, work)?,
+    ToolApprovalVerifier::verify_with_native_work(&journal, acyclic_harness::durable_host::task_interaction_id_with_native_work(protected.policy().root_task, descriptor.operation, work)?,
         descriptor.operation, pi_operator::parse_digest(descriptor.approval_digest)?, work)?.await
 }
 
@@ -195,7 +185,7 @@ async fn observe_writeback(filesystem: &Arc<PiNativeFilesystem>, stream: &Stream
     work: &NativeMaterializationWork) -> Result<(&'static str, Option<acyclic_fs::OwnedMaterializationJournal>)> {
     let journal = conversation_journal(filesystem, stream, protected, descriptor, work)?;
     let (outcome, _outcome_custody) = journal.interaction_outcome_with_native_work(
-        interaction_id(protected.policy().root_task, descriptor.operation, work)?, work)?.await?;
+        acyclic_harness::durable_host::task_interaction_id_with_native_work(protected.policy().root_task, descriptor.operation, work)?, work)?.await?;
     let fs_operation = acyclic_fs::OperationId::from_bytes(descriptor.operation.into_bytes());
     let store = resources.store.materialization_with_work(work.clone());
     let native = acyclic_fs::MaterializationJournalStore::load(&store, fs_operation).await
@@ -365,7 +355,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             &admitted.binding, &original_root, work).await?;
         if !reconcile {
             let journal = conversation_journal(&self.filesystem, &self.stream, &self.protected, &prepared, work)?;
-            let id = interaction_id(root, prepared.operation, work)?;
+            let id = acyclic_harness::durable_host::task_interaction_id_with_native_work(root, prepared.operation, work)?;
             let capability = work.display(&format_args!("interaction:respond:{id}")).map_err(native_error)?;
             let grants = Capabilities::new_with_native_work(["interaction:resolve", capability.0.as_str()], work)?;
             let responder = self.protected.conversation_authority_with_native_work(root, self.protected.policy().agent,
@@ -378,7 +368,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         if decision == PiOperatorDecision::Decline {
             let journal = conversation_journal(&self.filesystem, &self.stream, &self.protected, &prepared, work)?;
             let (outcome, _outcome_custody) = journal.interaction_outcome_with_native_work(
-                interaction_id(root, prepared.operation, work)?, work)?.await?;
+                acyclic_harness::durable_host::task_interaction_id_with_native_work(root, prepared.operation, work)?, work)?.await?;
             if !matches!(outcome, Some(InteractionOutcome::Declined)) { return Ok(TaskCommandProgress::Pending); }
             let (value, custody) = crate::pi_root_provider::guarded_pi_value(&status_response(&prepared, "declined", None),
                 crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8, work)?;

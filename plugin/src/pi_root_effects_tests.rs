@@ -236,8 +236,8 @@ async fn pi_root_stock_worker_reopens_original_effect_without_redispatch() {
         )
         .await
         .unwrap();
-        let admission = runtime.admit_root_with_native_work(
-            request.binding.clone(), request.root.clone(), staged.0, &work,
+        let admission = runtime.admit_root(
+            &request.binding, &request.root, &staged.0, &work,
         ).await.unwrap();
         drop(admission.0);
         drop(admission.1);

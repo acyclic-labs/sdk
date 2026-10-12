@@ -290,7 +290,7 @@ fn native_cut_decode<T: serde::de::DeserializeOwned>(
     bytes: &[u8], maximum: u64, audited_fixed_bytes: u64, schema: JsonValueSchema,
     diagnostic_label_bytes: u64, work: &NativeMaterializationWork,
 ) -> Result<(T, acyclic_fs::NativeAllocation)> {
-    super::pi_root_provider::guarded_pi_decode(bytes, maximum, audited_fixed_bytes, schema, diagnostic_label_bytes, work)
+    super::pi_root_provider::guarded_pi_decode(bytes, maximum, audited_fixed_bytes, acyclic_harness::wire::ErrorCode::Invalid, schema, diagnostic_label_bytes, work)
 }
 
 fn native_sort_entry_ids(ids: &mut [&str], work: &NativeMaterializationWork) -> Result<()> {
@@ -349,39 +349,25 @@ pub(crate) fn capture_limits(actual_root_limits: acyclic_harness::conversation::
         maximum_result_bytes: u32::try_from(result).map_err(|error| invalid(&error.to_string()))? })
 }
 
-fn runtime_validation_step(work: Option<&NativeMaterializationWork>, items: usize) -> Result<()> {
-    if let Some(work) = work {
-        work.charge(WorkCounters { items_examined: items as u64, ..WorkCounters::default() }).map_err(native_error)?;
-    }
-    Ok(())
-}
 
 impl PiNativeHostRuntime {
-    pub(crate) fn sanitize(mut self) -> Result<Self> {
+    pub(crate) fn sanitize(mut self, work: &NativeMaterializationWork) -> Result<Self> {
         self.environment.retain(|key, _| !is_caller_environment(key));
-        self.validate()?;
+        self.validate(work)?;
         Ok(self)
     }
 
-    pub(crate) fn validate(&self) -> Result<()> {
-        self.validate_original(None)
-    }
-
-    pub(crate) fn validate_with_native_work(&self, work: &NativeMaterializationWork) -> Result<()> {
+    pub(crate) fn validate(&self, work: &NativeMaterializationWork) -> Result<()> {
         work.remaining().map_err(native_error)?;
-        self.validate_original(Some(work))
-    }
-
-    fn validate_original(&self, work: Option<&NativeMaterializationWork>) -> Result<()> {
-        let reject = |reason| match work {
-            Some(_) => Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason },
-            None => invalid(reason),
-        };
+        let reject = |reason| Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason };
+        let inspect = |items: usize| work.charge(WorkCounters {
+            items_examined: items as u64, ..WorkCounters::UNCHARGED
+        }).map_err(native_error);
         let mut environment_bytes = 0_u64;
         for (index, (key, value)) in self.environment.iter().enumerate() {
-            runtime_validation_step(work, 1)?;
-            runtime_validation_step(work, key.len())?;
-            runtime_validation_step(work, value.len())?;
+            inspect(1)?;
+            inspect(key.len())?;
+            inspect(value.len())?;
             environment_bytes = environment_bytes.checked_add(key.len() as u64).and_then(|bytes| bytes.checked_add(value.len() as u64))
                 .ok_or_else(|| reject("Pi host environment size overflow"))?;
             if key.is_empty() || key.contains(['=', '\0']) || value.contains('\0') || is_caller_environment(key)
@@ -389,8 +375,8 @@ impl PiNativeHostRuntime {
                 || (cfg!(windows) && {
                     let mut duplicate = false;
                     for prior in self.environment.keys().take(index) {
-                        runtime_validation_step(work, prior.len())?;
-                        runtime_validation_step(work, key.len())?;
+                        inspect(prior.len())?;
+                        inspect(key.len())?;
                         if prior.eq_ignore_ascii_case(key) { duplicate = true; break; }
                     }
                     duplicate
@@ -399,12 +385,12 @@ impl PiNativeHostRuntime {
                 return Err(reject("Pi original host environment is invalid or contains a recursive credential"));
             }
         }
-        runtime_validation_step(work, self.version.len())?;
+        inspect(self.version.len())?;
         for path in [&self.executable, &self.extension] {
-            runtime_validation_step(work, path.as_os_str().len())?;
+            inspect(path.as_os_str().len())?;
         }
-        for path in &self.executable_prefix { runtime_validation_step(work, path.len())?; }
-        if let Some(path) = &self.provider_extension { runtime_validation_step(work, path.as_os_str().len())?; }
+        for path in &self.executable_prefix { inspect(path.len())?; }
+        if let Some(path) = &self.provider_extension { inspect(path.as_os_str().len())?; }
         if self.version != PI_NATIVE_VERSION || !self.executable.is_absolute() || !self.extension.is_absolute()
             || has_parent(&self.executable) || has_parent(&self.extension) || self.environment.is_empty()
             || self.executable_prefix.len() > 1
@@ -421,7 +407,7 @@ impl PiNativeHostRuntime {
         &self, work: &NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         work.remaining().map_err(native_error)?;
-        self.validate_with_native_work(work)?;
+        self.validate(work)?;
         let mut version = pi_native_string(&self.version, work)?;
         let mut executable = work.copy_path(&self.executable).map_err(native_error)?;
         let mut extension = work.copy_path(&self.extension).map_err(native_error)?;
@@ -465,7 +451,7 @@ impl PiNativeHostRuntime {
         capture: PiNativeCaptureLimits, work: &NativeMaterializationWork,
     ) -> Result<(PiNativeInvocation, acyclic_fs::NativeAllocation)> {
         work.remaining().map_err(native_error)?;
-        self.validate_with_native_work(work)?;
+        self.validate(work)?;
         let caller = BTreeMap::new();
         let projection = PiBoundInvocation { version: &self.version, executable: &self.executable,
             executable_prefix: &self.executable_prefix, extension: &self.extension,
@@ -477,7 +463,7 @@ impl PiNativeHostRuntime {
             maximum_result_bytes: capture.maximum_result_bytes };
         let bytes = super::pi_root_provider::guarded_pi_bytes(&projection, super::MAXIMUM_ADAPTER_STATE_BYTES, work)?;
         super::pi_root_provider::guarded_pi_decode(&bytes.0, super::MAXIMUM_ADAPTER_STATE_BYTES,
-            std::mem::size_of::<PiNativeInvocation>() as u64, JsonValueSchema::None, PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work)
+            std::mem::size_of::<PiNativeInvocation>() as u64, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None, PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work)
     }
 
     pub(crate) fn bind_invocation(
@@ -485,7 +471,7 @@ impl PiNativeHostRuntime {
         work: &NativeMaterializationWork,
     ) -> Result<(PiNativeInvocation, acyclic_fs::NativeAllocation)> {
         work.remaining().map_err(native_error)?;
-        self.validate_with_native_work(work)?;
+        self.validate(work)?;
         intent.validate(work)?;
         require_caller_environment(caller_environment)?;
         let persisted = &intent.invocation;
@@ -507,7 +493,7 @@ impl PiNativeHostRuntime {
             maximum_result_bytes: persisted.maximum_result_bytes };
         let bytes = super::pi_root_provider::guarded_pi_bytes(&projection, super::MAXIMUM_ADAPTER_STATE_BYTES, work)?;
         super::pi_root_provider::guarded_pi_decode(&bytes.0, super::MAXIMUM_ADAPTER_STATE_BYTES,
-            std::mem::size_of::<PiNativeInvocation>() as u64, JsonValueSchema::None, PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work)
+            std::mem::size_of::<PiNativeInvocation>() as u64, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None, PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work)
     }
 }
 
@@ -700,7 +686,7 @@ impl PiNativeLaunchIntent {
         let bytes = context.read_file_with_native_work(reference, work).await?;
         let maximum = context.scope().limits().file_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
         let intent = super::pi_root_provider::guarded_pi_decode::<Self>(
-            bytes.as_ref(), maximum, std::mem::size_of::<Self>() as u64, JsonValueSchema::None, PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work)?;
+            bytes.as_ref(), maximum, std::mem::size_of::<Self>() as u64, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None, PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work)?;
         intent.0.validate(work)?;
         Ok(intent)
     }
@@ -832,7 +818,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
         return Err(Error::Unauthorized("Pi native approval exceeds the original admitted native policy".into()));
     }
     let runtime = protected.native_runtime()?;
-    runtime.validate()?;
+    runtime.validate(work)?;
     if invocation.version != runtime.version || invocation.executable != runtime.executable
         || invocation.executable_prefix != runtime.executable_prefix || invocation.extension != runtime.extension
         || invocation.provider_extension != runtime.provider_extension
@@ -855,7 +841,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     let encoded_grants = super::pi_root_provider::guarded_pi_bytes(
         &["interaction:resolve", std::str::from_utf8(&respond.0[..respond.1]).expect("formatter copies UTF-8")], 1024, work)?;
     let grants = super::pi_root_provider::guarded_pi_decode::<Capabilities>(
-        &encoded_grants.0, 1024, std::mem::size_of::<Capabilities>() as u64, JsonValueSchema::None, NATIVE_CAPABILITIES_DIAGNOSTIC_LABEL_BYTES, work)?;
+        &encoded_grants.0, 1024, std::mem::size_of::<Capabilities>() as u64, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None, NATIVE_CAPABILITIES_DIAGNOSTIC_LABEL_BYTES, work)?;
     let responder = protected.conversation_authority_with_native_work(owner.task_id(), binding.agent_id, &grants.0, work)?;
     journal.resolve_interaction_with_native_work(approval,
         &InteractionResponse::Approval { approved: true, reason: None }, &responder.0.2, work)?.await?;

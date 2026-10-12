@@ -11,11 +11,11 @@ fn fixture() -> (pi_owner::PiOwnerConfig, AdapterState) {
         VolumeOwner::Agent(agent)).unwrap();
     let scratch = VolumeRef::new(provider, "scratch", VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent)).unwrap();
-    let owner = pi_owner::PiOwnerConfig::new(pi_owner::PiOwnerPolicy {
+    let owner = pi_owner::PiOwnerConfig::new(&pi_owner::PiOwnerPolicy {
         root_task: task, agent, journal, grants: Capabilities::new(["operation:declare", "operation:observe"]),
         limits: Limits::default(), run_limits: TaskRunLimits::default(),
         session_limits: SessionLimits::default(), concurrency: 1, maximum_payload_bytes: 4096,
-    }).unwrap();
+    }, None, &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
     let state = AdapterState { root_session_id: "native-root".to_owned(),
         root_agent_id: "native-root".to_owned(), task_binding: PluginTaskBinding::Pi(Box::new(PiTaskBinding {
             native_session_id: "native-root".to_owned(), task_id: task, agent_id: agent,
