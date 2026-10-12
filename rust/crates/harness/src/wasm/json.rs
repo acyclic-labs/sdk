@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Parses canonical JSON without passing full-width integer literals through
 /// JavaScript Number. Large serde integers are returned as `BigInt`.
 #[wasm_bindgen(js_name = decodeCanonicalJson)]

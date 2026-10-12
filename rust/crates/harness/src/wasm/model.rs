@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Complete declarative inventory, without granting file or option authority.
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
