@@ -4333,10 +4333,6 @@ macro_rules! ordinary_file_methods {
         ordinary_file_methods!(@call $this, $boundary,  |work| $this.allocate_range_with_meter(offset, length, operation, work))
     }
 
-    fn read_attribute(&$this, name: &[u8]) -> Result<Option<OwnedBytes>, MountSourceError> {
-        ordinary_file_methods!(@call $this, $boundary,  |work| $this.read_attribute_with_meter(name, work).map(|packet| packet.map(|packet| packet.bytes)))
-    }
-
     fn list_attributes(&$this, cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountAttributePage, MountSourceError> {
         ordinary_file_methods!(@call $this, $boundary, |work| $this.list_attributes_with_meter(cursor, maximum_entries, work).map(|(page, _)| page))
     }
@@ -4458,7 +4454,7 @@ where
         }, meter.as_ref()).map_err(capture_io_error)?
     }
 
-    fn read_attribute_with_meter(
+    fn read_attribute(
         &self, name: &[u8], work: &crate::NativeMaterializationWork,
     ) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
         let meter = work.native_read_meter();
@@ -4861,7 +4857,7 @@ where
         seek_with_meter(offset: u64, target: MountSeekTarget) -> Option<u64>;
         allocate_range_with_meter(offset: u64, length: u64, operation: MountRangeAllocation) -> ();
         set_attributes(metadata: FileMetadata, logical_bytes: Option<u64>) -> ();
-        read_attribute_with_meter(name: &[u8]) -> Option<crate::kernel::OwnedSourceChunk>;
+        read_attribute(name: &[u8]) -> Option<crate::kernel::OwnedSourceChunk>;
         list_attributes_with_meter(cursor: Option<&[u8]>, maximum_entries: u32) -> (MountAttributePage, crate::NativeAllocation);
         write_attribute(name: &[u8], value: crate::kernel::OwnedSourceChunk, mode: MountAttributeWriteMode) -> ();
         remove_attribute(name: &[u8]) -> ();
@@ -5025,7 +5021,7 @@ where
         }, meter.as_ref()).map_err(capture_io_error)?
     }
 
-    fn read_attribute_with_meter(&self, name: &[u8], work: &crate::NativeMaterializationWork)
+    fn read_attribute(&self, name: &[u8], work: &crate::NativeMaterializationWork)
         -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
         let meter = work.native_read_meter();
         self.runtime.block_on_measured(|| async {
@@ -8301,12 +8297,7 @@ where
         Ok(changed)
     }
 
-    fn read_link(&self, path: &MountPath) -> Result<OwnedBytes, MountSourceError> {
-        let work = capture_meter(crate::performance::BOUNDARY_BUDGET, &self.cancellation).map_err(|failure| failure.error)?;
-        self.read_link_with_meter(path, &work).map(|chunk| chunk.bytes)
-    }
-
-    fn read_link_with_meter(
+    fn read_link(
         &self,
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
@@ -8596,13 +8587,6 @@ where
     }
 
     fn read_attribute(
-        &self, path: &MountPath, name: &[u8],
-    ) -> Result<Option<OwnedBytes>, MountSourceError> {
-        let work = capture_meter(crate::performance::BOUNDARY_BUDGET, &self.cancellation).map_err(|failure| failure.error)?;
-        self.read_attribute_with_meter(path, name, &work).map(|value| value.map(|chunk| chunk.bytes))
-    }
-
-    fn read_attribute_with_meter(
         &self,
         path: &MountPath,
         name: &[u8],
@@ -9554,7 +9538,7 @@ mod tests {
         cancellation.cancel();
         let mut invocation = &work;
         assert!(matches!(source.lookup_pinned_with_meter(&path, &mut invocation), Err(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled))));
-        assert!(matches!(source.read_link_with_meter(&path, &mut invocation), Err(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled))));
+        assert!(matches!(source.read_link(&path, &mut invocation), Err(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled))));
         assert!(matches!(source.read_range_with_meter(&path, 0, 8, &mut invocation), Err(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled))));
         assert!(matches!(source.read_directory_with_meter(&MountPath::root(), None, 1, &mut invocation), Err(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled))));
         let mut delivered = 0;
@@ -9589,7 +9573,7 @@ mod tests {
         let invocation = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
         cancellation.cancel();
         assert!(matches!(source.lookup_pinned_with_meter(&path, &invocation), Err(MountSourceError::Cancelled)));
-        assert!(matches!(source.read_link_with_meter(&path, &invocation), Err(MountSourceError::Cancelled)));
+        assert!(matches!(source.read_link(&path, &invocation), Err(MountSourceError::Cancelled)));
         assert!(matches!(source.read_range_with_meter(&path, 0, 8, &invocation), Err(MountSourceError::Cancelled)));
         assert!(matches!(source.read_directory_with_meter(&MountPath::root(), None, 1, &invocation), Err(MountSourceError::Cancelled)));
         let mut delivered = 0;
@@ -9635,7 +9619,7 @@ mod tests {
         )?;
         assert_eq!(bytes.bytes.as_ref(), b"ont");
         assert!(bytes.logical_owned_bytes >= 3);
-        let target = source.read_link_with_meter(
+        let target = source.read_link(
             &link, &work,
         )?;
         assert_eq!(target.bytes.as_ref(), b"actual");
@@ -10942,7 +10926,7 @@ mod tests {
         to.write_attribute(
             b"user.metered", value, MountAttributeWriteMode::Create, &invocation,
         )?;
-        let value = to.read_attribute_with_meter(b"user.metered", &invocation)?
+        let value = to.read_attribute(b"user.metered", &invocation)?
             .ok_or("missing metered detached attribute")?;
         assert_eq!(value.bytes.as_ref(), b"payload");
         drop(value);
@@ -10960,7 +10944,7 @@ mod tests {
         assert_eq!(page.0.names, vec![b"user.metered".to_vec()]);
         drop(page);
         to.remove_attribute(b"user.metered", &invocation)?;
-        assert!(to.read_attribute_with_meter(b"user.metered", &invocation)?.is_none());
+        assert!(to.read_attribute(b"user.metered", &invocation)?.is_none());
         to.settle(&invocation)?;
         let observed = to.lookup_with_meter(&invocation)?;
         let prefix = meter.lock().work;
@@ -11993,13 +11977,13 @@ mod tests {
             let attribute = b"user.acyclic.detached";
             boundary(source.cancellation(), |work| detached.write_attribute(attribute, crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"retained").into(), 0), MountAttributeWriteMode::Create, work))?;
             assert_eq!(
-                detached.read_attribute(attribute)?.as_deref(),
+                boundary(source.cancellation(), |work| detached.read_attribute(attribute, work))?.map(|packet| packet.bytes).as_deref(),
                 Some(b"retained".as_slice())
             );
             let attributes = detached.list_attributes(None, 8)?;
             assert_eq!(attributes.names, vec![attribute.to_vec()]);
             boundary(source.cancellation(), |work| detached.remove_attribute(attribute, work))?;
-            assert_eq!(detached.read_attribute(attribute)?, None);
+            assert!(boundary(source.cancellation(), |work| detached.read_attribute(attribute, work))?.is_none());
         }
         Ok(())
     }
@@ -12078,8 +12062,8 @@ mod tests {
         std::fs::write(root.path().join("metadata.bin"), b"host")?;
         source.capture_host_path(root.path(), &path)?;
         assert_eq!(
-            source
-                .read_attribute(&path, b"user.acyclic.retained")?
+            boundary(source.cancellation(), |work| source.read_attribute(&path, b"user.acyclic.retained", work))?
+                .map(|packet| packet.bytes)
                 .as_deref(),
             Some(b"opaque".as_slice())
         );
@@ -12121,11 +12105,11 @@ mod tests {
             let name = b"user.acyclic.attached";
             boundary(source.cancellation(), |work| open.write_attribute(name, crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"identity").into(), 0), MountAttributeWriteMode::Create, work))?;
             assert_eq!(
-                open.read_attribute(name)?.as_deref(),
+                boundary(source.cancellation(), |work| open.read_attribute(name, work))?.map(|packet| packet.bytes).as_deref(),
                 Some(b"identity".as_slice())
             );
             assert_eq!(
-                source.read_attribute(&renamed, name)?.as_deref(),
+                boundary(source.cancellation(), |work| source.read_attribute(&renamed, name, work))?.map(|packet| packet.bytes).as_deref(),
                 Some(b"identity".as_slice())
             );
         }
@@ -12995,14 +12979,14 @@ mod tests {
         assert_eq!(source.lookup(&path)?, Some(created));
         boundary(source.cancellation(), |work| source.write_attribute(&path, b"user.acyclic", crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"native-xattr").into(), 0), MountAttributeWriteMode::Create, work))?;
         assert_eq!(
-            source.read_attribute(&path, b"user.acyclic")?.as_deref(),
+            boundary(source.cancellation(), |work| source.read_attribute(&path, b"user.acyclic", work))?.map(|packet| packet.bytes).as_deref(),
             Some(b"native-xattr".as_slice())
         );
         let attributes = source.list_attributes(&path, None, 8)?;
         assert_eq!(attributes.names, vec![b"user.acyclic".to_vec()]);
         assert_eq!(attributes.next_cursor, None);
         boundary(source.cancellation(), |work| source.remove_attribute(&path, b"user.acyclic", work))?;
-        assert_eq!(source.read_attribute(&path, b"user.acyclic")?, None);
+        assert!(boundary(source.cancellation(), |work| source.read_attribute(&path, b"user.acyclic", work))?.is_none());
         let page = source.read_directory(&MountPath::root(), None, 8)?;
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].name, name);
