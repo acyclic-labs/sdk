@@ -1527,6 +1527,11 @@ pub(crate) async fn send_control_envelope_with_attempts(
     let _ = windows_connect_attempts;
     let mut encoded = serde_json::to_vec(envelope)
         .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+    if encoded.len() >= MAXIMUM_CONTROL_MESSAGE_BYTES {
+        return Err(ControlRequestError::Response(
+            "Acyclic request exceeds the maximum frame size".to_owned(),
+        ));
+    }
     encoded.push(b'\n');
     #[cfg(target_os = "linux")]
     return send_linux_mailbox_request(
