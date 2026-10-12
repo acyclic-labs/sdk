@@ -4489,7 +4489,7 @@ mod tests {
                 .is_err()
             );
         }
-        assert_ne!(first.version().into(), second.version());
+        assert_ne!(first.version(), second.version());
         assert_eq!(
             host.read_content(&first, &read, 16).await?,
             acyclic_stream::OwnedBytes::from_static(b"one")
@@ -4551,8 +4551,8 @@ mod tests {
                 "messages",
                 Some(&listed_generation),
                 None,
-                10,
-            )
+                10, None,
+            )?
             .await?;
         assert_eq!(portable_page.generation, listed_generation);
         assert_eq!(
