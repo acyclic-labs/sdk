@@ -7652,7 +7652,7 @@ mod tests {
                 "/added.txt",
                 Bytes::from_static(b"added"),
                 FileMetadata::default(),
-            , crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         mount.advance_to_head().await?;
@@ -7940,7 +7940,7 @@ mod tests {
                 "/before.txt",
                 Bytes::from_static(b"unread"),
                 crate::kernel::FileMetadata::default(),
-            , crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let destination = root.path().join("mount");
@@ -7982,7 +7982,7 @@ mod tests {
                 "/original.txt",
                 Bytes::from_static(b"original"),
                 crate::kernel::FileMetadata::default(),
-            , crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
 
@@ -8107,7 +8107,7 @@ mod tests {
                     &format!("/entry{index:03}"),
                     Bytes::from_static(b"initial"),
                     crate::kernel::FileMetadata::default(),
-                , crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
                 .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         }
         for name in ["Alpha", "Zebra", "Ã©clair"] {
@@ -8116,7 +8116,7 @@ mod tests {
                     &format!("/{name}"),
                     Bytes::from_static(b"initial"),
                     crate::kernel::FileMetadata::default(),
-                , crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
                 .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         }
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
