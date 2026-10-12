@@ -10,7 +10,6 @@ use crate::{
     },
     runtime::ToolContext,
 };
-use acyclic_stream::BoxProviderFuture;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
