@@ -603,7 +603,7 @@ impl NativeMaterializationWork {
 
     /// Retains the original invocation for native queue completion.
     pub(crate) fn original_demand_work(&self) -> crate::demand::OriginalDemandWork {
-        crate::demand::OriginalDemandWork::from_native_materialization_work(self)
+        crate::demand::NativeSourceWork::from_native_materialization_work(self).original_demand_work()
     }
 
     pub(crate) fn from_original_demand_work(work: &crate::demand::OriginalDemandWork) -> Result<Self, crate::DemandError> {
@@ -915,19 +915,6 @@ impl NativeMaterializationWork {
         header_guard: &mut NativeAllocation,
     ) -> Result<crate::demand::NativeCheckoutControlWitness, NativeTreeMaterializationError> {
         self.state.register_native_checkout_control(self, producer, header_guard)
-    }
-
-    /// Constructs private controls through registered original custody.
-    pub(crate) fn with_native_checkout_controls<T, E: From<NativeTreeMaterializationError>>(
-        &self,
-        operation: impl FnOnce(
-            &mut crate::demand::NativeCheckoutControlSink<'_>,
-            &mut crate::kernel::allocation::AllocationLedger,
-            &mut crate::WorkCounters, crate::WorkBudget, &crate::CancellationToken,
-        ) -> Result<T, E>,
-    ) -> Result<T, E> {
-        self.state.with_native_checkout_controls(operation)
-            .map_err(|error| E::from(native_materialization_work_error(error)))?
     }
 
     /// The failure path must have destroyed all of the leaf's own backing.
