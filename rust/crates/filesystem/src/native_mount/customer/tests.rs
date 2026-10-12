@@ -125,38 +125,16 @@ async fn witnessed_attachment_keeps_the_original_root_and_rejects_unfunded_captu
     crate::initialize_native_mount_services()?;
     let token = crate::CancellationToken::new();
     let setup = test_work(crate::WorkBudget::UNBOUNDED, &token)?;
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "native-carrier-admission",
-            crate::WorkBudget::UNBOUNDED,
-            &token,
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    let mut transaction = workspace
-        .begin_transaction(IdempotencyKey::new(), &setup, &token)
-        .await?;
-    transaction
-        .create_directory("/selected-Ã©", &setup, &token)
-        .await?;
-    transaction
-        .commit(
-            None,
+    let physical = tempfile::tempdir()?;
+    std::fs::create_dir(physical.path().join("selected-Ã©"))?;
+    let lazy = native_lazy_source(physical.path(), "native-carrier-admission", &token).await?;
+    let generation = lazy
+        .exactify(
+            "/selected-Ã©",
             PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &token,
-            |_| async {
-                Ok::<_, crate::OperationFailure<WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
+            &mut KernelAccounting::native(&setup, &token),
         )
-        .await
-        .map_err(|failure| failure.error)?;
-    let generation = workspace.head(&setup, &token).await?;
+        .await?;
     let directory = tempfile::tempdir()?;
     let options = crate::MaterializeOptions::native(directory.path());
     let mount = MountOptions::read_only().subdirectory("/selected-Ã©");
