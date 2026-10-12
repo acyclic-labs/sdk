@@ -1,6 +1,41 @@
 //! Resources.
 use super::*;
 
+pub(super) struct Verification {
+    pub(super) remaining: Option<(u64, u64)>,
+    pub(super) path: Vec<OperationId>,
+}
+
+impl Verification {
+    pub(super) fn charge(
+        &mut self,
+        units: u64,
+        bytes: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+        }
+        if let Some((remaining_work, remaining_bytes)) = self.remaining.as_mut() {
+            *remaining_work = remaining_work.checked_sub(units).ok_or_else(|| {
+                admission_boundary(
+                    work,
+                    crate::wire::ErrorCode::Invalid,
+                    "project source verification exceeds work bound",
+                )
+            })?;
+            *remaining_bytes = remaining_bytes.checked_sub(bytes).ok_or_else(|| {
+                admission_boundary(
+                    work,
+                    crate::wire::ErrorCode::Invalid,
+                    "project source verification exceeds byte bound",
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
 impl<P: StreamProvider> CreatedTaskPublicationLease<P> {
     async fn verify_with_work(
         &self,
@@ -115,6 +150,41 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    pub(super) async fn source_admission(
+        &self,
+        task: TaskId,
+        budget: &mut Verification,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(TaskAdmissionRecord, u64)> {
+        budget.charge(1, 0, work)?;
+        let operation = OperationId::from_bytes(task.into_bytes());
+        let spec = self
+            .retained_declaration_with_work(operation, work)
+            .await?
+            .ok_or_else(|| {
+                admission_boundary(
+                    work,
+                    crate::wire::ErrorCode::NotFound,
+                    "project source admission is missing",
+                )
+            })?;
+        let held = if work.is_some() {
+            spec.logical_owned_bytes()?
+        } else {
+            0
+        };
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, held);
+        budget.charge(0, spec.state.descriptor().byte_length(), quota.work())?;
+        let admitted = self
+            .read_declared_admission_counted(&spec, quota.work())
+            .await;
+        drop(spec);
+        let released = quota.relinquish(held);
+        let record = admitted?;
+        released?;
+        Ok(record)
+    }
+
     pub(super) fn created_publication_lease_with_work(
         &self,
         operation: OperationId,
@@ -175,12 +245,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         admission: &TaskAdmissionRecord,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(RuntimeScope, u64)> {
-        let mut visited = Vec::new();
+        let mut verification = Verification {
+            path: Vec::new(),
+            remaining: None,
+        };
         let access = self
-            .verify_created_access_with_work(admission, &mut visited, work)
+            .verify_created_access(admission, &mut verification, work)
             .await;
-        let visited_bytes = (visited.capacity() * std::mem::size_of::<OperationId>()) as u64;
-        drop(visited);
+        let visited_bytes =
+            (verification.path.capacity() * std::mem::size_of::<OperationId>()) as u64;
+        drop(verification);
         if let Some(io) = work.as_deref_mut() {
             io.release_owned(visited_bytes)?;
         }
@@ -251,19 +325,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(false)
     }
 
-    pub(super) fn verify_created_access_with_work<'a, 'b>(
+    pub(super) fn verify_created_access<'a, 'b>(
         &'a self,
         admission: &'a TaskAdmissionRecord,
-        visited: &'a mut Vec<OperationId>,
+        verification: &'a mut Verification,
         work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
     ) -> impl std::future::Future<
         Output = Result<Option<crate::resource_preparation::CreatedResourceAccess>>,
     > + acyclic_stream::ProviderTask
     + 'a {
         async move {
-            if let Some(io) = work.as_deref_mut() {
-                io.check_cancellation()?;
-            }
+            verification.charge(1, 0, work)?;
             if admission.resource_proofs.is_empty() {
                 return Ok(None);
             }
@@ -274,18 +346,18 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .cloned()
             {
                 return crate::NativeFutureBundle::new(&native, || {
-                    self.verify_created_access_body(admission, visited, work)
+                    self.verify_created_access_body(admission, verification, work)
                 })?
                 .await;
             }
-            Box::pin(self.verify_created_access_body(admission, visited, work)).await
+            Box::pin(self.verify_created_access_body(admission, verification, work)).await
         }
     }
 
     pub(super) async fn verify_created_access_body(
         &self,
         admission: &TaskAdmissionRecord,
-        visited: &mut Vec<OperationId>,
+        verification: &mut Verification,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Option<crate::resource_preparation::CreatedResourceAccess>> {
         use crate::wire::ErrorCode;
@@ -295,15 +367,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if admission.resource_proofs.is_empty() {
             return Ok(None);
         }
-        if Self::proof_contains(visited, &admission.operation_id, work)? {
+        if Self::proof_contains(&verification.path, &admission.operation_id, work)? {
             return Err(admission_boundary(
                 work,
                 ErrorCode::Unauthorized,
                 "resource preparation proof is cyclic",
             ));
         }
-        Self::reserve_proof_slots(visited, work)?;
-        visited.push(admission.operation_id);
+        Self::reserve_proof_slots(&mut verification.path, work)?;
+        verification.path.push(admission.operation_id);
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
         let parent = admission.parent.ok_or_else(|| {
             admission_boundary(
@@ -313,15 +385,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             )
         })?;
         let (parent_admission, held) = self
-            .read_retained_admission_counted(
-                OperationId::from_bytes(parent.into_bytes()),
-                custody.work(),
-            )
+            .source_admission(parent, verification, custody.work())
             .await?;
         custody.adopt(held)?;
         let mut receipts = Vec::new();
         let mut current_default: Option<(usize, OperationId)> = None;
         for proof in &admission.resource_proofs {
+            verification.charge(1, 0, custody.work())?;
             let mut selected = None;
             for provider in &self.resource_creation {
                 if let Some(io) = custody.work().as_deref_mut() {
@@ -341,10 +411,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             })?;
             let mut proof_custody = crate::wire_codec::CodecQuota::new(custody.work(), 0)?;
             let (preparation, held) = self
-                .read_retained_admission_counted(
-                    OperationId::from_bytes(proof.preparation.into_bytes()),
-                    proof_custody.work(),
-                )
+                .source_admission(proof.preparation, verification, proof_custody.work())
                 .await?;
             proof_custody.adopt(held)?;
             let (request, held) =
@@ -352,6 +419,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     &preparation.input, proof_custody.work(),
                 )?;
             proof_custody.adopt(held)?;
+            verification.charge(
+                request.maximum_work,
+                request.maximum_bytes,
+                proof_custody.work(),
+            )?;
             if preparation.parent != request.child.parent
                 || preparation.operation_id.into_bytes() != proof.preparation.into_bytes()
                 || request.provider != proof.provider
@@ -366,7 +438,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 ));
             }
             let preparation_access = self
-                .verify_created_access_with_work(&preparation, visited, proof_custody.work())
+                .verify_created_access(&preparation, verification, proof_custody.work())
                 .await?;
             let (preparation_scope, scope_held) = self.root_scope.with_created_access_with_work(
                 &preparation,
@@ -385,10 +457,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 )
             })?;
             let (original_parent, held) = self
-                .read_retained_admission_counted(
-                    OperationId::from_bytes(preparation_parent.into_bytes()),
-                    proof_custody.work(),
-                )
+                .source_admission(preparation_parent, verification, proof_custody.work())
                 .await?;
             proof_custody.adopt(held)?;
             if !original_parent.grants.contains(&request.creation_grant)
@@ -411,8 +480,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     ));
                 }
                 let (original_child, held) = self
-                    .read_retained_admission_counted(
-                        request.child.operation_id,
+                    .source_admission(
+                        TaskId::from_bytes(request.child.operation_id.into_bytes()),
+                        verification,
                         proof_custody.work(),
                     )
                     .await?;
@@ -427,6 +497,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         "created resource origin admission changed",
                     ));
                 }
+            }
+            #[cfg(feature = "filesystem")]
+            if inherited && verification.remaining.is_some() {
+                self.source_graph_root(parent, verification, proof_custody.work())
+                    .await?;
             }
             {
                 let mut coordinator = self.coordinator.lock().await;
@@ -558,7 +633,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Self::reserve_proof_slots(&mut receipts, custody.work())?;
             receipts.push(receipt);
         }
-        visited.pop();
+        verification.path.pop();
         let (access, _) = crate::resource_preparation::CreatedResourceAccess::consume(
             admission,
             &mut receipts,

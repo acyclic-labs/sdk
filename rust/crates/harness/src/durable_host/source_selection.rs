@@ -1,5 +1,5 @@
 //! Project selection under the configured source policy.
-use super::source_authorization::SourceBudget;
+use super::resources::Verification;
 use super::*;
 use crate::core::AuthorityIssuer;
 use crate::source_authorization::{
@@ -142,9 +142,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             maximum_bytes,
             quota.work(),
         )?;
-        let mut budget = SourceBudget {
-            work: maximum_work,
-            bytes: maximum_bytes,
+        let mut budget = Verification {
+            remaining: Some((maximum_work, maximum_bytes)),
+            path: Vec::new(),
         };
         budget.charge(1, bytes, quota.work())?;
         let (caller, caller_held) = self
@@ -189,9 +189,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .host
             .source_created_project(&source, &snapshot.project, &mut budget, quota.work())
             .await?;
+        let (remaining_work, remaining_bytes) =
+            budget.remaining.expect("bounded project verification");
         if (!created_project_authenticated && source_task != graph_root)
-            || budget.work == 0
-            || budget.bytes == 0
+            || remaining_work == 0
+            || remaining_bytes == 0
         {
             return Err(admission_boundary(
                 quota.work(),
@@ -205,8 +207,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             source: &source,
             graph_root,
             operation_id,
-            maximum_work: budget.work,
-            maximum_bytes: budget.bytes,
+            maximum_work: remaining_work,
+            maximum_bytes: remaining_bytes,
             created_project_authenticated,
             cancellation,
         };
