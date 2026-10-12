@@ -31,7 +31,7 @@ impl<'a> PiForkCoordinator<'a> {
         self.validate_plan(plan, owner.task_id())?;
         self.require_original_plan(plan).await?;
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         self.admit_original(&plan.preparation, fence).await?;
         Ok(())
@@ -59,7 +59,7 @@ impl<'a> PiForkCoordinator<'a> {
         self.validate_plan(plan, owner.task_id())?;
         self.require_original_plan(plan).await?;
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         cancel.check().map_err(|_| Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
@@ -71,7 +71,7 @@ impl<'a> PiForkCoordinator<'a> {
             .await?;
         let host = self.runtime.runtime.task_host();
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         self.admit_original(&plan.preparation, fence).await?;
         if self
@@ -99,7 +99,7 @@ impl<'a> PiForkCoordinator<'a> {
         {
             let commands = self.runtime.runtime.commands().with_fork_preparer(preparer);
             let recovered = {
-                let mut io = native_work_io(work)?;
+                let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                 HistoryIo::retain_owned(
                     &mut io,
                     std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
@@ -108,7 +108,7 @@ impl<'a> PiForkCoordinator<'a> {
                 let value = host
                     .recover_work(plan.preparation.task_id(), &mut Some(&mut io))
                     .await?;
-                (value, io.into_custody())
+                (value, io.into_custody()?)
             };
             match recovered.0 {
                 WorkPull::Claimed(lease) | WorkPull::Unresolved { lease, .. } => {
@@ -188,7 +188,7 @@ impl<'a> PiForkCoordinator<'a> {
             });
         }
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         Ok(Some(report))
     }
@@ -224,7 +224,7 @@ impl<'a> PiForkCoordinator<'a> {
         };
         let host = self.runtime.runtime.task_host();
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         cancel.check().map_err(|_| Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
@@ -244,7 +244,7 @@ impl<'a> PiForkCoordinator<'a> {
             });
         }
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         self.publish(
             context,
@@ -268,7 +268,7 @@ impl<'a> PiForkCoordinator<'a> {
             )
             .await?;
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         Ok(Some(prepared))
     }
@@ -304,7 +304,7 @@ impl<'a> PiForkCoordinator<'a> {
                 reason: "Pi cold child has no successful published original creator",
             })?;
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         Ok(prepared)
     }
@@ -325,20 +325,20 @@ impl<'a> PiForkCoordinator<'a> {
     ) -> Result<PreparedPiFork> {
         let work = &self.work;
         let project_name = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = report
                 .request
                 .preparation
                 .child_project_volume
                 .storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let project = self
             .resources
             .fs
-            .open_workspace_with_native_work(&project_name.0, work, cancel)
+            .open_workspace(&project_name.0, work, cancel)
             .await
-            .map_err(native_workspace_error)?;
+            .map_err(|error| native_workspace_error((error, None)))?;
         let generation = report
             .captures
             .iter()
@@ -367,29 +367,31 @@ impl<'a> PiForkCoordinator<'a> {
                     reason: "Pi created project generation has a different identity shape",
                 })?;
         let (workspace, native_lazy) = source
-            .bind_prepared_fork_with_native_work(
+            .bind_prepared_fork(
                 plan.frozen,
                 project,
                 GenerationId::new(Digest::from_bytes(generation)),
                 plan.project_creation,
-                work,
-                cancel,
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: cancel,
+                },
             )
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
         let scratch_name = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = report
                 .child_private_volume
                 .storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let scratch = self
             .resources
             .fs
-            .open_workspace_with_native_work(&scratch_name.0, work, cancel)
+            .open_workspace(&scratch_name.0, work, cancel)
             .await
-            .map_err(native_workspace_error)?;
+            .map_err(|error| native_workspace_error((error, None)))?;
         let mut binding = self.native_copy::<PiTaskBinding, _>(
             &plan.commit.child,
             acyclic_harness::JsonValueSchema::None,
@@ -424,16 +426,16 @@ impl<'a> PiForkCoordinator<'a> {
                 reason: "Pi creator report lost its actual result generation",
             })?;
         let result_name = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = result_binding.volume.storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let results = self
             .resources
             .fs
-            .open_workspace_with_native_work(&result_name.0, work, cancel)
+            .open_workspace(&result_name.0, work, cancel)
             .await
-            .map_err(native_workspace_error)?;
+            .map_err(|error| native_workspace_error((error, None)))?;
         let mut generation = self.native_copy::<acyclic_harness::resources::GenerationRef, _>(
             generation,
             acyclic_harness::JsonValueSchema::None,
@@ -451,7 +453,10 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?;
         let workspace = workspace
-            .into_arc_with_native_work(work)
+            .into_arc(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work,
+                cancellation: work.cancellation(),
+            })
             .map_err(crate::pi_fork_host::native_lazy_error)?;
         let mut prepared = PreparedPiFork {
             binding: binding.0,
@@ -498,17 +503,23 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?;
         let verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
-        let mut seed_io = native_work_io(work)?;
+        let mut seed_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         seed_io.retain_owned(std::mem::size_of::<ForkReport>() as u64)?;
         let (seed, _) = report.copy(&mut Some(&mut seed_io))?;
         let seed_value = seed.into_seed(&mut Some(&mut seed_io))?;
-        let _seed_custody = seed_io.into_custody();
+        let _seed_custody = seed_io.into_custody()?;
         source
-            .validate_snapshot_with_native_work(plan.frozen, work)
+            .validate_snapshot(
+                plan.frozen,
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: work.cancellation(),
+                },
+            )
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
         let filesystem: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
@@ -534,24 +545,36 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?
         .into_native_shared(work)?;
-        let parent = StreamAggregate::open_with_native_work(
-            &self.stream,
-            authority.0.0,
-            verifier.0,
-            SchemaRegistry::new(),
-            work,
-        )
-        .await?;
+        let parent = {
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            io.preflight()?;
+            let aggregate = StreamAggregate::open(
+                &self.stream,
+                authority.0.0,
+                verifier.0,
+                SchemaRegistry::new(),
+                None,
+                acyclic_harness::store::default_projection_read_limits(),
+                acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+                None,
+                &mut Some(&mut io),
+            )
+            .await?;
+            io.return_staged_output()?;
+            (aggregate, io.into_custody()?)
+        };
         let mut parent_value = parent.0;
         parent_value.set_limits(context.scope().limits())?;
         parent_value = parent_value.with_fork_verifier(forks);
         {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             io.retain_owned(std::mem::size_of::<acyclic_harness::core::ApplyResult>() as u64)?;
             let (report, report_bytes) = report.copy(&mut Some(&mut io))?;
-            let mut scope_io = native_work_io(work)?;
+            let mut scope_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let scope = authority.0.2.copy(&mut Some(&mut scope_io))?;
-            let scope_custody = scope_io.into_custody();
+            let scope_custody = scope_io.into_custody()?;
             let scope_bytes = scope_custody.bytes();
             io.absorb_native_custody(scope_custody)?;
             let published = parent_value
@@ -563,7 +586,7 @@ impl<'a> PiForkCoordinator<'a> {
             released_report?;
             released_scope?;
             drop(published);
-            drop(io.into_custody());
+            drop(io.into_custody()?);
         }
         let child_authority = self.owner.conversation_authority_with_native_work(
             plan.request.child.task_id(),
@@ -572,25 +595,37 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?;
         let child_verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = child_authority.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
-        let child = StreamAggregate::open_with_native_work(
-            &self.stream,
-            child_authority.0.0,
-            child_verifier.0,
-            SchemaRegistry::new(),
-            work,
-        )
-        .await?;
+        let child = {
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            io.preflight()?;
+            let aggregate = StreamAggregate::open(
+                &self.stream,
+                child_authority.0.0,
+                child_verifier.0,
+                SchemaRegistry::new(),
+                None,
+                acyclic_harness::store::default_projection_read_limits(),
+                acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+                None,
+                &mut Some(&mut io),
+            )
+            .await?;
+            io.return_staged_output()?;
+            (aggregate, io.into_custody()?)
+        };
         let mut child_value = child.0;
         child_value.set_limits(plan.request.child.limits)?;
         {
-            let mut io = native_work_io(work)?;
-            let mut scope_io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut scope_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let scope = child_authority.0.2.copy(&mut Some(&mut scope_io))?;
-            let scope_custody = scope_io.into_custody();
+            let scope_custody = scope_io.into_custody()?;
             let scope_bytes = scope_custody.bytes();
             io.absorb_native_custody(scope_custody)?;
             let bound = child_value

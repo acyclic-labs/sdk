@@ -1,36 +1,16 @@
 #[cfg(target_os = "macos")]
 #[test]
-#[allow(unsafe_code, reason = "calls the NFS transport's C test hook")]
-fn exclusive_replay_is_bound_to_the_opened_file_handle() {
-    // SAFETY: the test hook has no arguments and owns all callback state.
-    assert_eq!(unsafe { nfs4_test_exclusive_replay_identity() }, 0);
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-#[allow(unsafe_code, reason = "calls the NFS transport's C test hook")]
-fn named_attribute_exclusive_replay_is_bound_to_owner_and_name() {
-    assert_eq!(
-        // SAFETY: the test hook has no arguments and owns all callback state.
-        unsafe { nfs4_test_namedattr_exclusive_replay_identity() },
-        0
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-#[allow(unsafe_code, reason = "calls the NFS transport's C test hook")]
-fn readdir_continuations_are_bound_to_the_namespace_revision() {
-    // SAFETY: the test hook has no arguments and mutates no shared state.
-    assert_eq!(unsafe { nfs4_test_readdir_cookie_verifier() }, 0);
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-#[allow(unsafe_code, reason = "calls the NFS transport's C test hook")]
-fn nfs_sync_acknowledgement_requires_successful_callback() {
-    // SAFETY: the test hook owns its callback state.
-    assert_eq!(unsafe { nfs4_test_sync_acknowledgement() }, 0);
+#[allow(unsafe_code, reason = "calls the NFS transport's C test hooks")]
+fn nfs_callback_protocol_cases() {
+    for hook in [
+        nfs4_test_exclusive_replay_identity,
+        nfs4_test_namedattr_exclusive_replay_identity,
+        nfs4_test_readdir_cookie_verifier,
+        nfs4_test_sync_acknowledgement,
+    ] {
+        // SAFETY: each hook owns its callback state and takes no arguments.
+        assert_eq!(unsafe { hook() }, 0);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -78,17 +58,24 @@ impl MetadataRefusingObjects {
     }
 }
 
-impl crate::async_storage::AsyncObjectStore for MetadataRefusingObjects {
+impl AsyncObjectStore for MetadataRefusingObjects {
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: crate::OwnedBytes,
+        bytes: OwnedBytes,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), crate::ObjectStoreError> {
         self.admit(object_id)?;
         self.inner.put(object_id, bytes, context).await
     }
-
+    async fn put_hashed(
+        &self,
+        object: crate::storage::HashedObject,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        self.admit(object.object_id())?;
+        self.inner.put_hashed(object, context).await
+    }
     async fn put_many(
         &self,
         writes: &[crate::storage::ObjectWrite],
@@ -99,7 +86,16 @@ impl crate::async_storage::AsyncObjectStore for MetadataRefusingObjects {
         }
         self.inner.put_many(writes, context).await
     }
-
+    async fn put_many_hashed(
+        &self,
+        objects: &[crate::storage::HashedObject],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        for object in objects {
+            self.admit(object.object_id())?;
+        }
+        self.inner.put_many_hashed(objects, context).await
+    }
     async fn read(
         &self,
         object_id: ObjectId,
@@ -108,7 +104,6 @@ impl crate::async_storage::AsyncObjectStore for MetadataRefusingObjects {
     ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
         self.inner.read(object_id, maximum_bytes, context).await
     }
-
     async fn read_many(
         &self,
         requests: &[crate::storage::ObjectReadRequest],
@@ -116,7 +111,6 @@ impl crate::async_storage::AsyncObjectStore for MetadataRefusingObjects {
     ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
         self.inner.read_many(requests, context).await
     }
-
     async fn contains(
         &self,
         object_id: ObjectId,
@@ -203,8 +197,7 @@ fn an_abandoned_grouped_change_never_applies() -> Result<(), Box<dyn std::error:
     let source = source(FilesystemProfile::Portable)?;
     let abandoned = native_test_path("abandoned.bin");
     let kept = native_test_path("kept.bin");
-    let work =
-        capture_meter(boundary_budget(), &source.cancellation).map_err(|failure| failure.error)?;
+    let work = capture_meter(boundary_budget(), &source.cancellation)?;
     let create = |path| AuthoredMutation::CreateFile {
         path,
         metadata: metadata(),
@@ -237,8 +230,7 @@ fn abandoning_a_blocked_caller_leaves_other_callers_live() -> Result<(), Box<dyn
     let source = Arc::new(source(FilesystemProfile::Portable)?);
     let abandoned = native_test_path("drainer.bin");
     let kept = native_test_path("waiter.bin");
-    let work =
-        capture_meter(boundary_budget(), &source.cancellation).map_err(|failure| failure.error)?;
+    let work = capture_meter(boundary_budget(), &source.cancellation)?;
     let create = |path| AuthoredMutation::CreateFile {
         path,
         metadata: metadata(),

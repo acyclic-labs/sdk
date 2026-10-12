@@ -128,7 +128,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         )
     }
 
-    pub(crate) fn require_volume_grant(
+    /// Requires the volume grant retained by this task admission.
+    pub fn require_volume_grant(
         &self,
         volume: &crate::conversation::VolumeRef,
         operation: crate::conversation::VolumeOperation,
@@ -285,14 +286,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             std::borrow::Cow::Borrowed(&record.input),
             io,
         )?;
-        if next != record.next || transition != record.transition {
+        if record.checkpoint()? != (&next.machine, next.revision, &next.state) || transition != record.transition {
             return Err(Error::Conflict(
                 "workflow transition differs from pinned machine".into(),
             ));
         }
         if let crate::workflow::MachineStatus::Completed { value } = &transition.status {
             crate::executor::with_history_io(io, |work| {
-                crate::contract::validate_json_schema_value(
+                crate::executor::validate_json_schema_value(
                     self.workflow_output.as_ref().unwrap_or(&self.admission.output_schema),
                     value,
                     "task output",
@@ -351,7 +352,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-    pub(crate) async fn verify(
+    /// Verifies the current task fence for dispatch or settlement.
+    pub async fn verify(
         &self,
         settlement: bool,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,

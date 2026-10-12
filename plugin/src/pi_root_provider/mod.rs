@@ -16,7 +16,6 @@ use acyclic_fs::{
     CancellationToken, LazyWorkspaceStore, Lifecycle, NativeAllocation, NativeMaterializationWork,
     NativeTreeMaterializationError, VolumeConfig, WorkBudget, WorkCounters, WorkError,
 };
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::wire::ErrorCode;
 use acyclic_harness::{
     EffectAttemptId, EffectId, Error, IdempotencyKey, JsonBounds, JsonCodecCharge, OperationId,
@@ -95,7 +94,10 @@ impl PiRootHandle {
                 reason: "root index key custody differs from original source work",
             });
         }
-        let workspace = workspace.into_arc_with_native_work(work)?;
+        let workspace = workspace.into_arc(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work,
+            cancellation: work.cancellation(),
+        })?;
         let mut entry = work.claim(
             std::mem::size_of::<(String, Self)>() as u64,
             0,
@@ -365,9 +367,9 @@ pub(crate) fn root_provider(
         .chain(std::iter::once(&request.binding.scratch.volume))
     {
         let grant = {
-            let mut io = native_work_io(&original)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&original)?);
             let value = volume.capability(VolumeOperation::Read, &mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         if volume.provider() != owner.policy().journal.provider()
             || !authority.scope.grants().contains(&grant.0)
@@ -379,13 +381,13 @@ pub(crate) fn root_provider(
         }
     }
     let grant = {
-        let mut io = native_work_io(&original)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&original)?);
         let value = request
             .binding
             .scratch
             .volume
             .capability(VolumeOperation::Write, &mut Some(&mut io))?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     if !authority.scope.grants().contains(&grant.0) {
         return Err(Error::NativeBoundary {

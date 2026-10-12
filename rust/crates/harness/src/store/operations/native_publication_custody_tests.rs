@@ -202,7 +202,7 @@ async fn foreign_cursor_record_metadata_is_rejected_without_byte_rebinding() -> 
         )),
     )
     .await?
-    .map_err(|error| sdk_error(error, &None))?;
+    .map_err(|error| crate::store::operations::stream_error_with_work(error, &None))?;
     let mut io = crate::store::HistoryWork::new(
         crate::filesystem::PreparationIo::from_native_work(&receiver).expect("receiver custody"),
     );

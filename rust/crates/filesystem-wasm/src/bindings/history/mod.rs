@@ -48,27 +48,23 @@ pub struct BrowserJoinResult {
 
 #[wasm_bindgen]
 impl BrowserChangeSet {
-    /// Exact immutable base endpoint.
     #[wasm_bindgen(getter)]
     pub fn from(&self) -> BrowserGeneration {
         let engine = self.engine.from().clone();
         BrowserGeneration { engine }
     }
 
-    /// Exact immutable resulting endpoint.
     #[wasm_bindgen(getter)]
     pub fn to(&self) -> BrowserGeneration {
         let engine = self.engine.to().clone();
         BrowserGeneration { engine }
     }
 
-    /// Stable path-independent records and namespace binding changes.
     pub fn changes(&self) -> Result<Ts<BrowserGenerationDiffResult>, JsValue> {
         let (changes, work) = (self.engine.changes().clone(), self.engine.work());
         encode_generation_diff(changes, work)
     }
 
-    /// Composes contiguous immutable deltas by diffing their outer endpoints.
     #[wasm_bindgen]
     pub async fn compose(
         &self,
@@ -86,19 +82,16 @@ impl BrowserChangeSet {
 
 #[wasm_bindgen]
 impl BrowserJoinPlan {
-    /// Target generation observed while planning.
     #[wasm_bindgen(getter, js_name = targetHead)]
     pub fn target_head(&self) -> Vec<u8> {
         self.engine.target_head().digest().into_bytes().to_vec()
     }
 
-    /// Exact discovered common ancestor.
     #[wasm_bindgen(getter, js_name = commonAncestor)]
     pub fn common_ancestor(&self) -> Vec<u8> {
         self.engine.common_ancestor().digest().into_bytes().to_vec()
     }
 
-    /// Applies this immutable plan through one exact target-head CAS.
     #[wasm_bindgen]
     pub async fn apply(
         &self,
@@ -119,7 +112,11 @@ impl BrowserJoinPlan {
         };
         let result = browser_join_result(
             self.engine
-                .apply(options, std::collections::BTreeMap::new(), acyclic_fs::PublicationPermit::Unrestricted)
+                .apply(
+                    options,
+                    std::collections::BTreeMap::new(),
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                )
                 .await
                 .map_err(js_error)?,
         );
@@ -129,19 +126,16 @@ impl BrowserJoinPlan {
 
 #[wasm_bindgen]
 impl BrowserGeneration {
-    /// Content-addressed generation identity.
     #[wasm_bindgen(getter)]
     pub fn id(&self) -> Vec<u8> {
         self.engine.id().digest().into_bytes().to_vec()
     }
 
-    /// Owning opaque workspace identity.
     #[wasm_bindgen(getter, js_name = workspaceId)]
     pub fn workspace_id(&self) -> Vec<u8> {
         self.engine.workspace_id().into_bytes().to_vec()
     }
 
-    /// Reads one complete file from this exact immutable state.
     #[wasm_bindgen]
     pub async fn read(&self, path: String, maximum_bytes: u64) -> Result<Vec<u8>, JsValue> {
         let bytes = sdk_value!(Box::pin(unbounded_future!(
@@ -215,7 +209,6 @@ impl BrowserGeneration {
         ts(browser_workspace_extent_plan(value))
     }
 
-    /// Retains this exact generation under one opaque identity.
     #[wasm_bindgen]
     pub async fn pin(&self, identity: String) -> Result<BrowserGeneration, JsValue> {
         let engine = sdk_value!(Box::pin(unbounded_future!(self.engine, pin(identity))))

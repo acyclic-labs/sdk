@@ -77,8 +77,6 @@ impl LocalStream {
         validate_limits(limits)?;
         let provider = MemoryStream::new_with_clock(limits.memory, clock);
         let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
-        #[cfg(test)]
-        let submitted_root = root.clone();
         let span = obs::OperationSpan::new(tracing::debug_span!(
             "acyclic.stream.recover",
             frames = Empty,
@@ -87,15 +85,6 @@ impl LocalStream {
         let open = tokio::task::spawn_blocking(move || {
             span.in_scope(|| Journal::open(&root, limits, &recovered, &span))
         });
-        #[cfg(test)]
-        if let Ok(mut hook) = JOURNAL_OPEN_SUBMITTED.lock()
-            && hook
-                .as_ref()
-                .is_some_and(|(expected, _)| *expected == submitted_root)
-            && let Some((_, submitted)) = hook.take()
-        {
-            let _ = submitted.send(());
-        }
         let mut replay_error = None;
         while let Some(recovered) = receiver.recv().await {
             let result = match recovered {

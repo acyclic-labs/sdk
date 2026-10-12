@@ -9,15 +9,19 @@ struct DirectoryState {
     ownership: SourcePayloadOwnership,
 }
 
-pub(super) struct CursorLease {
+/// A producer position held until the consumer accepts its page.
+pub struct SourceDirectoryPublication {
     source: NativeDemandSource,
     reference: SourceReference,
     token: u64,
     state: Option<DirectoryState>,
     restore: bool,
+    end: usize,
+    original: Option<crate::NativeMaterializationWork>,
+    _ownership: SourcePayloadOwnership,
 }
 
-impl CursorLease {
+impl SourceDirectoryPublication {
     fn discard(&mut self) {
         self.state.take();
         if self.restore {
@@ -60,7 +64,7 @@ impl CursorLease {
     }
 }
 
-impl CursorLease {
+impl SourceDirectoryPublication {
     fn restore(&mut self) -> Result<(), DemandError> {
         if !self.restore {
             self.state.take();
@@ -83,21 +87,16 @@ impl CursorLease {
         Ok(())
     }
 }
-impl Drop for CursorLease {
-    fn drop(&mut self) {
-        let _ = self.restore();
-    }
-}
 
 impl NativeDemandSource {
-    pub(super) fn cursor_lease(
+    fn directory_publication(
         &self,
         source: SourceReference,
         directory: &NamespacePath,
         observed: SourceVersion,
         cursor: Option<SourceCursor>,
         context: &mut CallbackWork,
-    ) -> Result<CursorLease, DemandError> {
+    ) -> Result<SourceDirectoryPublication, DemandError> {
         let restore = cursor.is_some();
         let (token, state) = if let Some(cursor) = cursor {
             if cursor.source != source {
@@ -131,12 +130,15 @@ impl NativeDemandSource {
                 self.open_directory_state(directory, observed, context)?,
             )
         };
-        Ok(CursorLease {
+        Ok(SourceDirectoryPublication {
             source: self.clone(),
             reference: source,
             token,
             state: Some(state),
             restore,
+            end: 0,
+            original: None,
+            _ownership: SourcePayloadOwnership::default(),
         })
     }
 
@@ -150,7 +152,7 @@ impl NativeDemandSource {
         #[cfg(unix)]
         let result = self.inner.root.read_dir_stats(&relative, context);
         #[cfg(windows)]
-        let result = self.inner.root.read_dir_stats_wide(&relative, context);
+        let result = self.inner.root.read_dir_stats(&relative, context);
         drop(relative);
         context.release(allocation)?;
         let (entries, allocation) = result?;
@@ -172,18 +174,10 @@ impl NativeDemandSource {
     }
 }
 
-/// A producer position held until the consumer accepts its page.
-pub struct SourceDirectoryPublication {
-    lease: Option<CursorLease>,
-    end: usize,
-    has_next: bool,
-    original: Option<crate::NativeMaterializationWork>,
-    _ownership: SourcePayloadOwnership,
-}
 impl std::fmt::Debug for SourceDirectoryPublication {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SourceDirectoryPublication")
-            .field("pending", &self.lease.is_some())
+            .field("pending", &self.state.is_some())
             .finish()
     }
 }
@@ -195,12 +189,13 @@ fn publication_cleanup() -> WorkCounters {
 }
 impl Drop for SourceDirectoryPublication {
     fn drop(&mut self) {
+        let _ = self.restore();
         let _ = self.retire();
     }
 }
 impl SourceDirectoryPublication {
     fn retire(&mut self) -> Result<(), DemandError> {
-        self.lease.take();
+        self.state.take();
         if let Some(original) = self.original.take() {
             original.with_original_leaf(|work| {
                 work.complete(publication_cleanup(), publication_cleanup())
@@ -230,11 +225,16 @@ impl SourceDirectoryPublication {
                 .charge(publication_cleanup())
                 .map_err(DemandError::from)?;
         }
-        if let Some(lease) = &mut self.lease {
-            if self.has_next {
-                lease.commit(self.end)?;
+        if let Some(state) = &self.state {
+            let has_next = !state.eof
+                || state
+                    .replay
+                    .as_ref()
+                    .is_some_and(|backing| self.end < backing.value.len());
+            if has_next {
+                self.commit(self.end)?;
             } else {
-                lease.discard();
+                self.discard();
             }
         }
         self.retire()
@@ -248,9 +248,7 @@ impl SourceDirectoryPublication {
         if let Some((_, work, budget, _)) = accounting.standalone_parts() {
             work.charge(&publication_cleanup(), &budget)?;
         }
-        if let Some(lease) = &mut self.lease {
-            lease.restore()?;
-        }
+        self.restore()?;
         self.retire()
     }
 }
@@ -294,7 +292,7 @@ impl NativeDemandSource {
                 let result = self
                     .inner
                     .root
-                    .open_dir_held_wide(directory, context)
+                    .open_dir_held(directory, context)
                     .and_then(|parent| {
                         crate::native_host::stat_windows_leaf(&parent, &entry.name, context)
                     });
@@ -442,7 +440,7 @@ impl NativeDemandSource {
             return Err(DemandError::NotDirectory);
         }
         let observed = version(&metadata);
-        let mut lease = self.cursor_lease(source, directory, observed, cursor, context)?;
+        let mut lease = self.directory_publication(source, directory, observed, cursor, context)?;
         let state = lease.state.as_mut().ok_or(DemandError::StaleCursor)?;
         let entries = self.page_entries(state, maximum as usize, context)?;
         let has_next = !state.eof || entries.range.end < entries.backing.value.len();
@@ -466,13 +464,10 @@ impl NativeDemandSource {
         if let Some(original) = &original {
             original.with_original_leaf(|work| work.reserve(publication_cleanup()))?;
         }
-        let publication = Some(Box::new(SourceDirectoryPublication {
-            lease: Some(lease),
-            end: entries.range.end,
-            has_next,
-            original,
-            _ownership: ownership,
-        }));
+        lease.end = entries.range.end;
+        lease.original = original;
+        lease._ownership = ownership;
+        let publication = Some(Box::new(lease));
         Ok(SourceDirectoryPage {
             entries,
             next,

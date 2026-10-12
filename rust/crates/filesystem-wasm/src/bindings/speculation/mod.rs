@@ -159,7 +159,6 @@ pub struct BrowserSpeculationMetrics {
 
 #[wasm_bindgen]
 impl BrowserSpeculation {
-    /// Records foreground demand and admits one authenticated successor.
     pub fn observe(&self, observation: JsValue) -> Result<Ts<BrowserAdmissionResult>, JsValue> {
         let observation: BrowserResidencyObservation =
             serde_wasm_bindgen::from_value(observation).map_err(js_error)?;
@@ -198,7 +197,6 @@ impl BrowserSpeculation {
         ts(result)
     }
 
-    /// Executes one admitted residency prediction through the browser's
     #[wasm_bindgen(js_name = executeResidency)]
     pub async fn execute_residency(
         &self,
@@ -229,7 +227,6 @@ impl BrowserSpeculation {
         })
     }
 
-    /// Records terminal usefulness for one residency operation.
     #[wasm_bindgen(js_name = finishResidency)]
     pub fn finish_residency(&self, operation_id: &[u8], useful: bool) -> Result<(), JsValue> {
         self.controller
@@ -239,7 +236,6 @@ impl BrowserSpeculation {
             .map_err(js_error)
     }
 
-    /// Plans one bounded promotion from exact caller-observed location facts.
     #[wasm_bindgen(js_name = planPromotion)]
     pub fn plan_promotion(
         &self,
@@ -276,7 +272,6 @@ impl BrowserSpeculation {
         ts(browser_promotion_admission(admission))
     }
 
-    /// Records terminal usefulness for one promotion operation.
     #[wasm_bindgen(js_name = finishPromotion)]
     pub fn finish_promotion(&self, operation_id: &[u8], useful: bool) -> Result<(), JsValue> {
         self.controller
@@ -286,7 +281,6 @@ impl BrowserSpeculation {
             .map_err(js_error)
     }
 
-    /// Atomically preempts both engines before recording foreground bytes.
     #[wasm_bindgen(js_name = preemptForForeground)]
     pub fn preempt_for_foreground(
         &self,
@@ -301,7 +295,6 @@ impl BrowserSpeculation {
         ts(browser_speculation_preemption(value))
     }
 
-    /// Atomically fences both engines onto a new immutable generation.
     #[wasm_bindgen(js_name = replaceGeneration)]
     pub fn replace_generation(
         &self,
@@ -319,7 +312,6 @@ impl BrowserSpeculation {
         ts(browser_speculation_preemption(value))
     }
 
-    /// Returns exact payload-free metrics for both engines.
     pub fn metrics(&self) -> Result<Ts<BrowserSpeculationMetrics>, JsValue> {
         let metrics = self
             .controller
@@ -332,7 +324,6 @@ impl BrowserSpeculation {
         })
     }
 
-    /// Cooperatively cancels future residency execution from this owner.
     pub fn cancel(&self) {
         self.cancellation.cancel();
     }

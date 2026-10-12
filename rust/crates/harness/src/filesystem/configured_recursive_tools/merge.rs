@@ -45,7 +45,7 @@ where
         for merge in &self.config.merges {
             if let Some(io) = io {
                 io.codec_charge(
-                    crate::contract::JsonCodecCharge::Work {
+                    crate::executor::json::JsonCodecCharge::Work {
                         bytes: 32,
                         items: 1,
                     },

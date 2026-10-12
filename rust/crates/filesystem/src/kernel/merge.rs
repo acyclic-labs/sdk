@@ -599,8 +599,6 @@ pub(crate) struct DirectoryMergeResult {
     pub(crate) conflicts: Vec<MergeConflict>,
     pub(crate) truncated: bool,
     pub(crate) examined_changes: u32,
-    pub(crate) folds: Vec<(FileId, FileId)>,
-    pub(crate) file_folds: Vec<FileFold>,
 }
 
 pub(crate) struct FileFold {
@@ -622,7 +620,7 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
         let record = merge_directory_record_with_resolutions_async(store, directory_id, base, ours, theirs,
             ResolutionView::Slice(&[]), maximum_conflicts, limits, &mut state, &mut accounting, cancellation).await?;
         Ok(DirectoryMergeResult { record, conflicts: state.conflicts.value, truncated: state.truncated,
-            examined_changes: maximum_changes - state.remaining_changes, folds: state.folds.value, file_folds: state.file_folds.value })
+            examined_changes: maximum_changes - state.remaining_changes })
     }.await;
     let work = accounting.spent();
     result.map(|value| OperationReceipt { value, work })
@@ -938,21 +936,6 @@ pub(crate) fn resolve_three<T: Clone + Eq>(base: &T, ours: &T, theirs: &T) -> Op
     } else {
         None
     }
-}
-
-#[cfg(test)]
-pub(crate) fn merge_file_fields(
-    base: FileRecord,
-    ours: FileRecord,
-    theirs: FileRecord,
-) -> Option<FileRecord> {
-    Some(FileRecord {
-        file_id: ours.file_id,
-        kind: resolve_three(&base.kind, &ours.kind, &theirs.kind)?,
-        link_count: ours.link_count,
-        metadata: resolve_three(&base.metadata, &ours.metadata, &theirs.metadata)?,
-        payload: resolve_three(&base.payload, &ours.payload, &theirs.payload)?,
-    })
 }
 
 async fn merge_file_fields_async<S: AsyncObjectStore>(

@@ -356,8 +356,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         Ok(owned)
     }
 
-    /// Validates a cut's identity without changing the source view.
-    pub fn validate_snapshot(
+    /// Validates a cut and its available indexes and generation without rebinding.
+    pub async fn validate_snapshot(
         &self,
         cut: LazySnapshotRef,
         ctx: &mut KernelAccounting<'_>,
@@ -379,6 +379,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         {
             return Err(LazyWorkspaceError::StaleSource);
         }
+        retire_node(
+            self.store
+                .load_lazy_overlay(cut.overlay, ctx)
+                .await?
+                .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?,
+            ctx,
+        )?;
+        retire_node(
+            self.store
+                .load_lazy_shadow(cut.shadows, ctx)
+                .await?
+                .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?,
+            ctx,
+        )?;
+        self.checkout(
+            crate::model::GenerationSelector::Exact(cut.authored_generation),
+            ctx,
+        )
+        .await?
+        .retire(ctx)?;
         Ok(())
     }
 }

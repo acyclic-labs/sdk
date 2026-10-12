@@ -43,17 +43,17 @@ struct RootPublicationGuard {
 impl acyclic_fs::AuthorityGuard for RootPublicationGuard {
     type Error = Error;
     async fn seal(&mut self, work: &mut acyclic_fs::AuthorityWork<'_>) -> std::result::Result<(), acyclic_fs::AuthorityError<Error>> {
-        if let Some(original) = work.original {
-            let io = crate::filesystem::PreparationIo::from_native_work(original)
-                .map_err(acyclic_fs::AuthorityError::Owner)?;
-            return self.lease.verify(Some(&io))
-                .map_err(acyclic_fs::AuthorityError::Owner)?.await.map_err(acyclic_fs::AuthorityError::Owner);
+        let callback = match work.original {
+            Some(original) => crate::filesystem::PreparationIo::from_native_work(original),
+            None => crate::filesystem::PreparationIo::from_budget(work.remaining()?, work.cancellation),
+        }.map_err(acyclic_fs::AuthorityError::Owner)?;
+        let result = match self.lease.verify(Some(&callback)) {
+            Ok(future) => future.await,
+            Err(error) => Err(error),
+        };
+        if work.original.is_none() {
+            work.work = work.work.checked_add(callback.receipt()).map_err(|error| acyclic_fs::AuthorityError::Authority(error.into()))?;
         }
-        let callback = crate::filesystem::PreparationIo::from_budget(work.remaining()?, work.cancellation)
-            .map_err(acyclic_fs::AuthorityError::Owner)?;
-        let result = self.lease.verify(Some(&callback))
-            .map_err(acyclic_fs::AuthorityError::Owner)?.await;
-        work.work = work.work.checked_add(callback.receipt()).map_err(|error| acyclic_fs::AuthorityError::Authority(error.into()))?;
         result.map_err(acyclic_fs::AuthorityError::Owner)
     }
 }
@@ -135,7 +135,7 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         let validate = || async move {
             let mut accounting = acyclic_fs::facade::FsWork::accounting(&io, io.cancellation());
-            let result = self.lazy.validate_snapshot(snapshot, &mut accounting);
+            let result = self.lazy.validate_snapshot(snapshot, &mut accounting).await;
             let (result, recorded) = acyclic_fs::facade::FsWork::finish(&io, result, &accounting);
             recorded?;
             result.map_err(root_source_error)

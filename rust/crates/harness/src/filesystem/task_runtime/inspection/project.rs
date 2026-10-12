@@ -71,10 +71,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if let Some(native) = &selected.native_snapshot {
                 let mut history = io.history_io();
                 let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-                let expected = crate::contract::canonical_json_digest(
+                let expected = crate::executor::json::canonical_json_digest(
                     native, selected.maximum_bytes, &mut observed,
                 )?;
-                let actual = crate::contract::canonical_json_digest(
+                let actual = crate::executor::json::canonical_json_digest(
                     &frozen, selected.maximum_bytes, &mut observed,
                 )?;
                 if actual != expected {

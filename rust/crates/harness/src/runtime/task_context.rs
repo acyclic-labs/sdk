@@ -480,7 +480,7 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
     prefix: &str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<bool> {
-    let digest = crate::contract::canonical_json_digest(
+    let digest = crate::executor::json::canonical_json_digest(
         value,
         acyclic_stream::MAX_RECORD_BYTES as u64,
         work,
@@ -489,7 +489,7 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
     let mut capability = [0; "directory:read:".len() + 64];
     let end = prefix.len() + digest.len();
     if let Some(io) = work.as_deref_mut() {
-        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         io.copy_bytes(end as u64)?;
     }
     capability[..prefix.len()].copy_from_slice(prefix.as_bytes());

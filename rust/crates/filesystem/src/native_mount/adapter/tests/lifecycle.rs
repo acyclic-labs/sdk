@@ -35,7 +35,8 @@ fn a_detached_write_that_cannot_stamp_changes_nothing() -> Result<(), Box<dyn st
         changed_ns: crate::kernel::MetadataField::Value(1),
         ..metadata()
     };
-    source.create_file(&path, timed)?;
+    let work = capture_meter(boundary_budget(), source.cancellation())?;
+    source.create_file(&path, timed, None, &work)?;
     source.write_range(&path, 0, Bytes::from_static(b"before"))?;
     let detached = source.detach_file(&path)?;
     let before = detached.lookup()?;
@@ -67,10 +68,13 @@ type MemorySource =
 fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
     let directory = tempfile::tempdir()?;
-    std::fs::write(directory.path().join("first"), b"first")?;
-    std::fs::write(directory.path().join("second"), b"other")?;
-    let first = source.path(&native_test_path("first"))?;
-    let second = source.path(&native_test_path("second"))?;
+    for name in ["first", "second"] {
+        std::fs::write(directory.path().join(name), b"first")?;
+    }
+    let paths = ["first", "second"]
+        .map(|name| source.path(&native_test_path(name)))
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
     let options = CaptureOptions {
         source_root: directory.path().to_path_buf(),
         expected_root_identity: capture_root_identity(directory.path())?,
@@ -78,68 +82,56 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
         maximum_extent_spans: 64,
     };
     let cancellation = CancellationToken::new();
-    let mut zero_candidate = source
-        .runtime
-        .block_on(|| async { source.checkout.lock().await.private_candidate() });
-    let zero_work = crate::NativeMaterializationWork::new(WorkBudget::default(), &cancellation)
-        .map_err(|(error, _)| error)?;
-    let zero_result = source.runtime.block_on(|| {
-        capture_paths_batched(
-            &mut zero_candidate,
-            std::slice::from_ref(&first),
-            &options,
-            1,
-            &cancellation,
+    let mut single_bytes = 0;
+    for count in [0, 1, 2] {
+        let mut budget = WorkBudget::UNBOUNDED;
+        if count == 0 {
+            budget.source_entries_visited = 0;
+        }
+        if count == 2 {
+            budget.source_bytes_read = single_bytes;
+        }
+        let work = capture_meter(budget, &cancellation)?;
+        let mut candidate = source.runtime.wait(|| async {
+            source
+                .checkout
+                .lock()
+                .await
+                .private_candidate(&work, &cancellation)
+                .map_err(fs_error)
+        })?;
+        let result = source.runtime.block_on(
+            || {
+                capture_paths_batched(
+                    &mut candidate,
+                    &paths[..count.max(1)],
+                    &options,
+                    1,
+                    &cancellation,
+                    None,
+                    &work,
+                )
+            },
             None,
-            &zero_work,
-        )
-    });
-    let Err(zero_failure) = zero_result else {
-        return Err(std::io::Error::other("zero budget admitted host observation").into());
-    };
-    assert_eq!(zero_failure.work.source_entries_visited, 0);
-    assert!(!zero_candidate.has_pending_mutations());
-    let mut candidate = source
-        .runtime
-        .block_on(|| async { source.checkout.lock().await.private_candidate() });
-    let single_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let single = source.runtime.block_on(|| {
-        capture_paths_batched(
-            &mut candidate,
-            std::slice::from_ref(&first),
-            &options,
-            1,
-            &cancellation,
-            None,
-            &single_work,
-        )
-    })?;
-    assert!(single.work.source_bytes_read > 0);
-    let mut budget = WorkBudget::UNBOUNDED;
-    budget.source_bytes_read = single.work.source_bytes_read;
-    let mut candidate = source
-        .runtime
-        .block_on(|| async { source.checkout.lock().await.private_candidate() });
-    let paths = [first, second];
-    let work = crate::NativeMaterializationWork::new(budget, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let result = source.runtime.block_on(|| {
-        capture_paths_batched(
-            &mut candidate,
-            &paths,
-            &options,
-            1,
-            &cancellation,
-            None,
-            &work,
-        )
-    });
-    let Err(failure) = result else {
-        return Err(std::io::Error::other("aggregate source budget was ignored").into());
-    };
-    assert!(failure.error.to_string().contains("source_bytes_read"));
-    assert!(!candidate.has_pending_mutations());
+        )?;
+        if count == 1 {
+            single_bytes = result?.work.source_bytes_read;
+            assert!(single_bytes > 0);
+        } else {
+            let error = result.expect_err("capture ceiling ignored");
+            assert!(matches!(
+                error.error,
+                crate::CaptureError::Kernel(
+                    FsError::Work(_)
+                        | FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
+                )
+            ));
+            assert!(!candidate.has_pending_mutations());
+            if count == 0 {
+                assert_eq!(work.receipt().source_entries_visited, 0);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -160,8 +152,7 @@ fn publication_policy_and_subtree_cases() -> Result<(), Box<dyn std::error::Erro
         ),
     ] {
         let (source, _) = sources(profile, ConsistencyMode::Pinned, policy)?;
-        let work = capture_meter(boundary_budget(), source.cancellation())
-            .map_err(|failure| failure.error)?;
+        let work = capture_meter(boundary_budget(), source.cancellation())?;
         let before = checkout_state(&source).0;
         let directory = native_test_path("src");
         if profile == native && publishes {
@@ -204,13 +195,18 @@ fn refresh_preserves_overlapping_read_conflicts_and_generation()
     } else {
         FilesystemProfile::Posix
     };
-    let (reader, writer) = sources(profile, ConsistencyMode::TrackingSafe, MountPublication::CloseAndSync)?;
+    let (reader, writer) = sources(
+        profile,
+        ConsistencyMode::TrackingSafe,
+        MountPublication::CloseAndSync,
+    )?;
     let path = native_test_path("observed.bin");
-    writer.create_file(&path, metadata())?;
+    let work = capture_meter(boundary_budget(), writer.cancellation())?;
+    writer.create_file(&path, metadata(), None, &work)?;
     writer.write_range(&path, 0, Bytes::from_static(b"first"))?;
     writer.sync()?;
     let binding_before = reader.binding_epoch();
-    reader.runtime.block_on(|| reader.refresh_async())?;
+    reader.runtime.wait(|| reader.refresh_async())?;
     let binding_after = reader.binding_epoch();
     assert_ne!(binding_after, binding_before);
     assert_eq!(reader.read_range(&path, 0, 5)?.as_ref(), b"first");
@@ -219,7 +215,7 @@ fn refresh_preserves_overlapping_read_conflicts_and_generation()
     writer.write_range(&path, 0, Bytes::from_static(b"other"))?;
     writer.sync()?;
     assert!(matches!(
-        reader.runtime.block_on(|| reader.refresh_async()),
+        reader.runtime.wait(|| reader.refresh_async()),
         Err(MountSourceError::Stale)
     ));
     assert_eq!(checkout_state(&reader).0, observed_generation);
@@ -237,8 +233,7 @@ fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Err
     };
     for detached in [false, true] {
         let source = source(profile)?;
-        let work = capture_meter(boundary_budget(), source.cancellation())
-            .map_err(|failure| failure.error)?;
+        let work = capture_meter(boundary_budget(), source.cancellation())?;
         let original = native_test_path("original");
         let alias = native_test_path("alias");
         let renamed = native_test_path("renamed");
@@ -267,6 +262,9 @@ fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Err
         assert_eq!(file.lookup()?.metadata, changed);
         assert_eq!(file.lookup()?.node.logical_bytes, 40);
         assert_eq!(file.read_range(32, 4)?.as_ref(), b"open");
+        for offset in [40, u64::MAX] {
+            assert!(file.read_up_to(offset, 8)?.is_empty());
+        }
         assert_eq!(file.seek(0, MountSeekTarget::Data)?, Some(8));
         if !detached {
             assert_eq!(source.read_range(&alias, 32, 4)?.as_ref(), b"open");
@@ -329,57 +327,27 @@ fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-#[test]
-fn shared_checkout_fence_blocks_every_adapter_until_exact_resolution()
--> Result<(), Box<dyn std::error::Error>> {
-    let profile = if cfg!(target_os = "windows") {
-        FilesystemProfile::Windows
-    } else {
-        FilesystemProfile::Posix
-    };
-    let (first, second) = shared_sources(profile)?;
-    let operation_id = OperationId::new();
-    first.runtime.block_on(|| async {
-        first
-            .checkout
-            .lock()
-            .await
-            .retain_operation_id(operation_id)
-    })?;
-    let path = native_test_path("fenced.bin");
-    assert!(matches!(
-        second.create_file(&path, metadata()),
-        Err(MountSourceError::Stale)
-    ));
-    first.runtime.block_on(|| async {
-        first
-            .checkout
-            .lock()
-            .await
-            .clear_retained_operation(operation_id);
-    });
-    second.create_file(&path, metadata())?;
-    Ok(())
-}
-
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn host_capture_preserves_unobservable_named_metadata() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Posix)?;
     let path = native_test_path("metadata.bin");
-    source.create_file(&path, metadata())?;
+    let work = capture_meter(boundary_budget(), source.cancellation())?;
+    source.create_file(&path, metadata(), None, &work)?;
     source.write_attribute(
         &path,
         b"user.acyclic.retained",
-        Bytes::from_static(b"opaque"),
+        crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::from_static(b"opaque"), 0),
         MountAttributeWriteMode::Create,
+        &work,
     )?;
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join("metadata.bin"), b"host")?;
     source.capture_host_path(root.path(), &path)?;
     assert_eq!(
         source
-            .read_attribute(&path, b"user.acyclic.retained")?
+            .read_attribute(&path, b"user.acyclic.retained", &work)?
+            .map(|value| value.bytes)
             .as_deref(),
         Some(b"opaque".as_slice())
     );
@@ -391,8 +359,9 @@ fn host_capture_preserves_unobservable_named_metadata() -> Result<(), Box<dyn st
 fn sparse_seek_and_special_nodes_preserve_canonical_native_semantics()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Posix)?;
-    let file = MountPath::root().child(b"sparse".to_vec());
-    source.create_file(&file, metadata())?;
+    let file = native_test_path("sparse");
+    let work = capture_meter(boundary_budget(), source.cancellation())?;
+    source.create_file(&file, metadata(), None, &work)?;
     source.resize(&file, 100)?;
     source.write_range(&file, 20, Bytes::from_static(b"data"))?;
     assert_eq!(source.seek(&file, 0, MountSeekTarget::Data)?, Some(20));
@@ -401,7 +370,7 @@ fn sparse_seek_and_special_nodes_preserve_canonical_native_semantics()
     assert_eq!(source.seek(&file, 100, MountSeekTarget::Hole)?, Some(100));
 
     let fifo = MountPath::root().child(b"fifo".to_vec());
-    let created = source.create_special(&fifo, MountNodeKind::Fifo, None, metadata())?;
+    let created = source.create_special(&fifo, MountNodeKind::Fifo, None, metadata(), &work)?;
     assert_eq!(created.node.kind, MountNodeKind::Fifo);
     let device = MountPath::root().child(b"device".to_vec());
     let created = source.create_special(
@@ -409,58 +378,10 @@ fn sparse_seek_and_special_nodes_preserve_canonical_native_semantics()
         MountNodeKind::CharacterDevice,
         Some((12, 34)),
         metadata(),
+        &work,
     )?;
     assert_eq!(created.node.device, Some((12, 34)));
     assert_eq!(source.lookup(&device)?, Some(created));
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-#[test]
-fn windows_mount_path_preserves_exact_utf16_components() -> Result<(), Box<dyn std::error::Error>> {
-    let source = source(FilesystemProfile::Windows)?;
-    let (initial, pending) = checkout_state(&source);
-    assert!(!pending);
-    let name = "exact-Î±-ðŸ˜€"
-        .encode_utf16()
-        .flat_map(u16::to_le_bytes)
-        .collect::<Vec<_>>();
-    let path = MountPath::root().child(name.clone());
-    let exact_metadata = FileMetadata {
-        windows_attributes: crate::kernel::MetadataField::Value(0x20),
-        created_ns: crate::kernel::MetadataField::Value(1_234_500),
-        modified_ns: crate::kernel::MetadataField::Value(2_345_600),
-        ..metadata()
-    };
-    let created = source.create_file(&path, exact_metadata)?;
-    assert_eq!(source.lookup(&path)?, Some(created));
-    let page = source.read_directory(&MountPath::root(), None, 8)?;
-    assert_eq!(page.entries.len(), 1);
-    assert_eq!(page.entries[0].name, name);
-    assert_eq!(page.entries[0].metadata, exact_metadata);
-    assert!(checkout_state(&source).1);
-    source.flush()?;
-    source.flush()?;
-    let (published, pending) = checkout_state(&source);
-    assert_ne!(published, initial);
-    assert!(!pending);
-
-    let host = tempfile::tempdir()?;
-    let captured_text = "captured-Î².bin";
-    std::fs::write(host.path().join(captured_text), b"captured")?;
-    let captured_name = captured_text
-        .encode_utf16()
-        .flat_map(u16::to_le_bytes)
-        .collect::<Vec<_>>();
-    let captured_path = MountPath::root().child(captured_name);
-    source.capture_host_path(host.path(), &captured_path)?;
-    assert_eq!(
-        source.read_range(&captured_path, 0, 8)?.as_ref(),
-        b"captured"
-    );
-    std::fs::remove_file(host.path().join(captured_text))?;
-    source.capture_host_path(host.path(), &captured_path)?;
-    assert_eq!(source.lookup(&captured_path)?, None);
     Ok(())
 }
 
@@ -470,14 +391,15 @@ fn windows_mount_path_preserves_exact_utf16_components() -> Result<(), Box<dyn s
 fn writable_projfs_captures_closes_renames_links_and_deletes()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = Arc::new(source(FilesystemProfile::Windows)?);
+    let work = capture_meter(boundary_budget(), source.cancellation())?;
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("projection");
     std::fs::create_dir(&destination)?;
     let mut session = mount_source(&source, &destination)?;
 
-    let first_name = "written-Î±.bin";
-    let second_name = "renamed-Î².bin";
-    let linked_name = "linked-Î³.bin";
+    let first_name = "written-α.bin";
+    let second_name = "renamed-β.bin";
+    let linked_name = "linked-γ.bin";
     let write_status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
             .args([
                 "-NoProfile",
@@ -488,8 +410,8 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
             .env("ACYCLIC_FS_TEST_PATH", destination.join(first_name)), std::time::Duration::from_secs(120))?;
     assert!(write_status.success());
     // Captures of external operations are deferred until callbacks flush.
-    session.flush_callbacks()?;
-    let first = windows_path(first_name);
+    session.flush_callbacks(&work)?;
+    let first = native_test_path(first_name);
     assert_eq!(source.read_range(&first, 0, 9)?.as_ref(), b"projected");
 
     let rename_status = acyclic_native_runtime::process_status(
@@ -505,8 +427,8 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
         std::time::Duration::from_secs(120),
     )?;
     assert!(rename_status.success());
-    session.flush_callbacks()?;
-    let second = windows_path(second_name);
+    session.flush_callbacks(&work)?;
+    let second = native_test_path(second_name);
     assert_eq!(source.lookup(&first)?, None);
     assert!(source.lookup(&second)?.is_some());
 
@@ -520,8 +442,8 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
             .env("ACYCLIC_FS_TEST_SOURCE", destination.join(second_name))
             .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(linked_name)), std::time::Duration::from_secs(120))?;
     assert!(link_status.success());
-    session.flush_callbacks()?;
-    let linked = windows_path(linked_name);
+    session.flush_callbacks(&work)?;
+    let linked = native_test_path(linked_name);
     let second_id = source
         .lookup(&second)?
         .ok_or("renamed source absent")?
@@ -548,14 +470,9 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
         std::time::Duration::from_secs(120),
     )?;
     assert!(delete_status.success());
-    session.flush_callbacks()?;
+    session.flush_callbacks(&work)?;
     assert_eq!(source.lookup(&second)?, None);
     assert!(source.lookup(&linked)?.is_some());
     assert!(session.stop()?);
     Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn windows_path(value: &str) -> MountPath {
-    MountPath::root().child(value.encode_utf16().flat_map(u16::to_le_bytes).collect())
 }

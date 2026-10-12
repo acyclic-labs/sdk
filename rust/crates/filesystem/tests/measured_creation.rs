@@ -189,13 +189,7 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
     let operation = OperationId::new();
     let budget = finite_budget()?;
     let created = fs
-        .create_workspace_with_operation(
-            "measured-recovery",
-            VolumeConfig::portable(Lifecycle::Ephemeral),
-            operation,
-            budget,
-            &CancellationToken::new(),
-        )
+        .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>("measured-recovery", VolumeConfig::portable(Lifecycle::Ephemeral), operation, budget, &CancellationToken::new(), None)
         .await?;
     let workspace = created.value.workspace();
     workspace
@@ -368,9 +362,7 @@ mod source_bound_lost_ack {
         let mut response_denied = budget;
         response_denied.authority_records_read = 0;
         let reference_failure = Fs::memory()
-            .create_workspace_with_operation(
-                "stream-lost-ack", config, operation, response_denied, &cancellation,
-            ).await.err().ok_or("post-commit authority denial unexpectedly succeeded")?;
+            .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>("stream-lost-ack", config, operation, response_denied, &cancellation, None).await.err().ok_or("post-commit authority denial unexpectedly succeeded")?;
         assert!(matches!(reference_failure.error, WorkspaceError::Work(_)));
         assert!(reference_failure.work.authority_records_appended > 0);
         assert_eq!(reference_failure.work.authority_records_read, 0);
@@ -443,9 +435,7 @@ mod source_bound_lost_ack {
         assert_eq!(original.id(), initial_id);
         assert_eq!(original.workspace_id(), workspace_id);
         assert_eq!(lazy.workspace().head(WorkBudget::UNBOUNDED, &cancellation).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
-        assert_eq!(lazy.snapshot(&mut acyclic_fs::kernel::KernelAccounting::standalone(
-            WorkBudget::UNBOUNDED, &cancellation,
-        )).await?.source, reference);
+        assert_eq!(lazy.snapshot(&mut WorkBudget::UNBOUNDED.accounting(&cancellation)).await?.source, reference);
         assert_eq!(
             store.load_lazy_workspace(workspace_id, &mut WorkBudget::UNBOUNDED.accounting(&cancellation)).await?.ok_or("binding absent after restart")?.source,
             reference
@@ -456,9 +446,7 @@ mod source_bound_lost_ack {
             (config, OperationId::new()),
             (changed_config, operation),
         ] {
-            let failure = reopened.create_workspace_with_operation(
-                "stream-lost-ack", requested_config, requested_operation, budget, &cancellation,
-            ).await.err().ok_or("restart accepted a foreign or reconfigured original creation")?;
+            let failure = reopened.create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>("stream-lost-ack", requested_config, requested_operation, budget, &cancellation, None).await.err().ok_or("restart accepted a foreign or reconfigured original creation")?;
             assert!(matches!(&failure.error, WorkspaceError::Engine(message)
                 if message == "volume creation was rejected by authority state"));
             failure.work.verify(budget)?;

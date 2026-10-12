@@ -160,7 +160,7 @@ fn preflight_context_composition(
         current_input_index: Option<u32>,
     }
     crate::executor::with_history_io(io, |work| {
-        crate::contract::json_byte_length(&JoinedContext {
+        crate::executor::json::json_byte_length(&JoinedContext {
                 messages: ContextMessages {
                     first,
                     user: None,
