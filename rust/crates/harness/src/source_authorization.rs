@@ -265,15 +265,6 @@ impl ProjectSourceAuthorization {
     }
 }
 
-/// Kernel-only witness carrying the complete authenticated original issuer, audience, caller admission/fence, operation, source and pinned selection.
-pub(crate) struct VerifiedProjectSourceRead<'a> {
-    authorization: &'a ProjectSourceAuthorization,
-}
-
-impl VerifiedProjectSourceRead<'_> {
-    pub(crate) const fn project(&self) -> &VolumeRef { &self.authorization.project }
-}
-
 /// Private-constructor read token. Borrowing it never mutates the caller scope.
 #[derive(Clone, Debug)]
 pub struct ProjectSourceReadHandle {
@@ -287,9 +278,7 @@ impl ProjectSourceReadHandle {
         authorization: ProjectSourceAuthorization, verifier: &AuthorityVerifier,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        authorization.verify_scope_with_work(verifier, work)?;
-        let proof = VerifiedProjectSourceRead { authorization: &authorization };
-        let grant = ContentGrant::from_verified_project_source(&proof, work)?;
+        let grant = ContentGrant::from_project_source(&authorization, verifier, work)?;
         Ok(Self { authorization, grant })
     }
 

@@ -86,17 +86,6 @@ fn overflow() -> Error {
     diagnostic(&None, crate::wire::ErrorCode::Invalid, "scheduler clone ownership overflows")
 }
 
-fn clone_dto<T: Clone>(
-    value: &T, work: &mut Option<&mut dyn HistoryIo>,
-    copy: impl FnOnce(&T, &mut CodecQuota<'_, '_>) -> Result<T>,
-) -> Result<T> {
-    if work.is_none() { return Ok(value.clone()); }
-    let mut quota = CodecQuota::new(work, 0)?;
-    let output = copy(value, &mut quota)?;
-    quota.transfer();
-    Ok(output)
-}
-
 fn copy_text(source: &str, quota: &mut CodecQuota<'_, '_>) -> Result<String> {
     observe(quota.work())?;
     crate::core::copy_text(source, quota)
@@ -269,10 +258,14 @@ fn copy_event(source: &SchedulerEvent, quota: &mut CodecQuota<'_, '_>) -> Result
 }
 
 macro_rules! closed_clone {
-    ($kind:ty, $visit:ident, $copy:expr) => {
+    ($kind:ty, $visit:ident, $copy:path) => {
         impl $kind {
             pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-                clone_dto(self, work, $copy)
+                if work.is_none() { return Ok(self.clone()); }
+                let mut quota = CodecQuota::new(work, 0)?;
+                let output = $copy(self, &mut quota)?;
+                quota.transfer();
+                Ok(output)
             }
             pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
                 $visit(self)
@@ -288,12 +281,17 @@ closed_clone!(Reservation, reservation_bytes, copy_reservation);
 closed_clone!(WorkflowSuspension, workflow_bytes, copy_workflow);
 closed_clone!(Outcome<FileRef>, outcome_bytes, copy_outcome);
 closed_clone!(LeaseFence, fence_bytes, copy_fence);
+closed_clone!(OperationState, state_bytes, copy_state);
 
 macro_rules! resource_clone {
     ($kind:ty) => {
         impl $kind {
             pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-                clone_dto(self, work, |source, quota| copy_resources(&source.0, quota).map(Self))
+                if work.is_none() { return Ok(self.clone()); }
+                let mut quota = CodecQuota::new(work, 0)?;
+                let output = Self(copy_resources(&self.0, &mut quota)?);
+                quota.transfer();
+                Ok(output)
             }
             pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
                 resources_bytes(&self.0)
@@ -308,10 +306,6 @@ impl OrchestrationDecision {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         decision_bytes(self)
     }
-}
-
-pub(super) fn clone_file_with_work(file: &FileRef, work: &mut Option<&mut dyn HistoryIo>) -> Result<FileRef> {
-    clone_dto(file, work, crate::core::copy_file)
 }
 
 impl LeaseFence {
@@ -344,14 +338,6 @@ impl SchedulerEvent {
 }
 
 impl OperationState {
-
-    pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-        clone_dto(self, work, copy_state)
-    }
-
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        state_bytes(self)
-    }
 
     pub(crate) fn work_lease_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Option<crate::distributed::WorkLease>> {
         observe(work)?;

@@ -14,16 +14,25 @@ const VERSION: u16 = 1;
 const LEAF_TAG: u8 = 1;
 const INTERNAL_TAG: u8 = 2;
 
-/// Uses the one canonical writer with caller-controlled reserve and header observations.
-/// Encodes one canonical page with physical allocation observation.
+/// Encodes one canonical page with before-effect admission.
 pub fn encode_extent_page<E: From<CanonicalDecodeError>>(
     page: &ExtentPage, maximum_items: u32,
-    observe: impl FnMut(super::codec::EncodeAllocationStep) -> Result<(), E>,
+    mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
     allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
 ) -> Result<Vec<u8>, E> {
+    use super::codec::{EncodeAllocationStep, EncodeWorkStep};
+    observe(EncodeWorkStep::Check)?;
     let encoded_length = extent_page_encoded_length(page, maximum_items)?;
+    observe(EncodeWorkStep::Admit(crate::WorkCounters {
+        bytes_encoded: encoded_length as u64, ..crate::WorkCounters::UNCHARGED
+    }))?;
     let mut encoder = Encoder::with_exact_capacity(
-        DOMAIN, VERSION, encoded_length, observe, allocation_error,
+        DOMAIN, VERSION, encoded_length, |step| {
+            if matches!(step, EncodeAllocationStep::BeforeHeader { .. }) {
+                observe(EncodeWorkStep::Check)?;
+            }
+            observe(EncodeWorkStep::Allocation(step))
+        }, allocation_error,
     )?;
     match page {
         ExtentPage::Leaf(extents) => {
@@ -56,6 +65,10 @@ pub fn encode_extent_page<E: From<CanonicalDecodeError>>(
             }
         }
     }
+    observe(EncodeWorkStep::Completed(crate::WorkCounters {
+        bytes_encoded: (encoded_length - DOMAIN.len() - 2) as u64,
+        ..crate::WorkCounters::UNCHARGED
+    }))?;
     Ok(encoder.finish())
 }
 

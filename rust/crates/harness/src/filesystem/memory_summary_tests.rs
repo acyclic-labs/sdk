@@ -1,5 +1,6 @@
 //! Real admitted compaction captured into a child-owned fork environment.
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::filesystem::{PreparationIo, workspace_ref};
 use crate::context::{Context, ModelContextCapacity, ModelTokenCount};
 use crate::filesystem::{FilesystemForkPreparer, FilesystemForkVerifier};
@@ -754,7 +755,7 @@ async fn assert_summary_child_import(
         Model::new("synthetic", "summary-child", "1", Value::Null)?,
         model.clone(),
         ContextPipeline::new([stage as Arc<dyn ContextStage>]),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     )
     .with_limits(limits);
     let journal = FilesystemExecutionJournal::new(

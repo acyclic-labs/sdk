@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::work;
 use crate::pi_fork::tests::Passive;
 use acyclic_harness::{Admission, AgentId, Capabilities,
@@ -42,12 +43,12 @@ impl Fixture {
         Ok(Self { stream: Arc::new(MemoryStream::default()), host, volume, issuer, signed, scope, tasks, machines })
     }
     async fn runtime(&self) -> Result<Arc<Runtime>> {
-        Ok(Arc::new(Runtime::open(self.stream.clone(), self.host.clone(), self.volume.clone(), self.issuer.verifier(),
+        Ok(Arc::new(Runtime::open(self.stream.clone(), self.host.clone(), self.volume.clone(), self.issuer.verifier(&mut None).unwrap(),
             self.signed.clone(), self.scope.clone(), self.tasks.clone(), self.machines.clone(), ToolRegistry::default(),
             SessionLimits { active_tasks:8, total_tasks:8, depth:4, model_steps:8 }, 8, 65_536).await?))
     }
     async fn file(&self, operation: OperationId, path: &str, bytes: &[u8]) -> Result<FileRef> {
-        let grant = ContentGrant::verify(&self.issuer.verifier(), &self.signed, &self.volume, VolumeOperation::Write)?;
+        let grant = ContentGrant::verify(&self.issuer.verifier(&mut None).unwrap(), &self.signed, &self.volume, VolumeOperation::Write)?;
         self.host.put_content(&self.volume, &grant, &format!("pi-inputs/{path}"), bytes,
             "application/json", path, 65_536, &acyclic_harness::IdempotencyKey::new(format!("mail:{operation}:{path}"))?).await
     }
@@ -137,7 +138,7 @@ async fn actual_mailbox_lost_ack_exact_sequence_and_original_sender() -> Result<
     child_context.send(parent, OperationId::from_bytes([81;16]), payload.clone()).await?;
     let mut stale = child_fence.clone(); stale.reservation_id.push_str("-replaced");
     assert!(reopened.task_host().send_owned(child, stale, parent, OperationId::from_bytes([82;16]), payload).await.is_err());
-    reopened.task_host().cancel_child_owned(parent, fence, child, OperationId::from_bytes([83;16])).await?;
+    reopened.task_host().cancel_child_owned(parent, &fence, child, OperationId::from_bytes([83;16]), &mut None).await?;
     assert!(child_owner.verify_dispatch().await.is_err());
     child_owner.verify_settlement().await?;
     assert!(authenticate(&child_context, &child_owner, &work).await.is_err());

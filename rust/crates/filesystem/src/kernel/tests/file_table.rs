@@ -563,8 +563,8 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
 }
 
 #[cfg(feature = "memory")]
-#[test]
-fn lookup_reads_only_one_file_table_frontier() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn lookup_reads_only_one_file_table_frontier() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = two_level_file_table(&store)?;
     let found = lookup_file_record(
@@ -573,29 +573,14 @@ fn lookup_reads_only_one_file_table_frontier() -> Result<(), Box<dyn std::error:
         FileId::from_bytes([2; 16]),
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
-    assert_eq!(found.record, Some(fifo_record(2)));
+        &CancellationToken::new(),
+    ).await?;
+    assert_eq!(found.value, Some(fifo_record(2)));
     assert_eq!(found.work.page_reads, 2);
-
-    let cancellation = CancellationToken::new();
-    let mut future = std::pin::pin!(lookup_file_record_async(
-        &store,
-        root,
-        FileId::from_bytes([2; 16]),
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
-    let Poll::Ready(asynchronous) = future.as_mut().poll(&mut context) else {
-        return Err("memory-backed asynchronous file lookup remained pending".into());
-    };
-    assert_eq!(asynchronous?, found);
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let mut future = std::pin::pin!(lookup_file_record_async(
+    let mut future = std::pin::pin!(lookup_file_record(
         &store,
         root,
         FileId::from_bytes([2; 16]),
@@ -603,6 +588,7 @@ fn lookup_reads_only_one_file_table_frontier() -> Result<(), Box<dyn std::error:
         WorkBudget::UNBOUNDED,
         &cancelled,
     ));
+    let mut context = Context::from_waker(Waker::noop());
     let Poll::Ready(result) = future.as_mut().poll(&mut context) else {
         return Err("pre-cancelled asynchronous file lookup remained pending".into());
     };
@@ -615,8 +601,8 @@ fn lookup_reads_only_one_file_table_frontier() -> Result<(), Box<dyn std::error:
 }
 
 #[cfg(feature = "memory")]
-#[test]
-fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
+#[tokio::test]
+async fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = ObjectId { kind: ObjectKind::FileTablePage, digest: Digest::ZERO };
@@ -627,12 +613,12 @@ fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
         WorkBudget { peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED },
     ] {
         let owner = ProofDataCustody::default();
-        let point = crate::async_storage::poll_immediate(lookup_file_record_async_with_custody(
+        let point = lookup_file_record_async_with_custody(
             &store, root, file_ids[0], DecodeLimits::default(), budget, &cancellation, Some(&owner),
-        )).expect_err("cold point frame must be denied");
-        let batch = crate::async_storage::poll_immediate(lookup_file_records_async_with_custody(
+        ).await.expect_err("cold point frame must be denied");
+        let batch = lookup_file_records_async_with_custody(
             &store, root, &file_ids, 1, DecodeLimits::default(), budget, &cancellation, Some(&owner),
-        )).expect_err("cold batch frame must be denied");
+        ).await.expect_err("cold batch frame must be denied");
         for failure in [point, batch] {
             assert!(matches!(failure.error, FileRecordReadError::Work(WorkError::BudgetExceeded { .. })));
             assert_eq!(*failure.work, WorkCounters::default());
@@ -641,14 +627,14 @@ fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
     }
     cancellation.cancel();
     let owner = ProofDataCustody::default();
-    let point = crate::async_storage::poll_immediate(lookup_file_record_async_with_custody(
+    let point = lookup_file_record_async_with_custody(
         &store, root, file_ids[0], DecodeLimits::default(), WorkBudget::UNBOUNDED,
         &cancellation, Some(&owner),
-    )).expect_err("cold point cancellation");
-    let batch = crate::async_storage::poll_immediate(lookup_file_records_async_with_custody(
+    ).await.expect_err("cold point cancellation");
+    let batch = lookup_file_records_async_with_custody(
         &store, root, &file_ids, 1, DecodeLimits::default(), WorkBudget::UNBOUNDED,
         &cancellation, Some(&owner),
-    )).expect_err("cold batch cancellation");
+    ).await.expect_err("cold batch cancellation");
     for failure in [point, batch] {
         assert!(matches!(failure.error, FileRecordReadError::Cancelled));
         assert_eq!(*failure.work, WorkCounters::default());
@@ -658,8 +644,8 @@ fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
 }
 
 #[cfg(feature = "memory")]
-#[test]
-fn file_record_batch_shares_frontiers_and_preserves_order() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn file_record_batch_shares_frontiers_and_preserves_order() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let root = two_level_file_table(&store)?;
@@ -675,9 +661,10 @@ fn file_record_batch_shares_frontiers_and_preserves_order() -> Result<(), Box<dy
         4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(
-        batch.records,
+        batch.value,
         vec![
             Some(fifo_record(2)),
             Some(fifo_record(1)),
@@ -691,8 +678,8 @@ fn file_record_batch_shares_frontiers_and_preserves_order() -> Result<(), Box<dy
 }
 
 #[cfg(feature = "memory")]
-#[test]
-fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
+#[tokio::test]
+async fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = two_level_file_table(&store)?;
@@ -705,7 +692,9 @@ fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
         FileId::from_bytes([1; 16]),
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("wrong file-table root kind unexpectedly succeeded")?;
     assert!(matches!(wrong.error, FileRecordReadError::WrongRootKind));
@@ -721,7 +710,9 @@ fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
         FileId::from_bytes([1; 16]),
         invalid_limits,
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("invalid file lookup limits unexpectedly succeeded")?;
     assert!(matches!(
@@ -739,7 +730,9 @@ fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
         FileId::from_bytes([1; 16]),
         height_one,
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("file lookup height limit unexpectedly succeeded")?;
     assert!(matches!(height.error, FileRecordReadError::HeightExceeded));
@@ -752,7 +745,9 @@ fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
         4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("empty file lookup batch unexpectedly succeeded")?;
     assert!(matches!(empty.error, FileRecordReadError::EmptyBatch));
@@ -764,7 +759,9 @@ fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
         1,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("excessive file lookup batch unexpectedly succeeded")?;
     assert!(matches!(
@@ -787,7 +784,9 @@ fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
         FileId::from_bytes([1; 16]),
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("forged file-table bound unexpectedly succeeded")?;
     assert!(matches!(

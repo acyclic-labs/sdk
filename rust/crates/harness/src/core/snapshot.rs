@@ -609,13 +609,13 @@ impl Snapshot {
             source_inventory(self)?.checked_add(self.projection.conversation.clone_cache_logical_bytes()?)
                 .ok_or_else(|| Error::Invalid("snapshot clone reservation overflows".into()))?
         } else { 0 };
+        let mut ordinary_work = None;
         let mut quota = crate::wire_codec::CodecQuota::new(work, reservation)?;
         let mut copied = Self::empty(self.authority.kind, self.revision, self.projection.lifecycle,
             self.projection.active_extension_revision, self.projection.effects_archived, quota.work())?;
         let (conversation, retained) = self.projection.conversation.copy(quota.work(), None)?;
         copied.projection.conversation = conversation;
         if native { quota.adopt(retained)?; }
-        let mut ordinary_work = None;
         let mut ordinary_quota = crate::wire_codec::CodecQuota::from_retained(&mut ordinary_work, 0);
         let mut fields = if native { &mut quota } else { &mut ordinary_quota };
         copied.authority = super::native_custody::copy_authority(&self.authority, fields)?;
@@ -862,6 +862,7 @@ impl Reducer {
                 .ok_or_else(|| Error::Invalid("snapshot clone reservation overflows".into()))?
         } else { 0 };
         if let Some(observer) = work.as_deref() { observer.check_cancellation()?; }
+        let mut ordinary_work = None;
         let mut quota = crate::wire_codec::CodecQuota::new(work, reservation)?;
         let mut snapshot = Snapshot::empty(self.authority.kind, self.revision, self.lifecycle,
             self.active_extension_revision, self.effects_archived, quota.work())?;
@@ -872,7 +873,6 @@ impl Reducer {
         snapshot.projection.conversation = conversation;
         if native { quota.adopt(retained)?; }
         {
-            let mut ordinary_work = None;
             let mut ordinary_quota = crate::wire_codec::CodecQuota::from_retained(&mut ordinary_work, 0);
             let mut fields = if native { &mut quota } else { &mut ordinary_quota };
             snapshot.authority = super::native_custody::copy_authority(&self.authority, fields)?;
@@ -1045,11 +1045,11 @@ impl Reducer {
                 work.as_deref_mut().expect("native restore observer").take_native_custody(bytes)?, None))
         } else {
             super::native_custody::NativeComponentCustody::prepare(
-                super::native_custody::NativeComponentRef::Base, 0, work)?
+                &super::native_custody::NativeComponentKey::Base, 0, work)?
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let base = super::native_custody::NativeComponentCustody::prepare(
-            super::native_custody::NativeComponentRef::Base, 0, work)?;
+            &super::native_custody::NativeComponentKey::Base, 0, work)?;
         drop(restored_custody.install(base, work)?);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let retired_vector_bytes = if intrinsic {
@@ -1410,6 +1410,10 @@ mod tests {
     fn recomputing_public_digest_cannot_authenticate_forged_projection() -> Result<()> {
         let (reducer, issuer) = fixture();
         let original = reducer.snapshot(usize::MAX, &mut None)?.0;
+        let mut changed_revision = original.copy(&mut None)?;
+        changed_revision.revision = 50;
+        assert!(matches!(Reducer::restore(changed_revision, issuer.verifier(&mut None)?, SchemaRegistry::new()),
+            Err(Error::Invalid(_))));
         let mut forged = original.copy(&mut None)?;
         forged.projection.lifecycle = LifecycleState::Completed;
         forged.state_digest = forged.digest_with_work(&mut None)?;
@@ -1460,7 +1464,7 @@ mod tests {
     #[test]
     fn restore_pins_complete_installed_bindings_and_allows_new_namespaces() -> Result<()> {
         let (mut reducer, issuer) = fixture();
-        reducer.schemas.register_configured(
+        reducer.schemas.register(
             "example.pinned",
             1,
             json!({"type":"object"}),
@@ -1503,7 +1507,7 @@ mod tests {
             1,
             json!({"type":"string"}),
             [9; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let restored = Reducer::restore(snapshot, issuer.verifier(&mut None).expect("verifier copy"), expanded.clone())?;
         reducer.schemas = expanded;

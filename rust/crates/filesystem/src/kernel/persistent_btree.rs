@@ -4,7 +4,7 @@ use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation
 use super::codec::DecodedPageShape;
 use super::persistent_io::{self, PageLease};
 use super::persistent_point::{Owned, absorb, retire_allocation};
-use super::search::counted_binary_search;
+use super::search::binary_search_with_accounting;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
@@ -550,8 +550,7 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
     fn apply_point_mutations(&mut self, entries: &mut Owned<Vec<F::Value>>, mutations: &[(usize, &M)]) -> Result<bool, crate::FsError> {
         let mut changed = false;
         for (_, mutation) in mutations {
-            let (found, comparisons) = search::<F>(&entries.value, mutation.key());
-            self.charge_items(comparisons)?;
+            let found = binary_search_with_accounting(&entries.value, self.accounting, |entry| F::key(entry).cmp(mutation.key()))?;
             let prior = found.ok().and_then(|index| entries.value.get(index));
             let next = mutation.replacement(prior).map_err(|error| Self::error(Error::Semantic(error)))?;
             if prior.is_some() != next.is_some() { return Err(Self::error(Error::MutationContract)); }
@@ -876,10 +875,6 @@ where
         self.remaining_bytes = self.remaining_bytes.saturating_sub(payload);
         Ok(Some((page, usize_to_u64(count))))
     }
-}
-
-fn search<F: Format>(entries: &[F::Value], key: &F::Key) -> (Result<usize, usize>, u64) {
-    counted_binary_search(entries, |entry| F::key(entry).cmp(key))
 }
 
 pub(crate) fn within_bounds<K: Ord>(

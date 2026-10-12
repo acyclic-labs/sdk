@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{AgentId, Capabilities, Outcome,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner}, core::AggregateKind};
 

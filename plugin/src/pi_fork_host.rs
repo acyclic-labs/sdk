@@ -4,6 +4,7 @@ use crate::{PendingSpawn, PendingSpawnLifecycle, PluginTaskBinding, ServiceResou
     pi_native_host::PiNativeFilesystem,
     pi_owner::PiOwnerConfig, pi_root_provider::PiRootHandle,
     pi_task::{PiTaskInput, PiTaskExecution}};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{LazySnapshotRef, WorkBudget, WorkCounters, NativeMaterializationWork};
 use acyclic_harness::{Error, Result, TaskId, OperationId,
     durable_host::TaskJournalOwner, filesystem::{TaskCommandProgress, ForkPreparationLimits},
@@ -339,7 +340,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 reason: "Pi requested alias already belongs to another admitted child" });
         }
         let coordinator = self.coordinator(&work)?;
-        let existing = coordinator.load_plan(&context, original, remaining(&work)?, &cancel).await?;
+        let existing = coordinator.load_plan(&context, original).await?;
         if reconcile && existing.is_none() { return Ok(TaskCommandProgress::Pending); }
         let (source, frozen, _source_custody) = self.source(shared, owner, caller, &input, existing.as_ref(), work).await?;
         let conversation = self.protected.conversation_authority_with_native_work(owner.task_id(),

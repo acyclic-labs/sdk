@@ -395,16 +395,16 @@ proptest::proptest! {
 
 #[test]
 fn names_are_canonical_bounded_and_path_independent() -> Result<(), Box<dyn Error>> {
-    let composed = WorkspaceName::new("caf\u{e9}")?;
-    let decomposed = WorkspaceName::new("cafe\u{301}")?;
+    let composed = WorkspaceName::new("caf\u{e9}", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let decomposed = WorkspaceName::new("cafe\u{301}", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(composed, decomposed);
     assert_eq!(composed.as_str(), "caf\u{e9}");
-    assert_eq!(WorkspaceName::new(""), Err(WorkspaceNameError::Empty));
-    assert_eq!(WorkspaceName::new(".."), Err(WorkspaceNameError::Reserved));
-    assert_eq!(
-        WorkspaceName::new("parent/child"),
-        Err(WorkspaceNameError::InvalidCharacter)
-    );
+    assert!(matches!(WorkspaceName::new("", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error), Err(WorkspaceError::Name(WorkspaceNameError::Empty))));
+    assert!(matches!(WorkspaceName::new("..", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error), Err(WorkspaceError::Name(WorkspaceNameError::Reserved))));
+    assert!(matches!(
+        WorkspaceName::new("parent/child", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error),
+        Err(WorkspaceError::Name(WorkspaceNameError::InvalidCharacter))
+    ));
     Ok(())
 }
 
@@ -419,16 +419,15 @@ fn workspace_names_preserve_nfc_and_cancellation()
         "a\u{315}\u{300}", "a\u{301}\u{300}",
     ] {
         let expected: String = spelling.nfc().collect();
-        let normalized = WorkspaceName::new_measured(
+        let normalized = WorkspaceName::new(
             spelling, WorkBudget::UNBOUNDED, &cancellation,
         )?;
         assert_eq!(normalized.value.as_str(), expected);
-        assert_eq!(WorkspaceName::new(spelling)?, normalized.value);
         assert!(normalized.work.peak_allocation_bytes >= normalized.value.retained_bytes());
     }
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = WorkspaceName::new_measured("name", WorkBudget::UNBOUNDED, &cancelled)
+    let failure = WorkspaceName::new("name", WorkBudget::UNBOUNDED, &cancelled)
         .err().ok_or("cancelled canonical name unexpectedly admitted")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
@@ -437,13 +436,13 @@ fn workspace_names_preserve_nfc_and_cancellation()
 
 #[test]
 fn identity_is_deterministic_and_namespace_scoped() -> Result<(), Box<dyn Error>> {
-    let name = WorkspaceName::new("repo")?;
+    let name = WorkspaceName::new("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let first = WorkspaceId::derive([1; 16], &name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(first, WorkspaceId::derive([1; 16], &name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?);
     assert_ne!(first, WorkspaceId::derive([2; 16], &name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?);
     assert_ne!(
         first,
-        WorkspaceId::derive([1; 16], &WorkspaceName::new("other")?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?
+        WorkspaceId::derive([1; 16], &WorkspaceName::new("other", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?
     );
     Ok(())
 }
@@ -3462,7 +3461,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
 
     // Authored metadata changed both ways is a conflict, reported as such.
     let base = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let third = fork("sibling-times-third", &base).await?;
+    let third = fork("sibling-times-third", &base).await?.value;
     for (workspace, mode) in [(&main, 0o700), (&third, 0o770)] {
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.set_metadata("/pkg", touch(40, mode), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;

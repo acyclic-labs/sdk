@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use crate::kernel::Child;
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn original_mutation_refuses_index_copy_before_allocating_or_reading()
+#[tokio::test]
+async fn original_mutation_refuses_index_copy_before_allocating_or_reading()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let original = entry("a", 1, FileKind::Regular)?;
@@ -22,9 +22,9 @@ fn original_mutation_refuses_index_copy_before_allocating_or_reading()
     let before = work.receipt();
     let live = work.live_allocation_bytes();
     let mut accounting = super::super::allocation::KernelAccounting::native(&work, &cancellation);
-    let error = crate::async_storage::poll_immediate(apply_tree_mutations_with_accounting(
+    let error = apply_tree_mutations_with_accounting(
         &store, root, &mutations, 1, DecodeLimits::default(), &mut accounting, &cancellation,
-    )).expect_err("index copy must be admitted before allocating");
+    ).await.expect_err("index copy must be admitted before allocating");
     assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | crate::FsError::Work(_)));
     assert_eq!(work.receipt(), before);
     assert_eq!(work.live_allocation_bytes(), live);
@@ -32,8 +32,8 @@ fn original_mutation_refuses_index_copy_before_allocating_or_reading()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn original_mutation_write_denial_preserves_paid_orphan_prefix()
+#[tokio::test]
+async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store)?;
@@ -48,9 +48,9 @@ fn original_mutation_write_denial_preserves_paid_orphan_prefix()
         WorkBudget { page_writes: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
     ).map_err(|(error, _)| error)?;
     let mut accounting = super::super::allocation::KernelAccounting::native(&work, &cancellation);
-    let error = crate::async_storage::poll_immediate(apply_tree_mutations_with_accounting(
+    let error = apply_tree_mutations_with_accounting(
         &store, root, &mutations, 2, DecodeLimits::default(), &mut accounting, &cancellation,
-    )).expect_err("second changed leaf must refuse on original page-write limit");
+    ).await.expect_err("second changed leaf must refuse on original page-write limit");
     assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | crate::FsError::Work(_)));
     assert_eq!(work.receipt().page_writes, 1);
     assert_eq!(work.receipt().backend_write_operations, 1);
@@ -161,7 +161,7 @@ async fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
     let root_bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     let TreePage::Internal(children) = decode_tree_page(&root_bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
@@ -189,7 +189,7 @@ async fn semantic_noop_preserves_root_and_writes_nothing() -> Result<(), Box<dyn
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     ).await?;
-    assert_eq!(receipt.root, root);
+    assert_eq!(receipt.value, root);
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 0);
     assert_eq!(receipt.work.backend_write_operations, 0);
@@ -223,7 +223,7 @@ async fn overflowing_leaf_splits_and_builds_one_new_root() -> Result<(), Box<dyn
     assert_eq!(receipt.work.page_reads, 1);
     assert_eq!(receipt.work.page_writes, 3);
     let bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     assert!(matches!(
         decode_tree_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
@@ -349,7 +349,7 @@ async fn point_noop_uses_logarithmic_leaf_search_without_rebuild()
     // records before allocation; the point lookup itself adds at most 11
     // binary-search comparisons.
     assert!(receipt.work.items_examined <= 1_024 + 11);
-    assert_eq!(receipt.root, root);
+    assert_eq!(receipt.value, root);
     assert_eq!(receipt.work.page_writes, 0);
     Ok(())
 }
@@ -466,7 +466,7 @@ async fn structural_batch_rebuilds_wide_leaf_in_linear_work() -> Result<(), Box<
         "linear structural plan examined {} items",
         receipt.work.items_examined
     );
-    assert_eq!(flatten_tree(&store, receipt.root)?.len(), 1_024);
+    assert_eq!(flatten_tree(&store, receipt.value)?.len(), 1_024);
     Ok(())
 }
 
@@ -493,7 +493,7 @@ async fn unordered_batch_is_deterministic_and_preserves_equal_name_order()
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     ).await?;
-    assert_eq!(flatten_tree(&store, receipt.root)?, vec![a]);
+    assert_eq!(flatten_tree(&store, receipt.value)?, vec![a]);
     Ok(())
 }
 
@@ -651,7 +651,7 @@ async fn generated_directory_histories_match_independent_ordered_map()
             &crate::CancellationToken::new(),
         ).await?;
         assert_eq!(
-            flatten_tree(&store, receipt.root)?,
+            flatten_tree(&store, receipt.value)?,
             expected.into_values().collect::<Vec<_>>(),
             "history {history} diverged"
         );
@@ -682,7 +682,7 @@ async fn point_inserts_rewrite_bounded_pages_however_large_the_directory()
             WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         ).await?;
-        root = receipt.root;
+        root = receipt.value;
         if step >= ENTRIES / 2 {
             largest_late_rewrite = largest_late_rewrite.max(receipt.work.bytes_encoded);
         }
@@ -701,7 +701,8 @@ async fn point_inserts_rewrite_bounded_pages_however_large_the_directory()
         ENTRIES,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &crate::CancellationToken::new(),
+    ).await?;
     let names = listing
         .entries
         .iter()

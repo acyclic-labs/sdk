@@ -4,6 +4,7 @@ use super::{
     FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
     FilesystemInteractionHost, FilesystemSchedulerPayloadStore, FilesystemWorkflowJournal,
 };
+use crate::runtime::TaskStateProvider;
 use crate::{
     Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     context::ContextPipeline,
@@ -227,14 +228,14 @@ impl WorkerTurn {
     }
 }
 
-enum WorkerContext {
+pub(super) enum WorkerContext {
     Ordinary(TaskContext),
     #[cfg(not(target_arch = "wasm32"))]
     Native(Arc<crate::runtime::NativeTaskContext>),
 }
 
 impl WorkerContext {
-    fn context(&self) -> &TaskContext {
+    pub(super) fn context(&self) -> &TaskContext {
         match self {
             Self::Ordinary(context) => context,
             #[cfg(not(target_arch = "wasm32"))]
@@ -422,7 +423,6 @@ where
         creation_providers: &[Arc<dyn crate::resource_preparation::ResourceCreationProvider>],
         resumable_tools: &ResumableToolRegistry, io: Option<&super::PreparationIo>,
     ) -> Result<Self> {
-        let client = acyclic_stream::StreamClient::new(stream.clone());
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| io.invalid("native runtime configuration has no original work"))?;
@@ -436,11 +436,11 @@ where
             let payloads = FilesystemSchedulerPayloadStore::new(filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let reader = FilesystemContentVerifier::new(filesystem.clone(), verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let coordinator = DistributedCoordinator::open(
-                &client, reader.clone(), Some(payloads.clone()),
+                &stream, reader.clone(), Some(payloads.clone()),
                 &mut Some(&mut crate::store::history::native_work_io(work)?),
             ).await?;
             let mut host = CoordinatorTaskHost::new_with_native_work(
-                coordinator, client.clone(), payloads, reader.clone(),
+                coordinator, stream.clone(), payloads, reader.clone(),
                 verifier.audience(), signed, verifier, scope, tasks, machines, clock, work,
             )?.with_session_limits(session_limits, Some(work))?
                 .with_resource_creation_providers(creation_providers, Some(work))?;
@@ -477,8 +477,8 @@ where
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
         let mut host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&client, reader.clone(), Some(payloads.clone()), &mut None).await?,
-            client.clone(),
+            DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?,
+            stream.clone(),
             payloads,
             reader.clone(),
             verifier.audience().clone(),
@@ -718,7 +718,7 @@ where
                 task, turn, io.original_native_work().expect("native approval IO"),
             ).await?,
             _ => {
-                let operation = execution_operation(task, turn);
+                let operation = execution_operation(task, turn, None)?;
                 let journal = FilesystemExecutionJournal::new(
                     self.stream.clone(), Arc::clone(&self.filesystem), &self.volume, &self.verifier,
                     &crate::core::SchemaRegistry::new(), &self.signed,
@@ -1017,10 +1017,13 @@ where
         let (owner, request) = self.host.readonly_fork_journal_owner_with_native_work(
             &witness, query, claim, work,
         )?.await?;
-        let preparation = owner.resource_preparation_reconciliation_with_native_work(
-            query, request, work,
-        )?.await?;
-        Ok(Some(preparation))
+        let mut preparation = owner.resource_preparation_with_native_work(request, work)?.await?;
+        let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64)?;
+        preparation.native_custody.as_mut().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "native preparation has no original metadata custody",
+        })?.absorb(&mut header).map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
+        Ok(Some(Arc::new(preparation)))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1075,7 +1078,7 @@ where
     ) -> Result<(Arc<FilesystemExecutionJournal<P, A, O>>, OperationId)> {
         let io = super::PreparationIo::from_native_work(work)?;
         let admission = self.admission_observed(task, Some(&io)).await?;
-        let operation = execution_operation_with_native_work(task, turn, work)?;
+        let operation = execution_operation(task, turn, Some(&io))?;
         let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
         let journal = FilesystemExecutionJournal::for_task(
                 owner,
@@ -1105,7 +1108,7 @@ where
     ) -> Result<(Arc<FilesystemExecutionJournal<P, A, O>>, OperationId)> {
         let io = super::PreparationIo::from_native_work(work)?;
         let admission = self.admission_observed(task, Some(&io)).await?;
-        let operation = execution_operation_with_native_work(task, turn, work)?;
+        let operation = execution_operation(task, turn, Some(&io))?;
         let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?;
         let journal = FilesystemExecutionJournal::for_task(
                 owner,
@@ -1131,7 +1134,7 @@ where
         self.bind_interaction_owner(
             FilesystemExecutionJournal::for_task(
                 self.host.journal_owner(task, fence).await?,
-                execution_operation(task, turn),
+                execution_operation(task, turn, None)?,
                 turn,
                 self.filesystem.clone(),
                 &self.volume,
@@ -1517,11 +1520,8 @@ where
             let work = io.original_native_work().ok_or_else(|| observed::boundary(
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wait context requires original observer",
             ))?;
-            let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?
-                .into_native_shared(work)?;
-            let mailbox = self.task_mailbox_with_native_work(owner, work)?;
-            let (context, custody) = self.harness.durable_context_for_read_with_native_work(
-                task, admission.operation_id, mailbox, work,
+            let (context, custody) = self.harness.durable_context_with_native_work(
+                task, admission.operation_id, work,
             ).await?;
             WorkerContext::Native(context.into_native_shared(custody, work)?)
         } else {
@@ -1625,231 +1625,222 @@ where
         let task = TaskId::from_bytes(operation_id.into_bytes());
         let admission = self.admission_observed(task, io).await?;
         let fence = observed::lease_fence(lease, io)?;
-        deadline::run(
-            &self.host, task, Some(&fence), admission.run_limits.deadline_epoch_ms,
-            operation_id, self.run_task_owned(lease, &fence, commands, maximum_transitions, io), io, |_| false,
-        ).await
-    }
-
-    async fn run_task_owned(
-        &self,
-        lease: &crate::distributed::WorkLease,
-        fence: &LeaseFence,
-        commands: &dyn TaskCommandHost,
-        maximum_transitions: u32,
-        io: Option<&super::PreparationIo>,
-    ) -> Result<WorkerTurn> {
-        let operation_id = lease.operation.operation_id;
-        let task = TaskId::from_bytes(operation_id.into_bytes());
-        #[cfg(not(target_arch = "wasm32"))]
-        let context = if let Some(io) = io {
-            let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "worker context requires original native work",
-            })?;
-            WorkerContext::Native(self.task_context_with_native_work(task, fence, work).await?)
-        } else {
-            WorkerContext::Ordinary(self.harness.durable_context(task, operation_id).await?)
-        };
-        #[cfg(target_arch = "wasm32")]
-        let context = WorkerContext::Ordinary(self.harness.durable_context(task, operation_id).await?);
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut session = if let WorkerContext::Native(context) = &context {
-            let work = io.and_then(|io| io.original_native_work()).ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "native worker lost its original observer",
-            })?;
-            self.host.start_task(lease, Some(work)).await?;
-            self.open_task_with_native_work(task, fence, Arc::clone(context), work).await?
-        } else {
-            self.host.start_task(lease, None).await?;
-            self.open_task(task, fence.clone()).await?
-        };
-        #[cfg(target_arch = "wasm32")]
-        let mut session = {
-            self.host.start_task(lease, None).await?;
-            self.open_task(task, fence.clone()).await?
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut wake_custody;
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut wake = if let Some(io) = io {
-            let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "native wake input requires original observer",
-            })?;
-            let (wake, custody) = self.host.workflow_input_with_native_work(task, fence, work).await?;
-            wake_custody = Some(custody);
-            wake
-        } else {
-            wake_custody = None;
-            self.host.workflow_input(task, fence).await?
-        };
-        #[cfg(target_arch = "wasm32")]
-        let mut wake = self.host.workflow_input(task, fence).await?;
-        let mut advanced = 0;
-        loop {
-            let revision = session.checkpoint().revision;
+        let run = async {
+            let fence = &fence;
             #[cfg(not(target_arch = "wasm32"))]
-            let _transition_custody;
-            #[cfg(not(target_arch = "wasm32"))]
-            let mut transition = if let Some(io) = io {
+            let context = if let Some(io) = io {
                 let work = io.original_native_work().ok_or(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unsupported,
-                    reason: "native transition requires original observer",
+                    reason: "worker context requires original native work",
                 })?;
-                let (value, custody) = session.latest_transition_with_native_work(work).await?;
-                _transition_custody = Some(custody);
-                value
+                WorkerContext::Native(self.task_context_with_native_work(task, fence, work).await?)
             } else {
-                _transition_custody = None;
-                session.latest_transition().await?
+                WorkerContext::Ordinary(self.harness.durable_context(task, operation_id).await?)
             };
             #[cfg(target_arch = "wasm32")]
-            let mut transition = session.latest_transition().await?;
-            if advanced == maximum_transitions
-                && transition.as_ref().is_none_or(|value| {
-                    matches!(value.status, MachineStatus::Suspended) && !value.commands.is_empty()
-                })
-            {
-                return Ok(WorkerTurn::Yielded);
-            }
-            let mut command_input = None;
-            if let Some(transition) = &mut transition {
-                if !transition.commands.is_empty() {
-                    match self
-                        .dispatch_commands(task, &context, fence, &transition.commands, commands, io)
-                        .await?
-                    {
-                        ready @ CommandDispatch::Ready {..} => command_input = Some(ready),
-                        CommandDispatch::Pending {
-                            command,
-                            guard_execution,
-                        } => {
-                            self.suspend_command(task, fence, revision, command, guard_execution, io)
-                                .await?;
-                            return Ok(WorkerTurn::Suspended { task, revision });
-                        }
-                        CommandDispatch::Indeterminate => {
-                            self.settle_observed(task, fence, Outcome::Indeterminate { operation_id }, io).await?;
-                            return Ok(WorkerTurn::Reconciling);
-                        }
-                    }
-                }
-                let outcome = match &mut transition.status {
-                    MachineStatus::Completed { value } => Some(Outcome::Succeeded(std::mem::take(value))),
-                    MachineStatus::Failed { message } => Some(Outcome::Failed {
-                        message: std::mem::take(message),
-                    }),
-                    MachineStatus::Suspended => None,
-                };
-                if let Some(outcome) = outcome {
-                    self.settle_observed(task, fence, outcome, io).await?;
-                    return Ok(WorkerTurn::Completed { task });
-                }
-            }
+            let context = WorkerContext::Ordinary(self.harness.durable_context(task, operation_id).await?);
             #[cfg(not(target_arch = "wasm32"))]
-            let mut wake_input_used = false;
-            let input = if transition.is_none() {
-                Value::Null
-            } else if let Some(CommandDispatch::Ready {value,..}) = command_input.as_mut() {
-                std::mem::take(value)
-            } else if let Some((wake_revision, value)) = &mut wake {
-                if *wake_revision == revision {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    { wake_input_used = true; }
-                    std::mem::take(value)
-                } else {
-                    self.suspend_observed(task, fence, revision, io).await?;
-                    return Ok(WorkerTurn::Suspended { task, revision });
-                }
-            } else {
-                self.suspend_observed(task, fence, revision, io).await?;
-                return Ok(WorkerTurn::Suspended { task, revision });
-            };
-            if advanced == maximum_transitions {
-                return Ok(WorkerTurn::Yielded);
-            }
-            if let Some(io) = io {
-                let hashed = acyclic_fs::WorkCounters {
-                    bytes_hashed: b"harness/v2/task-worker-step\0".len() as u64 + 24,
-                    ..Default::default()
-                };
-                io.preflight(hashed)?;
-                io.charge(hashed)?;
-            }
-            let mut digest = blake3::Hasher::new();
-            digest.update(b"harness/v2/task-worker-step\0");
-            digest.update(&task.into_bytes());
-            digest.update(&revision.to_be_bytes());
-            let mut bytes = [0; 16];
-            bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
-            #[cfg(not(target_arch = "wasm32"))]
-            let native_input = if let Some(CommandDispatch::Ready {
-                custody: Some(primary), additional_custody, ..
-            }) = command_input.as_mut() {
-                for incoming in additional_custody {
-                    primary.absorb(incoming).map_err(Error::from)?;
-                }
-                let key = native_step_key_with_custody(revision, primary)?;
-                Some(key)
-            } else {
-                None
-            };
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(key) = native_input {
-                let Some(CommandDispatch::Ready { custody, .. }) = command_input.as_mut() else {
-                    unreachable!("native key requires retained command custody");
-                };
-                let custody = custody.take().ok_or(Error::NativeBoundary {
+            let mut session = if let WorkerContext::Native(context) = &context {
+                let work = io.and_then(|io| io.original_native_work()).ok_or(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unsupported,
-                    reason: "native input has no original command custody",
+                    reason: "native worker lost its original observer",
                 })?;
-                session.step_with_native_work(
-                    OperationId::from_bytes(bytes), key, input, custody,
-                ).await?;
-            } else if let Some(io) = io {
+                self.host.start_task(lease, Some(work)).await?;
+                self.open_task_with_native_work(task, fence, Arc::clone(context), work).await?
+            } else {
+                self.host.start_task(lease, None).await?;
+                self.open_task(task, fence.clone()).await?
+            };
+            #[cfg(target_arch = "wasm32")]
+            let mut session = {
+                self.host.start_task(lease, None).await?;
+                self.open_task(task, fence.clone()).await?
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut wake_custody;
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut wake = if let Some(io) = io {
                 let work = io.original_native_work().ok_or(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unsupported,
-                    reason: "native step requires original observer",
+                    reason: "native wake input requires original observer",
                 })?;
-                let mut custody = if wake_input_used {
-                    wake_custody.take().ok_or(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid,
-                        reason: "native wake input has no original custody",
-                    })?
-                } else {
-                    io.take_native_custody(0)?
-                };
-                if !work.shares_ledger(custody.work()) {
-                    drop(input);
-                    return Err(Error::NativeWork {
-                        cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
-                        custody: Some(custody),
-                    });
-                }
-                let key = match native_step_key_with_custody(revision, &mut custody) {
-                    Ok(key) => key,
-                    Err(error) => { drop(input); return Err(error); }
-                };
-                session.step_with_native_work(
-                    OperationId::from_bytes(bytes), key, input, custody,
-                ).await?;
+                let (wake, custody) = self.host.workflow_input_with_native_work(task, fence, work).await?;
+                wake_custody = Some(custody);
+                wake
             } else {
+                wake_custody = None;
+                self.host.workflow_input(task, fence).await?
+            };
+            #[cfg(target_arch = "wasm32")]
+            let mut wake = self.host.workflow_input(task, fence).await?;
+            let mut advanced = 0;
+            loop {
+                let revision = session.checkpoint().revision;
+                #[cfg(not(target_arch = "wasm32"))]
+                let _transition_custody;
+                #[cfg(not(target_arch = "wasm32"))]
+                let mut transition = if let Some(io) = io {
+                    let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unsupported,
+                        reason: "native transition requires original observer",
+                    })?;
+                    let (value, custody) = session.latest_transition_with_native_work(work).await?;
+                    _transition_custody = Some(custody);
+                    value
+                } else {
+                    _transition_custody = None;
+                    session.latest_transition().await?
+                };
+                #[cfg(target_arch = "wasm32")]
+                let mut transition = session.latest_transition().await?;
+                if advanced == maximum_transitions
+                    && transition.as_ref().is_none_or(|value| {
+                        matches!(value.status, MachineStatus::Suspended) && !value.commands.is_empty()
+                    })
+                {
+                    return Ok(WorkerTurn::Yielded);
+                }
+                let mut command_input = None;
+                if let Some(transition) = &mut transition {
+                    if !transition.commands.is_empty() {
+                        match self
+                            .dispatch_commands(task, &context, fence, &transition.commands, commands, io)
+                            .await?
+                        {
+                            ready @ CommandDispatch::Ready {..} => command_input = Some(ready),
+                            CommandDispatch::Pending {
+                                command,
+                                guard_execution,
+                            } => {
+                                self.suspend_command(task, fence, revision, command, guard_execution, io)
+                                    .await?;
+                                return Ok(WorkerTurn::Suspended { task, revision });
+                            }
+                            CommandDispatch::Indeterminate => {
+                                self.task_host().settle_task(task, fence, Outcome::Indeterminate { operation_id }, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
+                                return Ok(WorkerTurn::Reconciling);
+                            }
+                        }
+                    }
+                    let outcome = match &mut transition.status {
+                        MachineStatus::Completed { value } => Some(Outcome::Succeeded(std::mem::take(value))),
+                        MachineStatus::Failed { message } => Some(Outcome::Failed {
+                            message: std::mem::take(message),
+                        }),
+                        MachineStatus::Suspended => None,
+                    };
+                    if let Some(outcome) = outcome {
+                        self.task_host().settle_task(task, fence, outcome, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
+                        return Ok(WorkerTurn::Completed { task });
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                let mut wake_input_used = false;
+                let input = if transition.is_none() {
+                    Value::Null
+                } else if let Some(CommandDispatch::Ready {value,..}) = command_input.as_mut() {
+                    std::mem::take(value)
+                } else if let Some((wake_revision, value)) = &mut wake {
+                    if *wake_revision == revision {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        { wake_input_used = true; }
+                        std::mem::take(value)
+                    } else {
+                        self.task_host().suspend_workflow(task, fence, revision, None, None, None, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
+                        return Ok(WorkerTurn::Suspended { task, revision });
+                    }
+                } else {
+                    self.task_host().suspend_workflow(task, fence, revision, None, None, None, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
+                    return Ok(WorkerTurn::Suspended { task, revision });
+                };
+                if advanced == maximum_transitions {
+                    return Ok(WorkerTurn::Yielded);
+                }
+                if let Some(io) = io {
+                    let hashed = acyclic_fs::WorkCounters {
+                        bytes_hashed: b"harness/v2/task-worker-step\0".len() as u64 + 24,
+                        ..Default::default()
+                    };
+                    io.preflight(hashed)?;
+                    io.charge(hashed)?;
+                }
+                let mut digest = blake3::Hasher::new();
+                digest.update(b"harness/v2/task-worker-step\0");
+                digest.update(&task.into_bytes());
+                digest.update(&revision.to_be_bytes());
+                let mut bytes = [0; 16];
+                bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
+                #[cfg(not(target_arch = "wasm32"))]
+                let native_input = if let Some(CommandDispatch::Ready {
+                    custody: Some(primary), additional_custody, ..
+                }) = command_input.as_mut() {
+                    for incoming in additional_custody {
+                        primary.absorb(incoming).map_err(Error::from)?;
+                    }
+                    let key = native_step_key_with_custody(revision, primary)?;
+                    Some(key)
+                } else {
+                    None
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(key) = native_input {
+                    let Some(CommandDispatch::Ready { custody, .. }) = command_input.as_mut() else {
+                        unreachable!("native key requires retained command custody");
+                    };
+                    let custody = custody.take().ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unsupported,
+                        reason: "native input has no original command custody",
+                    })?;
+                    session.step_with_native_work(
+                        OperationId::from_bytes(bytes), key, input, custody,
+                    ).await?;
+                } else if let Some(io) = io {
+                    let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unsupported,
+                        reason: "native step requires original observer",
+                    })?;
+                    let mut custody = if wake_input_used {
+                        wake_custody.take().ok_or(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Invalid,
+                            reason: "native wake input has no original custody",
+                        })?
+                    } else {
+                        io.take_native_custody(0)?
+                    };
+                    if !work.shares_ledger(custody.work()) {
+                        drop(input);
+                        return Err(Error::NativeWork {
+                            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                            custody: Some(custody),
+                        });
+                    }
+                    let key = match native_step_key_with_custody(revision, &mut custody) {
+                        Ok(key) => key,
+                        Err(error) => { drop(input); return Err(error); }
+                    };
+                    session.step_with_native_work(
+                        OperationId::from_bytes(bytes), key, input, custody,
+                    ).await?;
+                } else {
+                    session.step(
+                        OperationId::from_bytes(bytes),
+                        IdempotencyKey::new(format!("task-step:{revision}"))?,
+                        input,
+                    ).await?;
+                }
+                #[cfg(target_arch = "wasm32")]
                 session.step(
                     OperationId::from_bytes(bytes),
                     IdempotencyKey::new(format!("task-step:{revision}"))?,
                     input,
                 ).await?;
+                advanced += 1;
             }
-            #[cfg(target_arch = "wasm32")]
-            session.step(
-                OperationId::from_bytes(bytes),
-                IdempotencyKey::new(format!("task-step:{revision}"))?,
-                input,
-            ).await?;
-            advanced += 1;
-        }
+        };
+        deadline::run(
+            &self.host, task, Some(&fence), admission.run_limits.deadline_epoch_ms,
+            operation_id, run, io, |_| false,
+        ).await
     }
 
     async fn dispatch_commands(
@@ -2027,7 +2018,7 @@ where
         let scope = task_context.scope().clone();
         let limits = scope.limits();
         let run_limits = scope.run_limits();
-        let operation_id = execution_operation(task, turn);
+        let operation_id = execution_operation(task, turn, None)?;
         let journal = self
             .open_execution_journal(task, fence.clone(), turn, &admission)
             .await?;
@@ -2099,25 +2090,21 @@ fn native_step_key(
     Ok((key, io.into_native_custody(retained)?))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) fn execution_operation_with_native_work(
-    task: TaskId, turn: OperationId, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<OperationId> {
-    work.charge(acyclic_fs::WorkCounters {
-        bytes_hashed: b"harness/v2/task-execution\0".len() as u64 + 32,
-        ..Default::default()
-    }).map_err(Error::from)?;
-    Ok(execution_operation(task, turn))
-}
-
-pub fn execution_operation(task: TaskId, turn: OperationId) -> OperationId {
+pub(super) fn execution_operation(task: TaskId, turn: OperationId, io: Option<&super::PreparationIo>) -> Result<OperationId> {
+    if let Some(io) = io {
+        let hashed = acyclic_fs::WorkCounters {
+            bytes_hashed: b"harness/v2/task-execution\0".len() as u64 + 32, ..Default::default()
+        };
+        io.preflight(hashed)?;
+        io.charge(hashed)?;
+    }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"harness/v2/task-execution\0");
     hasher.update(&task.into_bytes());
     hasher.update(&turn.into_bytes());
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(bytes)
+    Ok(OperationId::from_bytes(bytes))
 }
 
 /// A stock executor and its mandatory task-owned journal.

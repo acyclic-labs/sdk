@@ -1942,25 +1942,6 @@ impl WasmReducer {
         volume.storage_name().map_err(js_error)
     }
 
-    /// Validates an exact content reference using the native Rust contract.
-    #[wasm_bindgen(js_name = validateFileRef)]
-    pub fn validate_file_ref(&self, file: JsValue) -> Result<(), JsValue> {
-        let file: FileRef = from_js(file)?;
-        file.validate().map_err(js_error)
-    }
-
-    /// Derives the canonical SHA-256 descriptor for staged bytes.
-    #[wasm_bindgen(js_name = fileDescriptorJson)]
-    pub fn file_descriptor_json(
-        &self,
-        bytes: Vec<u8>,
-        media_type: String,
-    ) -> Result<String, JsValue> {
-        let descriptor = FileDescriptor::from_bytes(&bytes, media_type).map_err(js_error)?;
-        String::from_utf8(crate::contract::canonical_json_bytes(&descriptor).map_err(js_error)?)
-            .map_err(|error| JsValue::from_str(&error.to_string()))
-    }
-
     /// Applies configured runtime bounds to one exact file reference.
     #[wasm_bindgen(js_name = validateFileUnderLimits)]
     pub fn validate_file_under_limits(
@@ -1971,35 +1952,6 @@ impl WasmReducer {
         let file: FileRef = from_js(file)?;
         let limits: Limits = from_js(limits)?;
         limits.validate_file(&file).map_err(js_error)
-    }
-
-    /// Validates one ref-only canonical message under explicit runtime limits.
-    #[wasm_bindgen(js_name = validateConversationMessage)]
-    pub fn validate_conversation_message(
-        &self,
-        message: JsValue,
-        limits: JsValue,
-    ) -> Result<(), JsValue> {
-        let message: ConversationMessage = from_js(message)?;
-        let limits: Limits = from_js(limits)?;
-        limits.validate_message(&message).map_err(js_error)
-    }
-
-    /// Verifies exact bytes against the pinned SHA-256 and byte-length descriptor.
-    #[wasm_bindgen(js_name = verifyFileBytes)]
-    pub fn verify_file_bytes(&self, file: JsValue, bytes: Vec<u8>) -> Result<(), JsValue> {
-        verify_file_bytes(file, bytes)
-    }
-
-    /// Resolves a complete canonical attachment manifest under the Rust rules.
-    #[wasm_bindgen(js_name = decodeAttachmentManifest)]
-    pub fn decode_attachment_manifest(
-        &self,
-        manifest: JsValue,
-        bytes: Vec<u8>,
-        item_count: u32,
-    ) -> Result<JsValue, JsValue> {
-        decode_attachment_manifest_bytes(manifest, bytes, item_count)
     }
 
     /// Selects logical fork history against this reducer before provider preparation.
@@ -2137,7 +2089,7 @@ fn schema_registry(value: JsValue) -> Result<SchemaRegistry, JsValue> {
                 definition.version,
                 definition.schema,
                 definition.implementation_digest,
-                definition.fork_policy,
+                definition.fork_policy, [], None,
             )
             .map_err(js_error)?;
     }

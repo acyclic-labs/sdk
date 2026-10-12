@@ -147,7 +147,7 @@ impl McpRuntimeCallbacks {
         if sampling.image.as_ref().is_some_and(|policy| !matches!(policy.intent, NativeMediaIntent::Image { .. }))
             || sampling.audio.as_ref().is_some_and(|policy| !matches!(policy.intent, NativeMediaIntent::Audio { .. }))
         { return Err(Error::Invalid("MCP sampling media intent differs from selected modality".into())); }
-        Ok(Self { executor: executor.with_tool_registry(crate::tool::ToolRegistry::new()), journal, model_name, sampling })
+        Ok(Self { executor: executor.with_tool_registry(crate::tool::ToolRegistry::default()), journal, model_name, sampling })
     }
     async fn run(&self, context: ToolContext, request: &McpCallbackRequest) -> Result<Value> {
         crate::contract::validate_json_byte_bound(request, context.scope().limits().file_bytes)?;
@@ -195,7 +195,7 @@ impl McpRuntimeCallbacks {
                     title: params.get("message").and_then(Value::as_str).ok_or_else(|| Error::Invalid("MCP form message absent".into()))?.into(),
                     schema: params.get("requestedSchema").cloned().ok_or_else(|| Error::Invalid("MCP form schema absent".into()))?,
                 };
-                interaction.validate()?;
+                interaction.validate(&mut None)?;
                 self.pin(operation, request).await?;
                 match context.interact(operation, interaction.clone()).await? {
                     InteractionOutcome::Answered { answer } => {

@@ -268,7 +268,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         .lock()
         .await
         .cancel_operation(
-            &host.owner,
+            host.verifier.audience(),
             &host.owner_scope,
             &issuer.verifier(&mut None).expect("verifier copy"),
             prep_op,

@@ -144,30 +144,8 @@ impl CargoExecutionContext<'_> {
     }
 }
 
-/// Read the exact Cargo metadata used by a profile invocation.
-pub fn load_metadata(manifest: impl AsRef<Path>) -> Result<Metadata, ProfileError> {
-    load_metadata_with_cargo(manifest, None)
-}
-
-/// Read metadata with an explicitly selected Cargo executable.
-///
-/// Release generation passes the pinned toolchain's Cargo here so feature
-/// and target profiles, ownership, and version checks all use one Cargo
-/// identity. The one-argument helper remains available to library callers.
-pub fn load_metadata_with_cargo(
-    manifest: impl AsRef<Path>,
-    cargo_path: Option<&Path>,
-) -> Result<Metadata, ProfileError> {
-    load_metadata_with_context(
-        manifest,
-        CargoExecutionContext {
-            cargo_path,
-            lock_selection: None,
-        },
-    )
-}
-
-pub fn load_metadata_with_context(
+/// Reads metadata with the selected Cargo executable and owner lock.
+pub fn load_metadata(
     manifest: impl AsRef<Path>,
     context: CargoExecutionContext<'_>,
 ) -> Result<Metadata, ProfileError> {
@@ -515,52 +493,6 @@ pub fn historical_profiles_for_package(
     Ok(profiles)
 }
 
-/// Execute one profile through Cargo and retain its exact Rustdoc JSON.
-pub fn execute_profile(
-    manifest: impl AsRef<Path>,
-    metadata: &Metadata,
-    profile: &ProfileSpec,
-    available_targets: &BTreeSet<String>,
-    target_dir: impl AsRef<Path>,
-    output_json: impl AsRef<Path>,
-) -> Result<RustdocObservation, ProfileError> {
-    execute_profile_with_cargo(
-        manifest,
-        metadata,
-        profile,
-        available_targets,
-        target_dir,
-        output_json,
-        None,
-    )
-}
-
-/// Execute a profile with the caller's pinned Cargo binary.
-///
-/// The default [`execute_profile`] entry point remains convenient for library
-/// callers. The production generator uses this variant so experimental binding
-/// receipts use the same pinned Cargo as the stable Rustdoc stage.
-pub fn execute_profile_with_cargo(
-    manifest: impl AsRef<Path>,
-    metadata: &Metadata,
-    profile: &ProfileSpec,
-    available_targets: &BTreeSet<String>,
-    target_dir: impl AsRef<Path>,
-    output_json: impl AsRef<Path>,
-    cargo_path: Option<&Path>,
-) -> Result<RustdocObservation, ProfileError> {
-    execute_target_profile_with_cargo(
-        manifest,
-        metadata,
-        profile,
-        available_targets,
-        target_dir,
-        output_json,
-        cargo_path,
-        &RustdocTarget::Library,
-    )
-}
-
 /// A Cargo-owned target; binary receipts are for source guides, never public API extraction.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RustdocTarget {
@@ -568,36 +500,9 @@ pub enum RustdocTarget {
     Binary(String),
 }
 
-// Preserve the existing seven-argument Cargo boundary while adding explicit target ownership.
+/// Executes the selected Cargo-owned target with the original producer context.
 #[allow(clippy::too_many_arguments)]
-pub fn execute_target_profile_with_cargo(
-    manifest: impl AsRef<Path>,
-    metadata: &Metadata,
-    profile: &ProfileSpec,
-    available_targets: &BTreeSet<String>,
-    target_dir: impl AsRef<Path>,
-    output_json: impl AsRef<Path>,
-    cargo_path: Option<&Path>,
-    rustdoc_target: &RustdocTarget,
-) -> Result<RustdocObservation, ProfileError> {
-    execute_target_profile_with_context(
-        manifest,
-        metadata,
-        profile,
-        available_targets,
-        target_dir,
-        output_json,
-        CargoExecutionContext {
-            cargo_path,
-            lock_selection: None,
-        },
-        rustdoc_target,
-    )
-}
-
-// Same maintained Cargo boundary; config and executable form one producer context.
-#[allow(clippy::too_many_arguments)]
-pub fn execute_target_profile_with_context(
+pub fn execute_profile(
     manifest: impl AsRef<Path>,
     metadata: &Metadata,
     profile: &ProfileSpec,
@@ -794,23 +699,8 @@ pub struct OwnedApiItem {
     pub docs_present: bool,
 }
 
-/// Extract the binding package's own public API. The core owner's projection is
-/// deliberately not substituted for this list.
+/// Extracts the package-owned API for its actual Cargo target name.
 pub fn extract_owned_api(
-    path: impl AsRef<Path>,
-    owner: &ApiOwner,
-    profile: ProfileId,
-) -> Result<Vec<OwnedApiItem>, ProfileError> {
-    let expected_crate_name = owner.rustdoc_package.replace('-', "_");
-    extract_owned_api_for_crate(path, owner, profile, &expected_crate_name)
-}
-
-/// Extract a receipt when the package's library target has a crate name that
-/// differs from its package name (for example the `acyclic-plugin` binary).
-/// The generator resolves this target name from Cargo metadata before calling
-/// this adapter, so ownership remains package exact while the Rustdoc root
-/// remains target exact.
-pub fn extract_owned_api_for_crate(
     path: impl AsRef<Path>,
     owner: &ApiOwner,
     profile: ProfileId,
@@ -1450,14 +1340,7 @@ mod tests {
             default_features: false,
             features: BTreeSet::from(["missing".into()]),
         };
-        let error = execute_profile(
-            "missing-Cargo.toml",
-            &metadata(),
-            &profile,
-            &BTreeSet::from(["host".into()]),
-            "unused-target",
-            "unused-output.json",
-        )
+        let error = execute_profile("missing-Cargo.toml", &metadata(), &profile, &BTreeSet::from(["host".into()]), "unused-target", "unused-output.json", CargoExecutionContext::default(), &RustdocTarget::Library)
         .expect_err("invalid feature must be rejected before spawning Cargo");
         assert_eq!(
             error,
@@ -1494,7 +1377,7 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        let metadata = load_metadata_with_cargo(root.join("Cargo.toml"), Some(&cargo)).unwrap();
+        let metadata = load_metadata(root.join("Cargo.toml"), CargoExecutionContext { cargo_path: Some(&cargo), lock_selection: None }).unwrap();
         let rustc = cargo
             .parent()
             .unwrap()
@@ -1515,15 +1398,7 @@ mod tests {
                 .find(|profile| profile.features.contains("helper-alias/native"))
                 .expect("historical docs.rs planner must retain qualified Cargo features");
         let receipt = root.join("receipt.json");
-        execute_profile_with_cargo(
-            root.join("Cargo.toml"),
-            &metadata,
-            &profile,
-            &available,
-            root.join("target"),
-            &receipt,
-            Some(&cargo),
-        )
+        execute_profile(root.join("Cargo.toml"), &metadata, &profile, &available, root.join("target"), &receipt, CargoExecutionContext { cargo_path: Some(&cargo), lock_selection: None }, &RustdocTarget::Library)
         .unwrap();
         assert!(local_item_names(&receipt).unwrap().contains("Witness"));
         let plain = ProfileSpec {
@@ -1541,15 +1416,7 @@ mod tests {
                 ..profile.clone()
             };
             let rejected = root.join(format!("rejected-{}.json", invalid.replace('/', "-")));
-            let error = execute_profile_with_cargo(
-                root.join("Cargo.toml"),
-                &metadata,
-                &invalid_profile,
-                &available,
-                root.join("target"),
-                &rejected,
-                Some(&cargo),
-            )
+            let error = execute_profile(root.join("Cargo.toml"), &metadata, &invalid_profile, &available, root.join("target"), &rejected, CargoExecutionContext { cargo_path: Some(&cargo), lock_selection: None }, &RustdocTarget::Library)
             .unwrap_err();
             assert!(matches!(error, ProfileError::InvalidRustdoc(_)));
             assert!(!rejected.exists());
@@ -1613,7 +1480,7 @@ mod tests {
             kind: ApiOwnerKind::NapiBinding,
         };
         let items =
-            extract_owned_api(path, &owner, ProfileId("binding-host-default".into())).unwrap();
+            extract_owned_api(path, &owner, ProfileId("binding-host-default".into()), &owner.rustdoc_package.replace('-', "_")).unwrap();
         assert!(!items.is_empty());
         assert!(items.iter().all(|item| {
             item.rustdoc_package == "acyclic-fs-napi" && item.published_owner == "acyclic-fs"
@@ -1632,7 +1499,7 @@ mod tests {
             kind: ApiOwnerKind::NapiBinding,
         };
         let items =
-            extract_owned_api(path, &owner, ProfileId("binding-host-default".into())).unwrap();
+            extract_owned_api(path, &owner, ProfileId("binding-host-default".into()), &owner.rustdoc_package.replace('-', "_")).unwrap();
         let top_level = items
             .iter()
             .filter(|item| item.key.path.matches("::").count() == 1)
@@ -1657,7 +1524,7 @@ mod tests {
         assert_eq!(observation.crate_version.as_deref(), Some("0.2.0"));
         assert_eq!(observation.target, "wasm32-unknown-unknown");
         let items =
-            extract_owned_api(path, &owner, ProfileId("wasm-binding-no-defaults".into())).unwrap();
+            extract_owned_api(path, &owner, ProfileId("wasm-binding-no-defaults".into()), &owner.rustdoc_package.replace('-', "_")).unwrap();
         assert!(!items.is_empty());
         assert!(items.iter().all(|item| {
             item.rustdoc_package == "acyclic-fs-wasm" && item.published_owner == "acyclic-fs"
@@ -1678,7 +1545,7 @@ mod tests {
             kind: ApiOwnerKind::NapiBinding,
         };
         let items =
-            extract_owned_api(path, &owner, ProfileId("binding-host-default".into())).unwrap();
+            extract_owned_api(path, &owner, ProfileId("binding-host-default".into()), &owner.rustdoc_package.replace('-', "_")).unwrap();
 
         // These types belong to the binding crate. A projection through the
         // published core owner would lose the binding namespace entirely.
@@ -1712,7 +1579,7 @@ mod tests {
             features: BTreeSet::new(),
         };
         let profile_id = profile.id();
-        let items = extract_owned_api(path, &owner, profile_id.clone()).unwrap();
+        let items = extract_owned_api(path, &owner, profile_id.clone(), &owner.rustdoc_package.replace('-', "_")).unwrap();
         let api_items = items
             .iter()
             .map(|item| crate::ApiItem {
@@ -1832,23 +1699,9 @@ mod tests {
         fs::create_dir_all(&out_dir).unwrap();
         let first = out_dir.join("objects-json.json");
         let second = out_dir.join("objects-all-features.json");
-        let first_observation = execute_profile(
-            &manifest,
-            &metadata,
-            json,
-            &available_targets,
-            &target_dir,
-            &first,
-        )
+        let first_observation = execute_profile(&manifest, &metadata, json, &available_targets, &target_dir, &first, CargoExecutionContext::default(), &RustdocTarget::Library)
         .unwrap();
-        let second_observation = execute_profile(
-            &manifest,
-            &metadata,
-            all_features,
-            &available_targets,
-            &target_dir,
-            &second,
-        )
+        let second_observation = execute_profile(&manifest, &metadata, all_features, &available_targets, &target_dir, &second, CargoExecutionContext::default(), &RustdocTarget::Library)
         .unwrap();
         assert_eq!(first_observation.crate_name, "acyclic_objects");
         assert_eq!(second_observation.crate_name, "acyclic_objects");

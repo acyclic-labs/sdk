@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::{PiScratchBinding, pi_owner::PiOwnerPolicy,
     pi_root::PiRootIntent, pi_root_inputs::{PiRootRequest, PiRootPreparation, ROOT_INPUT_DIRECTORY, ROOT_ALLOCATION_PROVIDER},
     pi_native::{PiNativeInvocation, PiNativeSourceCut, PiNativeSourceMode, PI_NATIVE_VERSION},
@@ -155,11 +156,15 @@ impl Fixture {
             reader, writer: Some(writer),
         }).unwrap();
         let original = PiRootPreparation::load(&private_root, &relative_session, &runtime, &filesystem, &(request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(request).root), None, &startup_work).await.unwrap();
-        let proof = crate::pi_root_provider::prove_root_scratch_allocation_with_native_work(owner.clone(), &resources,
-            filesystem.clone(), stream.clone(), original, &startup_work).await.unwrap().unwrap();
+        let observer = crate::pi_root_provider::root_provider(owner.clone(), &resources,
+            filesystem.clone(), stream.clone(), original, None, startup_work.clone()).unwrap();
+        let effect = observer.effect_id_with_native_work(&startup_work).unwrap();
+        let proof = observer.prove_scratch_allocation_with_native_work(
+            acyclic_harness::EffectAttemptId::from_bytes(effect.into_bytes()), &startup_work,
+        ).await.unwrap().unwrap();
         let native_authority = owner.conversation_authority_with_native_work(task, agent, context.scope().grants(), &startup_work).unwrap();
         crate::pi_conversation::bind_task_conversation(&stream, native_authority.0,
-            native_authority.1, &journal, &request.binding.scratch.volume, proof.operation(), context.scope().limits(),
+            native_authority.1, &journal, &request.binding.scratch.volume, proof.1, context.scope().limits(),
             &startup_work).await.unwrap();
         let original = original_operation(task, task, "actual-sdk-tool-call-1", &startup_work).unwrap();
         let operations = PiForkOperations::new(original, &startup_work).unwrap();
@@ -229,8 +234,7 @@ impl Fixture {
         let context = crate::pi_root_provider::bind_root_output_context_with_native_work(context, &self.journal, self.owner.clone(), &self.resources, self.filesystem.clone(), self.stream.clone(), &(self.root_request).binding, &(self.root_request).root, work).await.unwrap();
         let original = original_operation(self.owner.policy().root_task,
             self.journal.task_id(), &self.commit.sdk_operation, work).unwrap();
-        if let Some(plan) = coordinator.load_plan(context.context(), original, work.remaining().unwrap(),
-            work.cancellation()).await.unwrap() {
+        if let Some(plan) = coordinator.load_plan(context.context(), original).await.unwrap() {
             return plan;
         }
         let admission = self.runtime.runtime.task_host().observe_admission_with_native_work(self.journal.task_id(), work).await.unwrap();
@@ -598,8 +602,7 @@ async fn actual_stream_and_task_registry_restart_reconciles_original_creator_pro
     let context = crate::pi_root_provider::bind_root_output_context_with_native_work(context, &journal, fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), stream.clone(), &(fixture.root_request).binding, &(fixture.root_request).root, &observation_work).await.unwrap();
     let coordinator = PiForkCoordinator::new(runtime, fixture.filesystem.clone(), stream,
         &fixture.resources, fixture.owner.clone(), &observation_work).unwrap();
-    let original = coordinator.load_plan(context.context(), plan.original, observation_work.remaining().unwrap(),
-        observation_work.cancellation()).await.unwrap().unwrap();
+    let original = coordinator.load_plan(context.context(), plan.original).await.unwrap().unwrap();
     let recovered = coordinator.advance(&context, &journal, &fixture.fence, &original, fixture.root_handle.workspace.clone(),
         observation_work.remaining().unwrap(), observation_work.cancellation().clone()).await.unwrap().unwrap();
     assert_eq!(first.report, recovered.report);
@@ -631,10 +634,9 @@ async fn cold_pre_first_dispatch_restores_only_under_actual_child_owner_and_exis
         first.binding.task_id, &fence.0, &work).await.unwrap().into_native_shared(&work).unwrap();
     let context = fixture.runtime.runtime.task_context_with_native_work(first.binding.task_id, &fence.0, &work).await.unwrap()
         .with_output_volume_with_native_work(&first.binding.scratch.volume, &work).unwrap();
-    let original = coordinator.load_plan(context.context(), plan.original, work.remaining().unwrap(),
-        work.cancellation()).await.unwrap().unwrap();
+    let original = coordinator.load_plan(context.context(), plan.original).await.unwrap().unwrap();
     let restored = coordinator.restore_admitted(&context, &journal, &fence.0, &original,
-        fixture.root_handle.workspace.clone(), work.remaining().unwrap(), work.cancellation().clone()).await.unwrap();
+        fixture.root_handle.workspace.clone(), work.cancellation().clone()).await.unwrap();
     assert_eq!(restored.binding, first.binding);
     assert_eq!(restored.report, first.report);
     assert_eq!(restored.admission, first.admission);
@@ -642,7 +644,7 @@ async fn cold_pre_first_dispatch_restores_only_under_actual_child_owner_and_exis
     let mut changed = original;
     changed.commit.source_task = first.binding.task_id;
     assert!(coordinator.restore_admitted(&context, &journal, &fence.0, &changed, fixture.root_handle.workspace.clone(),
-        work.remaining().unwrap(), work.cancellation().clone()).await.is_err());
+        work.cancellation().clone()).await.is_err());
 }
 
 #[tokio::test]

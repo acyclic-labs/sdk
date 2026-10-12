@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::{policy, work};
 use crate::pi_owner::{PiOwnerConfig, PiOwnerPolicy};
 use crate::pi_recovery::{
@@ -413,7 +414,7 @@ fn pi_root_intent_rejects_unselected_or_unbounded_paths_and_invalid_identity() {
         )
         .unwrap(),
     );
-    assert!(PiRootIntent::ScratchOnly {}.validate(&binding).is_err());
+    assert!(PiRootIntent::ScratchOnly {}.validate(&binding, &crate::pi_fork::tests::work()).is_err());
     let directory = tempfile::tempdir().unwrap();
     let path = directory
         .path()
@@ -742,7 +743,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                             id: binding.task_id.to_string(),
                         },
                     )
-                    .verifier();
+                    .verifier(&mut None).unwrap();
                 }
                 "widening" => {
                     authority.scope = RuntimeScope::new(
@@ -771,7 +772,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                             id: binding.task_id.to_string(),
                         },
                     );
-                    authority.verifier = issuer.verifier();
+                    authority.verifier = issuer.verifier(&mut None).unwrap();
                     authority.signed =
                         issuer.issue("pi-owner", authority.signed.capabilities(), None, None, &mut None).expect("scope proof");
                 }
@@ -784,7 +785,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                             id: "not-a-task-identity".to_owned(),
                         },
                     );
-                    authority.verifier = issuer.verifier();
+                    authority.verifier = issuer.verifier(&mut None).unwrap();
                     authority.signed = issuer.issue("pi-owner", authority.signed.capabilities(), Some(binding.agent_id), None, &mut None).expect("scope proof");
                 }
                 _ => unreachable!(),

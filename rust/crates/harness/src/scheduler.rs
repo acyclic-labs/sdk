@@ -1281,8 +1281,7 @@ impl Scheduler {
                             let slot = decimal_slot(index, &mut digits);
                             let slot = clone_scheduler_text(slot, quota.work())?;
                             quota.adopt(slot.capacity() as u64)?;
-                            let file = clone_owned::clone_file_with_work(file, quota.work())?;
-                            quota.adopt(file.logical_owned_bytes()?)?;
+                            let file = crate::core::copy_file(file, &mut quota)?;
                             push_scheduler_item(&mut values, (slot, file), &mut value_slots, quota.work())?;
                         }
                     }
@@ -1291,8 +1290,7 @@ impl Scheduler {
                             let Some(Outcome::Succeeded(file)) = &child.outcome else { continue; };
                             let slot = clone_scheduler_text(slot, quota.work())?;
                             quota.adopt(slot.capacity() as u64)?;
-                            let file = clone_owned::clone_file_with_work(file, quota.work())?;
-                            quota.adopt(file.logical_owned_bytes()?)?;
+                            let file = crate::core::copy_file(file, &mut quota)?;
                             push_scheduler_item(&mut values, (slot, file), &mut value_slots, quota.work())?;
                         }
                     }
@@ -1764,7 +1762,7 @@ impl BorrowedOutcome<'_> {
 
     fn clone_with_work(self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<Outcome<FileRef>> {
         match self {
-            Self::Succeeded(file) => clone_owned::clone_file_with_work(file, work).map(Outcome::Succeeded),
+            Self::Succeeded(file) => file.copy(work).map(Outcome::Succeeded),
             Self::Failed(message) => clone_scheduler_text(message, work).map(|message| Outcome::Failed { message }),
             Self::ChildFailed { slot, message } => {
                 let length = slot.len().checked_add(message.len()).and_then(|bytes| bytes.checked_add(14))

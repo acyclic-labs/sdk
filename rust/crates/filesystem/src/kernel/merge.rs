@@ -428,7 +428,7 @@ fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
                 }
                 let merged_table = if mutations.value.is_empty() { request.ours.file_table } else {
                     apply_file_table_mutations_with_accounting(store, request.ours.file_table, &mutations.value,
-                        request.maximum_changes, limits, accounting, cancellation).await?.root
+                        request.maximum_changes, limits, accounting, cancellation).await?.value
                 };
                 let (parent, parent_id) = match request.ours_generation {
                     Some(object) if object.kind == ObjectKind::GenerationRoot => (object, GenerationId::new(object.digest)),
@@ -436,7 +436,7 @@ fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
                     None => {
                         let parent = build_checkpoint_with_accounting(store, CheckpointRequest { base: request.base_generation,
                             file_table: request.ours.file_table, merge_parent: None }, limits, accounting, cancellation).await?;
-                        (parent.root, parent.generation_id)
+                        (parent.value, GenerationId::new(parent.value.digest))
                     }
                 };
                 let merged = build_checkpoint_with_accounting(store, CheckpointRequest { base: parent, file_table: merged_table,
@@ -456,7 +456,7 @@ fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
                 });
                 if let Err(error) = copied { parents.retire(accounting)?; return Err(error); }
                 let Owned { value: parents, allocation, .. } = parents;
-                Ok((MergeGenerationOutcome::Prepared { generation_root: merged.root, generation_id: merged.generation_id,
+                Ok((MergeGenerationOutcome::Prepared { generation_root: merged.value, generation_id: GenerationId::new(merged.value.digest),
                     root: GenerationRoot { volume_id: request.ours.volume_id, root_file_id: request.ours.root_file_id,
                         file_table: merged_table, parents, required_features: request.ours.continuation_features() } }, allocation))
             }.await;
@@ -738,7 +738,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
             if conflicted { return Ok(None); }
             let entries = if mutations.value.is_empty() { ours_entries } else {
                 apply_tree_mutations_with_accounting(store, ours_entries, &mutations.value, maximum,
-                    limits, accounting, cancellation).await?.root
+                    limits, accounting, cancellation).await?.value
             };
             Ok(Some(FileRecord { file_id: directory_id, kind: super::FileKind::Directory, link_count, metadata,
                 payload: FilePayload::Directory { entries } }))

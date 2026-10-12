@@ -11,7 +11,7 @@ use crate::{
     Error, OperationId, Result,
     conversation::{
         Attachment, ContentGrant, ContentPublisher, ContentResidencyVerifier, FileDescriptor,
-        FileRef, Limits, VolumeOperation, VolumeRef, decode_attachment_manifest,
+        FileRef, VolumeOperation, VolumeRef,
         validate_content_path,
     },
     core::{AuthorityVerifier, Scope},
@@ -54,10 +54,10 @@ impl ObjectContentStore {
         scope: Scope,
         maximum_bytes: u64,
     ) -> Result<Arc<Self>> {
-        volume.validate()?;
+        volume.validate(&mut None)?;
         expected_provider.validate(&mut None)?;
-        verifier.verify(&scope)?;
-        ContentGrant::verify(&verifier, &owner_scope, &volume, VolumeOperation::Write)?;
+        verifier.verify(&scope, &mut None)?;
+        ContentGrant::verify(&verifier, &owner_scope, &volume, VolumeOperation::Write, maximum_bytes, &mut None)?;
         if maximum_bytes == 0
             || expected_provider.family() != "objects"
             || volume.provider() != &expected_provider
@@ -77,14 +77,14 @@ impl ObjectContentStore {
                 "Objects provider resolved another bucket".into(),
             ));
         }
-        let write_capability = volume.capability(VolumeOperation::Write)?;
+        let write_capability = volume.capability(VolumeOperation::Write, &mut None)?;
         let writer = if scope.capabilities().contains(&write_capability) {
             Some(ContentGrant::verify(
                 &verifier,
                 &scope,
                 &volume,
                 VolumeOperation::Write,
-            )?)
+             maximum_bytes, &mut None,)?)
         } else {
             None
         };
@@ -112,7 +112,7 @@ impl ObjectContentStore {
     }
 
     fn key(&self, path: &str, content: &str) -> Result<String> {
-        validate_content_path(path)?;
+        validate_content_path(path, &mut None)?;
         if content.len() != 64
             || !content
                 .bytes()
@@ -122,7 +122,7 @@ impl ObjectContentStore {
         }
         let key = format!(
             "{}/{}/@content/{}",
-            self.volume.storage_name()?,
+            self.volume.storage_name(&mut None)?,
             path,
             content
         );
@@ -134,14 +134,14 @@ impl ObjectContentStore {
         Ok(key)
     }
 
-    async fn read_exact(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
+    async fn read_exact(&self, file: &FileRef, maximum_bytes: u64) -> Result<acyclic_stream::OwnedBytes> {
         let grant = ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
-        grant.require_file_read(file)?;
-        self.read_content(file).await
+        grant.require_file_read(file, None)?;
+        self.read_content(file, maximum_bytes).await
     }
 
-    async fn read_content(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
-        file.validate()?;
+    async fn read_content(&self, file: &FileRef, maximum_bytes: u64) -> Result<acyclic_stream::OwnedBytes> {
+        file.validate(&mut None)?;
         if file.volume() != &self.volume || file.descriptor().byte_length() > self.maximum_bytes {
             return Err(Error::Unauthorized(
                 "file is outside this Objects binding".into(),
@@ -162,7 +162,7 @@ impl ObjectContentStore {
                     if_match: String::new(),
                     if_none_match: String::new(),
                 },
-                self.maximum_bytes,
+                maximum_bytes.min(self.maximum_bytes),
             )
             .await
             .map_err(storage)?;
@@ -183,7 +183,7 @@ impl ObjectContentStore {
                 "Objects returned another file length or metadata".into(),
             ));
         }
-        file.descriptor().verify(read.body())?;
+        file.descriptor().verify(read.body(), &mut None)?;
         Ok(read.into_body())
     }
 
@@ -200,7 +200,7 @@ impl ObjectContentStore {
             operation_id.to_string(),
         ))?)
         .to_hex();
-        let namespace = self.volume.storage_name()?;
+        let namespace = self.volume.storage_name(&mut None)?;
         let object_key = format!("{namespace}/.system/uploads/{operation}");
         let content_type = "application/vnd.acyclic.harness.upload-intent-v1";
         match self
@@ -259,14 +259,9 @@ impl ObjectContentStore {
         Ok(())
     }
 
-    async fn manifest(&self, file: &FileRef, count: u32) -> Result<Vec<Attachment>> {
-        let bytes = self.read_exact(file).await?;
-        decode_attachment_manifest(file, &bytes, Some(count), None)
-    }
-
     /// Converts content in this bucket into an immutable artifact key selection without copying its bytes or weakening the bucket boundary.
     pub fn artifact_ref(&self, file: &FileRef) -> Result<ArtifactRef> {
-        file.validate()?;
+        file.validate(&mut None)?;
         if file.volume() != &self.volume {
             return Err(Error::Unauthorized(
                 "artifact file is outside this Objects bucket".into(),
@@ -286,7 +281,7 @@ impl ObjectContentStore {
             &self.scope,
             &self.volume,
             VolumeOperation::Read,
-        )?;
+         self.maximum_bytes, &mut None,)?;
         if artifact.as_resource().provider() != self.volume.provider() {
             return Err(Error::Unauthorized(
                 "artifact belongs to another Objects provider".into(),
@@ -294,7 +289,7 @@ impl ObjectContentStore {
         }
         let key = std::str::from_utf8(artifact.as_resource().key())
             .map_err(|_| Error::Invalid("Objects artifact key is not UTF-8".into()))?;
-        let prefix = format!("{}/", self.volume.storage_name()?);
+        let prefix = format!("{}/", self.volume.storage_name(&mut None)?);
         if !key.starts_with(&prefix) || key.len() == prefix.len() {
             return Err(Error::Unauthorized(
                 "artifact is outside this Objects volume".into(),
@@ -336,7 +331,7 @@ impl ObjectContentStore {
             .user
             .get("harness-display-name")
             .ok_or_else(|| Error::Storage("Objects artifact display name is missing".into()))?;
-        let descriptor = FileDescriptor::from_bytes(observed.body(), &metadata.content_type)?;
+        let descriptor = FileDescriptor::from_bytes(observed.body(), &metadata.content_type, &mut None)?;
         if content_identity(&descriptor, display_name)? != content {
             return Err(Error::Conflict(
                 "Objects artifact content identity does not match its bytes".into(),
@@ -347,6 +342,7 @@ impl ObjectContentStore {
 }
 
 /// Lazily routes immutable Objects refs to separately registered owner bindings.
+#[derive(Default)]
 pub struct ObjectContentMountResolver {
     stores: BTreeMap<String, Arc<ObjectContentStore>>,
 }
@@ -354,73 +350,36 @@ pub struct ObjectContentMountResolver {
 impl ObjectContentMountResolver {
     /// Creates a resolver from independently authenticated bucket bindings.
     pub fn new(stores: impl IntoIterator<Item = Arc<ObjectContentStore>>) -> Result<Self> {
-        let mut resolver = Self {
-            stores: BTreeMap::new(),
-        };
+        let mut resolver = Self::default();
         for store in stores {
-            resolver.register(store)?;
+            store.volume.validate(&mut None)?;
+            let key = store.volume.capability(VolumeOperation::Read, &mut None)?;
+            if resolver.stores.contains_key(&key) {
+                return Err(Error::Invalid("Objects content volume is registered twice".into()));
+            }
+            resolver.stores.insert(key, store);
         }
         Ok(resolver)
     }
 
-    /// Creates an empty resolver for callers that prefer incremental setup.
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self {
-            stores: BTreeMap::new(),
-        }
-    }
-
-    /// Registers one exact owner-volume binding before the resolver is shared.
-    pub fn register(&mut self, store: Arc<ObjectContentStore>) -> Result<()> {
-        let volume = store.volume.clone();
-        volume.validate()?;
-        let key = volume.capability(VolumeOperation::Read)?;
-        if self.stores.contains_key(&key) {
-            return Err(Error::Invalid(
-                "Objects content volume is registered twice".into(),
-            ));
-        }
-        self.stores.insert(key, store);
-        Ok(())
-    }
-
     fn store(&self, volume: &VolumeRef) -> Result<Arc<ObjectContentStore>> {
-        volume.validate()?;
+        volume.validate(&mut None)?;
         self.stores
-            .get(&volume.capability(VolumeOperation::Read)?)
+            .get(&volume.capability(VolumeOperation::Read, &mut None)?)
             .cloned()
             .ok_or_else(|| Error::Unsupported("Objects content volume is not registered".into()))
     }
 }
 
-impl Default for ObjectContentMountResolver {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
-
-/// Short alias for applications that use the adapter as a content router.
-pub type ObjectContentRouter = ObjectContentMountResolver;
-
 impl crate::conversation::ContentMountResolver for ObjectContentMountResolver {
-    fn mount<'a>(
-        &'a self,
-        reference: &'a FileRef,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<(ContentGrant, Arc<dyn ContentResidencyVerifier>)>,
-                > + Send
-                + 'a,
-        >,
-    > {
+    fn mount<'a>(&'a self, reference: &'a FileRef)
+        -> BoxFuture<'a, Result<(ContentGrant, Arc<dyn ContentResidencyVerifier>)>> {
         Box::pin(async move {
             reference.validate(&mut None)?;
             let store = self.store(reference.volume())?;
             // Authenticate the current scope against this exact content reference before returning either the grant or the owner reader.
             let grant = ContentGrant::verify_read(&store.verifier, &store.scope, reference)?;
-            grant.require_file_read(reference)?;
+            grant.require_file_read(reference, None)?;
             Ok((grant, store as Arc<dyn ContentResidencyVerifier>))
         })
     }
@@ -465,9 +424,11 @@ impl ForkSeedVerifier for ObjectContentStore {
         self.volume.provider()
     }
 
-    fn verify<'a>(&'a self, seed: &'a ForkSeed) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            seed.validate()?;
+    fn verify<'a, 'w: 'a>(&'a self, seed: &'a ForkSeed, work: &'a mut Option<&'w mut dyn crate::store::history::HistoryIo>)
+        -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
+        crate::fork::admit_fork_future(work, |work| async move {
+            if work.is_some() { return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Unsupported, "Objects fork verification has no original-work provider")); }
+            seed.validate(&mut None)?;
             if seed.child_private_volume.provider() == self.volume.provider() {
                 return Err(Error::Unsupported(
                     "Objects cannot verify a child-private workspace".into(),
@@ -490,12 +451,22 @@ impl ForkSeedVerifier for ObjectContentStore {
         })
     }
 
-    fn read_manifest<'a>(&'a self, manifest: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move { self.read_exact(manifest).await })
+    fn read_manifest<'a, 'w: 'a>(&'a self, _seed: &'a ForkSeed, manifest: &'a FileRef,
+        work: &'a mut Option<&'w mut dyn crate::store::history::HistoryIo>)
+        -> Result<crate::store::history::HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
+        crate::fork::admit_fork_future(work, |work| async move {
+            if work.is_some() { return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Unsupported, "Objects fork verification has no original-work provider")); }
+            Ok((self.read_exact(manifest, self.maximum_bytes).await?, 0))
+        })
     }
 
-    fn verify_file<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.read_exact(file).await.map(|_| ()) })
+    fn verify_file<'a, 'w: 'a>(&'a self, _seed: &'a ForkSeed, file: &'a FileRef,
+        work: &'a mut Option<&'w mut dyn crate::store::history::HistoryIo>)
+        -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
+        crate::fork::admit_fork_future(work, |work| async move {
+            if work.is_some() { return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Unsupported, "Objects fork verification has no original-work provider")); }
+            self.read_exact(file, self.maximum_bytes).await.map(|_| ())
+        })
     }
 }
 
@@ -511,25 +482,27 @@ impl ContentPublisher for ObjectContentStore {
         bytes: &'a [u8],
         media_type: &'a str,
         display_name: &'a str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, Option<crate::conversation::ContentHold<'a>>)>> {
+        self.supports_stage(io)?;
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             let grant = self.writer.as_ref().ok_or_else(|| {
                 Error::Unauthorized("Objects writer is not bound to the original owner".into())
             })?;
-            grant.require(&self.volume, VolumeOperation::Write)?;
+            grant.require(&self.volume, VolumeOperation::Write, None)?;
             if bytes.len() as u64 > self.maximum_bytes {
                 return Err(Error::Invalid(
                     "Objects upload exceeds content limit".into(),
                 ));
             }
-            let descriptor = FileDescriptor::from_bytes(bytes, media_type)?;
+            let descriptor = FileDescriptor::from_bytes(bytes, media_type, &mut None)?;
             // Validate every public field before an external write is attempted.
             FileRef::new(
                 self.volume.clone(),
-                path,
-                "staged",
+                path.to_owned(),
+                "staged".to_owned(),
                 descriptor.clone(),
-                display_name,
+                display_name.to_owned(), &mut None
             )?;
             let content = content_identity(&descriptor, display_name)?;
             let key = self.key(path, &content)?;
@@ -537,7 +510,7 @@ impl ContentPublisher for ObjectContentStore {
                 .await?;
             let retry = format!(
                 "harness-upload:{}:{operation_id}",
-                self.volume.storage_name()?
+                self.volume.storage_name(&mut None)?
             );
             let published = self
                 .objects
@@ -581,50 +554,30 @@ impl ContentPublisher for ObjectContentStore {
                 ));
             }
             let reference =
-                FileRef::new(self.volume.clone(), path, content, descriptor, display_name)?;
+                FileRef::new(self.volume.clone(), path.to_owned(), content, descriptor, display_name.to_owned(), &mut None)?;
             // A retry receipt does not establish continued byte residency.
-            let committed = self.read_content(&reference).await?;
+            let committed = self.read_content(&reference, self.maximum_bytes).await?;
             if committed.as_slice() != bytes {
                 return Err(Error::Conflict(
                     "upload identity belongs to different content".into(),
                 ));
             }
-            Ok(reference)
+            Ok((reference, None))
         })
     }
 }
 
 impl ContentResidencyVerifier for ObjectContentStore {
-    fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.read_exact(reference).await.map(|_| ()) })
-    }
-
-    fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move { self.read_exact(reference).await })
-    }
-
-    fn verify_manifest<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        item_count: u32,
-        limits: &'a Limits,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            limits.validate_file(reference)?;
-            for attachment in self.manifest(reference, item_count).await? {
-                limits.validate_file(&attachment.file)?;
-                ContentResidencyVerifier::verify(self, &attachment.file).await?;
+    fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.supports_read(reference.volume(), io)?;
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if reference.descriptor().byte_length() > maximum_bytes {
+                return Err(Error::Invalid("content exceeds selected byte allowance".into()));
             }
-            Ok(())
+            self.read_exact(reference, maximum_bytes).await
         })
-    }
-
-    fn load_manifest<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        item_count: u32,
-    ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-        Box::pin(async move { self.manifest(reference, item_count).await })
     }
 }
 
@@ -652,7 +605,7 @@ mod tests {
     use super::*;
     use crate::{
         AgentId, Capabilities,
-        conversation::{ContentMountResolver, VolumeClass, VolumeOwner},
+        conversation::{Attachment, ContentMountResolver, Limits, VolumeClass, VolumeOwner},
         core::{AggregateKind, Authority, AuthorityIssuer},
         fork::ForkPreparation,
         resources::{GenerationRef, ProviderRef, StreamRef},
@@ -677,7 +630,7 @@ mod tests {
             ProviderRef::new("local".into(), "objects".into(), "1".into(), &mut None)?,
             bucket.name.clone(),
             VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(owner),
+            VolumeOwner::Agent(owner), &mut None
         )?;
         let issuer = AuthorityIssuer::new(
             "objects-test",
@@ -688,8 +641,8 @@ mod tests {
             },
         );
         let owner_scope = issuer.issue("owner", &Capabilities::new([
-                volume.capability(VolumeOperation::Read)?,
-                volume.capability(VolumeOperation::Write)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
             ]), Some(owner), None, &mut None).expect("scope proof");
         let provider = volume.provider().clone();
         let owner_store = ObjectContentStore::new(
@@ -709,9 +662,9 @@ mod tests {
                 "notes/one.txt",
                 b"owner bytes",
                 "text/plain",
-                "one.txt",
-            )
-            .await?;
+                "one.txt", None
+            )?
+            .await?.0;
         assert_eq!(
             owner_store
                 .stage(
@@ -719,21 +672,21 @@ mod tests {
                     "notes/one.txt",
                     b"owner bytes",
                     "text/plain",
-                    "one.txt"
-                )
-                .await?,
+                    "one.txt", None
+                )?
+                .await?.0,
             file
         );
-        assert_eq!(owner_store.read(&file).await?.as_ref(), b"owner bytes");
+        assert_eq!(owner_store.read(&file, file.descriptor().byte_length(), None)?.await?.as_ref(), b"owner bytes");
         let duplicate = owner_store
             .stage(
                 OperationId::from_bytes([42; 16]),
                 "notes/one.txt",
                 b"owner bytes",
                 "text/plain",
-                "one.txt",
-            )
-            .await?;
+                "one.txt", None
+            )?
+            .await?.0;
         assert_eq!(duplicate, file);
         assert!(
             owner_store
@@ -742,8 +695,8 @@ mod tests {
                     "notes/other.txt",
                     b"owner bytes",
                     "text/plain",
-                    "one.txt",
-                )
+                    "one.txt", None
+                )?
                 .await
                 .is_err()
         );
@@ -759,7 +712,7 @@ mod tests {
         owner_store.verify_artifact(&unpinned).await?;
         let traversal = ArtifactRef::new(
             provider.clone(),
-            format!("{}/../outside", owner_store.volume.storage_name()?).into_bytes(),
+            format!("{}/../outside", owner_store.volume.storage_name(&mut None)?).into_bytes(),
             Some(file.version().into()),
         )?;
         assert!(matches!(
@@ -791,13 +744,13 @@ mod tests {
                     filesystem.clone(),
                     "artifact-child-project",
                     VolumeClass::Project,
-                    project_owner.clone(),
+                    project_owner.clone(), &mut None
                 )?,
                 child_private_volume: VolumeRef::new(
                     filesystem.clone(),
                     "artifact-child-private",
                     VolumeClass::AgentPrivate,
-                    VolumeOwner::Agent(child_agent),
+                    VolumeOwner::Agent(child_agent), &mut None
                 )?,
                 inherited_through_sequence: 0,
                 maximum_inherited_messages: 1,
@@ -812,7 +765,7 @@ mod tests {
                             filesystem.clone(),
                             "parent-scratch",
                             VolumeClass::AgentPrivate,
-                            VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+                            VolumeOwner::Agent(AgentId::from_bytes([1; 16])), &mut None
                         )?,
                         generation: GenerationRef::new(filesystem.clone(), [99; 32], None)?,
                         paths: Vec::new(),
@@ -833,7 +786,7 @@ mod tests {
                             filesystem.clone(),
                             "artifact-parent-project",
                             VolumeClass::Project,
-                            project_owner,
+                            project_owner, &mut None
                         )?,
                         generation: GenerationRef::new(filesystem, [16; 32], Some("1".into()))?,
                     },
@@ -920,7 +873,7 @@ mod tests {
         reference_grants: Vec::new(),
         attachment_manifests: Vec::new(),
         boundary: None, };
-        ForkSeedVerifier::verify(owner_store.as_ref(), &seed).await?;
+        ForkSeedVerifier::verify(owner_store.as_ref(), &seed, &mut None)?.await?;
         assert!(owner_store.bindings().writer.is_some());
         let items = vec![Attachment {
             file: file.clone(),
@@ -934,11 +887,11 @@ mod tests {
                 "lists/one.json",
                 &manifest_bytes,
                 "application/vnd.acyclic.harness.attachments+json",
-                "one.json",
-            )
-            .await?;
+                "one.json", None
+            )?
+            .await?.0;
         owner_store
-            .verify_manifest(&manifest, 1, &Limits::default())
+            .verify_manifest(&manifest, 1, &Limits::default(), None)?
             .await?;
         assert_eq!(crate::conversation::load_manifest(&owner_store, &manifest, 1, None).await.map(|(items, _)| items)?, items);
         assert!(crate::conversation::load_manifest(&owner_store, &manifest, 2, None).await.map(|(items, _)| items).is_err());
@@ -955,7 +908,7 @@ mod tests {
             4_096,
         )
         .await?;
-        assert_eq!(attached.read(&file).await?.as_ref(), b"owner bytes");
+        assert_eq!(attached.read(&file, file.descriptor().byte_length(), None)?.await?.as_ref(), b"owner bytes");
         assert!(attached.bindings().writer.is_none());
         assert!(
             attached
@@ -964,8 +917,8 @@ mod tests {
                     "notes/denied.txt",
                     b"denied",
                     "text/plain",
-                    "denied.txt"
-                )
+                    "denied.txt", None
+                )?
                 .await
                 .is_err()
         );
@@ -976,8 +929,8 @@ mod tests {
                     "notes/one.txt",
                     b"owner bytes",
                     "text/plain",
-                    "changed.txt"
-                )
+                    "changed.txt", None
+                )?
                 .await
                 .is_err()
         );
@@ -988,8 +941,8 @@ mod tests {
                     "notes/one.txt",
                     b"other bytes",
                     "text/plain",
-                    "one.txt"
-                )
+                    "one.txt", None
+                )?
                 .await
                 .is_err()
         );
@@ -1000,8 +953,8 @@ mod tests {
                     "notes/two.txt",
                     b"owner bytes",
                     "text/plain",
-                    "one.txt"
-                )
+                    "one.txt", None
+                )?
                 .await
                 .is_err()
         );
@@ -1013,7 +966,7 @@ mod tests {
                 id: "impostor".into(),
             },
         );
-        let impostor_scope = impostor.issue("forged", &Capabilities::new([volume.capability(VolumeOperation::Read)?]), Some(reader), None, &mut None).expect("scope proof");
+        let impostor_scope = impostor.issue("forged", &Capabilities::new([volume.capability(VolumeOperation::Read, &mut None)?]), Some(reader), None, &mut None).expect("scope proof");
         assert!(
             ObjectContentStore::new(
                 objects.clone(),
@@ -1044,25 +997,25 @@ mod tests {
         );
         let wrong = FileRef::new(
             volume,
-            "notes/one.txt",
-            file.version(),
-            FileDescriptor::from_bytes(b"other", "text/plain")?,
-            "one.txt",
+            "notes/one.txt".to_owned(),
+            file.version().to_owned(),
+            FileDescriptor::from_bytes(b"other", "text/plain", &mut None)?,
+            "one.txt".to_owned(), &mut None
         )?;
-        assert!(owner_store.read(&wrong).await.is_err());
+        assert!(owner_store.read(&wrong, wrong.descriptor().byte_length(), None)?.await.is_err());
         let replacement = owner_store
             .stage(
                 OperationId::from_bytes([19; 16]),
                 "notes/one.txt",
                 b"replacement bytes",
                 "text/plain",
-                "one.txt",
-            )
-            .await?;
+                "one.txt", None
+            )?
+            .await?.0;
         assert_ne!(replacement.version(), file.version());
-        assert_eq!(owner_store.read(&file).await?.as_ref(), b"owner bytes");
+        assert_eq!(owner_store.read(&file, file.descriptor().byte_length(), None)?.await?.as_ref(), b"owner bytes");
         assert_eq!(
-            owner_store.read(&replacement).await?.as_ref(),
+            owner_store.read(&replacement, replacement.descriptor().byte_length(), None)?.await?.as_ref(),
             b"replacement bytes"
         );
         let replacement_artifact = owner_store.artifact_ref(&replacement)?;
@@ -1094,7 +1047,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(owner_store.read(&replacement).await.is_err());
+        assert!(owner_store.read(&replacement, replacement.descriptor().byte_length(), None)?.await.is_err());
         Ok(())
     }
 
@@ -1135,21 +1088,21 @@ mod tests {
             provider.clone(),
             bucket_a.name.clone(),
             VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(owner_a),
+            VolumeOwner::Agent(owner_a), &mut None
         )?;
         let volume_b = VolumeRef::new(
             provider.clone(),
             bucket_b.name.clone(),
             VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(owner_b),
+            VolumeOwner::Agent(owner_b), &mut None
         )?;
         let owner_scope_a = issuer.issue("owner-a", &Capabilities::new([
-                volume_a.capability(VolumeOperation::Read)?,
-                volume_a.capability(VolumeOperation::Write)?,
+                volume_a.capability(VolumeOperation::Read, &mut None)?,
+                volume_a.capability(VolumeOperation::Write, &mut None)?,
             ]), Some(owner_a), None, &mut None).expect("scope proof");
         let owner_scope_b = issuer.issue("owner-b", &Capabilities::new([
-                volume_b.capability(VolumeOperation::Read)?,
-                volume_b.capability(VolumeOperation::Write)?,
+                volume_b.capability(VolumeOperation::Read, &mut None)?,
+                volume_b.capability(VolumeOperation::Write, &mut None)?,
             ]), Some(owner_b), None, &mut None).expect("scope proof");
         let owner_store_a = ObjectContentStore::new(
             objects.clone(),
@@ -1179,18 +1132,18 @@ mod tests {
                 "a.txt",
                 b"bucket a",
                 "text/plain",
-                "a.txt",
-            )
-            .await?;
+                "a.txt", None
+            )?
+            .await?.0;
         let file_b = owner_store_b
             .stage(
                 OperationId::from_bytes([36; 16]),
                 "b.txt",
                 b"bucket b",
                 "text/plain",
-                "b.txt",
-            )
-            .await?;
+                "b.txt", None
+            )?
+            .await?.0;
         let attached_a_scope =
             issuer.delegate_private_file_read(&owner_scope_a, attached, "attached-a", &file_a)?;
         let attached_b_scope =
@@ -1219,11 +1172,11 @@ mod tests {
         .await?;
         let resolver = ObjectContentMountResolver::new(vec![attached_a, attached_b])?;
         let (grant_a, reader_a) = resolver.mount(&file_a).await?;
-        grant_a.require_file_read(&file_a)?;
-        assert_eq!(reader_a.read(&file_a).await?.as_ref(), b"bucket a");
+        grant_a.require_file_read(&file_a, None)?;
+        assert_eq!(reader_a.read(&file_a, file_a.descriptor().byte_length(), None)?.await?.as_ref(), b"bucket a");
         let (grant_b, reader_b) = resolver.mount(&file_b).await?;
-        grant_b.require_file_read(&file_b)?;
-        assert_eq!(reader_b.read(&file_b).await?.as_ref(), b"bucket b");
+        grant_b.require_file_read(&file_b, None)?;
+        assert_eq!(reader_b.read(&file_b, file_b.descriptor().byte_length(), None)?.await?.as_ref(), b"bucket b");
 
         let no_grant =
             issuer.issue("no-grant", &Capabilities::new([] as [String; 0]), Some(attached), None, &mut None).expect("scope proof");

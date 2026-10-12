@@ -6,6 +6,7 @@ use super::{
     TaskCommandHost, TaskCommandProgress, FORK_PREPARE_TASK_COMMAND_KIND,
     MODEL_TASK_COMMAND_KIND, TASK_ADMIT_PREPARED_COMMAND_KIND, fork_preparation_request,
 };
+use crate::runtime::TaskStateProvider;
 use crate::{
     Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::{ContentGrant, ConversationMessage, FileRef, VolumeOperation, VolumeRef},
@@ -287,7 +288,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     if maximum_request_bytes == 0 || maximum_request_bytes == u64::MAX {
         return Err(Error::Invalid("recursive request bound must be finite and positive".into()));
     }
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(crate::tool::files::read_file()?)?;
     tools.register(crate::tool::files::write_file()?)?;
     tools.register(crate::tool::files::edit_file()?)?;

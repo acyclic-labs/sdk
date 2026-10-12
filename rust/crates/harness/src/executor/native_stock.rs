@@ -1,5 +1,6 @@
 //! Original-work admission and custody for the shared stock execution engine.
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::projection::ModelContextSelection;
 use std::fmt::{Arguments, Write as _};
 
@@ -290,9 +291,8 @@ pub(crate) async fn stage_json<T: Serialize>(journal: &dyn ExecutionJournal,
 pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeScope,
     io: Option<&PreparationIo>) -> Result<Vec<crate::tool::ToolDefinition>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io && let Some(work) = io.original_native_work() {
-        let (definitions, custody) = registry.definitions_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
+    if let Some(io) = io && io.original_native_work().is_some() {
+        let definitions = registry.definitions(Some(io))?;
         let mut selected = Vec::new();
         for definition in definitions {
             let key = stock_key(format_args!("tool:call:{}", definition.name), Some(io))?;
@@ -300,7 +300,7 @@ pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeSco
         }
         return Ok(selected);
     }
-    Ok(registry.definitions()?.into_iter().filter(|definition| scope.grants()
+    Ok(registry.definitions(None)?.into_iter().filter(|definition| scope.grants()
         .contains(&capability::tool_call(&definition.name))).collect())
 }
 
@@ -845,7 +845,7 @@ impl StockExecution<'_> {
         let work = native.io.original_native_work().ok_or_else(|| native_boundary(
             crate::wire::ErrorCode::Storage, "stock policy has no original work"))?;
         for (_, policy) in context.stock_tool_policy_binding().into_iter().chain(context.stock_tool_policy_overrides()) {
-            let Some(((approval_operation, request), custody)) = context.stock_policy_approval_with_native_work(
+            let Some(((approval_operation, request), custody)) = context.stock_policy_approval(
                 policy.as_ref(), &self.stock.tool_scope, definition, invocation, work,
             ).await? else { continue; };
             native.io.absorb_native_custody(custody)?;
