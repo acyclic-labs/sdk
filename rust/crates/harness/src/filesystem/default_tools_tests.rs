@@ -307,7 +307,7 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
         .ok_or_else(|| Error::NotFound("canonical attachment-member grant".into()))?;
     assert_eq!(member.attachment_manifest.as_ref(), Some(&manifest));
     assert!(projected.iter().all(|grant| grant.reader == child_agent));
-    let donor = Capabilities::new([manifest.read_capability()?]);
+    let donor = Capabilities::new([manifest.read_capability(&mut None)?]);
     crate::filesystem::fork_preparer::require_reference_donor(&donor, member, None)?;
     let direct = projected.iter().find(|grant| grant.file == content)
         .ok_or_else(|| Error::NotFound("canonical content grant".into()))?;

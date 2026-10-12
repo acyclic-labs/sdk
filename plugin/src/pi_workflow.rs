@@ -6,7 +6,7 @@ use acyclic_harness::{
     distributed::{WorkPull, Worker},
     filesystem::{FilesystemHost, TaskCommandHost, TaskCommandProgress, TaskWorkerAttempt},
     runtime::{DurableTaskHost, TaskContext},
-    scheduler::{LeaseFence, ResourceSnapshot},
+    scheduler::{LeaseFence, ResourceRequest},
     workflow::{MachineCheckpoint, WorkflowCommand},
 };
 use acyclic_stream::{LocalStream};
@@ -96,7 +96,7 @@ impl<'a> PiWorkflowHost<'a> {
                 )?;
                 worker_custody = custody;
                 worker = Worker {
-                    id, available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+                    id, available: ResourceRequest::default(), labels: BTreeMap::new(),
                 };
                 let result = self.runtime.runtime.run_operation_with_native_work(
                     &worker, binding.task_id, self, 8, work,

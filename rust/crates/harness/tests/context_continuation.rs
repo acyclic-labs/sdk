@@ -971,7 +971,7 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             .iter()
             .flat_map(|message| message.content.file_refs())
             .chain(retained.metadata.values())
-            .map(FileRef::read_capability)
+            .map(|file| file.read_capability(&mut None))
             .collect::<Result<Vec<_>>>()?;
         let denied = RuntimeScope::new(Capabilities::new(grants.clone()), limits)?;
         assert!(matches!(
@@ -983,7 +983,7 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             Capabilities::new(
                 grants
                     .into_iter()
-                    .chain([tail_message.content.read_capability()?]),
+                    .chain([tail_message.content.read_capability(&mut None)?]),
             ),
             limits,
         )?;
@@ -1252,7 +1252,7 @@ async fn assert_scoped_checkpoint_source(
         .iter()
         .flat_map(|message| message.content.file_refs())
         .chain(retained.metadata.values())
-        .map(FileRef::read_capability)
+        .map(|file| file.read_capability(&mut None))
         .collect::<Result<Vec<_>>>()?;
     assert!(
         !grants.is_empty(),

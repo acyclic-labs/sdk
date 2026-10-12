@@ -30,7 +30,7 @@ impl crate::conversation::ContentResidencyVerifier for PrefixReader {
     fn read<'a>(&'a self, file: &'a FileRef, _: u64, io: Option<&'a PreparationIo>)
         -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            let capability = file.read_capability()?;
+            let capability = file.read_capability(&mut None)?;
             if !self.grants.contains(&capability) { return Err(Error::Unauthorized("prefix read is not granted".into())); }
             self.bytes.get(&capability).cloned().ok_or_else(|| Error::NotFound("prefix version is missing".into()))
         })
@@ -42,8 +42,8 @@ fn store(reader: &mut PrefixReader, bytes: acyclic_stream::OwnedBytes, media_typ
         "private".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])), &mut None)?,
         format!(".system/inherited-conversation/model-prefix/{index}.json"), format!("generation-{index}"),
         FileDescriptor::from_bytes(&bytes, media_type, &mut None)?, "model-prefix.json".into(), &mut None)?;
-    reader.grants.insert(file.read_capability()?);
-    reader.bytes.insert(file.read_capability()?, bytes);
+    reader.grants.insert(file.read_capability(&mut None)?);
+    reader.bytes.insert(file.read_capability(&mut None)?, bytes);
     Ok(file)
 }
 
@@ -136,12 +136,12 @@ async fn shared_prefix_depth_three_reopens_and_rejects_mutation_or_missing_grant
     assert_eq!(changed.request().messages, expected);
     let mut incompatible = local.clone(); incompatible.tools.clear();
     assert!(PreparedModelRequest::inherit(incompatible, &head, &reader, limits, None).await.is_err());
-    let mut denied = reader.clone(); denied.grants.remove(&head.read_capability()?);
+    let mut denied = reader.clone(); denied.grants.remove(&head.read_capability(&mut None)?);
     assert!(matches!(PreparedModelRequest::inherit(local.clone(), &head, &denied, limits, None).await, Err(Error::Unauthorized(_))));
-    let mut missing = reader.clone(); missing.bytes.remove(&attachment.read_capability()?);
+    let mut missing = reader.clone(); missing.bytes.remove(&attachment.read_capability(&mut None)?);
     assert!(PreparedModelRequest::inherit(local.clone(), &head, &missing, limits, None).await.is_err());
     assert!(PreparedModelRequest::inherit(local.clone(), &head, &reader, Limits { context_messages: prepared.request().messages.len(), ..limits }, None).await.is_err());
-    let mut corrupt = reader.clone(); corrupt.bytes.insert(head.read_capability()?, b"{}".to_vec().into());
+    let mut corrupt = reader.clone(); corrupt.bytes.insert(head.read_capability(&mut None)?, b"{}".to_vec().into());
     assert!(PreparedModelRequest::inherit(local, &head, &corrupt, limits, None).await.is_err());
     let mut changed_parent = prepared.request().clone(); changed_parent.messages[0].content = ModelContent::Text("later parent mutation".into());
     let changed_parent = PreparedModelRequest::prepare(changed_parent, limits, None)?;

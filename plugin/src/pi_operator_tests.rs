@@ -135,7 +135,7 @@ async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_de
 #[tokio::test]
 async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_its_caller() {
     use acyclic_harness::{filesystem::{TaskWorkerAttempt, TaskWorkerOutcome},
-        distributed::Worker, scheduler::{LeaseFence, ResourceSnapshot}};
+        distributed::Worker, scheduler::{LeaseFence, ResourceRequest}};
     let fixture = Fixture::new(None).await;
     let work = work();
     let plan = fixture.plan(&work).await;
@@ -145,7 +145,7 @@ async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_i
     let child = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.root_handle.workspace.clone(), work.remaining().unwrap(), work.cancellation().clone())
         .await.unwrap().unwrap();
-    let worker = Worker { id: "operator-private-child".into(), available: ResourceSnapshot::default(),
+    let worker = Worker { id: "operator-private-child".into(), available: ResourceRequest::default(),
         labels: Default::default() };
     let attempt_custody;
     let attempt;

@@ -11,7 +11,7 @@ use crate::{
     runtime,
     scheduler::{
         AssemblyKind, EntrypointRef, LeaseFence, OperationSpec, OperationState,
-        OrchestrationDecision, Reservation, ResourceSnapshot, Scheduler, SchedulerEvent,
+        OrchestrationDecision, Reservation, ResourceRequest, Scheduler, SchedulerEvent,
         assembly_invocation_digest, reduction_invocation_digest,
     },
     wire,

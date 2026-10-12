@@ -440,7 +440,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 return Err(Error::Unauthorized("current caller cannot delegate the configured exact launch file".into()));
             }
             drop(context.task().read_file(file).await?);
-            let grant = file.read_capability()?;
+            let grant = file.read_capability(&mut None)?;
             grants.push(grant.clone());
             scoped.push(grant);
         }
@@ -1547,10 +1547,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let task_context = context.context();
         task_context.owned_task_binding_with_native_work(work)?;
         if reconciliation_only {
-            token.verify_reconciliation_with_native_work(work)?.await?;
+            token.verify(true, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         } else {
             task_context.require_original_native_dispatch(work)?;
-            token.verify_creation_with_native_work(work)?.await?;
+            token.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         let owner = self.native_source_owner(task_context, cancellation, work).await?;
         let resolver = crate::runtime::content_residency_verifier(Arc::clone(context), owner, Some(&super::PreparationIo::from_native_work(work)?))?;
@@ -1624,9 +1624,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             self.config.history_limits, token.project_source(), resolver, cancellation, work,
         ).await?;
         if reconciliation_only {
-            token.verify_reconciliation_with_native_work(work)?.await?;
+            token.verify(true, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         } else {
-            token.verify_creation_with_native_work(work)?.await?;
+            token.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         Ok(source)

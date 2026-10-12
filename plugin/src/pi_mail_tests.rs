@@ -8,7 +8,7 @@ use acyclic_harness::{Admission, AgentId, Capabilities,
     core::{AggregateKind, Authority, AuthorityIssuer, Scope},
     distributed::{WorkLease, WorkPull, Worker},
     resources::ProviderRef,
-    runtime::{RuntimeScope, TaskDefinition, TaskRegistry}, scheduler::{ResourceSnapshot, SessionLimits},
+    runtime::{RuntimeScope, TaskDefinition, TaskRegistry}, scheduler::{ResourceRequest, SessionLimits},
     tool::ToolRegistry, workflow::{MachineIdentity, MachineRegistry}};
 use acyclic_fs::{CancellationToken, Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_stream::{MemoryStream};
@@ -54,7 +54,7 @@ impl Fixture {
             "application/json", path, 65_536, &acyclic_harness::IdempotencyKey::new(format!("mail:{operation}:{path}"))?).await
     }
     async fn pull(&self, runtime: &Runtime) -> Result<WorkLease> {
-        match runtime.task_host().pull_work(&Worker { id:"pi-mail-worker".into(), available:ResourceSnapshot::default(), labels:BTreeMap::new() }).await? {
+        match runtime.task_host().pull_work(&Worker { id:"pi-mail-worker".into(), available:ResourceRequest::default(), labels:BTreeMap::new() }).await? {
             WorkPull::Claimed(lease) => { runtime.task_host().start_task(&lease, None).await?; Ok(lease) }
             _ => Err(Error::NotFound("mail lease".into())),
         }

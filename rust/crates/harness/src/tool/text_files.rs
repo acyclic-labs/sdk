@@ -767,7 +767,7 @@ mod tests {
         let empty = RuntimeScope::new(Capabilities::default(), Limits::default())?;
         assert!(adapter.authorize(None, &input).is_err());
         assert!(adapter.authorize(Some(&empty), &input).is_err());
-        let grants = Capabilities::new([file.read_capability()?]);
+        let grants = Capabilities::new([file.read_capability(&mut None)?]);
         let scope = RuntimeScope::new(grants, Limits::default())?;
         assert_eq!(adapter.preflight(&scope, &input)?, file);
         for range in [json!({"start":4,"end":1}), json!({"start":0,"end":6})] {

@@ -11,7 +11,7 @@ async fn pull_enforces_operation_placement_labels() -> Result<()> {
     declare(&mut coordinator, declaration, "placed").await?;
     let mut worker = Worker {
         id: "worker".into(),
-        available: ResourceSnapshot::default(),
+        available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     };
     assert!(coordinator.pull(&worker).await?.is_none());
@@ -49,7 +49,7 @@ async fn owned_pull_filters_foreign_operations_and_retains_uncertain_capacity() 
     let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
     let worker = Worker {
         id: "shared-worker".into(),
-        available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
+        available: ResourceRequest(BTreeMap::from([("cpu".into(), 1)])),
         labels: BTreeMap::new(),
     };
     let WorkPull::Claimed(lease) = coordinator
@@ -166,7 +166,7 @@ async fn exact_target_pull_never_claims_or_rejects_an_unrelated_task() -> Result
     let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
     let worker = Worker {
         id: "target-worker".into(),
-        available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
+        available: ResourceRequest(BTreeMap::from([("cpu".into(), 1)])),
         labels: BTreeMap::new(),
     };
     let first_before = coordinator.scheduler().operation(first).cloned();
@@ -313,7 +313,7 @@ async fn exact_target_pull_preserves_live_partial_and_cancelled_reservations() -
         let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
         let worker = Worker {
             id: "partial-worker".into(),
-            available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 2)])),
+            available: ResourceRequest(BTreeMap::from([("cpu".into(), 2)])),
             labels: BTreeMap::new(),
         };
         assert!(matches!(
@@ -354,7 +354,7 @@ async fn owned_pull_retains_exact_attempt_after_unresolved_admission() -> Result
         let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
         let worker = Worker {
             id: "fault-worker".into(),
-            available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
+            available: ResourceRequest(BTreeMap::from([("cpu".into(), 1)])),
             labels: BTreeMap::new(),
         };
         if fault == 1 {
@@ -454,7 +454,7 @@ async fn cancelled_work_does_not_starve_the_pull_queue() -> Result<()> {
         .await?;
     let worker = Worker {
         id: "worker".into(),
-        available: ResourceSnapshot::default(),
+        available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     };
     assert_eq!(

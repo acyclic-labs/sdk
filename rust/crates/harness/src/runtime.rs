@@ -1804,7 +1804,6 @@ impl TaskAdmissionRecord {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut created = BTreeSet::new();
         for proof in &self.resource_proofs {
-            proof.validate(quota.work())?;
             let bytes = crate::store::history::canonical_bytes_with_work(
                 &proof.resource, acyclic_stream::MAX_RECORD_BYTES as u64, quota.work(),
             )?;
@@ -2054,12 +2053,10 @@ impl TaskAdmissionRecord {
         let native = work.as_deref().and_then(|io| io.original_native_work())
             .expect("native fixed metadata observer").clone();
         let mut diagnostic_custody = None;
-        let decoded = crate::contract::json_from_value_bounded(
-            std::borrow::Cow::Owned(value), crate::contract::JsonBounds {
+        let decoded = crate::contract::json_from_value_bounded(std::borrow::Cow::Owned(value), crate::contract::JsonBounds {
                 maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
                 maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64, maximum_depth: 256,
-            }, 0, crate::wire::ErrorCode::Invalid, crate::contract::JsonValueSchema::None,
-            &mut |charge| {
+            }, 0, Some(crate::wire::ErrorCode::Invalid), crate::contract::JsonValueSchema::None, &mut |charge| {
                 if let crate::contract::JsonCodecCharge::Admission { value_shape, .. } = charge {
                     let diagnostic = crate::contract::json_typed_diagnostic_owned_bytes(
                         value_shape, LABELS.len() as u64, Some(crate::wire::ErrorCode::Invalid),
@@ -2070,8 +2067,7 @@ impl TaskAdmissionRecord {
                 } else {
                     work.as_deref_mut().expect("native fixed metadata observer").codec_charge(charge)
                 }
-            },
-        );
+            });
         match decoded {
             Err(Error::NativeDecode { code, source, custody: None }) =>
                 Err(Error::NativeDecode { code, source, custody: diagnostic_custody }),
@@ -3106,7 +3102,7 @@ impl RuntimeScope {
         if let Some(access) = &access {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.as_deref().is_some_and(|io| io.original_native_work().is_some())
-                && !access.has_native_custody()
+                && access.native_custody.is_none()
             {
                 return Err(scope_metadata_boundary(work, crate::wire::ErrorCode::Unauthorized,
                     "native created resource seal requires its original payload custody"));
@@ -3304,8 +3300,8 @@ impl RuntimeScope {
         file: &FileRef,
     ) -> Option<&Arc<dyn crate::conversation::ContentResidencyVerifier>> {
         self.created_access.as_ref()?.references.iter()
-            .find(|binding| &binding.file == file)
-            .map(|binding| &binding.reader)
+            .find(|(reference, _)| reference == file)
+            .map(|(_, reader)| reader)
     }
 
     #[cfg(feature = "filesystem")]
@@ -8078,7 +8074,6 @@ impl DurableBatchRequest {
         }
         let mut resources = BTreeSet::new();
         for proof in &self.scope.resource_proofs {
-            proof.validate(&mut None)?;
             if !resources.insert(crate::contract::canonical_json_bytes(&proof.resource)?) {
                 return Err(Error::Invalid("batch repeats a created resource proof".into()));
             }
@@ -9603,7 +9598,7 @@ mod tests {
     fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, ToolInvocation) {
         let policy = FixedPolicy {
             identity: ComponentIdentity { name: "test.policy".into(), version: "1".into(), digest: [9; 32] },
-            decision: ToolPolicyDecision::RequireApproval { prompt: "Approve λ 🦀?".into() },
+            decision: ToolPolicyDecision::RequireApproval { prompt: "Approve ÃƒÅ½Ã‚Â» ÃƒÂ°Ã…Â¸Ã‚Â¦Ã¢â€šÂ¬?".into() },
         };
         let definition = ToolDefinition {
             name: "test.echo".into(), revision: "1".into(), description: "Echo".into(),
@@ -9614,7 +9609,7 @@ mod tests {
         let invocation = ToolInvocation {
             operation_id: OperationId::new(), call_id: "provider-call".into(),
             name: definition.name.clone(),
-            arguments: serde_json::json!({"z":[true,null],"a":"λ"}),
+            arguments: serde_json::json!({"z":[true,null],"a":"ÃƒÅ½Ã‚Â»"}),
         };
         (policy, definition, invocation)
     }
@@ -9748,7 +9743,7 @@ mod tests {
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
         assert_eq!(work.receipt(), before);
         let mut io = crate::store::history::native_work_io(&work)?;
-        let prompt = io.clone_text("Approve λ?")?;
+        let prompt = io.clone_text("Approve ÃƒÅ½Ã‚Â»?")?;
         let request = Interaction::Approval { prompt, operation_id: OperationId::new(), action_digest: [1; 32] };
         let custody = io.into_custody();
         let before = work.receipt();
@@ -10257,7 +10252,7 @@ mod tests {
         validate_children_request(parent, None, usize::MAX)?;
         assert!(validate_children_request(parent, Some("\u{7f}"), 1).is_err());
         validate_children_request(parent, Some(&"x".repeat(1_024)), 1)?;
-        validate_children_request(parent, Some("résumé"), 1)?;
+        validate_children_request(parent, Some("rÃƒÆ’Ã‚Â©sumÃƒÆ’Ã‚Â©"), 1)?;
 
         let child = TaskChild {
             slot: "a".into(),
@@ -10539,7 +10534,7 @@ mod tests {
         assert!(read_granted(&grants, &file)?);
         assert!(!grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?));
         for capability in [
-            file.read_capability()?,
+            file.read_capability(&mut None)?,
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.directory_read_capability("notes", &mut None)?,
             volume.directory_read_capability("notes/nested", &mut None)?,

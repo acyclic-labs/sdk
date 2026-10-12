@@ -9,7 +9,7 @@ async fn owned_child_declaration_rechecks_parent_and_recovers_tail_conflict() ->
         let parent = OperationId::from_bytes([41; 16]);
         declare(&mut first, spec(parent, 0)?, "fenced-parent").await?;
         let lease = start(&mut first, &Worker {
-            id: "parent-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+            id: "parent-worker".into(), available: ResourceRequest::default(), labels: BTreeMap::new(),
         }, "parent-start").await?;
         assert_eq!(lease.operation.operation_id, parent);
         let fence = LeaseFence::from(&lease.reservation);
@@ -130,7 +130,7 @@ async fn cancellation_is_owner_fenced_durable_and_exactly_replayable() -> Result
     let grandchild = OperationId::from_bytes([46; 16]);
     declare(&mut coordinator, spec(parent, 0)?, "cancel-parent-declare").await?;
     let worker = Worker {
-        id: "cancel-parent-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+        id: "cancel-parent-worker".into(), available: ResourceRequest::default(), labels: BTreeMap::new(),
     };
     let lease = start(&mut coordinator, &worker, "cancel-parent-start").await?;
     assert_eq!(lease.operation.operation_id, parent);
@@ -211,7 +211,7 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
         declare(&mut first, spec(task, 0)?, "wake-task").await?;
         let worker = Worker {
             id: "wake-worker".into(),
-            available: ResourceSnapshot::default(),
+            available: ResourceRequest::default(),
             labels: BTreeMap::new(),
         };
         let lease = start(&mut first, &worker, "wake-start").await?;
@@ -347,7 +347,7 @@ async fn passive_suspension_atomically_fences_execution_and_recovers_commit_ack(
             let execution = OperationId::from_bytes([92; 16]);
             declare(&mut coordinator, spec(task, 0)?, "idle-task").await?;
             let lease = start(&mut coordinator, &Worker {
-                id: "idle-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+                id: "idle-worker".into(), available: ResourceRequest::default(), labels: BTreeMap::new(),
             }, "idle-start").await?;
             assert_eq!(lease.operation.operation_id, task);
             let fence = LeaseFence::from(&lease.reservation);
@@ -481,7 +481,7 @@ async fn leases_are_fenced_and_recoverable() -> Result<()> {
     coordinator = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
     let worker = Worker {
         id: "worker".into(),
-        available: ResourceSnapshot::default(),
+        available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     };
     let first = coordinator

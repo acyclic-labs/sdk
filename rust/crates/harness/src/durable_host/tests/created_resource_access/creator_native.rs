@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-use crate::resource_preparation::{CreatedReferenceBinding, CreatedResourceAccess};
+use crate::resource_preparation::{CreatedResourceAccess};
 use crate::store::history::HistoryIo;
 
 #[tokio::test]
@@ -210,27 +210,19 @@ async fn same_created_seal_engine_rejects_exact_file_ambiguity_and_inherited_def
     let file = writer.stage_once(
         OperationId::from_bytes([181;16]), "exact-seal/one.txt", b"one", "text/plain", "one.txt", None,
     )?.await?.0;
-    let other = writer.stage_once(
-        OperationId::from_bytes([182;16]), "exact-seal/two.txt", b"two", "text/plain", "two.txt", None,
-    )?.await?.0;
     drop(receipt);
-    for change in 0..4 {
+    for change in 0..3 {
         let mut receipts = Vec::new();
         for proof in &created.request.child.resource_proofs {
             let mut receipt = creator.verify(&created.request, proof).await?;
             if proof == private_proof {
                 match change {
                     0 => {
-                        receipt.operations.push(CreatedResourceOperation::ReadFile(file.clone()));
-                        receipt.operations.push(CreatedResourceOperation::ReadFile(file.clone()));
+                        let reader = Arc::clone(&receipt.content[0].binding.reader);
+                        receipt.references.push((file.clone(), reader.clone()));
+                        receipt.references.push((file.clone(), reader));
                     }
                     1 => {
-                        receipt.operations.push(CreatedResourceOperation::ReadFile(file.clone()));
-                        receipt.references.push(CreatedReferenceBinding {
-                            file: other.clone(), reader: Arc::clone(&receipt.content[0].binding.reader),
-                        });
-                    }
-                    2 => {
                         receipt.content[0].artifact_writer = true;
                     }
                     _ => {
@@ -258,7 +250,7 @@ async fn retained_preparation_decode_cancel_and_allocator_denial_precede_owned_d
     let denied = NativeMaterializationWork::new(budget, &cancellation)
         .expect("original ledger consumes the sole allowed allocation");
     let mut observer = crate::store::history::native_work_io(&denied)?;
-    assert!(matches!(ResourcePreparationRequest::from_borrowed_value_with_work(
+    assert!(matches!(ResourcePreparationRequest::decode(
         &input, &mut Some(&mut observer),
     ), Err(Error::NativeWork { .. })));
     assert_eq!(denied.receipt().backend_read_operations, 0);
@@ -268,7 +260,7 @@ async fn retained_preparation_decode_cancel_and_allocator_denial_precede_owned_d
         .expect("original cancellable invocation");
     let mut observer = crate::store::history::native_work_io(&cancelled)?;
     cancellation.cancel();
-    assert!(matches!(ResourcePreparationRequest::from_borrowed_value_with_work(
+    assert!(matches!(ResourcePreparationRequest::decode(
         &input, &mut Some(&mut observer),
     ), Err(Error::NativeWork { .. })));
     assert_eq!(cancelled.receipt().backend_read_operations, 0);

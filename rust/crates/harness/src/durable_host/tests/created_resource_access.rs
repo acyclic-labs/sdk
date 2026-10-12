@@ -10,7 +10,7 @@ use crate::filesystem::{
     workspace_ref,
 };
 use crate::resource_preparation::{
-    CreatedResourceOperation, CreatedResourceReceipt, ResourceCreationOrigin,
+    CreatedResourceReceipt, ResourceCreationOrigin,
     ResourceCreationProofRef, ResourceCreationProvider, ResourcePreparationRequest,
     TaskResourcePreparation, created_resource_capability,
 };
@@ -197,13 +197,12 @@ impl SandboxCreator {
         preparation: &TaskResourcePreparation,
         corrupt_origin: impl FnOnce(&mut ResourceCreationOrigin),
     ) -> Result<()> {
-        preparation.verify_creation().await?;
+        preparation.verify(false, None)?.await?;
         let request = preparation.request();
         request.validate(&mut None)?;
         let proof = self.proof(preparation.origin().preparation_task)?;
         if request.provider != self.provider
             || request.creation_grant != "resource:create:custom"
-            || request.resources != [proof.resource.clone()]
             || request.child.resource_proofs != [proof.clone()]
             || request.maximum_work < 4
         {
@@ -224,7 +223,7 @@ impl SandboxCreator {
             &[WorkspaceMutation::PutFile { path: "/manifest.json".into(), bytes: payload.into() }],
             &IdempotencyKey::new("sandbox-manifest")?,
         ).await?;
-        preparation.verify_creation().await?;
+        preparation.verify(false, None)?.await?;
         let evidence_volume = VolumeRef::new(
             self.filesystem_provider.clone(),
             "sandbox-allocation".into(),
@@ -257,7 +256,7 @@ impl SandboxCreator {
             &[WorkspaceMutation::PutFile { path: "/allocation.json".into(), bytes: bytes.into() }],
             &IdempotencyKey::new("sandbox-allocation")?,
         ).await?;
-        preparation.verify_creation().await?;
+        preparation.verify(false, None)?.await?;
         self.allocations.lock().await.insert(
             crate::contract::canonical_json_bytes(&proof.resource)?, generation,
         );
@@ -312,7 +311,7 @@ impl ResourceCreationProvider for SandboxCreator {
                 resource: allocation.resource,
                 evidence: allocation.evidence,
                 allocation_generation: generation,
-                operations: vec![CreatedResourceOperation::Named("execute".into())],
+                operations: vec!["execute".into()],
                 content: Vec::new(),
                 references: Vec::new(),
             })
@@ -556,10 +555,19 @@ impl CreationFixture {
             "task:spawn:test.created@1".into(),
         ]);
         child = child.with_resource_proofs(vec![proof.clone()])?;
-        Ok(ResourcePreparationRequest { command: None, source_checkpoint:None, provider: self.creator.provider.clone(), child, resources: vec![proof.resource],
-        input_files: Vec::new(), read_authorization: None,
-        creation_grant: "resource:create:custom".into(), maximum_resources: 1,
-        maximum_work: 4, maximum_bytes: 65_536, payload: serde_json::json!({"image":"isolated"}), })
+        Ok(ResourcePreparationRequest {
+command: None,
+source_checkpoint:None,
+provider: self.creator.provider.clone(),
+child,
+input_files: Vec::new(),
+read_authorization: None,
+creation_grant: "resource:create:custom".into(),
+maximum_resources: 1,
+maximum_work: 4,
+maximum_bytes: 65_536,
+payload: serde_json::json!({"image":"isolated"}),
+})
     }
 
     async fn prepare(&self, request: &ResourcePreparationRequest)
@@ -606,7 +614,7 @@ impl CreationFixture {
 async fn created_custom_operation_requires_canonical_admission_not_a_caller_receipt() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let request = fixture.sandbox_request()?;
-    let label = created_resource_capability(&request.resources[0], "execute", &mut None)?;
+    let label = created_resource_capability(&request.resources().next().expect("created resource"), "execute", &mut None)?;
     assert!(!fixture.root_scope.grants().contains(&label));
     let (preparation, _, _invocation) = fixture.prepare(&request).await?;
     fixture.creator.create(&preparation, |_| {}).await?;
@@ -705,7 +713,7 @@ async fn original_creation_fence_survives_current_preparation_and_parent_recover
     };
     fixture.host.start_task(&recovered_prep, None).await?;
     assert_ne!(recovered_prep.reservation, original_prep.reservation);
-    assert!(preparation.verify_creation().await.is_err());
+    assert!(preparation.verify(false, None)?.await.is_err());
     fixture.host.coordinator.lock().await.release_lease(
         &fixture.root_lease, IdempotencyKey::new("release-created-parent")?,
     ).await?;
@@ -721,7 +729,7 @@ async fn original_creation_fence_survives_current_preparation_and_parent_recover
     assert!(fixture.host.admit_owned(request.child.clone(), old_parent_fence).await.is_err());
     assert!(matches!(fixture.admit_child(request.child.clone()).await?, Admission::Accepted(_)));
     let context = fixture.harness.durable_context(TaskId::from_bytes([84; 16]), request.child.operation_id).await?;
-    assert!(context.scope().grants().contains(&created_resource_capability(&request.resources[0], "execute", &mut None)?));
+    assert!(context.scope().grants().contains(&created_resource_capability(&request.resources().next().expect("created resource"), "execute", &mut None)?));
     Ok(())
 }
 
@@ -733,7 +741,7 @@ async fn cancelled_parent_cannot_consume_existing_created_allocation() -> Result
     fixture.creator.create(&preparation, |_| {}).await?;
     assert!(!preparation.cancellation().expect("caller invocation is sealed").is_cancelled());
     fixture.host.cancel(fixture.root, None).await?;
-    assert!(preparation.verify_creation().await.is_err());
+    assert!(preparation.verify(false, None)?.await.is_err());
     assert!(preparation.cancellation().expect("same caller invocation").is_cancelled());
     fixture.creator.verify(&request, &request.child.resource_proofs[0]).await?;
     assert!(fixture.admit_child(request.child.clone()).await.is_err());
@@ -870,16 +878,21 @@ impl CreationFixture {
                 result.capability(VolumeOperation::Read, &mut None)?, result.capability(VolumeOperation::Write, &mut None)?,
             ].iter().map(String::as_str)));
         }
-        let (resources, proofs) = preparer.creation_allocations(&fork, TaskId::from_bytes([83; 16]), None)?;
+        let proofs = preparer.creation_allocations(&fork, TaskId::from_bytes([83; 16]), None)?;
         child = child.with_resource_proofs(proofs)?;
         let request = ResourcePreparationRequest {
-            command: None, source_checkpoint: None,
-            provider: self.filesystem_provider.clone(), child,
-            resources, creation_grant: "fork:publish".into(),
-            maximum_resources: if with_result {3} else {2}, maximum_work: 16_384, maximum_bytes: 16 * 1_024 * 1_024,
-            payload: serde_json::to_value(&fork).map_err(|e| Error::Invalid(e.to_string()))?,
-            input_files: Vec::new(), read_authorization: fork.authorized_source.clone(),
-        };
+command: None,
+source_checkpoint: None,
+provider: self.filesystem_provider.clone(),
+child,
+creation_grant: "fork:publish".into(),
+maximum_resources: if with_result {3} else {2},
+maximum_work: 16_384,
+maximum_bytes: 16 * 1_024 * 1_024,
+payload: serde_json::to_value(&fork).map_err(|e| Error::Invalid(e.to_string()))?,
+input_files: Vec::new(),
+read_authorization: fork.authorized_source.clone(),
+};
         let (preparation, _, _invocation) = self.prepare(&request).await?;
         let report = preparer.prepare_for_task(fork, &preparation).await?;
         let seed = report.clone().into_seed(&mut None)?;
@@ -1142,7 +1155,7 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     let created = fixture.create_filesystem_child_with_options(
         &["fork:publish","conversation:bind"],true,
     ).await?;
-    assert_eq!(created.request.resources.len(),3);
+    assert_eq!(created.request.resources().count(),3);
     assert_eq!(created.request.child.resource_proofs.len(),3);
     let allocation_cancellation = acyclic_fs::CancellationToken::new();
     let allocation_io = crate::filesystem::PreparationIo::from_budget(
@@ -1187,8 +1200,8 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     owner.authenticate_fork_parent(&created.seed.child, &mut None)?;
     assert!(owner.authenticate_fork_parent(fixture.host.verifier.audience(), &mut None).is_err());
     let proof = owner.child_scratch_creation_proof()?;
-    assert_eq!(proof.original_task(),task);
-    assert_eq!(proof.agent(),created.seed.child_agent);
+    assert_eq!(crate::runtime::task_id_for_admission(proof.origin().intended_child),task);
+    assert_eq!(proof.volume().owner(), &VolumeOwner::Agent(created.seed.child_agent));
     assert_eq!(proof.volume(),&created.private);
     let root_owner = fixture.host.journal_owner(
         fixture.root,(&fixture.root_lease.reservation).into(),

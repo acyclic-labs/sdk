@@ -78,7 +78,7 @@ async fn cold_child_observation_preserves_original_cut_and_dispatch_is_only_init
         &fixture.owner, &plan, &work).await.unwrap());
     let worker = acyclic_harness::distributed::Worker {
         id: "lifecycle-original-child-owner".to_owned(),
-        available: acyclic_harness::scheduler::ResourceSnapshot::default(),
+        available: acyclic_harness::scheduler::ResourceRequest::default(),
         labels: BTreeMap::new(),
     };
     fixture.runtime.runtime.run_operation_with_native_work(&worker, prepared.binding.task_id,

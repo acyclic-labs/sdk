@@ -21,7 +21,7 @@ use acyclic_harness::{Error, JsonValueSchema, OperationId, Outcome, Result, Task
         NativeRecordedPreparation,
         RecursiveSourceSnapshot, TaskCommandHost, TaskCommandProgress, TaskSourceInspection, TaskWorkerAttempt},
     resources::GenerationRef, runtime::{ContentBindings, DurableTaskHost, NativeTaskContext, TaskAdmissionRecord, TaskContext},
-    scheduler::{LeaseFence, ResourceSnapshot}, store::{HistoryReadLimits, HistoryReader},
+    scheduler::{LeaseFence, ResourceRequest}, store::{HistoryReadLimits, HistoryReader},
     workflow::WorkflowCommand};
 use acyclic_stream::{BoxProviderFuture, LocalStream};
 use serde_json::Value;
@@ -636,7 +636,7 @@ impl PiNativeCommandHost {
                 )?;
                 worker_custody = custody;
                 worker = Worker {
-                    id, available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+                    id, available: ResourceRequest::default(), labels: BTreeMap::new(),
                 };
                 let result = self.runtime.runtime.run_operation_with_native_work(
                     &worker, task, self, 8, &work,

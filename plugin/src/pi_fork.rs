@@ -17,7 +17,7 @@ use acyclic_harness::{AgentId, Capabilities, Error, OperationId, Outcome, Result
     fork::{ForkReport, ForkRequest},
     resource_preparation::ResourcePreparationRequest,
     runtime::{DurableTaskHost, TaskAdmissionRecord, task_id_for_admission},
-    scheduler::{LeaseFence, ResourceSnapshot},
+    scheduler::{LeaseFence, ResourceRequest},
     source_authorization::{ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider},
     store::{HistoryIo, HistoryReadLimits, StreamAggregate},
     workflow::WorkflowCommand};
@@ -765,7 +765,7 @@ impl PiForkCoordinator {
                 WorkPull::Idle => {
                     let worker_id = work.display(&format_args!("pi-fork:{}", self.resources.instance_id))
                         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    let worker = Worker { id: worker_id.0, available: ResourceSnapshot::default(), labels: BTreeMap::new() };
+                    let worker = Worker { id: worker_id.0, available: ResourceRequest::default(), labels: BTreeMap::new() };
                     let result = self.runtime.runtime.run_operation_with_native_work(&worker,
                         plan.preparation.task_id(), &commands, 8, work).await?;
                     drop(result);

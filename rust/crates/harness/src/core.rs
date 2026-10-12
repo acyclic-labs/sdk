@@ -329,7 +329,7 @@ impl AuthorityIssuer {
         let volume = file.volume();
         self.require_private_owner_read(owner_scope, volume)?;
         self.issue(
-            &id.into(), &Capabilities::new([file.read_capability()?]),
+            &id.into(), &Capabilities::new([file.read_capability(&mut None)?]),
             Some(reader), Some(owner_scope.proof), &mut None,
         )
     }

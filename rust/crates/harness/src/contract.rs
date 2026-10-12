@@ -84,10 +84,7 @@ pub use json::{
     sdk_json_diagnostic_bytes,
     json_owned_value_conversion_additional_bytes,
 };
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub use json::{
-    json_from_value_bounded,
-};
+pub use json::json_from_value_bounded;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use json::{
     validate_json_byte_bound_native_trusted,
@@ -849,7 +846,7 @@ pub struct ProtocolIdentity {
 /// Deterministic capability set.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub struct Capabilities(BTreeSet<String>);
+pub struct Capabilities(pub(crate) BTreeSet<String>);
 
 impl Capabilities {
     /// Builds a capability set.
@@ -902,9 +899,6 @@ impl Capabilities {
         Self::new_with_native_work(self.iter(), work)
     }
 
-    pub(crate) fn from_owned_set(values: BTreeSet<String>) -> Self {
-        Self(values)
-    }
     /// Returns whether a capability is present.
     #[must_use]
     pub fn contains(&self, value: &str) -> bool {
@@ -982,7 +976,7 @@ pub struct PolicyLayer {
     pub policy: AuthorityPolicy,
 }
 
-/// Resolves runtime → invocation policy layers without ambient authority.
+/// Resolves runtime Ã¢â€ â€™ invocation policy layers without ambient authority.
 #[must_use]
 pub fn resolve_policies(layers: &[AuthorityPolicy]) -> Capabilities {
     let Some(first) = layers.first() else {
@@ -1564,8 +1558,8 @@ mod tests {
     #[test]
     fn component_label_validation_is_byte_bounded_and_unicode_precise() {
         assert!(validate_component_label("alpha", "label").is_ok());
-        assert!(validate_component_label(&"é".repeat(127), "label").is_ok());
-        assert!(validate_component_label(&"😀".repeat(63), "label").is_ok());
+        assert!(validate_component_label(&"ÃƒÂ©".repeat(127), "label").is_ok());
+        assert!(validate_component_label(&"Ã°Å¸Ëœâ‚¬".repeat(63), "label").is_ok());
         for value in ["", ".", "..", "/", "\\", "a\n", "a\u{00a0}", "a\u{2003}", "a\u{007f}"] {
             assert!(
                 validate_component_label(value, "label").is_err(),
@@ -1574,6 +1568,6 @@ mod tests {
         }
         assert!(validate_component_label(&"a".repeat(255), "label").is_ok());
         assert!(validate_component_label(&"a".repeat(256), "label").is_ok());
-        assert!(validate_component_label(&"é".repeat(128), "label").is_ok());
+        assert!(validate_component_label(&"ÃƒÂ©".repeat(128), "label").is_ok());
     }
 }

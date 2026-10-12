@@ -11,7 +11,7 @@ pub struct Worker {
     /// Stable worker identity.
     pub id: String,
     /// Currently available logical capacity.
-    pub available: ResourceSnapshot,
+    pub available: ResourceRequest,
     /// Labels available for exact-match operation placement.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,

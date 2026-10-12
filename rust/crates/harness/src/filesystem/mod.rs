@@ -2204,11 +2204,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
             native_creation_guard.ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native inherited publication requires its original issued creation guard",
-            })?.verify_creation_with_native_work(work)?.await?;
+            })?.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         if !native
             && let Some(preparation) = preparation
-        { preparation.verify_creation().await?; }
+        { preparation.verify(false, None)?.await?; }
         if let Some(io) = io {
             let project = io.capability(&self.project, "volume:read:")?;
             if !self.scope.capabilities().contains(&project)
@@ -3425,7 +3425,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         let mut before_publication = move |original: &acyclic_fs::NativeMaterializationWork| {
                             let lease = Arc::clone(&lease);
                             let original = original.clone();
-                            async move { lease.verify_with_native_work(&original)?.await }
+                            async move { lease.verify_with_io(&PreparationIo::from_native_work(&original)?)?.await }
                         };
                         fork_preparer_io::publish_native(
                             self, &workspace, expected_generation, &mutations,

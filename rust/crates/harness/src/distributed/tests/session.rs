@@ -231,7 +231,7 @@ async fn atomic_session_race<P: StreamProvider>(
     let lease = recovered
         .pull(&Worker {
             id: "atomic-worker".into(),
-            available: ResourceSnapshot::default(),
+            available: ResourceRequest::default(),
             labels: BTreeMap::new(),
         })
         .await?
@@ -371,7 +371,7 @@ async fn session_claim_race<P: StreamProvider>(
         });
         declare(&mut first, child, &format!("budget-child-{index}")).await?;
         let lease = start(&mut first, &Worker {
-            id: format!("worker-{index}"), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+            id: format!("worker-{index}"), available: ResourceRequest::default(), labels: BTreeMap::new(),
         }, &format!("budget-start-{index}")).await?;
         let id = lease.operation.operation_id;
         let fence = LeaseFence::from(&lease.reservation);

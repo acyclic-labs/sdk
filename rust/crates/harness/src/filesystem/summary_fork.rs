@@ -176,11 +176,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             native_creation_guard.ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native summary publication requires its original issued creation guard",
-            })?.verify_creation_with_native_work(work)?.await?;
+            })?.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         if !native
             && let Some(preparation) = preparation
-        { preparation.verify_creation().await?; }
+        { preparation.verify(false, None)?.await?; }
         if let Some(io) = io {
             let capability = io.capability(&self.project, "volume:read:")?;
             if !self.scope.capabilities().contains("fork:publish") || !self.scope.capabilities().contains(&capability) {

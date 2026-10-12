@@ -1811,7 +1811,7 @@ impl WasmReducer {
     #[wasm_bindgen(js_name = fileReadCapability)]
     pub fn file_read_capability(&self, file: JsValue) -> Result<String, JsValue> {
         let file: FileRef = from_js(file)?;
-        file.read_capability().map_err(js_error)
+        file.read_capability(&mut None).map_err(js_error)
     }
 
     /// Computes the canonical capability for one private directory boundary.

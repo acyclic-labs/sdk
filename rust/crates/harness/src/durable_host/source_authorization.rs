@@ -433,7 +433,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     quota.adopt(retained)?;
                     {
                         let mut request_quota = crate::wire_codec::CodecQuota::new(quota.work(), 0)?;
-                        let (request, bytes) = crate::resource_preparation::ResourcePreparationRequest::from_borrowed_value_with_work(
+                        let (request, bytes) = crate::resource_preparation::ResourcePreparationRequest::decode(
                             &preparation.input, request_quota.work())?;
                         request_quota.adopt(bytes)?;
                         request.validate(request_quota.work())?;

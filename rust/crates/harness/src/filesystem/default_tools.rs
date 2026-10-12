@@ -1890,7 +1890,7 @@ where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
 fn recursive_exact_file_granted(grants: &Capabilities, file: &FileRef, io: Option<&super::PreparationIo>) -> Result<bool> {
     match io {
         Some(io) => io.contains_capability(grants, file, "file:read:"),
-        None => Ok(grants.contains(&file.read_capability()?)),
+        None => Ok(grants.contains(&file.read_capability(&mut None)?)),
     }
 }
 

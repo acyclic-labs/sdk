@@ -46,7 +46,7 @@ impl MailFixture {
                     kind: super::super::super::TOOL_TASK_COMMAND_KIND.into(), payload }}), None).await?,
                 Admission::Accepted(_)));
             let lease = match runtime.task_host().pull_work(&Worker {
-                id: "native-mail-control".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+                id: "native-mail-control".into(), available: ResourceRequest::default(), labels: BTreeMap::new(),
             }).await? {
                 WorkPull::Claimed(lease) => lease,
                 _ => return Err(Error::NotFound("native mail original lease".into())),

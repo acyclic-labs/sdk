@@ -254,17 +254,6 @@ pub(crate) fn resource_preparation_owned_bytes(
                 owned_add!(environment.as_resource().logical_owned_bytes()?);
             }
         }
-        owned_add!((request.resources.capacity() as u64)
-            .checked_mul(std::mem::size_of::<crate::resources::ResourceRef>() as u64)
-            .ok_or_else(|| crate::fork::boundary_error(
-                work, crate::wire::ErrorCode::Invalid, "resource preparation ownership inventory overflows"))?);
-        for reference in &request.resources {
-            if let Some(observer) = work.as_deref_mut() {
-                observer.check_cancellation()?;
-                observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-            }
-            owned_add!(reference.logical_owned_bytes()?);
-        }
         owned_add!((child.resource_proofs.capacity() as u64)
             .checked_mul(std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>() as u64)
             .ok_or_else(|| crate::fork::boundary_error(

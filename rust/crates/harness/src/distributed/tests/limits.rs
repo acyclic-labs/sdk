@@ -90,7 +90,7 @@ async fn admitted_fixture(
     declare(&mut coordinator, spec(operation, 0)?, "measured-seed-0").await?;
     let lease = coordinator.pull(&Worker {
         id: "measured-release-worker".into(),
-        available: ResourceSnapshot::default(),
+        available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     }).await?.ok_or_else(|| Error::NotFound("original admitted lease".into()))?;
     Ok((coordinator, lease))

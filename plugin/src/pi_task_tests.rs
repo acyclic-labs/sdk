@@ -17,7 +17,7 @@ use acyclic_harness::{
     filesystem::FilesystemHost,
     resources::ProviderRef,
     runtime::{RuntimeScope},
-    scheduler::{LeaseFence, ResourceSnapshot},
+    scheduler::{LeaseFence, ResourceRequest},
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::{collections::BTreeMap, path::Path};
@@ -906,7 +906,7 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
     drop(observed);
     assert_eq!(query.live_allocation_bytes(), query_baseline);
     let partial = fixture.runtime.runtime.run_operation_with_native_work(&Worker {
-        id: "pi-preparing-observation".into(), available: ResourceSnapshot::default(),
+        id: "pi-preparing-observation".into(), available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     }, plan.preparation.task_id(), &fixture.runtime.runtime.commands(), 1, &query).await.unwrap();
     assert!(matches!(partial.0, Some( acyclic_harness::filesystem::TaskWorkerAttempt::Progress(
@@ -1029,7 +1029,7 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
     let suspension = reopened.runtime.task_host().workflow_suspension(task).await.unwrap().unwrap();
     reopened.runtime.task_host().resume_workflow(task, suspension.revision, input, acyclic_harness::IdempotencyKey::new("pi-root-control/distinct-next").unwrap(), None).await.unwrap();
     let next = reopened.runtime.run_operation_with_native_work(&Worker {
-        id: "pi-root-control-next".into(), available: ResourceSnapshot::default(),
+        id: "pi-root-control-next".into(), available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     }, task, &reopened.runtime.commands(), 8, &reopen_work).await.unwrap();
     assert!(matches!(next.0, Some(acyclic_harness::filesystem::TaskWorkerAttempt::Progress(

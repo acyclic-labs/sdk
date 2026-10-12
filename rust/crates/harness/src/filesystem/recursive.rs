@@ -416,11 +416,11 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObject
         }
         for file in &input_files {
             file.validate(&mut None)?;
-            grants.push(file.read_capability()?);
+            grants.push(file.read_capability(&mut None)?);
         }
         child.grants = Capabilities::new(grants);
     }
-    let (resources, proofs) = preparer.creation_allocations(fork, preparation_task, io)?;
+    let proofs = preparer.creation_allocations(fork, preparation_task, io)?;
     child.resource_proofs = proofs;
     crate::executor::with_history_io(io, |work| child.validate(work))?;
     let provider = match io {
@@ -431,12 +431,18 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObject
         crate::executor::with_history_io(io, |work| authorization.clone_with_work_and_custody(work))
             .map(|(authorization, _)| authorization)).transpose()?;
     let request = ResourcePreparationRequest {
-        provider, child, resources,
-        creation_grant: super::fork_preparer_io::clone_text("fork:publish", io)?,
-        maximum_resources: limits.resources, maximum_work: limits.work, maximum_bytes: limits.bytes,
-        read_authorization, payload: encode(fork, io)?,
-        command: Some(command), source_checkpoint, input_files,
-    };
+provider,
+child,
+creation_grant: super::fork_preparer_io::clone_text("fork:publish", io)?,
+maximum_resources: limits.resources,
+maximum_work: limits.work,
+maximum_bytes: limits.bytes,
+read_authorization,
+payload: encode(fork, io)?,
+command: Some(command),
+source_checkpoint,
+input_files,
+};
     crate::executor::with_history_io(io, |work| request.validate(work))?;
     Ok(request)
 }
@@ -477,7 +483,7 @@ impl super::PreparationRecord for CommandResults {
 }
 
 const PREPARATION_STATE_SCHEMA: &[u8] = br#"{"oneOf":[{"type":"object","required":["phase","command","request_digest"],"properties":{"phase":{"const":"ready"},"command":{"type":"object"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"object","required":["phase","operation_id","request_digest"],"properties":{"phase":{"const":"waiting"},"operation_id":{"type":"string"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"object","required":["phase"],"properties":{"phase":{"const":"settled"}},"additionalProperties":false}]}"#;
-const PREPARATION_INPUT_SCHEMA: &[u8] = br#"{"type":"object","required":["provider","child","resources","creation_grant","maximum_resources","maximum_work","maximum_bytes","payload","command"],"properties":{"provider":{"type":"object"},"child":{"type":"object"},"resources":{"type":"array","minItems":1,"items":{"type":"object"}},"creation_grant":{"const":"fork:publish"},"maximum_resources":{"type":"integer","minimum":1,"maximum":4294967295},"maximum_work":{"type":"integer","minimum":1,"maximum":18446744073709551614},"maximum_bytes":{"type":"integer","minimum":1,"maximum":18446744073709551614},"payload":{"type":"object"},"source_checkpoint":{"type":["object","null"]},"input_files":{"type":"array","items":{"type":"object"}},"read_authorization":{"type":["object","null"]},"command":{"type":"object","required":["operation_id","kind","payload"],"properties":{"operation_id":{"type":"string","minLength":1},"kind":{"const":"acyclic.fork.prepare.v1"},"payload":{"type":"object"}},"additionalProperties":false}},"additionalProperties":false}"#;
+const PREPARATION_INPUT_SCHEMA: &[u8] = br#"{"type":"object","required":["provider","child","creation_grant","maximum_resources","maximum_work","maximum_bytes","payload","command"],"properties":{"provider":{"type":"object"},"child":{"type":"object"},"creation_grant":{"const":"fork:publish"},"maximum_resources":{"type":"integer","minimum":1,"maximum":4294967295},"maximum_work":{"type":"integer","minimum":1,"maximum":18446744073709551614},"maximum_bytes":{"type":"integer","minimum":1,"maximum":18446744073709551614},"payload":{"type":"object"},"source_checkpoint":{"type":["object","null"]},"input_files":{"type":"array","items":{"type":"object"}},"read_authorization":{"type":["object","null"]},"command":{"type":"object","required":["operation_id","kind","payload"],"properties":{"operation_id":{"type":"string","minLength":1},"kind":{"const":"acyclic.fork.prepare.v1"},"payload":{"type":"object"}},"additionalProperties":false}},"additionalProperties":false}"#;
 const PREPARATION_OUTPUT_SCHEMA: &[u8] = br#"{"type":"object","required":["request","captures","child_private_volume","child_private_generation","inherited_context","summary","inherited_through_sequence","shared_grants","reference_grants","history_witness","attachment_manifests"],"properties":{"request":{"type":"object"},"captures":{"type":"array"},"child_private_volume":{"type":"object"},"child_private_generation":{"type":"object"},"child_result_volume":{"type":["object","null"]},"child_result_generation":{"type":["object","null"]},"inherited_context":{"type":"array"},"summary":{"type":["object","null"]},"inherited_through_sequence":{"type":"integer","minimum":0},"shared_grants":{"type":"array"},"reference_grants":{"type":"array"},"history_witness":{"type":["array","null"]},"attachment_manifests":{"type":"array"}},"additionalProperties":false}"#;
 
 fn preparation_implementation_digest(io: Option<&super::PreparationIo>) -> Result<[u8; 32]> {

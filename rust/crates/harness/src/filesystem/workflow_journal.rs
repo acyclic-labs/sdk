@@ -10,7 +10,7 @@ use crate::{
     durable_host::TaskJournalOwner,
     workflow::{
         MachineStatus, WORKFLOW_REPLAY_PAGE_RECORDS, WorkflowAdmission,
-        WorkflowCommitOutcome, WorkflowJournal, WorkflowRecord,
+        WorkflowJournal, WorkflowRecord,
         validate_workflow_next,
     },
 };
@@ -817,7 +817,7 @@ where
 
     async fn reconcile(
         &self, record: &WorkflowRecord, io: Option<&PreparationIo>,
-    ) -> Result<Option<WorkflowCommitOutcome>> {
+    ) -> Result<Option<WorkflowRecord>> {
         let admission = self.read_admission(io).await?.ok_or_else(|| {
             Error::Conflict("workflow transition has no retained admission".into())
         })?;
@@ -827,7 +827,7 @@ where
             return Err(Error::Conflict("workflow operation identity reused".into()));
         }
         self.verify_command_payloads(&existing, io).await?;
-        Ok(Some(WorkflowCommitOutcome::Replayed(existing)))
+        Ok(Some(existing))
     }
 
     pub(crate) async fn commit_with_io(
@@ -836,7 +836,7 @@ where
         idempotency_key: IdempotencyKey,
         record: WorkflowRecord,
         io: Option<&PreparationIo>,
-    ) -> Result<WorkflowCommitOutcome> {
+    ) -> Result<WorkflowRecord> {
         self.require_machine_io(io)?;
         if let Some(io) = io { io.check_cancellation()?; }
         if let Some(owner) = &self.owner {
@@ -874,7 +874,7 @@ where
                 }
                 self.verify_command_payloads(&existing, io).await?;
                 if let Some(held) = history_hold { held.into_retained(); }
-                return Ok(WorkflowCommitOutcome::Replayed(existing));
+                return Ok(existing);
             }
             if revision != expected_revision {
                 return Err(Error::Conflict(
@@ -905,7 +905,7 @@ where
         let appended = self.append_reference(&self.path, idempotency_key.as_str(), expected_revision,
             record.operation_id, &reference, io).await;
         match appended {
-            Ok(true) => Ok(WorkflowCommitOutcome::Applied(record)),
+            Ok(true) => Ok(record),
             Ok(false) => match self.reconcile(&record, io).await? {
                 Some(previous) => Ok(previous),
                 None => Err(Error::Conflict("workflow checkpoint or ownership changed".into())),
@@ -1046,7 +1046,7 @@ where
     fn commit_with_native_work<'a>(
         &'a self, expected_revision: u64, idempotency_key: IdempotencyKey,
         record: WorkflowRecord, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (WorkflowCommitOutcome, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (WorkflowRecord, acyclic_fs::NativeAllocation)>> {
         if let Some(owner) = &self.owner { owner.require_native_workflow_validation()?; }
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
@@ -1092,7 +1092,7 @@ where
         expected_revision: u64,
         idempotency_key: IdempotencyKey,
         record: WorkflowRecord,
-    ) -> BoxFuture<'a, Result<WorkflowCommitOutcome>> {
+    ) -> BoxFuture<'a, Result<WorkflowRecord>> {
         let span = obs_span!("acyclic.harness.workflow.commit", rev = expected_revision);
         traced(span, self.commit_with_io(expected_revision, idempotency_key, record, None))
     }

@@ -115,7 +115,7 @@ async fn actual_registration_denial_never_allocates_a_native_entry() {
 #[ignore = "requires the installed Pi 1.1.0 node, CLI and harness extension artifacts"]
 async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
     use acyclic_harness::{distributed::Worker, filesystem::{TaskWorkerAttempt, TaskWorkerOutcome},
-        scheduler::{LeaseFence, ResourceSnapshot}};
+        scheduler::{LeaseFence, ResourceRequest}};
     let fixture = Fixture::new(Some(installed_runtime())).await;
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let original = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence,
@@ -134,7 +134,7 @@ async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
     assert!(host.register_cold_locator_with_native_work(task, plan.commit.caller,
         &replacement_operation, &root_key, fixture.root_handle.workspace.clone(), &query_work).await.is_err());
     let worker = Worker { id: "pi-cold-native-owner".into(),
-        available: ResourceSnapshot::default(), labels: BTreeMap::new() };
+        available: ResourceRequest::default(), labels: BTreeMap::new() };
     let mut attempt = fixture.runtime.runtime.run_operation_with_native_work(&worker, task,
         &fixture.runtime.runtime.commands(), 1, &query_work).await.unwrap();
     let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt.0.take()

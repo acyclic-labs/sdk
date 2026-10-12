@@ -2083,7 +2083,7 @@ pub fn observe_preparation<'a, P: StreamProvider>(
     crate::NativeFutureBundle::new(work, || async {
         witness.verify_with_native_work(work).await?;
         let scratch = witness.scratch_proof();
-        if scratch.is_some_and(|scratch| witness.task() != scratch.original_task()) {
+        if scratch.is_some_and(|scratch| witness.task() != crate::runtime::task_id_for_admission(scratch.origin().intended_child)) {
             return Err(boundary(crate::wire::ErrorCode::Storage, "native admission witness differs from its original scratch task"));
         }
         let operation = NativePreparationRoot::operation(witness.task(), work)?;
@@ -2099,7 +2099,7 @@ pub fn observe_preparation<'a, P: StreamProvider>(
                     ));
                 }
                 if let Some(scratch) = scratch {
-                    if witness.task() != scratch.original_task()
+                    if witness.task() != crate::runtime::task_id_for_admission(scratch.origin().intended_child)
                         || !intent.0.manifest.volumes.iter().any(|mapping| mapping.writable
                             && &mapping.volume == scratch.volume())
                     {

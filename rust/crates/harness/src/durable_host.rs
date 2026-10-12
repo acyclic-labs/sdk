@@ -251,26 +251,18 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
     ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
-            return self.verify_with_native_work(work)
-                .map(crate::store::history::HistoryContentFuture::Native);
+            if !self._native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "created publication lease differs from its original SDK metadata ledger" });
+            }
+            return crate::NativeFutureBundle::new(work, || async move {
+                let mut observer = crate::store::history::native_work_io(work)?;
+                self.verify_with_work(&mut Some(&mut observer)).await
+            }).map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
             let mut observer = io.history_io();
             self.verify_with_work(&mut Some(&mut observer)).await
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_with_native_work<'a>(
-        &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        if !self._native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "created publication lease differs from its original SDK metadata ledger" });
-        }
-        crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::store::history::native_work_io(work)?;
-            self.verify_with_work(&mut Some(&mut io)).await
         })
     }
 
@@ -599,14 +591,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.validate_input_file(file, io)?;
         let mut reader = None;
         if let Some(access) = &self.input_created {
-            for binding in &access.references {
+            for (reference, verifier) in &access.references {
                 if let Some(io) = io {
                     let step = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
                     io.preflight(step)?;
                     io.charge(step)?;
                 }
-                if &binding.file == file {
-                    reader = Some(&binding.reader);
+                if reference == file {
+                    reader = Some(verifier);
                     break;
                 }
             }
@@ -738,7 +730,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .ok_or_else(|| Error::Unauthorized("task has no current scratch allocation".into()))?;
         let proof = binding.scratch_creation.as_ref()
             .ok_or_else(|| Error::Unauthorized("current scratch is not a verified filesystem allocation".into()))?;
-        if proof.original_task() != self.task_id || Some(proof.agent()) != self.input_agent
+        if crate::runtime::task_id_for_admission(proof.origin().intended_child) != self.task_id || !self.input_agent.is_some_and(|agent| proof.volume().owner() == &crate::conversation::VolumeOwner::Agent(agent))
             || proof.volume() != &binding.volume
         {
             return Err(Error::Unauthorized("scratch allocation belongs to another original task".into()));
@@ -1270,7 +1262,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let parent = admission.parent.ok_or_else(|| admission_boundary(
                 quota.work(), crate::wire::ErrorCode::Unauthorized, "resource preparation requires an admitted parent"))?;
             if let Some(observer) = quota.work().as_deref_mut() {
-                let comparisons = (request.resources.len() as u64)
+                let comparisons = (request.resources().count() as u64)
                     .checked_mul(request.child.resource_proofs.len() as u64)
                     .and_then(|comparisons| comparisons.checked_add(1))
                     .ok_or_else(|| admission_boundary(&Some(&mut *observer), crate::wire::ErrorCode::Invalid,
@@ -1283,7 +1275,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 || request.child.parent != Some(parent)
                 || request.child.operation_id == admission.operation_id
                 || request.child.resource_proofs.iter().any(|proof|
-                    request.resources.contains(&proof.resource) && proof.preparation != self.task_id)
+                    request.resources().any(|resource| resource == &proof.resource) && proof.preparation != self.task_id)
                 || !self.input_grants.contains(&request.creation_grant)
             {
                 return Err(admission_boundary(quota.work(), crate::wire::ErrorCode::Unauthorized,
@@ -1622,10 +1614,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn verify_root_bootstrap_context_with_native_work(
-        &self, root: &TaskAdmissionRecord, binding: &crate::store::VerifiedRootBinding,
+    pub(crate) async fn root_bootstrap_context<'a>(
+        &'a self, root: &'a TaskAdmissionRecord, binding: &'a crate::store::VerifiedRootBinding,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
+    ) -> Result<crate::resource_preparation::RootBootstrapContentContext<'a>> {
         self.verify_root_binding_identity_with_native_work(binding, true, work)?;
         if root.parent.is_some() || crate::runtime::task_id_for_admission(root.operation_id) != self.task_id {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
@@ -1637,7 +1629,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "bootstrap admission differs from protected original workflow" });
         }
-        self.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await
+        self.verify_read_access(&mut Some(&mut io)).await?;
+        let digest = root.canonical_digest_with_work(&mut Some(&mut io))?;
+        Ok(crate::resource_preparation::RootBootstrapContentContext::authenticated(root, self.root_bootstrap_owner(), binding, digest))
     }
 
     pub(crate) fn retain_root_binding(
@@ -3096,7 +3090,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "child preparation has no original scratch creation proof",
                 })?;
-            if scratch.original_task() != task {
+            if crate::runtime::task_id_for_admission(scratch.origin().intended_child) != task {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "preparation scratch proof belongs to another task",
@@ -3115,11 +3109,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn verify_original_root_bootstrap_source_with_native_work(
-        &self, original: &(OperationSpec, &LeaseFence),
-        root: &TaskAdmissionRecord, binding: &crate::store::VerifiedRootBinding,
+    pub(crate) fn original_root_bootstrap_context<'a>(
+        &self, original: &'a (OperationSpec, &LeaseFence),
+        root: &'a TaskAdmissionRecord, binding: &'a crate::store::VerifiedRootBinding,
         native: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
+    ) -> Result<crate::resource_preparation::RootBootstrapContentContext<'a>> {
         let mut io = crate::store::history::native_work_io(native)?;
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
         let declaration = &original.0;
@@ -3141,7 +3135,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(admission_boundary(&mut observer, crate::wire::ErrorCode::Unauthorized,
                 "bootstrap root input differs from its protected original workflow"));
         }
-        Ok(())
+        let digest = root.canonical_digest_with_work(&mut observer)?;
+        Ok(crate::resource_preparation::RootBootstrapContentContext::authenticated(root, declaration.owner.authority(), binding, digest))
     }
 
     /// Restores only configured, originally allocated ROOT content.
@@ -3162,17 +3157,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     &self.stream, self.verifier.audience(), &self.owner_scope, &self.verifier,
                     root.operation_id, binding.fence(), &mut Some(&mut io),
                 ).await?;
-                let context = RootBootstrapContentContext::from_verified_original_root_with_native_work(
-                    self, &original, root, binding, native,
-                ).await?;
-                let received = provider.verify_root_bootstrap_with_native_work(
-                    context, request, native,
-                )?.await?;
-                let next = CreatedResourceAccess::consume_root_bootstrap_with_native_work(
-                    context, request, received.0, received.1, native,
-                )?;
+                let context = self.original_root_bootstrap_context(&original, root, binding, native)?;
+                let next = provider.verify_root_bootstrap_with_native_work(context, request, native)?.await?;
                 access = Some(match access.take() {
-                    Some(current) => current.merge_root_bootstrap_with_native_work(next, native)?,
+                    Some(current) => current.merge_root(next, native)?,
                     None => next,
                 });
                 drop(original);
@@ -4186,14 +4174,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ).await?;
             proof_custody.adopt(held)?;
             let (request, held) =
-                crate::resource_preparation::ResourcePreparationRequest::from_borrowed_value_with_work(
+                crate::resource_preparation::ResourcePreparationRequest::decode(
                     &preparation.input, proof_custody.work(),
                 )?;
             proof_custody.adopt(held)?;
             if preparation.parent != request.child.parent
                 || preparation.operation_id.into_bytes() != proof.preparation.into_bytes()
                 || request.provider != proof.provider
-                || !request.resources.contains(&proof.resource)
+                || !request.resources().any(|resource| resource == &proof.resource)
                 || !request.child.resource_proofs.contains(proof)
                 || !preparation.grants.contains(&request.creation_grant)
             {
@@ -4685,9 +4673,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut reader: Option<&dyn ContentResidencyVerifier> = None;
         #[cfg(feature = "filesystem")]
         if let Some(access) = access.as_ref() {
-            for binding in &access.references {
+            for (reference, verifier) in &access.references {
                 if let Some(io) = quota.work().as_deref_mut() { io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?; }
-                if &binding.file == payload { reader = Some(binding.reader.as_ref()); break; }
+                if reference == payload { reader = Some(verifier.as_ref()); break; }
             }
             if reader.is_none() {
                 for binding in &access.content {
@@ -6979,7 +6967,7 @@ pub(crate) mod tests {
             let lease = coordinator
                 .pull(&crate::distributed::Worker {
                     id: "model-worker".into(),
-                    available: crate::scheduler::ResourceSnapshot::default(),
+                    available: crate::scheduler::ResourceRequest::default(),
                     labels: BTreeMap::new(),
                 })
                 .await?
@@ -7101,12 +7089,7 @@ pub(crate) mod tests {
             let [record] = records.as_slice() else {
                 return Err(Error::Invalid("one owned transition required".into()));
             };
-            assert!(matches!(
-                journal
-                    .commit(0, record.idempotency_key.clone(), record.clone())
-                    .await?,
-                crate::workflow::WorkflowCommitOutcome::Replayed(_)
-            ));
+            assert_eq!(journal.commit(0, record.idempotency_key.clone(), record.clone()).await?, *record);
             let mut forged = record.clone();
             forged.next.state = serde_json::json!(1);
             forged.transition.state = serde_json::json!(1);
@@ -7497,7 +7480,7 @@ pub(crate) mod tests {
             let lease = coordinator
                 .pull(&crate::distributed::Worker {
                     id: "replacement-worker".into(),
-                    available: crate::scheduler::ResourceSnapshot::default(),
+                    available: crate::scheduler::ResourceRequest::default(),
                     labels: BTreeMap::new(),
                 })
                 .await?
@@ -7637,12 +7620,7 @@ pub(crate) mod tests {
                 &content_scope,
                 65_536, None,
             )?;
-            assert!(matches!(
-                journal
-                    .commit(0, record.idempotency_key.clone(), record)
-                    .await?,
-                crate::workflow::WorkflowCommitOutcome::Replayed(_)
-            ));
+            assert_eq!(journal.commit(0, record.idempotency_key.clone(), record.clone()).await?, record);
             (journal, pending)
         };
         #[cfg(feature = "filesystem")]
@@ -8044,7 +8022,7 @@ pub(crate) mod tests {
                 .await
                 .pull(&crate::distributed::Worker {
                     id: "renewal-worker".into(),
-                    available: crate::scheduler::ResourceSnapshot::default(),
+                    available: crate::scheduler::ResourceRequest::default(),
                     labels: BTreeMap::new(),
                 })
                 .await?

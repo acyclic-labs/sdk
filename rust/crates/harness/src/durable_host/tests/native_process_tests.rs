@@ -1178,7 +1178,7 @@ where
                 let (config, operation, initial_generation, _, _) =
                     root_births.expect("mixed Project was physically created through its original operation");
                 let protected = creator.protect_root_bootstrap_with_native_work(
-                    &owner, &source, crate::resource_preparation::RootBootstrapContentRole::Project,
+                    &owner, &source, crate::conversation::VolumeClass::Project,
                     operation, config, initial_generation, snapshot.authored_generation,
                     Some((&native_source, snapshot)), work,
                 )?.await?.into_native_shared(work)?;

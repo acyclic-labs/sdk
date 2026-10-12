@@ -1654,7 +1654,7 @@ impl ReferenceGrant {
     /// Exact, per-file capability the owner may issue to this reader.
     pub fn capability(&self) -> Result<String> {
         self.validate(&mut None)?;
-        self.file.read_capability()
+        self.file.read_capability(&mut None)
     }
 }
 
@@ -2325,7 +2325,7 @@ impl ForkSeed {
         }
         // Inherited files are pinned child-owned content.
         for file in &self.inherited_context {
-            values.push(file.read_capability()?);
+            values.push(file.read_capability(&mut None)?);
         }
         Ok(Capabilities::new(values))
     }
@@ -3156,7 +3156,7 @@ mod tests {
         seed.attached_agents.push(attached);
         seed.validate(&mut None)?;
         let access = seed.attached_read_capabilities(attached)?;
-        assert!(access.contains(&inherited.read_capability()?));
+        assert!(access.contains(&inherited.read_capability(&mut None)?));
         assert!(
             !access.contains(
                 &seed

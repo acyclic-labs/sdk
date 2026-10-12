@@ -10,7 +10,7 @@ use crate::{
     distributed::{SchedulerPayloadStore as _, WorkLease, WorkPull, Worker},
     resources::ProviderRef,
     runtime::{TaskDefinition, ToolContext},
-    scheduler::ResourceSnapshot,
+    scheduler::ResourceRequest,
     tool::{Tool, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
     workflow::{MachineIdentity, MachineTransition, ResumableMachine},
 };
@@ -260,7 +260,7 @@ impl Fixture {
     async fn admit_command(&self, runtime: &Runtime, kind: &str, command: Value) -> Result<WorkLease> {
         self.admit_only(runtime, kind, command).await?;
         match runtime.task_host().pull_work(&Worker {
-            id: "deadline-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+            id: "deadline-worker".into(), available: ResourceRequest::default(), labels: BTreeMap::new(),
         }).await? {
             WorkPull::Claimed(lease) => Ok(lease),
             _ => Err(Error::NotFound("deadline lease".into())),
@@ -301,7 +301,7 @@ impl Fixture {
             let mut operation_io = crate::store::native_work_io(work)?;
             crate::store::HistoryIo::retain_owned(&mut operation_io, std::mem::size_of::<crate::distributed::WorkPull>().max(std::mem::size_of::<crate::filesystem::TaskWorkerAttempt>()) as u64)?;
             let output = runtime.task_host().pull_operation(&Worker {
-            id: "deadline-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+            id: "deadline-worker".into(), available: ResourceRequest::default(), labels: BTreeMap::new(),
         }, operation, &mut Some(&mut operation_io)).await?;
             (output, operation_io.into_custody())
         };

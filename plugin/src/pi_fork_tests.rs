@@ -99,7 +99,7 @@ impl Fixture {
         let runtime = Arc::new(Runtime::open_with_native_work(stream.clone(), filesystem.clone(), &journal_volume,
             owner.authority_with_native_work(&startup_work).unwrap(), &startup_work).await.unwrap());
         let _root_admission = runtime.admit_root(&root_binding, &request.root, &command.0, &startup_work).await.unwrap();
-        let worker = Worker { id: "pi-fork-fixture".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new() };
+        let worker = Worker { id: "pi-fork-fixture".into(), available: ResourceRequest::default(), labels: BTreeMap::new() };
         let first = runtime.runtime.run_operation_with_native_work(&worker, task, &runtime.runtime.commands(), 1, &startup_work).await.unwrap();
         let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = first.0 else { panic!("root allocation lease"); };
         let dispatch_fence = LeaseFence::from(&lease.reservation);
@@ -471,7 +471,7 @@ async fn original_preparation_task_partial_checkpoint_reopens_without_early_chil
     coordinator.admit_preparation(&fixture.context, &fixture.journal, &fixture.fence, &plan).await.unwrap();
     let host = fixture.runtime.runtime.task_host();
     let worker_name = work.display("fork-partial-original").unwrap();
-    let worker = Worker { id: worker_name.0, available: ResourceSnapshot::default(), labels: BTreeMap::new() };
+    let worker = Worker { id: worker_name.0, available: ResourceRequest::default(), labels: BTreeMap::new() };
     let partial = fixture.runtime.runtime.run_operation_with_native_work(&worker, plan.preparation.task_id(),
         &fixture.runtime.runtime.commands(), 1, work).await.unwrap();
     assert!(matches!(partial.0, Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. }))));
@@ -535,7 +535,7 @@ async fn explicit_root_sibling_and_descendant_sources_use_operation_read_proofs_
     let sibling_plan = fixture.selected_plan(&fixture.context, &fixture.journal, &fixture.fence, &root.binding, fixture.root_handle.workspace.clone(), sibling_commit).await.unwrap();
     let sibling = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence, &sibling_plan, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
 
-    let worker = Worker { id: "actual-child-caller".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new() };
+    let worker = Worker { id: "actual-child-caller".into(), available: ResourceRequest::default(), labels: BTreeMap::new() };
     let original = work();
     let attempt = fixture.runtime.runtime.run_operation_with_native_work(&worker, first.binding.task_id,
         &fixture.runtime.runtime.commands(), 1, &original).await.unwrap();
@@ -623,7 +623,7 @@ async fn cold_pre_first_dispatch_restores_only_under_actual_child_owner_and_exis
     let coordinator = PiForkCoordinator::new(fixture.runtime.clone(), fixture.filesystem.clone(),
         fixture.stream.clone(), &fixture.resources, fixture.owner.clone(), &work).unwrap();
     let worker_name = work.display("cold-native-child-owner").unwrap();
-    let worker = Worker { id: worker_name.0, available: ResourceSnapshot::default(), labels: BTreeMap::new() };
+    let worker = Worker { id: worker_name.0, available: ResourceRequest::default(), labels: BTreeMap::new() };
     let attempt = fixture.runtime.runtime.run_operation_with_native_work(&worker, first.binding.task_id,
         &fixture.runtime.runtime.commands(), 1, &work).await.unwrap();
     let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt.0 else { panic!("actual child owner"); };

@@ -336,7 +336,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let helper_owner = Arc::new(fixture.host.journal_owner(TaskId::from_bytes([130;16]), (&helper_lease.reservation).into()).await?
         .with_invocation_cancellation(&helper_guard));
     let prepared = helper_owner.resource_preparation(prepared_request.clone(), &mut None).await?;
-    assert!(!prepared.grants().contains(&project.capability(VolumeOperation::Read, &mut None)?));
+    assert!(!prepared.origin().source_grants.contains(&project.capability(VolumeOperation::Read, &mut None)?));
     assert_eq!(prepared.project_source().map(|handle|handle.authorization()), Some(handle.authorization()));
     let mut altered = prepared_request.clone();
     altered.read_authorization.as_mut().ok_or_else(||Error::Invalid("source control omitted".into()))?.operation_id = OperationId::from_bytes([132;16]);

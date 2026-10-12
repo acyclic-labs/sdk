@@ -874,8 +874,7 @@ impl PreparationIo {
             maximum_depth: 128,
         };
         let mut reservation = None;
-        let result = crate::contract::json_from_value_bounded(
-            std::borrow::Cow::Borrowed(source), bounds, 0, code, schema, &mut |next| match next {
+        let result = crate::contract::json_from_value_bounded(std::borrow::Cow::Borrowed(source), bounds, 0, Some(code), schema, &mut |next| match next {
                 crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
                     let allowance = allowance(value_shape)?;
                     let diagnostics = if schema == crate::contract::JsonValueSchema::Root {
@@ -889,8 +888,7 @@ impl PreparationIo {
                     Ok(())
                 }
                 next => self.codec_charge(next, false),
-            },
-        );
+            });
         finish_decode(self, result, reservation)
     }
 
@@ -1068,7 +1066,7 @@ pub(in crate::filesystem) fn strings(io: &PreparationIo, values: &[&str]) -> Res
 pub(in crate::filesystem) fn reference_key(reference: &FileRef, io: Option<&PreparationIo>) -> Result<String> {
     match io {
         Some(io) => io.capability(reference, "file:read:"),
-        None => reference.read_capability(),
+        None => reference.read_capability(&mut None),
     }
 }
 
@@ -1247,19 +1245,19 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.and_then(PreparationIo::original_native_work) {
         let guard = Arc::clone(native_creation_guard.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "task-bound native creation requires its original issued creation guard" })?);
-        guard.verify_creation_with_native_work(original)?.await?;
+        guard.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(original)?))?.await?;
         let operation = acyclic_fs::OperationId::from_bytes(operation_key(key, io)?.into_bytes());
         let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
             let guard = Arc::clone(&guard);
             let work = work.clone();
-            async move { guard.verify_creation_with_native_work(&work)?.await }
+            async move { guard.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?.await }
         };
         host.filesystem.create_workspace_with_operation_guarded_with_native_work(
             name, acyclic_fs::VolumeConfig::portable(lifecycle), operation,
             original, original.cancellation(), &mut before).await?;
         return Ok(());
     }
-    if let Some(preparation) = preparation { preparation.verify_creation().await?; }
+    if let Some(preparation) = preparation { preparation.verify(false, None)?.await?; }
     match io {
         Some(io) => {
             let operation = acyclic_fs::OperationId::from_bytes(operation_key(key, Some(io))?.into_bytes());
@@ -1268,7 +1266,7 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
         }
         None => { host.filesystem.create_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?; }
     }
-    if let Some(preparation) = preparation { preparation.verify_creation().await?; }
+    if let Some(preparation) = preparation { preparation.verify(false, None)?.await?; }
     Ok(())
 }
 
@@ -1286,14 +1284,14 @@ pub(in crate::filesystem) async fn apply_generation_task_guarded<A: AsyncAuthori
         let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
             let guard = Arc::clone(&guard);
             let work = work.clone();
-            async move { guard.verify_creation_with_native_work(&work)?.await }
+            async move { guard.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?.await }
         };
         return publish_native(
             host, reference, expected, mutations, key, io, &mut before,
         ).await;
     }
     let mut before = || async move {
-        if let Some(preparation) = preparation { preparation.verify_creation().await?; }
+        if let Some(preparation) = preparation { preparation.verify(false, None)?.await?; }
         Ok(())
     };
     publish_generation(host, reference, expected, mutations, key, io, &mut before).await
@@ -1553,10 +1551,10 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.and_then(PreparationIo::original_native_work) {
         native_creation_guard.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "task-bound native fork requires its original issued creation guard" })?
-            .verify_creation_with_native_work(original)?.await?;
-    } else if let Some(preparation) = preparation { preparation.verify_creation().await?; }
+            .verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(original)?))?.await?;
+    } else if let Some(preparation) = preparation { preparation.verify(false, None)?.await?; }
     #[cfg(target_arch = "wasm32")]
-    if let Some(preparation) = preparation { preparation.verify_creation().await?; }
+    if let Some(preparation) = preparation { preparation.verify(false, None)?.await?; }
     grant.require(source, VolumeOperation::Read, io)?;
     let observed = if let Some(io) = io {
         let mut history = io.history_io();
@@ -1579,7 +1577,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
             let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
                 let guard = Arc::clone(&guard);
                 let work = work.clone();
-                async move { guard.verify_creation_with_native_work(&work)?.await }
+                async move { guard.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?.await }
             };
             workspace.fork_with_native_work(&child_name, options,
                 acyclic_fs::PublicationPermit::Unrestricted, original, io.cancellation(), &mut before).await?
@@ -1602,7 +1600,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
         host.fork_volume_pinned(source, source_generation, child, paths, key).await?
     };
     if !io.is_some_and(|io| io.original_native_work().is_some())
-        && let Some(preparation) = preparation { preparation.verify_creation().await?; }
+        && let Some(preparation) = preparation { preparation.verify(false, None)?.await?; }
     Ok(observed)
 }
 

@@ -106,7 +106,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 )
                 .await?;
             quota.adopt(retained)?;
-            let (request, retained) = crate::resource_preparation::ResourcePreparationRequest::from_borrowed_value_with_work(
+            let (request, retained) = crate::resource_preparation::ResourcePreparationRequest::decode(
                 &preparation.input, quota.work())?;
             quota.adopt(retained)?;
             let provider = self
@@ -150,27 +150,10 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 ));
             }
             for content in &receipt.content {
-                let mut allocated = false;
-                for operation in &receipt.operations {
-                    if let Some(io) = quota.work().as_deref_mut() {
-                        io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
-                    }
-                    allocated |= match operation {
-                        crate::resource_preparation::CreatedResourceOperation::ReadVolume(
-                            volume,
-                        )
-                        | crate::resource_preparation::CreatedResourceOperation::WriteVolume(
-                            volume,
-                        ) => volume == &content.volume,
-                        _ => false,
-                    };
+                if let Some(io) = quota.work().as_deref_mut() {
+                    io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
                 }
-                if !allocated
-                    || !matches!(
-                        content.volume.class(),
-                        VolumeClass::Project | VolumeClass::AgentPrivate
-                    )
-                {
+                if !matches!(content.volume.class(), VolumeClass::Project | VolumeClass::AgentPrivate) {
                     continue;
                 }
                 let origin = receipt.origin.intended_child;

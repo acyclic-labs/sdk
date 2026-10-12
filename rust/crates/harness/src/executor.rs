@@ -7257,7 +7257,7 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         let media_only = RuntimeScope::new(
-            crate::Capabilities::new([file.read_capability()?]),
+            crate::Capabilities::new([file.read_capability(&mut None)?]),
             Limits::default(),
         )?;
         assert!(matches!(
@@ -7266,7 +7266,7 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         let allowed = RuntimeScope::new(
-            crate::Capabilities::new([file.read_capability()?, options.read_capability()?]),
+            crate::Capabilities::new([file.read_capability(&mut None)?, options.read_capability(&mut None)?]),
             Limits::default(),
         )?;
         assert!(matches!(
@@ -7321,7 +7321,7 @@ mod tests {
             })
         });
         let first_only = RuntimeScope::new(
-            Capabilities::new([first.read_capability()?]),
+            Capabilities::new([first.read_capability(&mut None)?]),
             Limits::default(),
         )?;
         assert!(matches!(
@@ -7330,7 +7330,7 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
-        let grants = Capabilities::new([first.read_capability()?, second.read_capability()?]);
+        let grants = Capabilities::new([first.read_capability(&mut None)?, second.read_capability(&mut None)?]);
         let narrow = RuntimeScope::new(
             grants.clone(),
             Limits {

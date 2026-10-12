@@ -391,7 +391,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work)
             && let Some(task) = &self.task_preparation {
-            task.verify_creation_with_native_work(work)?.await?;
+            task.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         Ok(grants)
     }
@@ -403,7 +403,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let native = io.and_then(PreparationIo::original_native_work);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = native && let Some(task) = &self.task_preparation {
-            task.verify_creation_with_native_work(work)?.await?;
+            task.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         let controller = self.controller(io.filter(|io| io.original_native_work().is_some()))?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -429,7 +429,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
 
     /// Builds the exact created identities and their allocation journal proofs.
     pub(crate) fn creation_allocations(&self, request: &ForkRequest, preparation: crate::TaskId,
-        io: Option<&PreparationIo>) -> Result<(Vec<ResourceRef>, Vec<crate::resource_preparation::ResourceCreationProofRef>)> {
+        io: Option<&PreparationIo>) -> Result<Vec<crate::resource_preparation::ResourceCreationProofRef>> {
         if io.is_some_and(|io| io.original_native_work().is_some()) {
             self.check_request(request, io, self.task_preparation.as_deref())?;
         } else {
@@ -442,26 +442,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
         }
         let count = creation_volumes(request).count();
-        let mut resources = bounded_io::vector(count, io)?;
         let mut proofs = bounded_io::vector(count, io)?;
         for (volume, _) in creation_volumes(request) {
             let resource = bounded_io::content_workspace(&self.host.provider, volume, io)?.into_resource();
-            let copied = crate::executor::with_history_io(io, |work| {
-                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-                let provider = crate::core::copy_provider(resource.provider(), &mut quota)?;
-                let key = crate::core::copy_copy_vector(resource.key(), &mut quota)?;
-                let version = resource.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
-                let copied = ResourceRef::new(resource.kind(), provider, key, version, quota.work())?;
-                quota.transfer();
-                Ok::<_, Error>(copied)
-            })?;
-            resources.push(copied);
             proofs.push(crate::resource_preparation::ResourceCreationProofRef {
                 provider: match io { Some(io) => self.host.provider.clone_with_io(io)?, None => self.host.provider.clone() },
                 preparation, resource, evidence: allocation_ref(&self.host.provider, volume, io)?.into_resource(),
             });
         }
-        Ok((resources, proofs))
+        Ok(proofs)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -514,7 +503,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             if !parent { return Ok(false); }
             match task {
                 Some(task) => io.ok_or_else(|| reject(crate::wire::ErrorCode::Invalid, "task preparation lacks its IO ledger"))?
-                    .contains_capability(task.grants(), volume, "volume:read:"),
+                    .contains_capability(&task.origin().source_grants, volume, "volume:read:"),
                 None => Ok(true),
             }
         };
@@ -569,7 +558,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let bound = task.request();
             if task.origin().intended_child != bound.child.operation_id
                 || bound.child.parent != Some(task.origin().parent_task)
-                || task.grants() != &task.origin().source_grants
             {
                 return Err(reject(crate::wire::ErrorCode::Unauthorized,
                     "fork preparation differs from its genuine immutable owner admission"));
@@ -585,7 +573,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             if bound.provider != self.host.provider || bound.creation_grant != capability::FORK_PUBLISH
                 || bound.read_authorization != request.authorized_source
                 || request.preparation.maximum_inherited_bytes > bound.maximum_bytes
-                || bound.resources.len() != creation_volumes(request).count()
+                || bound.resources().count() != creation_volumes(request).count()
             {
                 return Err(reject(crate::wire::ErrorCode::Unauthorized, "fork differs from its admitted preparation boundary"));
             }
@@ -602,7 +590,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             drop(payload_hold);
             drop(encoded);
             drop(request_hold);
-            for (resource, (volume, _)) in bound.resources.iter().zip(creation_volumes(request)) {
+            for (resource, (volume, _)) in bound.resources().zip(creation_volumes(request)) {
                 let before = io.owned_bytes()?;
                 let resource_hold;
                 let actual = bounded_io::content_workspace(&self.host.provider, volume, Some(io))?.into_resource();
@@ -719,7 +707,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         self.check_request(request, attempt.io.as_ref(), Some(preparation.as_ref()))?;
         attempt.native_creation_guard = Some(Arc::clone(preparation));
         crate::NativeFutureBundle::new(work, || async move {
-            preparation.verify_creation_with_native_work(work)?.await?;
+            preparation.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
             let io = attempt.io.as_ref().expect("original native preparer owns its IO");
             io.retain_owned(std::mem::size_of::<ForkReport>() as u64)?;
             let owned = request.copy(&mut Some(&mut io.history_io()))?.0;
@@ -738,12 +726,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     ) -> Result<crate::NativeFutureBundle<'a, (Option<ForkReport>, acyclic_fs::NativeAllocation)>> {
         self.require_native_projection_work(work)?;
         crate::NativeFutureBundle::new(work, || async move {
-            preparation.verify_reconciliation_with_native_work(work)?.await?;
+            preparation.verify(true, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
             let attempt = self.attempt(Some(preparation.as_ref()))?;
             let io = attempt.io.as_ref().expect("original native preparer owns its IO");
             self.check_request(request, Some(io), Some(preparation.as_ref()))?;
             let report = attempt.reconcile(request).await?;
-            preparation.verify_reconciliation_with_native_work(work)?.await?;
+            preparation.verify(true, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
             let retained = io.owned_bytes()?;
             let custody = io.take_native_custody(retained)?;
             Ok((report, custody))
@@ -798,19 +786,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
 
     async fn verify_task_lease(&self, settlement: bool) -> Result<()> {
         if let Some(preparation) = &self.task_preparation {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = self.io.as_ref().and_then(PreparationIo::original_native_work) {
-                return if settlement {
-                    preparation.verify_reconciliation_with_native_work(work)?.await
-                } else {
-                    preparation.verify_creation_with_native_work(work)?.await
-                };
-            }
-            if settlement {
-                preparation.verify_reconciliation().await?;
-            } else {
-                preparation.verify_creation().await?;
-            }
+            let io = self.io.as_ref().filter(|io| io.original_native_work().is_some());
+            preparation.verify(settlement, io)?.await?;
         }
         Ok(())
     }
@@ -1273,7 +1250,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         report.validate(&mut history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo))?;
         if let Some(preparation) = &self.task_preparation {
             for grant in &report.reference_grants {
-                require_reference_donor(preparation.grants(), grant, self.io.as_ref())?;
+                require_reference_donor(&preparation.origin().source_grants, grant, self.io.as_ref())?;
                 if grant.reader == report.request.child_agent
                     && !{
                         let key = bounded_io::reference_key(&grant.file, self.io.as_ref())?;
@@ -1462,7 +1439,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?;
             fork.0.validate(&mut Some(&mut io.history_io()))?;
             if fork.0.authorized_source != request.read_authorization
-                || request.resources.len() != creation_volumes(&fork.0).count()
+                || request.resources().count() != creation_volumes(&fork.0).count()
                 || fork.0.preparation.maximum_inherited_bytes > request.maximum_bytes
             {
                 return Err(reject("fork claim source or resources differ from their immutable request"));
@@ -1470,7 +1447,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let role = creation_volumes(&fork.0).find_map(|(selected, role)|
                 (selected == volume).then_some(role))
                 .ok_or_else(|| reject("fork claim volume is outside the witnessed request"))?;
-            for (resource, (selected, _)) in request.resources.iter().zip(creation_volumes(&fork.0)) {
+            for (resource, (selected, _)) in request.resources().zip(creation_volumes(&fork.0)) {
                 if selected.provider() != &self.provider {
                     return Err(reject("fork claim resource belongs to another original provider"));
                 }
@@ -1578,7 +1555,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            native_creation_guard.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "native seed binding requires its original issued creation guard" })?.verify_creation_with_native_work(work)?.await?;
+            native_creation_guard.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "native seed binding requires its original issued creation guard" })?.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         let binding = seed_digest(seed, MAX_REPORT_BYTES, io)?;
         for (volume, role) in seed_creation_volumes(seed)? {
@@ -1628,7 +1605,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            native_creation_guard.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "native allocation claim requires its original issued creation guard" })?.verify_creation_with_native_work(work)?.await?;
+            native_creation_guard.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "native allocation claim requires its original issued creation guard" })?.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         crate::executor::with_history_io(io.filter(|io| io.original_native_work().is_some()),
             |work| claim.volume.validate(work))?;

@@ -219,11 +219,10 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         project.capability(VolumeOperation::Read, &mut None)?, project.capability(VolumeOperation::Write, &mut None)?,
         "conversation:bind".into(),
     ]);
-    let (resources, proofs) = preparer.creation_allocations(&fork, task, None)?;
+    let proofs = preparer.creation_allocations(&fork, task, None)?;
     admission = admission.with_resource_proofs(proofs)?;
     let mut request = created.request.clone();
     request.child = admission;
-    request.resources = resources;
     request.payload = serde_json::to_value(&fork).map_err(|error| Error::Invalid(error.to_string()))?;
     let preparation = owner.resource_preparation(request, &mut None).await?;
     let report = preparer.with_task_preparation(Arc::new(preparation))?.prepare(fork).await?;
@@ -442,7 +441,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     owner.authenticate_fork_parent(&audience, &mut None)?;
     let bootstrap = owner.root_bootstrap_binding_witness_with_native_work(&native).await?;
     let (original_root, root_custody) = owner.original_root_admission_with_native_work(&native).await?;
-    owner.verify_root_bootstrap_context_with_native_work(
+    owner.root_bootstrap_context(
         &original_root, bootstrap.binding(), &native,
     ).await?;
     assert_ne!(owner.root_bootstrap_owner(), &audience);
@@ -496,7 +495,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let mut substituted_root = original_root.clone();
     substituted_root.input = serde_json::json!({"substituted_original_root": true});
     let before = query.receipt();
-    assert!(matches!(owner.verify_root_bootstrap_context_with_native_work(
+    assert!(matches!(owner.root_bootstrap_context(
         &substituted_root, bootstrap.binding(), &query,
     ).await, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
     assert_eq!(query.receipt().backend_read_operations, before.backend_read_operations);
@@ -514,7 +513,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     assert_eq!(query.receipt().backend_read_operations, before.backend_read_operations);
     assert_eq!(query.receipt().backend_write_operations, before.backend_write_operations);
     let before = cancelled.receipt();
-    assert!(matches!(owner.verify_root_bootstrap_context_with_native_work(
+    assert!(matches!(owner.root_bootstrap_context(
         &original_root, bootstrap.binding(), &cancelled,
     ).await, Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(cancelled.receipt().backend_read_operations, before.backend_read_operations);
@@ -526,11 +525,11 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         &fixture.stream, owner.root_bootstrap_owner(), &observation_scope, &creator.verifier(&mut None).expect("verifier copy"),
         original_root.operation_id, bootstrap.binding().fence(), &mut Some(&mut source_io),
     ).await?;
-    fixture.host.verify_original_root_bootstrap_source_with_native_work(
+    fixture.host.original_root_bootstrap_context(
         &original_reservation, &original_root, bootstrap.binding(), &query,
     )?;
     let before = query.receipt();
-    assert!(matches!(fixture.host.verify_original_root_bootstrap_source_with_native_work(
+    assert!(matches!(fixture.host.original_root_bootstrap_context(
         &original_reservation, &substituted_root, bootstrap.binding(), &query,
     ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
     assert_eq!(query.receipt().backend_read_operations, before.backend_read_operations);

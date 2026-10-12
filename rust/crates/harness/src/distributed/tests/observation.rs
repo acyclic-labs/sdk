@@ -137,7 +137,7 @@ async fn original_owner_proof_survives_reopen_and_rejects_replaced_key() -> Resu
     ));
     let worker = Worker {
         id: "owner-proof-worker".into(),
-        available: ResourceSnapshot::default(),
+        available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     };
     let revision = reopened.revision();

@@ -2162,7 +2162,7 @@ mod tests {
         let scope = issuer().issue("head-writer", &Capabilities::new([
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
-                file.read_capability()?,
+                file.read_capability(&mut None)?,
             ]), Some(agent), None, &mut None).expect("scope proof");
         let bind = Command {
             operation_id: OperationId::from_bytes([101; 16]),
@@ -2276,7 +2276,7 @@ mod tests {
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
                 "conversation:select_context".to_owned(),
-                file.read_capability()?,
+                file.read_capability(&mut None)?,
             ]), Some(agent), None, &mut None).expect("scope proof");
         writer
             .execute(Command {

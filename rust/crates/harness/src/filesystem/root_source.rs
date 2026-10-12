@@ -150,7 +150,7 @@ where for<'source> &'source LazyWorkspace<A, O, D, S>: Send
                 let mut before_mutation = move |work: &acyclic_fs::NativeMaterializationWork| {
                     let original = acyclic_fs::NativeMaterializationWork::clone(work);
                     let lease = Arc::clone(&lease);
-                    async move { lease.verify_with_native_work(&original)?.await }
+                    async move { lease.verify_with_io(&crate::filesystem::PreparationIo::from_native_work(&original)?)?.await }
                 };
                 let (commit, snapshot) = (async { let cancellation = io.cancellation(); let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(original, cancellation)?; let mut guard = self.lazy.native_write_guard(&mut before_mutation, &accounting)?; self.lazy.write_at_snapshot(snapshot, root_lazy_mutations(mutations), key, permit, &accounting, &mut guard).await }).await?;
                 Ok((generation(commit)?, snapshot))
