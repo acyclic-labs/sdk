@@ -175,12 +175,12 @@ impl PendingDeliveryBuffer {
                 return Err(super::lazy::mount_demand_error(error));
             }
         };
+        let old_bytes = (self.entries.capacity() * width) as u64;
         entries.append(&mut self.entries);
         drop(std::mem::replace(&mut self.entries, entries));
         if let Some(old) = self.custody.replace(custody) {
-            old.retire(self.bytes).map_err(super::MountSourceError::Work)?;
+            old.retire(old_bytes).map_err(super::MountSourceError::Work)?;
         }
-        self.bytes = bytes;
         work.record(copied).map_err(mount_demand_error)
     }
 
@@ -199,15 +199,15 @@ impl PendingDeliveryBuffer {
 #[derive(Default)]
 struct PendingDeliveryBuffer {
     entries: Vec<PendingObserverDelivery>,
-    bytes: u64,
     custody: Option<super::NativeMountAllocationCustody>,
 }
 
 impl Drop for PendingDeliveryBuffer {
     fn drop(&mut self) {
+        let bytes = (self.entries.capacity() * std::mem::size_of::<PendingObserverDelivery>()) as u64;
         drop(std::mem::take(&mut self.entries));
         if let Some(custody) = self.custody.take() {
-            custody.retire(self.bytes).expect("notification backing retires once");
+            custody.retire(bytes).expect("notification backing retires once");
         }
     }
 }

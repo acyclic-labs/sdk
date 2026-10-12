@@ -20,7 +20,7 @@ use acyclic_harness::{AgentId, Capabilities, Error, OperationId, Outcome, Result
     source_authorization::{ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider},
     store::{HistoryReadLimits, StreamAggregate},
     workflow::WorkflowCommand};
-use acyclic_stream::{LocalStream, StreamClient};
+use acyclic_stream::{LocalStream};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -160,7 +160,7 @@ impl PreparedPiFork {
 pub(crate) struct PiForkCoordinator {
     runtime: Arc<Runtime>,
     filesystem: Arc<Filesystem>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     resources: ServiceResources,
     owner: Arc<PiOwnerConfig>,
     work: NativeMaterializationWork,
@@ -169,7 +169,7 @@ pub(crate) struct PiForkCoordinator {
 impl PiForkCoordinator {
 
     pub(crate) fn new(runtime: Arc<Runtime>, filesystem: Arc<Filesystem>,
-        stream: StreamClient<LocalStream>, resources: &ServiceResources, owner: Arc<PiOwnerConfig>,
+        stream: std::sync::Arc<LocalStream>, resources: &ServiceResources, owner: Arc<PiOwnerConfig>,
         work: &NativeMaterializationWork) -> Result<Self> {
         runtime.verify_owner_with_native_work(&owner, work)?;
         let resources = crate::pi_root_provider::service_resources_with_native_work(resources, work)?;

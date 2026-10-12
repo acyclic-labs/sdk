@@ -17,7 +17,7 @@ use acyclic_harness::{
     runtime::{DurableTaskHost, RuntimeScope},
     scheduler::{LeaseFence, ResourceSnapshot},
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::{collections::BTreeMap, path::Path};
 
 #[path = "pi_task_model_tests.rs"]
@@ -220,11 +220,11 @@ async fn open(
             .await
             .unwrap();
     }
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(root.join("stream"), LocalStreamLimits::default())
             .await
             .unwrap(),
-    ));
+    );
     let runtime = PiTaskRuntime::open_with_native_work(
         stream, filesystem, &journal, authority, &work,
     ).await?;
@@ -381,14 +381,14 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
         )
         .unwrap(),
     );
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(
             directory.path().join("stream"),
             LocalStreamLimits::default(),
         )
         .await
         .unwrap(),
-    ));
+    );
     let reopen_work = acyclic_fs::NativeMaterializationWork::new(
         crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
     ).unwrap();
@@ -510,14 +510,14 @@ async fn pi_runtime_reopen_authenticates_retained_native_binding_without_startin
         )
         .unwrap(),
     );
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(
             directory.path().join("stream"),
             LocalStreamLimits::default(),
         )
         .await
         .unwrap(),
-    ));
+    );
     let mut state = session_state(&binding);
     let reopen_work = acyclic_fs::NativeMaterializationWork::new(
         crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),

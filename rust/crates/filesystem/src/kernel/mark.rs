@@ -143,7 +143,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            match decode(decode_file_table_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id))? {
+            match decode(decode_file_table_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))? {
                 FileTablePage::Leaf(records) => {
                     for record in records {
                         self.record(&record).await?;
@@ -194,7 +194,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            if let TreePage::Internal(children) = decode(decode_tree_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name))? {
+            if let TreePage::Internal(children) = decode(decode_tree_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))? {
                 pending.extend(children.into_iter().map(|child| child.page));
             }
         }
@@ -248,7 +248,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            match decode(decode_attribute_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::AttributePage::Leaf, crate::kernel::AttributePage::Internal, |first_name, page| crate::kernel::AttributeChild { first_name, page }, |child| &child.first_name))? {
+            match decode(decode_attribute_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))? {
                 AttributePage::Leaf(entries) => {
                     for entry in entries {
                         self.blob(entry.value).await?;

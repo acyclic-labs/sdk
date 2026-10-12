@@ -3,7 +3,7 @@ use super::super::allocation::AllocationLedger;
 use crate::foundation::{Digest, FileId, VolumeId};
 use crate::kernel::{
     FileMetadata, FileTablePage, GenerationRoot, InlineFileData, LogicalName, MetadataField,
-    NameEncoding, TreeChild, TreeEntry, TreePage, encode_file_metadata, encode_file_table_page,
+    NameEncoding, TreeEntry, TreePage, encode_file_metadata, encode_file_table_page,
     encode_tree_page,
 };
 use crate::memory::MemoryObjectStore;
@@ -15,6 +15,7 @@ use crate::storage::{
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use crate::kernel::Child;
 fn setup_cache<'a, S>(
     store: &'a S, entries: usize, budget: WorkBudget,
     custody: Option<&'a super::super::ProofDataCustody>,
@@ -661,8 +662,8 @@ fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
     let malformed_root_tree = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Internal(vec![TreeChild {
-                first_name: LogicalName::new(NameEncoding::Utf8, b"zzz".to_vec(), 255)?,
+        encode_tree_page(&TreePage::Internal(vec![Child {
+                first: LogicalName::new(NameEncoding::Utf8, b"zzz".to_vec(), 255)?,
                 page: leaf,
             }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;

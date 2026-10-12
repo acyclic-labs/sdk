@@ -18,7 +18,7 @@ use acyclic_harness::{
         WorkflowCommitOutcome, WorkflowJournal,
     },
 };
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde_json::{Value, json};
@@ -63,7 +63,7 @@ impl ResumableMachine for Counter {
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_retry() -> Result<()> {
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let provider = ProviderRef::new("workflow-e2e", "filesystem", "2")?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let volume = VolumeRef::new(
@@ -89,7 +89,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             volume.capability(VolumeOperation::Write)?,
         ]),
     );
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
     let command_payload = host
         .put_content(
             &volume,
@@ -107,7 +107,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host.clone(),
         "counter",
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         65_536,
     )?);
@@ -132,8 +132,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         request_digest: [5; 32],
         initial: initial.clone(),
     };
-    stream
-        .stream("harness/v2/workflows/orphan")
+    acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v2/workflows/orphan")
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
         .append_batch(
             vec![Bytes::from_static(b"unadmitted-transition")],
@@ -147,7 +146,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host.clone(),
         "orphan",
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         65_536,
     )?;
@@ -226,8 +225,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     let reopened =
         DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
     assert_eq!(reopened.checkpoint().state, json!(4));
-    let admission_entries = stream
-        .stream("harness/v2/workflow-admissions/counter")
+    let admission_entries = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v2/workflow-admissions/counter")
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
         .read(0, 2)
         .await
@@ -239,8 +237,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     let admission_ref: FileRef = serde_json::from_slice(&admission_entries[0].value)
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     assert_eq!(admission_ref.descriptor().media_type(), "application/json");
-    let records = stream
-        .stream("harness/v2/workflows/counter")
+    let records = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v2/workflows/counter")
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
         .read(0, 2)
         .await
@@ -257,7 +254,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host.clone(),
         "paged-counter",
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         65_536,
     )?);
@@ -286,7 +283,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host.clone(),
         "paged-counter",
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         65_536,
     )?);
@@ -316,7 +313,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host,
         "counter",
         volume,
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope,
         65_536,
     )?;

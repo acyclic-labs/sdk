@@ -441,7 +441,7 @@ const inboxMessageType = "acyclic_mail";
 
 /** A queued message is not a receipt; only the own-task persisted native branch is. */
 export function persistedPiInboxCursor(session: ExtensionContext["sessionManager"], task: string) {
-  const candidates: SessionEntry[] = [];
+  const candidates = new Map<SessionEntry, number>();
   const seen = new Set<string>();
   let next = session.getLeafId();
   while (next !== null) {
@@ -456,12 +456,12 @@ export function persistedPiInboxCursor(session: ExtensionContext["sessionManager
         if (typeof details.sequence !== "number" || !Number.isSafeInteger(details.sequence) || details.sequence <= 0 ||
             typeof details.message_id !== "string" || !details.message_id ||
             (details.kind !== "message" && details.kind !== "steer")) throw new Error("Pi inbox native receipt is malformed");
-        candidates.push(entry);
+        candidates.set(entry, details.sequence);
       }
     }
     next = entry.parentId;
   }
-  if (!candidates.length) return 0;
+  if (!candidates.size) return 0;
   const file = session.getSessionFile();
   if (!file) throw new Error("Pi inbox requires an actual persisted native session");
   let persisted: SessionManager;
@@ -475,12 +475,10 @@ export function persistedPiInboxCursor(session: ExtensionContext["sessionManager
     throw error;
   }
   let cursor = 0;
-  for (const entry of candidates) {
+  for (const [entry, sequence] of candidates) {
     const actual = persisted.getEntry(entry.id);
     if (actual && JSON.stringify(actual) === JSON.stringify(entry)) {
-      if (entry.type !== "custom_message" || !entry.details || typeof entry.details !== "object" ||
-          !("sequence" in entry.details) || typeof entry.details.sequence !== "number") throw new Error("Pi inbox receipt lost its validated native sequence");
-      cursor = Math.max(cursor, entry.details.sequence);
+      cursor = Math.max(cursor, sequence);
     }
   }
   return cursor;

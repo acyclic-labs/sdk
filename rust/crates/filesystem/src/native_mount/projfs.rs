@@ -7494,7 +7494,7 @@ mod tests {
         mut child: acyclic_native_runtime::ProcessTree,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let result = child.wait(std::time::Duration::from_secs(120));
-        child.terminate()?;
+        child.terminate(None)?;
         let status = result?;
         if status.success() {
             Ok(())

@@ -24,7 +24,7 @@ fn authority() -> Authority {
 fn workload(events: u64) -> (Reducer, Vec<Command>) {
     let issuer = AuthorityIssuer::new("bench", [7; 32], authority());
     let scope = issuer.root("root", Capabilities::new(["lifecycle:manage"]));
-    let reducer = Reducer::new(authority(), issuer.verifier(), SchemaRegistry::new());
+    let reducer = Reducer::new(authority(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     let commands = (0..events)
         .map(|revision| Command {
             operation_id: OperationId::from_bytes(u128::from(revision + 1).to_be_bytes()),

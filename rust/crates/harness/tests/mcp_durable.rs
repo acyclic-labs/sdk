@@ -21,7 +21,7 @@ use acyclic_harness::{
     store::StreamAggregate,
     tool::{ToolInvocation, ToolProjection, ToolRegistry, ToolResult},
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use std::{
@@ -234,7 +234,7 @@ type LocalJournal = FilesystemExecutionJournal<
 >;
 
 async fn bind_conversation(
-    stream: &StreamClient<LocalStream>,
+    stream: &std::sync::Arc<LocalStream>,
     issuer: &AuthorityIssuer,
     agent: AgentId,
 ) -> Result<()> {
@@ -244,7 +244,7 @@ async fn bind_conversation(
             kind: AggregateKind::Conversation,
             id: "mcp-fault".into(),
         },
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
     )
     .await?;
@@ -302,11 +302,11 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
             ),
         ]),
     );
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(root.join("stream"), LocalStreamLimits::default())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-    ));
+    );
     if create {
         bind_conversation(&stream, &issuer, agent).await?;
     }
@@ -314,7 +314,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
         stream,
         host,
         private,
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
+        issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
         signed.clone(),
         8192,
     )?);
@@ -460,7 +460,7 @@ async fn phase(
                 operation: OperationId::from_bytes([46; 16]),
                 interaction: InteractionId::from_bytes([47; 16]),
                 scope: &signed,
-                verifier: &issuer.verifier(),
+                verifier: &issuer.verifier(&mut None).expect("verifier copy"),
                 approval: approval.as_ref(),
                 maximum_tools: 1,
                 maximum_bytes: 8192,

@@ -1544,7 +1544,7 @@ mod tests {
         validate_workflow_commit(prior.revision, &record.idempotency_key, &record, None)?;
         validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record, None)?;
         validate_workflow_page(prior.revision, u32::MAX)?;
-        crate::executor::validate_execution_page(prior.revision, u32::MAX)?;
+        crate::executor::validate_execution_page(u32::MAX)?;
         let mut unsafe_command = serde_json::to_value(&record.transition.commands[0])
             .map_err(|error| Error::Invalid(error.to_string()))?;
         unsafe_command["body"] = json!("inline attachment bytes");
