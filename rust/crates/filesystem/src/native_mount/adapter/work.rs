@@ -32,6 +32,15 @@ impl NativeDemandCarrier<'_> {
         }
     }
 
+    fn remaining(&mut self) -> Result<(WorkBudget, u64), MountSourceError> {
+        self.with_work(|work| {
+            Ok((
+                work.remaining().map_err(super::lazy::mount_demand_error)?,
+                work.live_allocation_bytes(),
+            ))
+        })
+    }
+
     pub(super) fn reborrow(&mut self) -> NativeDemandCarrier<'_> {
         match self {
             Self::Borrowed(work) => NativeDemandCarrier::Borrowed(work),
@@ -42,38 +51,14 @@ impl NativeDemandCarrier<'_> {
 
     pub(super) fn new_custody(
         &mut self,
-    ) -> Result<super::NativeMountAllocationCustody, MountSourceError> {
+    ) -> Result<std::sync::Arc<super::NativeMountAllocationCustody>, MountSourceError> {
         match self.original_native_work() {
             Some(work) => super::NativeMountAllocationCustody::new(
-                &mut crate::demand::NativeSourceWork::from_native_materialization_work(&work),
+                &mut crate::NativeMaterializationWork::clone(&work),
             ),
             None => self.with_work(super::NativeMountAllocationCustody::new),
         }
         .map_err(super::lazy::mount_demand_error)
-    }
-
-    pub(super) fn empty_source_chunk(
-        &self,
-    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        let Some(work) = self.original_native_work() else {
-            return Ok(crate::kernel::OwnedSourceChunk::claimed(
-                OwnedBytes::new(),
-                0,
-            ));
-        };
-        let allocation = work
-            .claim(0, 0, crate::WorkCounters::UNCHARGED)
-            .map_err(MountSourceError::NativeWork)?;
-        let bytes = OwnedBytes::from_vec_with_guard(Vec::new(), allocation, work.runtime_meter())
-            .map_err(|failure| match failure.into_error() {
-            acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-                MountSourceError::NativeWork(work.runtime_error(error))
-            }
-            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
-                MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout)
-            }
-        })?;
-        Ok(crate::kernel::OwnedSourceChunk::intrinsic(bytes, 0))
     }
 
     pub(super) fn accept_with_prior_live<T, E>(
@@ -86,7 +71,7 @@ impl NativeDemandCarrier<'_> {
             Ok(receipt) => (Ok(receipt.value), receipt.work),
             Err(failure) => (Err(map(failure.error)), *failure.work),
         };
-        self.with_work(|work| work.merge_with_prior_live(completed, prior_live))
+        self.with_work(|work| work.merge(completed, prior_live))
             .map_err(super::lazy::mount_demand_error)?;
         result
     }
@@ -105,7 +90,7 @@ impl NativeDemandCarrier<'_> {
         let result = if bytes == 0 {
             Ok(())
         } else {
-            self.with_work(|work| work.record_adoption(bytes, &None))
+            self.with_work(|work| work.record_native_owned_completed(bytes, &None).1)
                 .map_err(super::lazy::mount_demand_error)
         }
         .and_then(|()| self.check(cancellation, lifetime));
@@ -124,17 +109,15 @@ impl NativeDemandCarrier<'_> {
 fn capture_meter(
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<crate::NativeMaterializationWork, OperationFailure<MountSourceError>> {
-    crate::NativeMaterializationWork::new(budget, cancellation).map_err(|(error, completed)| {
-        OperationFailure::new(MountSourceError::NativeWork(error), completed)
-    })
+) -> Result<crate::NativeMaterializationWork, MountSourceError> {
+    crate::NativeMaterializationWork::new(budget, cancellation)
+        .map_err(|(error, _)| MountSourceError::NativeWork(error))
 }
 
 pub(super) fn boundary<T>(
     cancellation: &CancellationToken,
     operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, MountSourceError>,
 ) -> Result<T, MountSourceError> {
-    let work = capture_meter(crate::performance::BOUNDARY_BUDGET, cancellation)
-        .map_err(|failure| failure.error)?;
+    let work = capture_meter(crate::performance::BOUNDARY_BUDGET, cancellation)?;
     operation(&work)
 }

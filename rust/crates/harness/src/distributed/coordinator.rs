@@ -79,7 +79,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     if quota.work().is_some() {
                         quota.adopt(existing.logical_owned_bytes()?)?;
                     }
-                    return Err(coordinator_boundary(
+                    return Err(guarded_boundary(
                         quota.work(),
                         wire::ErrorCode::Conflict,
                         "coordinator history repeats an idempotency key",
@@ -89,7 +89,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     work.check_cancellation()?;
                 }
                 if committed_at_ms <= self.last_committed_at_ms {
-                    return Err(coordinator_boundary(
+                    return Err(guarded_boundary(
                         quota.work(),
                         wire::ErrorCode::Storage,
                         "coordinator commit time is not increasing",
@@ -204,7 +204,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 drop(expected);
                 custody.relinquish(expected_bytes)?;
                 if differs {
-                    return Err(coordinator_boundary(
+                    return Err(guarded_boundary(
                         custody.work(),
                         wire::ErrorCode::Invalid,
                         "assembled scheduler result differs from pinned children",
@@ -215,7 +215,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             custody.relinquish(decision_bytes)?;
         }
         let operation = self.scheduler.operation(operation_id).ok_or_else(|| {
-            coordinator_boundary(
+            guarded_boundary(
                 custody.work(),
                 wire::ErrorCode::NotFound,
                 "scheduler result operation is absent",
@@ -228,7 +228,12 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         .into_iter()
         .flatten()
         {
-            crate::contract::validate_json_schema_value(schema, &value, "scheduler result", custody.work())?;
+            crate::contract::validate_json_schema_value(
+                schema,
+                &value,
+                "scheduler result",
+                custody.work(),
+            )?;
         }
         Ok(())
     }
@@ -258,7 +263,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 | SchedulerEvent::WorkflowResumed { .. }
                 | SchedulerEvent::Orchestrated { .. }
         ) {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Unauthorized,
                 "scheduler event requires its scoped coordinator API",
@@ -282,7 +287,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     ) -> Result<bool> {
         self.refresh(work).await?;
         if verified_revision.is_some_and(|revision| revision != self.revision) {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Conflict,
                 "coordinator changed after owner verification",
@@ -313,7 +318,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 self.validate_command_wait(&event, waiting_command, true, custody.work())?;
                 self.validate_replay(&event, custody.work()).map(|()| false)
             } else {
-                Err(coordinator_boundary(
+                Err(guarded_boundary(
                     custody.work(),
                     wire::ErrorCode::Conflict,
                     "coordinator retry identity reused",
@@ -404,7 +409,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let applied = match appended {
             Ok(AppendOutcome::Committed(receipt)) => {
                 if receipt.end.checked_sub(receipt.start) != Some(1) || receipt.tail < receipt.end {
-                    return Err(coordinator_boundary(
+                    return Err(guarded_boundary(
                         custody.work(),
                         wire::ErrorCode::Storage,
                         "invalid coordinator append receipt",
@@ -413,7 +418,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 Ok(receipt.start == revision - 1)
             }
             Ok(AppendOutcome::TailConflict { .. }) => Ok(false),
-            Err(error) if idle_execution.is_none() && coordinator_retry_conflict(&error) => {
+            Err(error) if idle_execution.is_none() && error.code() == wire::ErrorCode::Conflict => {
                 Err(error)
             }
             Err(error) => return Err(error),
@@ -425,7 +430,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             != Some(true)
         {
             return applied.and_then(|_| {
-                Err(coordinator_boundary(
+                Err(guarded_boundary(
                     custody.work(),
                     wire::ErrorCode::Conflict,
                     "coordinator publication differs from its intent",
@@ -451,9 +456,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             ..
         } = event
         {
-            let operation = self.scheduler.operation(*operation_id).ok_or_else(|| {
-                coordinator_boundary(work, wire::ErrorCode::NotFound, "model task")
-            })?;
+            let operation = self
+                .scheduler
+                .operation(*operation_id)
+                .ok_or_else(|| guarded_boundary(work, wire::ErrorCode::NotFound, "model task"))?;
             crate::scheduler::require_execution_owner(operation, fence, false, work)?;
         }
         Ok(())
@@ -475,7 +481,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             input,
         } = event
         else {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Invalid,
                 "command wait guard only applies to wake",
@@ -484,7 +490,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let operation = self
             .scheduler
             .operation(*operation_id)
-            .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::NotFound, "waiting task"))?;
+            .ok_or_else(|| guarded_boundary(work, wire::ErrorCode::NotFound, "waiting task"))?;
         if (!replaying && operation.phase != crate::scheduler::OperationPhase::Suspended)
             || operation.phase == crate::scheduler::OperationPhase::Terminal
             || operation.cancellation_requested
@@ -494,7 +500,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     || slot.input.as_ref() != replaying.then_some(input)
             })
         {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Conflict,
                 "selected command wait is no longer current",
@@ -517,7 +523,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 spec.parent
                     .as_ref()
                     .ok_or_else(|| {
-                        coordinator_boundary(
+                        guarded_boundary(
                             work,
                             wire::ErrorCode::Invalid,
                             "child declaration has no parent",
@@ -532,13 +538,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 self.scheduler
                     .operation(*operation_id)
                     .ok_or_else(|| {
-                        coordinator_boundary(work, wire::ErrorCode::NotFound, "cancellation child")
+                        guarded_boundary(work, wire::ErrorCode::NotFound, "cancellation child")
                     })?
                     .spec
                     .parent
                     .as_ref()
                     .ok_or_else(|| {
-                        coordinator_boundary(
+                        guarded_boundary(
                             work,
                             wire::ErrorCode::Unauthorized,
                             "cancellation requires an authorized direct child",
@@ -547,22 +553,23 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     .operation_id
             }
             _ => {
-                return Err(coordinator_boundary(
+                return Err(guarded_boundary(
                     work,
                     wire::ErrorCode::Invalid,
                     "parent fence only applies to declaration or recursive child cancellation",
                 ));
             }
         };
-        let operation = self.scheduler.operation(parent).ok_or_else(|| {
-            coordinator_boundary(work, wire::ErrorCode::NotFound, "admitting parent")
-        })?;
+        let operation = self
+            .scheduler
+            .operation(parent)
+            .ok_or_else(|| guarded_boundary(work, wire::ErrorCode::NotFound, "admitting parent"))?;
         crate::scheduler::require_execution_owner(operation, fence, false, work)
     }
 
     pub(super) fn next_commit_time(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<u64> {
         let after_previous = self.last_committed_at_ms.checked_add(1).ok_or_else(|| {
-            coordinator_boundary(
+            guarded_boundary(
                 work,
                 wire::ErrorCode::Invalid,
                 "coordinator commit time exhausted",
@@ -571,7 +578,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         use acyclic_stream::UnixMillisClock as _;
         let now = acyclic_stream::SystemUnixMillisClock.now_unix_millis();
         if now == 0 || now == u64::MAX {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Invalid,
                 "coordinator clock exceeds supported range",
@@ -593,7 +600,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             &event,
             SchedulerEvent::WorkflowSuspended { .. } | SchedulerEvent::LeaseReleased { .. }
         ) {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Invalid,
                 "idle execution guard requires suspension or lease release",
@@ -603,7 +610,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             && matches!(&event, SchedulerEvent::LeaseReleased { .. })
             && workflow_guard.is_none()
         {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Invalid,
                 "measured lease release requires its original workflow witness",

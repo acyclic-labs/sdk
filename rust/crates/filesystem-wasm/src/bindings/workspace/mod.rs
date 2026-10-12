@@ -283,13 +283,13 @@ impl BrowserWorkspace {
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| js_error(failure.error))?;
-            Box::pin(value.fork(
+            Box::pin(value.fork::<_, _, acyclic_fs::WorkspaceError>(
                 destination,
                 ForkOptions::from_generation(generation, idempotency_key),
                 acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                publication_ready,
+                &mut publication_ready,
             ))
             .await
             .map(|receipt| receipt.value)
@@ -314,13 +314,13 @@ impl BrowserWorkspace {
         )?;
         let engine = {
             let (value, generation) = (&self.engine, &generation.engine);
-            Box::pin(value.fork(
+            Box::pin(value.fork::<_, _, acyclic_fs::WorkspaceError>(
                 destination,
                 browser_fork_options(generation.clone(), idempotency_key, options.paths.clone()),
                 acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                publication_ready,
+                &mut publication_ready,
             ))
             .await
             .map(|receipt| receipt.value)
@@ -386,14 +386,10 @@ impl BrowserWorkspace {
         #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
     ) -> Result<BrowserChangeSet, JsValue> {
         let maximum_changes = wasm_u32(&maximum_changes)?;
-
-        let engine = {
-            let (workspace, from, to) = (&self.engine, &from.engine, &to.engine);
-            workspace
-                .diff(from, to, maximum_changes)
-                .await
-                .map_err(js_error)?
-        };
+        let engine = sdk_value!(unbounded_future!(
+            self.engine,
+            diff(&from.engine, &to.engine, maximum_changes)
+        ))?;
         Ok(BrowserChangeSet { engine })
     }
 
@@ -430,9 +426,12 @@ impl BrowserWorkspace {
                         "target generation",
                     )
                     .await?,
-                    acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
                 )
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(js_error)?
         };
         Ok(BrowserJoinPlan { engine })

@@ -36,7 +36,7 @@ pub(super) async fn file_id<A, O, D, S>(
     lazy: &LazyWorkspace<A, O, D, S>,
     path: &str,
     lookup: &LazyLookup,
-    original: Option<&crate::NativeMaterializationWork>,
+    work: &crate::NativeMaterializationWork,
 ) -> Result<FileId, MountSourceError>
 where
     A: AsyncAuthorityStore + Send + Sync,
@@ -44,16 +44,13 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    let cancellation = CancellationToken::new();
-    let mut work = match original {
-        Some(original) => {
-            crate::kernel::KernelAccounting::native(original, original.cancellation())
-        }
-        None => crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
-    };
-    lazy.stable_file_id_for_lookup(path, lookup, &mut work)
-        .await
-        .map_err(lazy_error)
+    lazy.stable_file_id_for_lookup(
+        path,
+        lookup,
+        &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+    )
+    .await
+    .map_err(lazy_error)
 }
 
 pub(super) fn mount_lookup(lookup: LazyLookup, file_id: FileId) -> MountLookup {
@@ -128,8 +125,7 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::NativeRecordIo(error, allocation) => {
             MountSourceError::Io(error, allocation)
         }
-        LazyWorkspaceError::NativeWork(error)
-        | LazyWorkspaceError::NativeConstruction { cause: error, .. } => {
+        LazyWorkspaceError::NativeWork(error) => {
             MountSourceError::NativeWork(error)
         }
         LazyWorkspaceError::NativeRecordJson(error, allocation) => {
@@ -165,9 +161,6 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         }
         LazyWorkspaceError::NamespacePath(error) => MountSourceError::NamespacePath(error),
         LazyWorkspaceError::WorkspaceCause(error) => MountSourceError::WorkspaceCause(error),
-        LazyWorkspaceError::NativeWorkspace(cause, allocation) => {
-            MountSourceError::NativeWorkspaceCause(cause, allocation)
-        }
         LazyWorkspaceError::Store(message) => MountSourceError::Engine(message.into()),
         error => match error.semantic_error() {
             LazyWorkspaceError::NotFound => MountSourceError::NotFound,

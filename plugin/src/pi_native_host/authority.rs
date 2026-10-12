@@ -112,7 +112,12 @@ impl PiNativeCommandHost {
             .await?
             .into_native_shared(work)?;
         owner
-            .verify(recovery, &mut Some(&mut native_work_io(work)?))
+            .verify(
+                recovery,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                )),
+            )
             .await?;
         Ok(((admitted.1, admitted.2), owner, original))
     }
@@ -146,9 +151,11 @@ impl PiNativeCommandHost {
             work,
         )?;
         let interaction_verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let result = input
             .binding
@@ -199,9 +206,11 @@ impl PiNativeCommandHost {
             work,
         )?;
         let verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         Ok(NativeProcessAuthority {
             verifier: verifier.0,
@@ -263,9 +272,11 @@ impl PiNativeCommandHost {
             work,
         )?;
         let verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let history = HistoryReader::new_with_native_work(
             &self.stream,
@@ -277,7 +288,9 @@ impl PiNativeCommandHost {
         let effect = acyclic_harness::effect_host::task_effect_id(
             input.binding.task_id,
             command,
-            &mut Some(&mut native_work_io(work)?),
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
         )?;
         history
             .0

@@ -68,12 +68,14 @@ impl<'a> PiForkCoordinator<'a> {
         context: &acyclic_harness::runtime::TaskContext,
     ) -> Result<()> {
         let native = {
-            let mut io = native_work_io(&self.work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+            );
             let value = self.owner.policy().journal.directory_read_capability(
                 crate::pi_root_inputs::ROOT_INPUT_DIRECTORY,
                 &mut Some(&mut io),
             )?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let capability = native.0.as_str();
         if !context.scope().grants().contains(capability) {

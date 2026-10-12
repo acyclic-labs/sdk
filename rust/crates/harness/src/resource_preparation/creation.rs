@@ -66,7 +66,7 @@ impl TaskResourcePreparation {
             if self
                 .native_custody
                 .as_ref()
-                .is_none_or(|guard| !guard.matches_work(work))
+                .is_none_or(|guard| !guard.work().shares_allocation_context(work))
             {
                 return Err(Error::NativeBoundary {
                     code: Unauthorized,

@@ -31,13 +31,9 @@ impl NativeGate {
     ) -> Result<PublicationPermit> {
         if let Some(reservation) = self.reservation.as_ref() {
             owner
-                .verify(false, &mut Some(&mut native_work_io(meter)?))
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))
                 .await?;
-            owner.require_volume_grant(
-                volume,
-                VolumeOperation::Write,
-                &mut Some(&mut native_work_io(meter)?),
-            )?;
+            owner.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))?;
             return Ok(reservation.0);
         }
         let recover_original = existing_only || self.requires_original_recovery;

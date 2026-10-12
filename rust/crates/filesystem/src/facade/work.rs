@@ -1,4 +1,8 @@
 use super::*;
+use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{NativeAllocation, NativeMaterializationWork};
+use acyclic_stream::ProviderTask;
 
 /// Work supplied as a standalone budget or an original native invocation.
 pub trait FsWork: Sync + ProviderTask {
@@ -59,7 +63,17 @@ impl FsWork for &NativeMaterializationWork {
         result: Result<(T, KernelOwnedAllocation), FsError>,
         _: &KernelAccounting<'_>,
     ) -> Self::OwnedOutput<T> {
-        result.and_then(|(value, allocation)| Ok((value, native_pinned_allocation(allocation)?)))
+        result.and_then(|(value, allocation)| {
+            Ok((
+                value,
+                match allocation {
+                    KernelOwnedAllocation::NativeOriginal(guard) => guard,
+                    KernelOwnedAllocation::Standalone => {
+                        return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+                    }
+                },
+            ))
+        })
     }
     fn accounting<'a>(&'a self, cancellation: &'a CancellationToken) -> KernelAccounting<'a> {
         KernelAccounting::native(self, cancellation)
@@ -71,19 +85,6 @@ impl FsWork for &NativeMaterializationWork {
 
 /// Receipt-bearing facade result.
 pub type FsResult<T> = MeasuredResult<OperationReceipt<T>, FsError>;
-
-pub(super) fn remaining_owned(
-    work: WorkCounters,
-    budget: WorkBudget,
-    live_bytes: u64,
-) -> Result<WorkBudget, OperationFailure<FsError>> {
-    let mut remaining = work
-        .remaining(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    // The ledger already admitted these live bytes within the same permit.
-    remaining.peak_allocation_bytes -= live_bytes;
-    Ok(remaining)
-}
 
 #[inline]
 pub(super) fn add(
@@ -119,12 +120,12 @@ pub(super) fn merge_simultaneous_work(
     Ok(merged)
 }
 
-pub(super) fn merge_simultaneous_failure<E: From<WorkError>>(
+pub(super) fn merge_simultaneous_failure(
     prior: WorkCounters,
     nested: WorkCounters,
     live_bytes: u64,
-    error: E,
-) -> OperationFailure<E> {
+    error: FsError,
+) -> OperationFailure<FsError> {
     match prior.with_backend(nested, live_bytes) {
         Ok(merged) => OperationFailure::new(error, merged),
         Err(overflow) => OperationFailure::new(overflow.into(), prior),
@@ -140,6 +141,19 @@ pub(crate) fn measured<T, E>(
     result
         .map(|value| OperationReceipt { value, work })
         .map_err(|error| OperationFailure::new(error, work))
+}
+
+pub(super) fn remaining_owned(
+    work: WorkCounters,
+    budget: WorkBudget,
+    live_bytes: u64,
+) -> Result<WorkBudget, OperationFailure<FsError>> {
+    let mut remaining = work
+        .remaining(budget)
+        .map_err(|error| OperationFailure::new(error.into(), work))?;
+    // The ledger already admitted these live bytes within the same permit.
+    remaining.peak_allocation_bytes -= live_bytes;
+    Ok(remaining)
 }
 
 pub(super) fn authority_work<'a>(
@@ -164,5 +178,10 @@ pub(super) fn record_authority_work(
     if accounting.native_work().is_some() {
         return Ok(());
     }
-    merge_creation_backend_work(accounting, authority.spent())
+    let (allocations, work, budget, _) = accounting
+        .standalone_parts()
+        .ok_or(FsError::HandleAllocationFailed)?;
+    *work = work.with_backend(authority.spent(), allocations.live_bytes())?;
+    work.verify(budget)?;
+    Ok(())
 }

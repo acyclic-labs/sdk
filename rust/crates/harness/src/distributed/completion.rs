@@ -1,6 +1,4 @@
-use super::commit::{
-    PreparedNativeRecovery, receive_native_commit, reserve_prepared_vector, resolve_commit,
-};
+use super::commit::observe_commit;
 use super::*;
 
 /// Accepts and funds a completion before its physical action.
@@ -10,7 +8,7 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
     mut template: crate::filesystem::NativePreparationCompletionTemplate,
     original: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<crate::NativeFutureBundle<'static, acyclic_fs::MaterializationJournal>> {
-    use acyclic_stream::{CommitCondition, CommitConflict, CommittedMutation, Record};
+    use acyclic_stream::{CommitCondition, CommitOutcome};
     use std::mem::size_of;
     let mut io = crate::store::HistoryWork::new(
         crate::filesystem::PreparationIo::from_native_work(original)?,
@@ -49,9 +47,9 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
     let owner_condition = owner.condition(JournalWrite::Fresh, &mut work).await?;
     let bounds = operations::bounds_with_work(&client, template.path(), &mut work)
         .await?
-        .map_err(|error| sdk_error(error, &work))?;
+        .map_err(|error| crate::store::operations::stream_error_with_work(error, &work))?;
     if bounds.tail != template.expected_revision() {
-        return Err(coordinator_boundary(
+        return Err(guarded_boundary(
             &work,
             wire::ErrorCode::Conflict,
             "native completion Preparing record changed before acceptance",
@@ -61,38 +59,17 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
         path: template.path().clone(),
         expected: template.expected_revision(),
     };
-    let owner_path_bytes = match &owner_condition {
-        CommitCondition::Tail { path, .. } => path.as_str().len() as u64,
-        CommitCondition::Absent { .. } => {
-            return Err(Error::NativeBoundary {
-                code: wire::ErrorCode::Unauthorized,
-                reason: "native completion requires its original owner tail",
-            });
-        }
-    };
-    let path_bytes = template.path().as_str().len() as u64;
-    let key_bytes = template.key().as_bytes().len() as u64;
-    // SDK paths, retry keys and the completion record are bounded before this arithmetic.
-    let append_metadata = (4 * size_of::<CommittedMutation>() + 4 * size_of::<Record>()) as u64;
-    let conflict_metadata = (4 * size_of::<CommitConflict>()) as u64;
-    let append_source = append_metadata + path_bytes + maximum_bytes;
-    let conflict_source = conflict_metadata + owner_path_bytes + path_bytes;
-    let pool_bytes = (append_source.max(conflict_source)
-        + key_bytes
-        + size_of::<acyclic_stream::IdempotencyObservation>() as u64
-        + size_of::<Error>() as u64
-        + crate::contract::sdk_json_diagnostic_bytes()
-        + size_of::<(
-            crate::filesystem::NativePreparationCompletionTemplate,
-            acyclic_stream::PreparedNativeCommit,
-            PreparedNativeRecovery,
-            acyclic_fs::NativeAllocation,
-            crate::store::history::AcceptedCompletionIo,
-        )>() as u64)
+    if !matches!(&owner_condition, CommitCondition::Tail { .. }) {
+        return Err(Error::NativeBoundary {
+            code: wire::ErrorCode::Unauthorized,
+            reason: "native completion requires its original owner tail",
+        });
+    }
+    let pool_bytes = (size_of::<Error>() as u64 + crate::contract::sdk_json_diagnostic_bytes())
         .max(size_of::<acyclic_fs::MaterializationJournal>() as u64);
     let (request, custody) = {
         let mut prepared = commit_request(template.key().clone(), 0, &mut work);
-        reserve_prepared_vector(&mut prepared.0.conditions, 2, &mut prepared.1)?;
+        prepared.1.reserve(2, &mut prepared.0.conditions)?;
         prepared.0.conditions.push(owner_condition);
         prepared.0.conditions.push(target);
         add_record(
@@ -126,26 +103,12 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             }
         };
     let prepared = async {
-        let prepared = native_call_result(
+        let (mut prepared, sdk_custody) = native_response(
             original,
             client
                 .native_prepare_commit(request, maximum_bytes as usize, original.runtime_meter())
                 .await,
-        )?
-        .map_err(|error| sdk_error(error, &None))?;
-        let (mut prepared, incoming) = prepared.into_parts();
-        let sdk_custody =
-            match acyclic_fs::NativeAllocation::from_runtime_allocation(original, incoming) {
-                Ok(incoming) => incoming,
-                Err((cause, incoming)) => {
-                    drop(prepared);
-                    drop(incoming);
-                    return Err(Error::NativeWork {
-                        cause,
-                        custody: None,
-                    });
-                }
-            };
+        )?;
         let Some(recovery) = prepared.take_recovery_future() else {
             drop(prepared);
             return Err(Error::NativeBoundary {
@@ -173,7 +136,6 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
         let (mut template, sdk, sdk_recovery, mut sdk_custody, mut observer) = state;
         let operation = OperationId::from_bytes(template.task_binding().0.into_bytes());
         let finished = async {
-            let key = template.key().clone();
             template.set_completed_work(counters)?;
             let (value, output, maximum_bytes) = template.codec_parts();
             // The accepted reservation covers every write within this fixed buffer.
@@ -211,25 +173,45 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
                 .original_native_work()
                 .expect("accepted completion ledger")
                 .clone();
-            let committed = sdk.finish(output).await;
-            let (outcome, received) = {
-                let mut optional = Some(&mut observer as &mut dyn HistoryIo);
-                let mut custody = CodecQuota::from_retained(&mut optional, 0);
-                let committed = receive_native_commit(&original, committed, None, 0, &mut custody)?;
-                resolve_commit(
-                    committed,
-                    &client,
-                    key,
-                    Some(operation),
-                    None,
-                    Some(sdk_recovery),
-                    custody.work(),
-                )
-                .await?
+            let mut optional = Some(&mut observer as &mut dyn HistoryIo);
+            let mut quota = CodecQuota::from_retained(&mut optional, 0);
+            let committed = match native_response(&original, sdk.finish(output).await) {
+                Ok(received) => {
+                    observe_commit(&received.0, true, None, &mut quota)?;
+                    matches!(&received.0, CommitOutcome::Committed(_))
+                }
+                Err(Error::NativeStream {
+                    source: StreamError::Unavailable,
+                    ..
+                }) => {
+                    let inspected = native_response(&original, sdk_recovery.await).map_err(
+                        |error| match error {
+                            Error::NativeStream { .. } => Error::Indeterminate(operation),
+                            error => error,
+                        },
+                    )?;
+                    match inspected.0.as_ref().map(|observation| &observation.outcome) {
+                        Some(IdempotencyOutcome::Commit(outcome)) => {
+                            observe_commit(outcome, false, None, &mut quota)?;
+                            matches!(outcome, CommitOutcome::Committed(_))
+                        }
+                        None => return Err(Error::Indeterminate(operation)),
+                        Some(_) => {
+                            return Err(guarded_boundary(
+                                quota.work(),
+                                wire::ErrorCode::Conflict,
+                                "commit recovery identity reused",
+                            ));
+                        }
+                    }
+                }
+                Err(error) => return Err(error),
             };
-            let committed = matches!(&outcome, acyclic_stream::CommitOutcome::Committed(_));
-            drop(outcome);
-            observer.release_owned(received)?;
+            quota
+                .work()
+                .as_deref_mut()
+                .expect("accepted completion observer")
+                .check_cancellation()?;
             if !committed {
                 return Err(Error::NativeBoundary {
                     code: wire::ErrorCode::Conflict,
@@ -281,4 +263,23 @@ fn completion_error(mut error: Error, incoming: acyclic_fs::NativeAllocation) ->
         *custody = Some(incoming);
     }
     error
+}
+
+fn native_response<T>(
+    original: &acyclic_fs::NativeMaterializationWork,
+    response: acyclic_stream::NativeStreamResult<T>,
+) -> Result<(T, acyclic_fs::NativeAllocation)> {
+    let output = crate::store::history::native_sdk_result(original, response)?;
+    let (value, allocation) = output.into_parts();
+    match acyclic_fs::NativeAllocation::from_runtime_allocation(original, allocation) {
+        Ok(allocation) => Ok((value, allocation)),
+        Err((cause, allocation)) => {
+            drop(value);
+            drop(allocation);
+            Err(Error::NativeWork {
+                cause,
+                custody: None,
+            })
+        }
+    }
 }

@@ -29,13 +29,9 @@ pub(crate) async fn bind_root_output_context_with_native_work(
     {
         return Err(invalid());
     }
-    current_owner.require_volume_grant(
-        &binding.scratch.volume,
-        VolumeOperation::Write,
-        &mut Some(&mut native_work_io(work)?),
-    )?;
+    current_owner.require_volume_grant(&binding.scratch.volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
     current_owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let preparation = load_original_preparation_with_native_work(
         &owner,
@@ -104,9 +100,9 @@ pub(crate) async fn bind_root_output_context_with_native_work(
         work,
     )?;
     let verifier = {
-        let mut io = native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     let source = filesystem
         .root_output_source(
@@ -233,9 +229,9 @@ impl PiRootProvider {
         let operation =
             self.creation_operation_with_native_work(effect, attempt, resource, work)?;
         let name = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = volume.storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         self.fs
             .workspace_for_creation_operation_with_native_work(

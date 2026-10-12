@@ -86,8 +86,10 @@ where
             )
             .await
     } else {
-        let accounting =
-            acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, work.cancellation())?;
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work,
+            cancellation: work.cancellation(),
+        };
         workspace
             .import_selected(
                 checkpoint,
@@ -95,7 +97,7 @@ where
                 plan.1,
                 operation,
                 permit,
-                &accounting,
+                &mut accounting,
                 before_publication,
             )
             .await

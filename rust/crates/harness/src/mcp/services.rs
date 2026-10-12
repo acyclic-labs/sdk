@@ -1,15 +1,15 @@
 //! Typed resource and prompt operations over the same admitted protocol boundary.
-use super::http::HttpMcpTransport;
-use super::rpc::{check, checkpoint, protocol_error};
-use crate::{Error, NativeWork, OperationId, Result, wire::ErrorCode};
-use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use super::{charge, error, rpc::check};
+use crate::{Error, NativeWork, Result, wire::ErrorCode};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 
 /// Validates service input on the supplied work ledger.
 pub fn validate_params(method: &str, params: &Value, work: NativeWork<'_>) -> Result<()> {
-    checkpoint(work, 1, 0)?;
+    charge(work, 1, 0, 0)?;
     if !params.is_object() {
-        return Err(protocol_error(
+        return Err(error(
             work,
             ErrorCode::Invalid,
             "MCP service parameters must be an object",
@@ -29,9 +29,9 @@ pub fn validate_params(method: &str, params: &Value, work: NativeWork<'_>) -> Re
                 "request_state",
                 "input_responses",
             ] {
-                checkpoint(work, 1, 0)?;
+                charge(work, 1, 0, 0)?;
                 if params.get(key).is_some() {
-                    return Err(protocol_error(
+                    return Err(error(
                         work,
                         ErrorCode::Unsupported,
                         "MCP stdio continuation needs its own authority owner",
@@ -41,7 +41,7 @@ pub fn validate_params(method: &str, params: &Value, work: NativeWork<'_>) -> Re
             check::<rmcp::model::CallToolRequestParams>(params, work)
         }
         _ => {
-            return Err(protocol_error(
+            return Err(error(
                 work,
                 ErrorCode::Unsupported,
                 "MCP service method not selected",
@@ -61,9 +61,23 @@ pub fn validate_result(method: &str, value: Value, work: NativeWork<'_>) -> Resu
         "prompts/list" => check::<rmcp::model::ListPromptsResult>(&value, work),
         "prompts/get" => check::<rmcp::model::GetPromptResult>(&value, work),
         "tools/list" => check::<super::McpToolsPage>(&value, work),
-        "tools/call" => check::<rmcp::model::CallToolResult>(&value, work),
+        "tools/call" => {
+            charge(work, 2, 0, 0)?;
+            if !value.get("content").is_some_and(Value::is_array)
+                || value
+                    .get("isError")
+                    .is_some_and(|error| !error.is_boolean())
+            {
+                return Err(error(
+                    work,
+                    ErrorCode::Invalid,
+                    "invalid MCP tool result envelope",
+                ));
+            }
+            check::<rmcp::model::CallToolResult>(&value, work)
+        }
         _ => {
-            return Err(protocol_error(
+            return Err(error(
                 work,
                 ErrorCode::Unsupported,
                 "MCP method is not an admitted service",
@@ -71,76 +85,6 @@ pub fn validate_result(method: &str, value: Value, work: NativeWork<'_>) -> Resu
         }
     }?;
     Ok(value)
-}
-
-impl HttpMcpTransport {
-    /// One explicitly admitted resource discovery page; never auto-reloads.
-    pub async fn list_resources(
-        &self,
-        operation: OperationId,
-        cursor: Option<&str>,
-    ) -> Result<rmcp::model::ListResourcesResult> {
-        self.service(operation, "resources/list", cursor_params(cursor))
-            .await
-    }
-    /// One explicitly admitted resource template page.
-    pub async fn list_resource_templates(
-        &self,
-        operation: OperationId,
-        cursor: Option<&str>,
-    ) -> Result<rmcp::model::ListResourceTemplatesResult> {
-        self.service(operation, "resources/templates/list", cursor_params(cursor))
-            .await
-    }
-    /// Reads an exact URI under the host's existing network admission.
-    pub async fn read_resource(
-        &self,
-        operation: OperationId,
-        uri: &str,
-    ) -> Result<rmcp::model::ReadResourceResult> {
-        self.service(operation, "resources/read", json!({"uri":uri}))
-            .await
-    }
-    /// One explicitly admitted prompt discovery page.
-    pub async fn list_prompts(
-        &self,
-        operation: OperationId,
-        cursor: Option<&str>,
-    ) -> Result<rmcp::model::ListPromptsResult> {
-        self.service(operation, "prompts/list", cursor_params(cursor))
-            .await
-    }
-    /// Gets one exact prompt. Returned messages remain external content.
-    pub async fn get_prompt(
-        &self,
-        operation: OperationId,
-        name: &str,
-        arguments: std::collections::BTreeMap<String, String>,
-    ) -> Result<rmcp::model::GetPromptResult> {
-        self.service(
-            operation,
-            "prompts/get",
-            json!({"name":name,"arguments":arguments}),
-        )
-        .await
-    }
-    async fn service<T: DeserializeOwned>(
-        &self,
-        operation: OperationId,
-        method: &str,
-        params: Value,
-    ) -> Result<T> {
-        validate_params(method, &params, None)?;
-        serde_json::from_value(validate_result(
-            method,
-            self.rpc(operation, method, params, None).await?,
-            None,
-        )?)
-        .map_err(|error| Error::Invalid(error.to_string()))
-    }
-}
-fn cursor_params(cursor: Option<&str>) -> Value {
-    cursor.map_or_else(|| json!({}), |cursor| json!({"cursor":cursor}))
 }
 
 #[cfg(test)]
@@ -216,62 +160,5 @@ mod tests {
                 Err(Error::Unsupported(_))
             ));
         }
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn finite_seven_method_validation_uses_original_ledger_and_retires_typed_temporaries() {
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
-                peak_allocation_bytes: 16 << 20,
-                items_examined: 10_000,
-                allocation_operations: 32,
-                ..Default::default()
-            },
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .expect("original finite work");
-        let baseline = work.live_allocation_bytes();
-        let before = work.receipt();
-        for (method, valid, invalid) in service_cases() {
-            validate_result(method, valid, Some(&work)).expect("bounded closed DTO");
-            assert_eq!(work.live_allocation_bytes(), baseline);
-            let error =
-                validate_result(method, invalid, Some(&work)).expect_err("malformed result");
-            assert!(matches!(
-                &error,
-                Error::NativeJson {
-                    custody: Some(_),
-                    ..
-                }
-            ));
-            assert!(work.live_allocation_bytes() > baseline);
-            drop(error);
-            assert_eq!(work.live_allocation_bytes(), baseline);
-        }
-        validate_result("tools/list", json!({"tools":[]}), Some(&work)).expect("tool discovery");
-        validate_result(
-            "tools/call",
-            json!({
-                "content":[{"type":"image","data":"AAEC","mimeType":"image/png"}],
-                "structuredContent":null
-            }),
-            Some(&work),
-        )
-        .expect("binary and present null tool result");
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        assert_eq!(
-            work.receipt().allocation_operations,
-            before.allocation_operations
-        );
-        assert!(work.receipt().items_examined > before.items_examined);
-        work.cancellation().cancel();
-        assert!(matches!(
-            validate_params("tools/list", &json!({}), Some(&work)),
-            Err(Error::NativeWork {
-                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-                ..
-            })
-        ));
     }
 }

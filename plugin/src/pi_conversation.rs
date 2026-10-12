@@ -71,9 +71,8 @@ pub(crate) async fn observe_task_conversation(
             "Pi binding requires a positive immutable event limit",
         ));
     }
-    let io = PreparationIo::from_native_work(work)?;
-    let mut native_io = &io;
-    let mut observer: Option<&mut dyn HistoryIo> = Some(&mut native_io);
+    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+    let mut observer: Option<&mut dyn HistoryIo> = Some(&mut io);
     let verifier = issuer.verifier(&mut observer)?;
     let operation = native_root_output_binding_operation(&audience, volume, creation, work)?;
     let reader = HistoryReader::new(stream, &audience, &verifier, &mut observer)?;

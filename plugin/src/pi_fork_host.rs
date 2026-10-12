@@ -13,7 +13,6 @@ use crate::{
 };
 use acyclic_fs::{LazySnapshotRef, NativeMaterializationWork, WorkBudget, WorkCounters};
 use acyclic_harness::runtime::TaskStateProvider;
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     Error, OperationId, Result, TaskId,
     core::SchemaRegistry,
@@ -416,7 +415,7 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
                 .await?;
                 source_custody = Some(custody);
                 owner
-                    .verify(false, &mut Some(&mut native_work_io(work)?))
+                    .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                     .await?;
                 snapshot
             } else {
@@ -489,9 +488,9 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
             .next()
             .ok_or_else(|| invalid("Pi project missing"))?;
         let workspace = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = project.storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         #[derive(Serialize)]
         struct Pending<'b> {
@@ -654,9 +653,9 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
         )?;
         let mut authority = (conversation.0, conversation.1);
         let mut verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let parent = StreamAggregate::open_with_native_work(
             &self.stream,
@@ -898,7 +897,7 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
         .await?;
         let snapshot = frozen.0;
         owner
-            .verify(false, &mut Some(&mut native_work_io(&work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?)))
             .await?;
         let observed = ObservedSource {
             caller: input.caller,
@@ -916,7 +915,7 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
         )
         .await?;
         owner
-            .verify(false, &mut Some(&mut native_work_io(&work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?)))
             .await?;
         ready(
             &PiRootSource {
@@ -983,13 +982,13 @@ pub(crate) async fn freeze_created_root_source(
         work,
         || async {
             owner
-                .verify(false, &mut Some(&mut native_work_io(work)?))
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             provider
                 .verify_created_source(owner, key, &original.0.1, work)
                 .await?;
             owner
-                .verify(false, &mut Some(&mut native_work_io(work)?))
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await
         },
     )
@@ -1055,26 +1054,27 @@ where
         });
     }
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let observed = physical.observe_with_native_work(work, &mut guard).await?;
     guard().await?;
-    let accounting =
-        acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, work.cancellation())
-            .map_err(native_lazy_error)?;
+    let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+        work,
+        cancellation: work.cancellation(),
+    };
     let rebound = source
-        .rebind_source(&accounting)
+        .rebind_source(&mut accounting)
         .await
         .map_err(native_lazy_error)?;
     guard().await?;
-    if rebound.as_state().source != observed.0.source {
+    if rebound.source != observed.0.source {
         return Err(Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Conflict,
             reason: "Root source rebind changed its guarded watcher observation",
         });
     }
     let frozen = source
-        .snapshot(&accounting)
+        .snapshot(&mut accounting)
         .await
         .map_err(native_lazy_error)?;
     guard().await?;
@@ -1085,7 +1085,7 @@ where
         });
     }
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     drop(rebound);
     drop(observed.0);
@@ -1093,10 +1093,9 @@ where
 }
 
 pub(crate) fn native_lazy_error(source: acyclic_fs::LazyWorkspaceError) -> Error {
-    let (source, custody) = source.into_native_failure();
     match source {
-        acyclic_fs::LazyWorkspaceError::NativeWork(cause) => Error::NativeWork { cause, custody },
-        source => Error::NativeSource { source, custody },
+        acyclic_fs::LazyWorkspaceError::NativeWork(cause) => cause.into(),
+        source => source.into(),
     }
 }
 
@@ -1115,13 +1114,13 @@ pub(crate) async fn freeze_child_source<P: acyclic_stream::StreamProvider>(
         });
     }
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let checkpoint = view
         .checkpoint_projects_with_native_work(owner, work)?
         .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let mut selected = checkpoint
         .0

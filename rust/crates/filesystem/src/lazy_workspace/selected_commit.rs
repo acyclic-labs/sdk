@@ -1,42 +1,39 @@
 use super::*;
-use crate::kernel::{KernelAccounting, Owned, allocation::KernelOwnedAllocation};
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
 {
-    /// Resolves the immutable selected publication, independently of the current head and hints.
     pub(crate) async fn selected_snapshot(
         &self,
         operation: crate::OperationId,
         generation: crate::GenerationId,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazySnapshotRef, crate::Digest), LazyWorkspaceError> {
-        let (value, mut allocation) = self
+        let (record, mut guard) = self
             .workspace
             .volume
             .fs
             .workspace_operation_generation(
                 &self.workspace.volume,
                 operation,
-                accounting,
-                cancellation(accounting),
+                ctx,
+                cancellation(ctx),
             )
             .await?;
-        let Some((actual, record)) = value else {
-            crate::kernel::retire_allocation(allocation, 0, accounting)?;
+        let Some((actual, record)) = record else {
+            crate::kernel::retire_allocation(guard, 0, ctx)?;
             return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
         };
         let bytes = record.payload.len() as u64;
-        if matches!(allocation, KernelOwnedAllocation::Standalone) {
-            let (adopted, admission) = accounting.record_actual_owned(bytes)?;
-            allocation = adopted;
-            if let Err(error) = admission {
+        if matches!(guard, KernelOwnedAllocation::Standalone) {
+            let (funding, admitted) = ctx.record_actual_owned(bytes)?;
+            guard = funding;
+            if let Err(error) = admitted {
                 drop(record);
-                crate::kernel::retire_allocation(allocation, bytes, accounting)?;
+                crate::kernel::retire_allocation(guard, bytes, ctx)?;
                 return Err(error.into());
             }
         }
-        let record = Owned::new(record, allocation, bytes);
+        let record = Owned::new(record, guard, bytes);
         let result = (|| {
             if actual != generation {
                 return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
@@ -44,14 +41,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             let decoded = crate::kernel::decode_publication_evidence_with_accounting(
                 &record.value.payload,
                 self.workspace.limits().maximum_object_bytes,
-                accounting,
+                ctx,
             )?;
             let evidence = decoded
                 .original_evidence
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-            let context = super::publication_codec::decode_publication_context(
-                evidence, operation, accounting,
-            )?;
+            let context = publication_codec::decode_publication_context(evidence, operation, ctx)?;
             let NativeSnapshotContext::Selected { cut, input } = context else {
                 return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
             };
@@ -61,7 +56,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             {
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
-            accounting.charge(WorkCounters {
+            ctx.charge(WorkCounters {
                 bytes_hashed: LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
                 ..WorkCounters::UNCHARGED
             })?;
@@ -76,75 +71,58 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 input,
             ))
         })();
-        record.retire(accounting)?;
+        record.retire(ctx)?;
         result
     }
-
     pub(crate) async fn finish_selected_import(
         &self,
         operation: crate::OperationId,
         generation: crate::GenerationId,
         destination: LazySnapshotRef,
         source: LazySnapshotRef,
-        source_config: VolumeConfig,
+        config: VolumeConfig,
         input: crate::Digest,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
         if destination.workspace_id != self.workspace.id() {
             return Err(LazyWorkspaceError::StaleIdentity);
         }
-        let (snapshot, original_input) = self
-            .selected_snapshot(operation, generation, accounting)
-            .await?;
-        if original_input != input {
+        let (snapshot, saved) = self.selected_snapshot(operation, generation, ctx).await?;
+        if saved != input {
             return Err(LazyWorkspaceError::StaleIdentity);
         }
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self
                 .store
-                .load_lazy_workspace(self.workspace.id(), accounting)
+                .load_lazy_workspace(self.workspace.id(), ctx)
                 .await?
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-            let pending = state.pending_remove.as_ref().filter(|pending| {
-                matches!(pending.kind, PendingLazyRemoveKind::Mounted { idempotency_key }
-                    if idempotency_key.operation_id() == operation)
-            });
-            if let Some(pending) = pending {
-                if pending.prepared_overlay != snapshot.overlay
-                    || state.overlay != snapshot.overlay
-                    || state.shadows != snapshot.shadows
-                    || state.source != snapshot.source
-                {
-                    return Err(LazyWorkspaceError::StaleIdentity);
-                }
-            } else {
+            let pending = state.pending_remove.as_ref().filter(|pending|
+                matches!(pending.kind,PendingLazyRemoveKind::Mounted { idempotency_key } if idempotency_key.operation_id() == operation));
+            let Some(pending) = pending else {
                 return Ok(snapshot);
+            };
+            if pending.prepared_overlay != snapshot.overlay
+                || state.overlay != snapshot.overlay
+                || state.shadows != snapshot.shadows
+                || state.source != snapshot.source
+            {
+                return Err(LazyWorkspaceError::StaleIdentity);
             }
-            let replacement = LazyWorkspaceState {
-                revision: state
-                    .revision
-                    .checked_add(1)
-                    .ok_or(crate::WorkError::Overflow)?,
+            let revision = state.revision;
+            let next = LazyWorkspaceState {
+                revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
                 pending_remove: None,
-                completed_selected_import: Some(CompletedSelectedImport {
-                    operation,
-                    snapshot,
-                    destination,
-                    source,
-                    input,
-                    config: self.workspace.volume.config,
-                    source_config,
-                }),
-                ..state.clone()
+                selected_import_roots: Some([
+                    (snapshot, self.workspace.volume.config),
+                    (destination, self.workspace.volume.config),
+                    (source, config),
+                ]),
+                ..state
             };
             if self
                 .store
-                .compare_and_swap_lazy_workspace(
-                    self.workspace.id(),
-                    state.revision,
-                    replacement,
-                    accounting,
-                )
+                .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
                 .await?
             {
                 return Ok(snapshot);

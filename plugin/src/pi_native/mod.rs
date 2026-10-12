@@ -1,6 +1,5 @@
 //! Pi's pinned native command over the existing task/effect and namespace owners.
 use acyclic_harness::runtime::TaskSpawner as _;
-use acyclic_harness::store::native_work_io;
 
 use super::{PiScratchAllocation, PiTaskBinding, pi_caller};
 use acyclic_fs::{

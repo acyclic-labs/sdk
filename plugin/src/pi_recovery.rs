@@ -9,7 +9,6 @@ use acyclic_fs::{
 use acyclic_harness::filesystem::TaskWorkerAttempt;
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::store::HistoryIo;
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     Error, Outcome, Result, TaskId,
     conversation::FileRef,
@@ -305,7 +304,9 @@ where
     for task in tasks.0 {
         if let Some(preparation) = task.preparation {
             let recovered = {
-                let mut io = native_work_io(work)?;
+                let mut io = acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                );
                 HistoryIo::retain_owned(
                     &mut io,
                     std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
@@ -315,7 +316,7 @@ where
                     .task_host()
                     .recover_work(preparation, &mut Some(&mut io))
                     .await?;
-                (value, io.into_custody())
+                (value, io.into_custody()?)
             };
             let phase = match recovered.0 {
                 WorkPull::Claimed(_) => "reserved",
@@ -343,7 +344,9 @@ where
         }
         let task_id = task.binding.task_id;
         let mut recovered = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
@@ -353,7 +356,7 @@ where
                 .task_host()
                 .recover_work(task_id, &mut Some(&mut io))
                 .await?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         custody.absorb(&mut recovered.1)?;
         let observation = match recovered.0 {
@@ -541,36 +544,42 @@ where
         .chain(binding.results.as_ref().map(|result| &result.volume))
     {
         let read = {
-            let mut io = acyclic_harness::store::history::native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = volume.capability(
                 acyclic_harness::conversation::VolumeOperation::Read,
                 &mut Some(&mut io),
             )?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         if !admission.0.grants.contains(&read.0) {
             return Err(invalid("Pi selection lacks its original read grant"));
         }
     }
     let scratch_write = {
-        let mut io = acyclic_harness::store::history::native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let value = binding.scratch.volume.capability(
             acyclic_harness::conversation::VolumeOperation::Write,
             &mut Some(&mut io),
         )?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     if !admission.0.grants.contains(&scratch_write.0) {
         return Err(invalid("Pi scratch lacks its original write grant"));
     }
     if let Some(result) = &binding.results {
         let write = {
-            let mut io = acyclic_harness::store::history::native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = result.volume.capability(
                 acyclic_harness::conversation::VolumeOperation::Write,
                 &mut Some(&mut io),
             )?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         if !admission.0.grants.contains(&write.0) {
             return Err(invalid(
@@ -651,7 +660,9 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
     );
     match result {
         Ok(value) => {
-            custody.resize(retained_owned)?;
+            custody.release(custody.bytes().checked_sub(retained_owned).ok_or(
+                acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+            )?)?;
             Ok((value, custody))
         }
         Err(Error::NativeDecode {

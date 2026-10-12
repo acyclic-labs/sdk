@@ -63,7 +63,7 @@ impl PiNativeCommandHost {
     ) -> Result<(Option<TaskWorkerAttempt>, NativeAllocation)> {
         self.child_admission(task, work).await?;
         let observed = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
@@ -75,7 +75,7 @@ impl PiNativeCommandHost {
                 .task_host()
                 .recover_work(task, &mut Some(&mut io))
                 .await?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         match observed.0 {
             WorkPull::Claimed(lease) => {

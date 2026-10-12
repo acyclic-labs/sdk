@@ -287,7 +287,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         {
             crate::model::charge_items(Some(&io), 1)?;
             if file.volume().provider() == &self.host.provider {
-                let key = match Some(&io) { Some(io) => io.capability(file, "file:read:"), None => file.read_capability() }?;
+                let key = match Some(&io) { Some(io) => io.capability(file, "file:read:"), None => file.read_capability(&mut None) }?;
                 let owned = key.len() as u64;
                 if !fork_verify_insert(
                     &mut unique_files,

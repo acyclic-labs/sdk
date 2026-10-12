@@ -287,7 +287,12 @@ pub(crate) async fn approve_command(
     work: &NativeMaterializationWork,
 ) -> Result<InteractionId> {
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )
         .await?;
     let native_capability = "effect:provider:acyclic.pi.native";
     if context.durable_task_id() != Some(owner.task_id())
@@ -333,7 +338,12 @@ pub(crate) async fn approve_command(
         .open_interaction_with_native_work(approval, &interaction.0, work)?
         .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )
         .await?;
     let respond = native_fixed_text(format_args!("interaction:respond:{approval}"))?;
     let encoded_grants = crate::pi_root_provider::guarded_pi_bytes(
@@ -371,7 +381,12 @@ pub(crate) async fn approve_command(
         )?
         .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )
         .await?;
     Ok(approval)
 }

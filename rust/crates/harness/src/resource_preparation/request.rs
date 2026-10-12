@@ -86,7 +86,7 @@ impl ResourcePreparationRequest {
         {
             return Err(invalid(work));
         }
-        crate::contract::validate_trusted_json_byte_bound(self, self.maximum_bytes, work)?;
+        crate::contract::json_byte_length(self, self.maximum_bytes, work)?;
         if let Some(checkpoint) = &self.source_checkpoint {
             checkpoint.validate(work)?;
             if checkpoint.descriptor().byte_length() > self.maximum_bytes {

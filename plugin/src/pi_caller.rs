@@ -78,7 +78,7 @@ pub(crate) fn issue(
         }
     };
     let capabilities = Capabilities::new_with_native_work([CALLER_CAPABILITY], work)?;
-    let mut io = acyclic_harness::store::native_work_io(work)?;
+    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
     let value = authority.issuer.issue(
         identity_text,
         &capabilities.0,
@@ -86,7 +86,7 @@ pub(crate) fn issue(
         None,
         &mut Some(&mut io),
     )?;
-    let scope = (value, io.into_custody());
+    let scope = (value, io.into_custody()?);
     drop(identity.0);
     drop(identity.1);
     drop(capabilities.0);
@@ -148,7 +148,7 @@ pub(crate) fn verify<'a>(
     let authority = owner.authority(work)?;
     let verified = authority.verifier.verify(
         scope,
-        &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
+        &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
     );
     drop(authority);
     verified?;

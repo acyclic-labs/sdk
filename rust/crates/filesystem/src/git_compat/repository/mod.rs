@@ -44,11 +44,6 @@ impl<S> GitCompatRepository<S> {
     pub const fn workspace_id(&self) -> WorkspaceId {
         self.workspace_id
     }
-
-    /// Borrows the durable state adapter.
-    pub const fn store(&self) -> &S {
-        &self.store
-    }
 }
 
 impl<S: GitCompatStore> GitCompatRepository<S> {

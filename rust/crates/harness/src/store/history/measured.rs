@@ -1,10 +1,7 @@
 //! Aggregate accounting on the existing IO context.
 use super::HistoryIo;
 use crate::filesystem::PreparationIo;
-use crate::{
-    Error, Result,
-    core::{Authority, Event},
-};
+use crate::{Error, Result, core::Authority};
 use acyclic_fs::{
     CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkCounters,
 };
@@ -119,10 +116,10 @@ impl HistoryIo for HistoryWork {
             ..Default::default()
         })?;
         self.io.remaining()?;
-        self.io.retain_owned(bytes)
+        self.io.retain_owned(bytes).map_err(Into::into)
     }
     fn retain_owned(&mut self, bytes: u64) -> Result<()> {
-        self.io.retain_owned(bytes)
+        self.io.retain_owned(bytes).map_err(Into::into)
     }
     fn admit_owned(&self, bytes: u64) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -132,7 +129,7 @@ impl HistoryIo for HistoryWork {
         HistoryIo::admit_owned(&&self.io, bytes)
     }
     fn release_owned(&mut self, bytes: u64) -> Result<()> {
-        self.io.release(bytes)
+        self.io.release(bytes).map_err(Into::into)
     }
     fn clone_authority(&mut self, authority: &Authority) -> Result<Authority> {
         Ok(Authority {
@@ -212,14 +209,16 @@ impl HistoryIo for HistoryWork {
                     ..Default::default()
                 };
                 self.io.preflight(next)?;
-                self.io.charge(next)
+                self.io.charge(next).map_err(Into::into)
             }
             JsonCodecCharge::Read { .. } => Ok(()),
             _ => HistoryIo::codec_charge(&mut &self.io, charge),
         }
     }
     fn decode_json_value(&mut self, bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
-        HistoryIo::decode_json_value(&mut &self.io, bytes)
+        let value = self.io.decode_json::<serde_json::Value>(bytes)?;
+        let retained = crate::contract::json_value_logical_owned_bytes(&value)?;
+        Ok((value, retained))
     }
     fn hashed_bytes(&mut self, bytes: u64) -> Result<()> {
         HistoryIo::hashed_bytes(&mut &self.io, bytes)
@@ -268,7 +267,7 @@ impl HistoryIo for HistoryWork {
     fn receive_work(&mut self, mut delta: WorkCounters) -> Result<()> {
         delta.output_bytes = 0;
         delta.items_returned = 0;
-        self.io.charge(delta)
+        self.io.charge(delta).map_err(Into::into)
     }
     fn verify_content<'a>(
         &'a mut self,

@@ -8,13 +8,13 @@ async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<
     main.write_text("/shared", "base").await?;
     let base = main.head(B, &cancel).await?.value;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -36,7 +36,7 @@ async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
+            }, std::collections::BTreeMap::new(),
             PublicationPermit::Unrestricted
         )
         .await?,

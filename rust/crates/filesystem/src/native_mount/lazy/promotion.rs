@@ -5,7 +5,7 @@ pub(super) async fn stage_mount_promotion<A, O, D, S>(
     authored: &CheckoutMountSource<A, O>,
     path: &str,
     expected_source: FileId,
-    carrier: &mut adapter::NativeDemandCarrier<'_>,
+    work: &crate::NativeMaterializationWork,
 ) -> Result<(), MountSourceError>
 where
     A: AsyncAuthorityStore + Send + Sync,
@@ -13,24 +13,16 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    let cancellation = carrier.cancellation();
+    let cancellation = work.cancellation();
+    let carrier = &mut adapter::NativeDemandCarrier::Native(work);
     for _ in 0..MAXIMUM_PROMOTION_RETRIES {
         carrier.with_work(|work| mount_items(work, 1))?;
         let (mut candidate, epoch, stamp) = authored
             .shared_checkout()
             .candidate(None, carrier, &cancellation, Some(authored.cancellation()))
             .await?;
-        let original = carrier.original_native_work();
-        let mut accounting = match &original {
-            Some(original) => crate::kernel::KernelAccounting::native(original, &cancellation),
-            None => crate::kernel::KernelAccounting::standalone(
-                carrier
-                    .with_work(|work| work.remaining())
-                    .map_err(mount_demand_error)?,
-                &cancellation,
-            ),
-        };
-        let result = lazy
+        let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
+        let changed = lazy
             .stage_into_checkout(
                 &mut candidate.checkout,
                 None,
@@ -39,13 +31,8 @@ where
                 u64::MAX,
                 &mut accounting,
             )
-            .await;
-        let changed = if original.is_some() {
-            result.map_err(lazy_error)?
-        } else {
-            let result = crate::facade::measured(result, &accounting);
-            carrier.with_work(|work| mount_accept(work, result, lazy_error))?
-        };
+            .await
+            .map_err(lazy_error)?;
         if !changed {
             return Ok(());
         }
@@ -85,20 +72,28 @@ where
                         })
                         .map_err(|_| MountSourceError::Cancelled)
                 },
-                None,
-                |publication, _| publication,
             )
             .await?;
-        if installed.is_some() {
+        if installed == Some(super::super::MountPublication::PerMutation) {
             return authored
                 .shared_checkout()
-                .publish_mutation_with_carrier(
-                    carrier,
-                    &cancellation,
+                .publish(
+                    crate::PublicationPermit::Unrestricted,
+                    work,
+                    cancellation,
                     Some(authored.cancellation()),
-                    authored.callback_guard(),
+                    &mut adapter::source_publication_guard(
+                        authored.callback_guard().cloned(),
+                        Some(authored.cancellation().clone()),
+                    ),
+                    None,
+                    &mut None,
                 )
-                .await;
+                .await
+                .map_err(|(error, _)| error);
+        }
+        if installed.is_some() {
+            return Ok(());
         }
     }
     Err(MountSourceError::Stale)
@@ -114,59 +109,29 @@ where
     pub(super) async fn promote(
         &self,
         mounted: &MountPath,
-        original: Option<&crate::NativeMaterializationWork>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        let (path, _allocation) = self.path(mounted, original)?;
+        let (path, _allocation) = self.path(mounted, work)?;
         let resolution = self
-            .resolve(mounted, &path, ViewGate::callback_owner(), original)
+            .resolve(mounted, &path, ViewGate::callback_owner(), work)
             .await?;
         let (lookup, _allocation) = match resolution {
             Resolution::Authored(_) => return Ok(()),
             Resolution::Absent => return Err(MountSourceError::NotFound),
             Resolution::Unauthored(lookup, allocation) => (lookup, allocation),
         };
-        let expected_source = file_id(&self.lazy, &path, &lookup, original).await?;
-        let mut work =
-            crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, self.authored.cancellation());
-        let mut carrier = match original {
-            Some(work) => adapter::NativeDemandCarrier::Native(work),
-            None => adapter::NativeDemandCarrier::Borrowed(&mut work),
-        };
-        stage_mount_promotion(
-            &self.lazy,
-            &self.authored,
-            &path,
-            expected_source,
-            &mut carrier,
-        )
-        .await
+        let expected_source = file_id(&self.lazy, &path, &lookup, work).await?;
+        stage_mount_promotion(&self.lazy, &self.authored, &path, expected_source, work).await
     }
 
     pub(super) fn promote_parents_locked(
         &self,
         path: &MountPath,
-        original: Option<&crate::NativeMaterializationWork>,
-    ) -> Result<(), MountSourceError>
-    where
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
-        D: DemandSource + 'static,
-        S: LazyWorkspaceStore,
-    {
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
         for length in 1..path.components().len() {
-            let (parent, _allocation) = match original {
-                Some(work) => {
-                    let (path, allocation) = copy_path(&path.components()[..length], None, work)?;
-                    (path, Some(allocation))
-                }
-                None => (
-                    MountPath {
-                        components: path.components()[..length].to_vec(),
-                    },
-                    None,
-                ),
-            };
-            self.runtime.wait(|| self.promote(&parent, original))?;
+            let (parent, _allocation) = copy_path(&path.components()[..length], None, work)?;
+            self.runtime.wait(|| self.promote(&parent, work))?;
         }
         Ok(())
     }

@@ -1,4 +1,3 @@
-//! extension types semantics.
 use super::*;
 /// Explicit treatment of one extension's state at a child fork.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -115,7 +115,7 @@ fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
             },
             &mut work
         ),
-        Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     assert!(matches!(
         open_macos_metadata_target(&root.directory, Path::new("file"), &mut work)?.apply(
@@ -125,7 +125,7 @@ fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
             },
             &mut work
         ),
-        Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     Ok(())
 }
@@ -171,7 +171,7 @@ fn fifo_metadata_uses_a_nonblocking_held_handle_and_socket_metadata_fails_closed
             },
             &mut work
         ),
-        Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     let old_socket = temporary.path().join("old-socket");
     let pending = open_macos_metadata_target(&root.directory, Path::new("socket"), &mut work)?;

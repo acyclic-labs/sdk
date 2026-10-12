@@ -345,7 +345,12 @@ impl PiNativeCommandHost {
         };
         effect
             .owner
-            .verify(false, &mut Some(&mut native_work_io(&original_work)?))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(&original_work)?,
+                )),
+            )
             .await?;
         if effect.owner.task_id() != task || effect.context.durable_task_id() != Some(task) {
             return Err(unauthorized(
@@ -441,7 +446,14 @@ impl PiNativeCommandHost {
                     .clone();
                 effect
                     .owner
-                    .verify(false, &mut Some(&mut native_work_io(&original_work)?))
+                    .verify(
+                        false,
+                        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                            acyclic_harness::filesystem::PreparationIo::from_native_work(
+                                &original_work,
+                            )?,
+                        )),
+                    )
                     .await?;
                 let view = self
                     .live_view(task)
@@ -587,7 +599,12 @@ impl PiNativeCommandHost {
         self.child_admission(task, &work).await?;
         bound
             .owner
-            .verify(false, &mut Some(&mut native_work_io(&work)?))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
+                )),
+            )
             .await?;
         Ok(work)
     }

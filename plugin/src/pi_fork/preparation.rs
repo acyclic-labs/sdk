@@ -79,9 +79,9 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?;
         let verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let signed = &authority.0.2;
         let caller_id = work.display(&owner.task_id())?;
@@ -100,7 +100,7 @@ impl<'a> PiForkCoordinator<'a> {
         }
         verifier.0.verify_audience(
             parent.reducer().authority(),
-            &mut Some(&mut native_work_io(work)?),
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
         )?;
         self.selected_graph(context, owner, commit.source_task)
             .await?;
@@ -119,9 +119,9 @@ impl<'a> PiForkCoordinator<'a> {
         let mut selected_project = None;
         for (key, volume) in &source_input.binding.project_volumes {
             let name = {
-                let mut io = native_work_io(work)?;
+                let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                 let value = volume.storage_name(&mut Some(&mut io))?;
-                (value, io.into_custody())
+                (value, io.into_custody()?)
             };
             if name.0 == source.workspace().name().as_str() {
                 selected_project = Some((key, volume));
@@ -225,7 +225,7 @@ impl<'a> PiForkCoordinator<'a> {
                 reason: "Pi immutable result allocation must remain Preparing",
             });
         }
-        let mut child_volume_io = native_work_io(work)?;
+        let mut child_volume_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let child_project = child_project.copy(&mut Some(&mut child_volume_io))?;
         let child_private = commit
             .child
@@ -233,7 +233,7 @@ impl<'a> PiForkCoordinator<'a> {
             .volume
             .copy(&mut Some(&mut child_volume_io))?;
         let child_result = results.volume.copy(&mut Some(&mut child_volume_io))?;
-        let _child_volume_custody = child_volume_io.into_custody();
+        let _child_volume_custody = child_volume_io.into_custody()?;
         let child_id = work.display(&commit.child.task_id)?;
         #[derive(Serialize)]
         struct Arguments<'a> {
@@ -268,9 +268,15 @@ impl<'a> PiForkCoordinator<'a> {
             inherited_references: limits.resources,
             history_limits,
         };
-        let checkpoint_snapshot = parent.reducer().snapshot_native(usize::MAX, work)?;
+        let checkpoint_snapshot = {
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            let snapshot = parent.reducer().snapshot(usize::MAX, &mut Some(&mut io))?.0;
+            (snapshot, io.into_custody()?)
+        };
         let checkpoint_bytes = crate::pi_root_provider::guarded_pi_bytes(
-            &checkpoint_snapshot,
+            &checkpoint_snapshot.0,
             self.owner.policy().maximum_payload_bytes,
             work,
         )?;
@@ -323,12 +329,12 @@ impl<'a> PiForkCoordinator<'a> {
         let snapshot = source_snapshot.0;
         request_custody.absorb(&mut source_snapshot.1)?;
         let input_read = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = self.owner.policy().journal.directory_read_capability(
                 crate::pi_root_inputs::ROOT_INPUT_DIRECTORY,
                 &mut Some(&mut io),
             )?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         if !context.scope().grants().contains(&input_read.0) {
             return Err(Error::NativeBoundary {
@@ -474,7 +480,7 @@ impl<'a> PiForkCoordinator<'a> {
             custody: None,
         })?;
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         drop(launch_reference.0);
         let mut plan = PiForkPlan {

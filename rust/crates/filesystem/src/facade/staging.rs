@@ -368,33 +368,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .map(|object| (object, work))
             .map_err(|error| OperationFailure::new(error, work))
     }
-    pub(super) async fn put_encoded(
-        &self,
-        kind: ObjectKind,
-        encoded: OperationReceipt<Vec<u8>>,
-        prior: WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<(ObjectId, WorkCounters), OperationFailure<FsError>> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            accounting
-                .record_completed(add(prior, encoded.work).map_err(|failure| failure.error)?)?;
-            let allocation = accounting.claim_owned(encoded.value.capacity() as u64, 0)?;
-            self.put_encoded_with_accounting(
-                kind,
-                (encoded.value, allocation),
-                &mut accounting,
-                cancellation,
-            )
-            .await
-        }
-        .await;
-        let work = accounting.spent();
-        result
-            .map(|object| (object, work))
-            .map_err(|error| OperationFailure::new(error, work))
-    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {

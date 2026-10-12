@@ -300,7 +300,9 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
     );
     match result {
         Ok(value) => {
-            custody.resize(retained_owned)?;
+            custody.release(custody.bytes().checked_sub(retained_owned).ok_or(
+                acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+            )?)?;
             Ok((value, custody))
         }
         Err(Error::NativeDecode {
@@ -314,7 +316,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
         }),
         Err(error) => {
             // The SDK has already destroyed its partial DTO and parser here.
-            custody.resize(0)?;
+            custody.release(custody.bytes())?;
             drop(custody);
             Err(error)
         }

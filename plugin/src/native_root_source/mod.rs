@@ -4,7 +4,6 @@ use acyclic_fs::{
     MeasuredResult, NativeAllocation, NativeMaterializationWork, NativeRootIdentity,
     OperationFailure, OperationReceipt, WorkCounters,
 };
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::wire::ErrorCode;
 use acyclic_harness::{Error as RootError, Result as RootResult};
 
@@ -160,7 +159,12 @@ mod tests {
             .await?;
         fixture
             .journal
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                )),
+            )
             .await?;
         // Fixture::new obtained this protected result by observing the real
         // original Root effect and its actual Filesystem creator resources.
@@ -321,7 +325,9 @@ mod tests {
                     fixture.journal.require_volume_grant(
                         &foreign,
                         VolumeOperation::Read,
-                        &mut Some(&mut native_work_io(&work)?),
+                        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                            acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
+                        )),
                     )?;
                     Ok(expected)
                 },
