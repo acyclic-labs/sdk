@@ -169,12 +169,13 @@ impl NativeTaskContext {
             .filter(|binding| binding.writer.is_some())
             .ok_or_else(|| boundary(crate::wire::ErrorCode::Unauthorized,
                 "output volume has no authenticated created writer"))?;
-        let (permission, permission_custody) = volume.capability_with_native_work(
-            crate::conversation::VolumeOperation::Write, work,
+        let mut permission_io = crate::store::history::native_work_io(work)?;
+        let permission = volume.capability(
+            crate::conversation::VolumeOperation::Write, &mut Some(&mut permission_io),
         )?;
         let allowed = self.context.scope.grants().contains(&permission);
         drop(permission);
-        drop(permission_custody);
+        drop(permission_io);
         if !allowed {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "original task scope cannot write the selected output volume"));
@@ -420,7 +421,7 @@ impl ToolContext {
         let (permission, permission_custody) = volume.capability_with_native_work(operation, work)?;
         let allowed = self.effective_scope().grants().contains(&permission);
         drop(permission);
-        drop(permission_custody);
+        drop(permission_io);
         if allowed { Ok(()) } else {
             Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "effective tool scope cannot access the selected mounted volume"))
@@ -761,43 +762,35 @@ impl<P: acyclic_stream::StreamProvider> NativeContextVerifier<P> {
 }
 
 impl<P: acyclic_stream::StreamProvider + 'static> ContentResidencyVerifier for NativeContextVerifier<P> {
-    fn verify<'a>(&'a self, reference: &'a FileRef) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.authorize(reference).await?;
-            drop(self.context.context.read_file(reference).await?);
-            self.authorize(reference).await
+    fn verify<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            drop(self.read(reference, maximum_bytes, io)?.await?);
+            if let Some(work) = io.and_then(|io| io.original_native_work()) {
+                self.authorize_native(reference, maximum_bytes, work).await
+            } else { self.authorize(reference).await }
         })
     }
 
-    fn read<'a>(&'a self, reference: &'a FileRef) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
-            self.authorize(reference).await?;
-            let bytes = self.context.context.read_file(reference).await?;
-            self.authorize(reference).await?;
-            Ok(bytes)
-        })
-    }
-
-    fn verify_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, ()>> {
-        NativeFutureBundle::new(work, || async move {
-            self.authorize_native(reference, maximum_bytes, work).await?;
-            drop(self.context.context.read_file_with_native_work(reference, work).await?);
-            self.authorize_native(reference, maximum_bytes, work).await
-        })
-    }
-
-    fn read_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        NativeFutureBundle::new(work, || async move {
-            self.authorize_native(reference, maximum_bytes, work).await?;
-            let output = self.context.context.read_file_with_native_work(reference, work).await?;
-            self.authorize_native(reference, maximum_bytes, work).await?;
-            Ok(output)
+    fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if let Some(work) = io.and_then(|io| io.original_native_work()) {
+                self.authorize_native(reference, maximum_bytes, work).await?;
+                let bytes = self.context.context.read_file_with_native_work(reference, work).await?;
+                self.authorize_native(reference, maximum_bytes, work).await?;
+                Ok(bytes)
+            } else {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(boundary(crate::wire::ErrorCode::Invalid, "content exceeds the callback byte bound"));
+                }
+                self.authorize(reference).await?;
+                let bytes = self.context.context.read_file(reference).await?;
+                self.authorize(reference).await?;
+                Ok(bytes)
+            }
         })
     }
 }

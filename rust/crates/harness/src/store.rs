@@ -296,8 +296,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 &output,
                 "application/json",
                 "state.json",
-            )
-            .await?;
+                None,
+            )?
+            .await?.0;
         if content.volume() != publisher.volume() {
             return Err(Error::Unauthorized(
                 "extension publisher returned another volume".into(),
@@ -1500,16 +1501,16 @@ impl<P: StreamProvider> StreamAggregate<P> {
                         owner.require_effect_grants(provider, true, work)?;
                         #[cfg(not(target_arch = "wasm32"))]
                         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-                            owner.validate_input_file_with_native_work(request, native)?;
-                            owner.validate_input_file_with_native_work(result_schema, native)?;
+                            owner.validate_input_file(request, Some(&crate::filesystem::PreparationIo::from_native_work(native)?))?;
+                            owner.validate_input_file(result_schema, Some(&crate::filesystem::PreparationIo::from_native_work(native)?))?;
                         } else {
-                            owner.validate_input_file(request)?;
-                            owner.validate_input_file(result_schema)?;
+                            owner.validate_input_file(request, None)?;
+                            owner.validate_input_file(result_schema, None)?;
                         }
                         #[cfg(target_arch = "wasm32")]
                         {
-                            owner.validate_input_file(request)?;
-                            owner.validate_input_file(result_schema)?;
+                            owner.validate_input_file(request, None)?;
+                            owner.validate_input_file(result_schema, None)?;
                         }
                         crate::distributed::JournalWrite::Fresh
                     }
@@ -1759,7 +1760,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     ) -> Result<(acyclic_stream::OwnedBytes, u64)> {
         match work.as_deref_mut() {
             Some(observer) => history::read_content_with_work(observer, verifier, reference).await,
-            None => verifier.read(reference).await.map(|bytes| (bytes, 0)),
+            None => verifier.read(reference, reference.descriptor().byte_length(), None)?.await.map(|bytes| (bytes, 0)),
         }
     }
 
@@ -1782,9 +1783,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
             verifier.as_ref(), reference, scratch.work()).await?;
         scratch.adopt(claim)?;
         match detail_outcome {
-            Some(outcome) => ticket.validate_decision_for_request_with_work(
+            Some(outcome) => ticket.validate_decision_bytes(
                 request.request(), outcome, reference, &bytes, scratch.work()),
-            None => ticket.validate_answer_for_request_with_work(
+            None => ticket.validate_answer_bytes(
                 request.request(), reference, &bytes, scratch.work()),
         }
     }
@@ -1814,7 +1815,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let verifier = self.content_verifier.as_ref().ok_or_else(|| {
                 Error::Unsupported("interaction content verifier is not bound".into())
             })?;
-            let bytes = verifier.read(&ticket.request).await?;
+            let bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
             ticket.validate_request_bytes(&bytes)?;
         }
         if let crate::core::Action::ResolveInteraction { resolution } = action
@@ -1827,10 +1828,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .reducer
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-            let request_bytes = verifier.read(&ticket.request).await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
-            let answer_bytes = verifier.read(answer).await?;
-            ticket.validate_answer_bytes(&request, answer, &answer_bytes)?;
+            let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
+            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?;
+            let answer_bytes = verifier.read(answer, answer.descriptor().byte_length(), None)?.await?;
+            ticket.validate_answer_bytes(&request, answer, &answer_bytes, &mut None)?;
         }
         if let crate::core::Action::ResolveInteraction { resolution } = action
             && let Some(detail) = &resolution.detail
@@ -1842,10 +1843,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .reducer
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-            let request_bytes = verifier.read(&ticket.request).await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
-            let detail_bytes = verifier.read(detail).await?;
-            ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes)?;
+            let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
+            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?;
+            let detail_bytes = verifier.read(detail, detail.descriptor().byte_length(), None)?.await?;
+            ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes, &mut None)?;
         }
         if let crate::core::Action::AppendCustom {
             schema,
@@ -1856,7 +1857,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let verifier = self.content_verifier.as_ref().ok_or_else(|| {
                 Error::Unsupported("extension content verifier is not bound".into())
             })?;
-            let bytes = verifier.read(content).await?;
+            let bytes = verifier.read(content, content.descriptor().byte_length(), None)?.await?;
             self.reducer
                 .validate_custom_bytes(schema, *version, content, &bytes)?;
         }
@@ -1880,9 +1881,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
             if source != previous {
                 return Err(Error::Conflict("extension migration source changed".into()));
             }
-            self.limits.validate_file(&prior.content)?;
-            self.limits.validate_file(content)?;
-            let old_bytes = verified_content_bytes(verifier.as_ref(), &prior.content).await?;
+            self.limits.validate_file(&prior.content, &mut None)?;
+            self.limits.validate_file(content, &mut None)?;
+            let (old_bytes, _old_hold) = verified_content_bytes(verifier.as_ref(), &prior.content, self.limits.file_bytes, None).await?;
             self.reducer
                 .validate_custom_bytes(name, prior.version, &prior.content, &old_bytes)?;
             let previous_value: Value =
@@ -1899,7 +1900,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 target_digest,
                 &previous_value,
             )?;
-            let bytes = verified_content_bytes(verifier.as_ref(), content).await?;
+            let (bytes, _hold) = verified_content_bytes(verifier.as_ref(), content, self.limits.file_bytes, None).await?;
             self.reducer
                 .validate_custom_bytes(name, *to_version, content, &bytes)?;
             if bytes.as_ref() != crate::contract::canonical_json_bytes(&expected)?.as_slice() {
@@ -1912,7 +1913,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let verifier = self.content_verifier.as_ref().ok_or_else(|| {
                 Error::Unsupported("extension content verifier is not bound".into())
             })?;
-            let bytes = verifier.read(content).await?;
+            let bytes = verifier.read(content, content.descriptor().byte_length(), None)?.await?;
             self.reducer
                 .validate_configuration_bytes(extension, content, &bytes)?;
         }
@@ -1942,6 +1943,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                         manifest,
                         *item_count,
                         &self.limits,
+                        None,
                     )
                     .await?;
                 }
@@ -1960,7 +1962,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 Error::Unsupported("effect request content verifier is not bound".into())
             })?;
             verified_content_bytes(verifier.as_ref(), request, (request).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
-            let schema_bytes = verifier.read(result_schema).await?;
+            let schema_bytes = verifier.read(result_schema, result_schema.descriptor().byte_length(), None)?.await?;
             validate_schema_bytes(result_schema, &schema_bytes)?;
         }
         if let crate::core::Action::ResolveEffect { observation } = action
@@ -1973,8 +1975,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .reducer
                 .effect(observation.effect_id)
                 .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
-            let bytes = verifier.read(result).await?;
-            let schema_bytes = verifier.read(&effect.result_schema).await?;
+            let bytes = verifier.read(result, result.descriptor().byte_length(), None)?.await?;
+            let schema_bytes = verifier.read(&effect.result_schema, effect.result_schema.descriptor().byte_length(), None)?.await?;
             let schema = validate_schema_bytes(&effect.result_schema, &schema_bytes)?;
             validate_result_bytes(&schema, result, &bytes)?;
         }
