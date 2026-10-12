@@ -377,7 +377,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     }
                     match self
                         .current
-                        .restore_generation_with_permit(
+                        .restore_generation(
                             &source,
                             current.id(),
                             IdempotencyKey::from_bytes(operation_id.into_bytes()),
@@ -463,7 +463,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     idempotency_key: IdempotencyKey::from_bytes(operation_id.into_bytes()),
                 };
                 let initial = plan
-                    .apply_with_permit(options, self.permit)
+                    .apply(options, self.permit)
                     .await
                     .map_err(display)?;
                 let mut projected_conflicts = None;
@@ -492,7 +492,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                             if acyclic_fs::text_merge::has_conflict_markers(text))
                     });
                     let outcome = plan
-                        .apply_candidate_with_permit(options, &candidate, self.permit)
+                        .apply_candidate(options, &candidate, self.permit)
                         .await
                         .map_err(display)?;
                     if has_markers {
@@ -578,7 +578,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 let current = self.current.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?;
                 let outcome = self
                     .current
-                    .apply_paths_from_with_permit(
+                    .apply_paths_from(
                         base.as_ref(),
                         source.as_ref(),
                         &paths.iter().cloned().collect::<Vec<_>>(),

@@ -1081,7 +1081,7 @@ where
             .apply(ApplyOptions {
                 if_target: target_id,
                 idempotency_key: operation,
-            })
+            }, crate::PublicationPermit::Unrestricted)
             .await
             .map_err(|error| status(&error))?;
         let outcome = if existing_operation

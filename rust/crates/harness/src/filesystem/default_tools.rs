@@ -6,6 +6,7 @@ use super::{
     TaskCommandHost, TaskCommandProgress, FORK_PREPARE_TASK_COMMAND_KIND,
     MODEL_TASK_COMMAND_KIND, TASK_ADMIT_PREPARED_COMMAND_KIND, fork_preparation_request,
 };
+use crate::runtime::TaskStateProvider;
 use crate::{
     Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::{ContentGrant, ConversationMessage, FileRef, VolumeOperation, VolumeRef},
@@ -287,7 +288,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     if maximum_request_bytes == 0 || maximum_request_bytes == u64::MAX {
         return Err(Error::Invalid("recursive request bound must be finite and positive".into()));
     }
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(crate::tool::files::read_file()?)?;
     tools.register(crate::tool::files::write_file()?)?;
     tools.register(crate::tool::files::edit_file()?)?;
@@ -688,8 +689,8 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
             recursive_observe(io, |work| {
                 plan.source_project.validate(work)?;
                 plan.target_project.validate(work)?;
-                plan.source_generation.validate_with_work(work)?;
-                plan.expected_target_generation.validate_with_work(work)?;
+                plan.source_generation.validate(work)?;
+                plan.expected_target_generation.validate(work)?;
                 plan.notice.validate(work)
             })?;
             if let Some(source) = &plan.authorized_source {
@@ -1819,7 +1820,7 @@ where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
     let effective = recursive_effective_scope(context, io);
     recursive_observe(io, |work| {
         binding.source.request.validate(work)?;
-        binding.child.validate_with_work(work)?;
+        binding.child.validate(work)?;
         effective.limits().validate_file(&binding.source_checkpoint, work)
     })?;
     if !recursive_observe(io, |work| crate::runtime::read_granted_with_work(effective.grants(), &binding.source_checkpoint, work))? {

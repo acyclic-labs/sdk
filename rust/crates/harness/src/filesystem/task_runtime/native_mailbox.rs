@@ -61,8 +61,7 @@ pub(super) fn read_received<'a, P: StreamProvider + 'static>(
 ) -> Result<crate::NativeFutureBundle<'a, OwnedBytes>> {
     require_original(mailbox, work)?;
     crate::NativeFutureBundle::new(work, || async move {
-        mailbox.host.read_received_from_owner_with_native_work(
-            mailbox.owner.as_ref(), receive, item, work,
-        ).await
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        mailbox.host.read_received_mail_owned(mailbox.owner.as_ref(), receive, item, Some(&io)).await
     })
 }

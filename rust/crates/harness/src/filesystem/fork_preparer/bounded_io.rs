@@ -119,7 +119,7 @@ fn finish_encoding<T>(mut diagnostics: DecodeReservation<'_>, result: Result<T>)
 }
 
 /// Audited closed Harness DTOs only, including their Value/string/vector containers.
-pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {
+pub(crate) trait PreparationRecord: serde::de::DeserializeOwned {
     fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
     /// Static diagnostic label bound.
     fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
@@ -686,16 +686,13 @@ impl PreparationIo {
         &self, future: crate::store::history::HistoryContentFuture<'_, T>,
     ) -> Result<T> {
         let frame = match &future {
-            crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => *frame_bytes,
+            crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => Some(self.guard_owned(*frame_bytes)?),
             #[cfg(not(target_arch = "wasm32"))]
-            crate::store::history::HistoryContentFuture::Native(_) => 0,
+            crate::store::history::HistoryContentFuture::Native(_) => None,
         };
         let result = future.await;
-        let released = if frame == 0 { Ok(()) } else { self.release(frame) };
-        match result {
-            Ok(value) => released.map(|()| value),
-            Err(error) => { let _ = released; Err(error) }
-        }
+        drop(frame);
+        result
     }
 
     pub(crate) async fn verify_publication_lease(
@@ -842,8 +839,12 @@ impl PreparationIo {
         &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
     ) -> Result<T> {
         let mut decoded = self.value_decode_with_schema::<T>(
-            source, code, T::json_value_schema(), preparation_slot_bytes::<T>(),
-            T::diagnostic_label_bytes(), None,
+            source, code, T::json_value_schema(), T::diagnostic_label_bytes(), |shape| {
+                crate::contract::json_typed_value_decode_owned_bytes(shape, preparation_slot_bytes::<T>())
+                    .map_err(|error| decode_allowance_with_code(error, Some(code)))?
+                    .checked_add(std::mem::size_of::<T>() as u64)
+                    .ok_or_else(|| decode_allowance_error("typed Value reservation overflow", Some(code)))
+            },
         )?;
         let actual = (std::mem::size_of::<T>() as u64)
             .checked_add(decoded.0.logical_owned_bytes()?)
@@ -857,17 +858,16 @@ impl PreparationIo {
         &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
     ) -> Result<(T, DecodeReservation<'_>)> {
         self.value_decode_with_schema(
-            source, code, T::json_value_schema(), T::maximum_slot_bytes(),
-            T::diagnostic_label_bytes(), Some(T::decode_owned_allowance),
+            source, code, T::json_value_schema(), T::diagnostic_label_bytes(),
+            |shape| T::decode_owned_allowance(shape, 0, shape.input_bytes(), Some(code)),
         )
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn value_decode_with_schema<T: serde::de::DeserializeOwned>(
         &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
-        schema: crate::contract::JsonValueSchema, slot_bytes: u64,
-        diagnostic_label_bytes: u64,
-        profile: Option<fn(crate::contract::JsonValueShape, u64, u64, Option<crate::wire::ErrorCode>) -> Result<u64>>,
+        schema: crate::contract::JsonValueSchema, diagnostic_label_bytes: u64,
+        mut allowance: impl FnMut(crate::contract::JsonValueShape) -> Result<u64>,
     ) -> Result<(T, DecodeReservation<'_>)> {
         if self.original_native_work().is_none() {
             return Err(self.invalid("native Value decoding requires original work"));
@@ -882,14 +882,7 @@ impl PreparationIo {
         let result = crate::contract::json_from_value_bounded(
             std::borrow::Cow::Borrowed(source), bounds, 0, code, schema, &mut |next| match next {
                 crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
-                    let allowance = match profile {
-                        Some(profile) => profile(value_shape, 0, value_shape.input_bytes(), Some(code))?,
-                        None => crate::contract::json_typed_value_decode_owned_bytes(
-                            value_shape, slot_bytes,
-                        ).map_err(|error| decode_allowance_with_code(error, Some(code)))?
-                            .checked_add(std::mem::size_of::<T>() as u64)
-                            .ok_or_else(|| decode_allowance_error("typed Value reservation overflow", Some(code)))?,
-                    };
+                    let allowance = allowance(value_shape)?;
                     let diagnostics = if schema == crate::contract::JsonValueSchema::Root {
                         0
                     } else {
@@ -1181,7 +1174,7 @@ pub(in crate::filesystem) fn volume_storage_name(volume: &VolumeRef, io: Option<
 pub(crate) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Workspace<A, O>> {
-    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
+    reference.validate(&mut Some(&mut io.history_io()))?;
     if reference.as_resource().provider() != &host.provider {
         return Err(failure(Some(io), crate::wire::ErrorCode::Invalid, "resource belongs to another Filesystem provider"));
     }
@@ -1196,7 +1189,7 @@ pub(crate) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, workspace: &acyclic_fs::Workspace<A, O>,
     reference: &crate::resources::GenerationRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Generation<A, O>> {
-    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
+    reference.validate(&mut Some(&mut io.history_io()))?;
     if reference.as_resource().provider() != &host.provider {
         return Err(failure(Some(io), crate::wire::ErrorCode::Invalid, "resource belongs to another Filesystem provider"));
     }
@@ -1244,7 +1237,7 @@ pub(in crate::filesystem) async fn resolve<A: AsyncAuthorityStore, O: AsyncObjec
                 let provider = crate::core::copy_provider(reference.provider(), &mut quota)?;
                 let key = crate::core::copy_copy_vector(reference.key(), &mut quota)?;
                 let version = reference.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
-                let resource = ResourceRef::new_with_work(reference.kind(), provider, key, version, quota.work())?;
+                let resource = ResourceRef::new(reference.kind(), provider, key, version, quota.work())?;
                 let workspace = WorkspaceRef::from_resource_with_work(resource, quota.work())?;
                 quota.transfer();
                 workspace
@@ -1616,7 +1609,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
                 let work = work.clone();
                 async move { guard.verify_creation_with_native_work(&work)?.await }
             };
-            workspace.fork_with_permit_guarded_with_native_work(&child_name, options,
+            workspace.fork_with_native_work(&child_name, options,
                 acyclic_fs::PublicationPermit::Unrestricted, original, io.cancellation(), &mut before).await?
         } else {
             io.receive(workspace.fork(&child_name, options, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, io.cancellation(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))).await)?
@@ -1649,8 +1642,21 @@ mod tests {
     use acyclic_fs::Fs;
 
     #[tokio::test]
+    async fn dropping_pending_completion_releases_its_frame() -> Result<()> {
+        let io = PreparationIo::from_budget(acyclic_fs::performance::work_budget(100_000, 16_000_000), &CancellationToken::new())?;
+        let before = io.owned_bytes()?;
+        let future = io.history_future(|| async { std::future::pending::<()>().await; Ok(()) })?;
+        assert!(io.owned_bytes()? > before);
+        let mut completion = Box::pin(io.finish_future(future));
+        assert!(futures::poll!(&mut completion).is_pending());
+        drop(completion);
+        assert_eq!(io.owned_bytes()?, before);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix() -> Result<()> {
-        let provider = crate::resources::ProviderRef::new("ordinary-owner-control", "filesystem", "2")?;
+        let provider = crate::resources::ProviderRef::new("ordinary-owner-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
         let volume = VolumeRef::new(provider, "owned", VolumeClass::Project,
             VolumeOwner::Project("ordinary-owner-control".into()))?;
@@ -1677,13 +1683,13 @@ mod tests {
                 Ok(())
             },
         ).await?;
-        assert_eq!(accepted.read("/file", 32).await.map_err(map_error)?.as_ref(), b"owned");
+        assert_eq!(host.read(&initial.workspace, Some(&host.generation_ref(&accepted)?), "/file", 32).await?.as_ref(), b"owned");
         Ok(())
     }
 
     #[tokio::test]
     async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() -> Result<()> {
-        let provider = crate::resources::ProviderRef::new("source-read-control", "filesystem", "2")?;
+        let provider = crate::resources::ProviderRef::new("source-read-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
         let project = |name: &str| VolumeRef::new(provider.clone(), name, VolumeClass::Project,
             VolumeOwner::Project("source-read-control".into()));
@@ -1703,10 +1709,10 @@ mod tests {
             kind: AggregateKind::Conversation, id: "caller".into(),
         });
         let scope = issuer.issue("exact-project-read", &crate::Capabilities::new([
-            source.capability(VolumeOperation::Read)?, caller.capability(VolumeOperation::Read)?,
+            source.capability(VolumeOperation::Read, &mut None)?, caller.capability(VolumeOperation::Read, &mut None)?,
         ]), None, None, &mut None).expect("scope proof");
-        let selected_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &source, VolumeOperation::Read)?;
-        let caller_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &caller, VolumeOperation::Read)?;
+        let selected_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &source, VolumeOperation::Read, MAX_CAPTURE_BYTES, &mut None)?;
+        let caller_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &caller, VolumeOperation::Read, MAX_CAPTURE_BYTES, &mut None)?;
         assert!(matches!(fork(&host, &source, &caller_read, &selected_generation, &denied_child,
             None, &IdempotencyKey::new("denied-source-read")?, None, None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1725,16 +1731,13 @@ mod tests {
             None, &IdempotencyKey::new("pinned-selected-fork")?, None, None,
             #[cfg(not(target_arch = "wasm32"))]
             None).await?;
-        assert_eq!(host.read(&forked.workspace, Some(&forked.generation), "/value.txt", 32).await?,
-            bytes::Bytes::from_static(b"selected"));
+        assert_eq!(host.read(&forked.workspace, Some(&forked.generation), "/value.txt", 32).await?.as_ref(), b"selected");
         host.apply(&forked.workspace, Some(&forked.generation),
             &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"child".to_vec() }],
             &IdempotencyKey::new("isolated-child-edit")?).await?;
         assert_eq!(host.resolve(&initial.workspace).await?.generation, later_generation);
-        assert_eq!(host.read(&initial.workspace, None, "/value.txt", 32).await?,
-            bytes::Bytes::from_static(b"later"));
-        assert_eq!(host.read(&initial.workspace, Some(&selected_generation), "/value.txt", 32).await?,
-            bytes::Bytes::from_static(b"selected"));
+        assert_eq!(host.read(&initial.workspace, None, "/value.txt", 32).await?.as_ref(), b"later");
+        assert_eq!(host.read(&initial.workspace, Some(&selected_generation), "/value.txt", 32).await?.as_ref(), b"selected");
         Ok(())
     }
 }

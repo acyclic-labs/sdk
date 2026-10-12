@@ -133,7 +133,7 @@ async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn st
     let receipt = capture_baseline(
         &mut checkout,
         &options,
-        &acyclic_fs::CapturePolicy::allow_all(),
+        &acyclic_fs::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     )

@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::{AgentId, Capabilities, core::{AggregateKind, Authority}, conversation::{VolumeClass, VolumeOwner}};
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -14,7 +15,7 @@ async fn public_browser_selected_inspection_and_custom_loop_use_real_owner_and_p
     let owner = WasmReducer::new(to_js(&Authority { kind: AggregateKind::Task, id: id.clone() })?,
         "headless-browser".into(), vec![41; 32], to_js(&Vec::<Value>::new())?)?;
     let agent = AgentId::from_bytes([42; 16]);
-    let provider = ProviderRef::new("headless-browser", "filesystem", "2").map_err(js_error)?;
+    let provider = ProviderRef::new("headless-browser".into(), "filesystem".into(), "2".into(), &mut None).map_err(js_error)?;
     let volume = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).map_err(js_error)?;
     let scope = owner.issuer.issue("owner", &Capabilities::new([
         "operation:declare".into(), "operation:observe".into(), "operation:cancel".into(),

@@ -70,6 +70,7 @@ struct Installed {
     active: usize,
 }
 
+#[derive(Default)]
 struct RegistryState {
     current: BTreeMap<String, ExtensionIdentity>,
     versions: BTreeMap<ExtensionIdentity, Installed>,
@@ -77,18 +78,8 @@ struct RegistryState {
 }
 
 /// Thread-safe exact-version registry for native implementations.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ExtensionRegistry(Arc<Mutex<RegistryState>>);
-
-impl Default for ExtensionRegistry {
-    fn default() -> Self {
-        Self(Arc::new(Mutex::new(RegistryState {
-            current: BTreeMap::new(),
-            versions: BTreeMap::new(),
-            version_digests: BTreeMap::new(),
-        })))
-    }
-}
 
 impl ExtensionRegistry {
     /// Installs one exact executable version and accepts it for new work.

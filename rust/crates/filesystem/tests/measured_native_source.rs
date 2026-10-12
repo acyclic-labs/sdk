@@ -365,7 +365,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     assert_eq!(recovered.value.1.id(), original_id);
     assert_eq!(recovered.value.1.workspace_id(), workspace_id);
     assert_eq!(recovered.value.0.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
-    assert_eq!(recovered.value.0.snapshot().await?.source, advanced);
+    assert_eq!(recovered.value.0.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await?.source, advanced);
     assert_eq!(store.load_lazy_workspace(workspace_id).await?.ok_or("lost binding")?.source, advanced);
 
     let foreign_source = Arc::new(NativeDemandSource::open_with_reference_measured(
@@ -465,9 +465,9 @@ async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -
     failure.work.verify(limited)?;
 
     let file = source.open_file(source.reference(), &path, node.version, budget, &token).await?.value;
-    let baseline = file.read_range(0, 6, budget, &token)?;
+    let baseline = acyclic_fs::demand::read_file(&*file, 0, 6, budget, &token)?;
     limited.backend_read_operations = baseline.work.backend_read_operations.checked_sub(1).ok_or("no held native IO")?;
-    let failure = file.read_range(0, 6, limited, &token).err().ok_or("held file ignored native IO limit")?;
+    let failure = acyclic_fs::demand::read_file(&*file, 0, 6, limited, &token).err().ok_or("held file ignored native IO limit")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
     assert_eq!(failure.work.source_bytes_read, 6);
     assert_eq!(failure.work.output_bytes, 0);

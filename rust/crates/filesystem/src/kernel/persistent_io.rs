@@ -271,7 +271,6 @@ async fn read_cold_standalone<S: AsyncObjectStore>(
                 store, page, maximum_bytes, budget, cancellation,
                 data_custody.map(crate::async_storage::ObjectReadObservation::new),
             ).await
-                .map(|receipt| crate::OperationReceipt { value: receipt.value, work: receipt.work })
                 .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, Error::Storage))
         },
         remaining, cancellation, Error::Storage(ObjectStoreError::Cancelled),

@@ -19,10 +19,9 @@ fn decode_location_with_work(
     bytes: &[u8],
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<EffectLocation> {
-    if work.is_some() {
-        operations::validate_canonical_json_with_work(bytes, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
-    }
-    let Some(observer) = work.as_deref_mut() else { return crate::executor::decode_json(bytes); };
+    operations::validate_canonical_json_with_work(bytes, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
+    let Some(observer) = work.as_deref_mut() else { return crate::contract::json_from_slice(bytes)
+        .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}"))); };
     let mut reservation = 0;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
         bytes.len() as u64,
@@ -201,11 +200,11 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
     publication: &mut operations::IndexedPublication,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
-    let verifier = reducer.event_verifier(work)?;
+    let verifier = reducer.event_verifier();
     let result = async {
         let Some(effect_id) = crate::core::event_effect_id(&event.payload) else {
             return effect_heads::publication_with_work(
-                client, reducer.authority(), &verifier, event, None, publication, work,
+                client, reducer.authority(), verifier, event, None, publication, work,
             ).await;
         };
         let mut path = Some(path_with_work(reducer.authority(), effect_id, work)?);
@@ -224,7 +223,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
                     .await?
                     .ok_or_else(|| Error::Storage("effect transition head is missing".into()))?;
                 let prior = verified_with_work(
-                    client, reducer.authority(), &verifier, effect_id, &record,
+                    client, reducer.authority(), verifier, effect_id, &record,
                     2 * acyclic_stream::MAX_RECORD_BYTES as u64, work,
                 ).await;
                 let record_bytes = operations::sdk_record_retained_bytes(&record, work);
@@ -263,7 +262,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
                 path.take().expect("original effect path"), expected, encoded, work);
             operations::release_owned_after_drop(appended, location_capacity, work)?;
             effect_heads::publication_with_work(
-                client, reducer.authority(), &verifier, event,
+                client, reducer.authority(), verifier, event,
                 Some((effect_id, effect_heads::Head { revision: event.revision, position: expected })),
                 publication, work,
             ).await
@@ -276,12 +275,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
             None => result,
         }
     }.await;
-    let verifier_capacity = verifier.logical_owned_bytes();
-    drop(verifier);
-    match verifier_capacity {
-        Ok(capacity) => operations::release_owned_after_drop(result, capacity, work),
-        Err(error) => match result { Err(original) => Err(original), Ok(()) => Err(error) },
-    }
+    result
 }
 
 /// Reads authenticated effect events at a bounded committed cut.
@@ -529,7 +523,7 @@ pub(super) async fn retirement_proof_for_event_with_work<P: StreamProvider>(
         let capacity = expected.capacity() as u64;
         drop(expected);
         let released = match work.as_deref_mut() {
-            Some(observer) => observer.release_bytes(capacity),
+            Some(observer) => observer.release_owned(capacity),
             None => Ok(()),
         };
         matches?;
@@ -663,7 +657,7 @@ mod native_effect_paid_point_tests {
         let issuer = AuthorityIssuer::new("paid-effect-point", [7; 32], authority.clone());
         let reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
         let volume = VolumeRef::new(
-            ProviderRef::new("test", "filesystem", "2")?, "effect-volume",
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, "effect-volume",
             VolumeClass::AgentPrivate, VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
         )?;
         let request = FileRef::new(volume.clone(), "effects/request.json", "generation-1",
