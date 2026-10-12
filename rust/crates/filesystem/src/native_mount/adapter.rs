@@ -8618,24 +8618,12 @@ where
 
     fn create_absent_file(
         &self, path: &MountPath, metadata: FileMetadata, absent_since: ViewStamp,
-    ) -> Result<MountLookup, MountSourceError> {
-        boundary(&self.cancellation, |work| self.create_absent_file_with_meter(path, metadata, absent_since, work))
-    }
-
-    fn create_absent_file_with_meter(
-        &self, path: &MountPath, metadata: FileMetadata, absent_since: ViewStamp,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountLookup, MountSourceError> {
         self.create_file_on_carrier(path, metadata, Some(absent_since), NativeDemandCarrier::Native(work), work.native_read_meter())
     }
 
     fn create_directory(
-        &self, path: &MountPath, metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError> {
-        boundary(&self.cancellation, |work| self.create_directory_with_meter(path, metadata, work))
-    }
-
-    fn create_directory_with_meter(
         &self,
         path: &MountPath,
         metadata: FileMetadata,
@@ -8651,14 +8639,6 @@ where
     }
 
     fn create_symbolic_link(
-        &self, path: &MountPath, target: Bytes, metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError> {
-        boundary(&self.cancellation, |work| self.create_symbolic_link_with_meter(
-            path, crate::kernel::OwnedSourceChunk::claimed(target.into(), 0), metadata, work,
-        ))
-    }
-
-    fn create_symbolic_link_with_meter(
         &self,
         path: &MountPath,
         target: crate::kernel::OwnedSourceChunk,
@@ -8688,12 +8668,6 @@ where
     }
 
     fn set_attributes(
-        &self, path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>,
-    ) -> Result<(), MountSourceError> {
-        boundary(&self.cancellation, |work| self.set_attributes_with_meter(path, metadata, logical_bytes, work))
-    }
-
-    fn set_attributes_with_meter(
         &self,
         path: &MountPath,
         metadata: FileMetadata,
@@ -9741,7 +9715,7 @@ mod tests {
         source.create_file(&path, metadata())?;
         source.write_range(&path, 0, Bytes::from_static(b"content"))?;
         let link = native_test_path("link");
-        source.create_symbolic_link(&link, Bytes::from_static(b"actual"), metadata())?;
+        boundary(&source.cancellation, |work| source.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((Bytes::from_static(b"actual")).into(), 0), metadata(), work))?;
         let cancellation = CancellationToken::new();
         let budget = crate::performance::BOUNDARY_BUDGET;
         let work = crate::NativeMaterializationWork::new(budget, &cancellation)
@@ -10525,12 +10499,12 @@ mod tests {
             Err(MountSourceError::AlreadyExists)
         ));
         assert!(matches!(
-            source.create_absent_file(&path, metadata(), stale),
+            boundary(&source.cancellation, |work| source.create_absent_file(&path, metadata(), stale, work)),
             Err(MountSourceError::AlreadyExists)
         ));
         source.sync()?;
         assert!(matches!(
-            source.create_absent_file(&path, metadata(), stale),
+            boundary(&source.cancellation, |work| source.create_absent_file(&path, metadata(), stale, work)),
             Err(MountSourceError::AlreadyExists)
         ));
         Ok(())
@@ -10598,9 +10572,9 @@ mod tests {
         };
         assert!(capacity > 3, "the real queued buffer has spare capacity");
         let second_path = native_test_path("bounded-queued-second");
-        let second_created = source.create_absent_file(
-            &second_path, metadata(), source.checkout.ledger.stamp(),
-        )?;
+        let second_created = boundary(&source.cancellation, |work| source.create_absent_file(
+            &second_path, metadata(), source.checkout.ledger.stamp(), work,
+        ))?;
         let second_file = source.open_created(&second_path, &second_created)?;
         second_file.write_range(0, Bytes::from_static(b"two"))?;
         let second_pending = source.checkout.pending_create(second_created.node.file_id)
@@ -11491,7 +11465,7 @@ mod tests {
         let (completed, receive) = std::sync::mpsc::sync_channel(1);
         let task = std::thread::spawn(move || {
             let result =
-                writer.create_directory(&MountPath::root().child(b"leased".to_vec()), metadata());
+                boundary(&writer.cancellation, |work| writer.create_directory(&MountPath::root().child(b"leased".to_vec()), metadata(), work));
             assert!(completed.send(result).is_ok(), "mutation result receiver");
         });
         assert!(
@@ -11679,11 +11653,10 @@ mod tests {
             child(&directory, "c"),
             child(&other, "x"),
         );
-        let directory_id = source
-            .create_directory(&directory, metadata())?
+        let directory_id = boundary(&source.cancellation, |work| source.create_directory(&directory, metadata(), work))?
             .node
             .file_id;
-        let other_id = source.create_directory(&other, metadata())?.node.file_id;
+        let other_id = boundary(&source.cancellation, |work| source.create_directory(&other, metadata(), work))?.node.file_id;
         let a_id = source.create_file(&a, metadata())?.node.file_id;
         let b_id = source.create_file(&b, metadata())?.node.file_id;
         let x_id = source.create_file(&x, metadata())?.node.file_id;
@@ -11721,7 +11694,7 @@ mod tests {
         let host = tempfile::tempdir()?;
         for directory in ["captured", "untouched"] {
             std::fs::create_dir(host.path().join(directory))?;
-            source.create_directory(&native_test_path(directory), metadata())?;
+            boundary(&source.cancellation, |work| source.create_directory(&native_test_path(directory), metadata(), work))?;
             for name in ["a", "b"] {
                 std::fs::write(host.path().join(directory).join(name), b"host")?;
             }
@@ -11995,7 +11968,7 @@ mod tests {
         };
         let (manual, _) = shared_sources(profile, MountPublication::Manual)?;
         let initial = checkout_state(&manual).0;
-        manual.create_directory(&native_test_path("src"), metadata())?;
+        boundary(&manual.cancellation, |work| manual.create_directory(&native_test_path("src"), metadata(), work))?;
         boundary(&manual.cancellation, |work| manual.flush(work))?;
         assert_eq!(checkout_state(&manual), (initial, true));
         manual.sync()?;
@@ -12024,7 +11997,7 @@ mod tests {
         let before = checkout_state(&per_mutation).0;
         per_mutation.create_file(&native_test_path("published.bin"), metadata())?;
         let published_directory = native_test_path("published-directory");
-        let created_directory = per_mutation.create_directory(&published_directory, metadata())?;
+        let created_directory = boundary(&per_mutation.cancellation, |work| per_mutation.create_directory(&published_directory, metadata(), work))?;
         assert_eq!(
             per_mutation.lookup(&published_directory)?,
             Some(created_directory)
@@ -12038,7 +12011,7 @@ mod tests {
             MountPublication::PerMutation,
         )?;
         let portable_directory = native_test_path("portable-directory");
-        let created_directory = portable.create_directory(&portable_directory, metadata())?;
+        let created_directory = boundary(&portable.cancellation, |work| portable.create_directory(&portable_directory, metadata(), work))?;
         assert_eq!(
             portable.lookup(&portable_directory)?,
             Some(created_directory)

@@ -5387,7 +5387,7 @@ fn capture_changed_windows_metadata(
         metadata.modified_ns = MetadataField::Value(unix_nanoseconds(current.modified)?);
     }
     verify_source_write_work(projection.source, projection.work)?;
-    projection.source.set_attributes_with_meter(path, metadata, None, projection.work)
+    projection.source.set_attributes(path, metadata, None, projection.work)
         .map_err(detach_source_error)?;
     verify_source_write_work(projection.source, projection.work)?;
     projection.source.flush(projection.work).map_err(detach_source_error)?;
