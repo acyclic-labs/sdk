@@ -23,7 +23,7 @@ For custom authentication, use `new Inference(new InferenceClient(new HttpInfere
 
 Discover an opaque policy in `models[].idleKvProfiles`, then call
 `context.retain({ idleKv: { profile, idleTimeoutMs }, identity })`. Rust uses
-`context.retain(Retention::idle_kv(profile, idle_timeout_ms))`. This paid KV pin
+`Inference::retention_request(revision, Retention::idle_kv(profile, idle_timeout_ms))`. This paid KV pin
 does not guarantee capacity, throughput, or latency. Keep the request identity
 for retries; Rust admission and renewal builders preserve it when cloned.
 

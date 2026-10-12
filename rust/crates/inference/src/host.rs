@@ -127,41 +127,85 @@ impl Inference {
         )
     }
 
-    /// Start an exact immutable Context creation with a stable pre-dispatch identity.
+    /// Prepares one immutable Context creation with a stable pre-dispatch identity.
     #[must_use]
-    pub fn context(&self, model: impl Into<String>) -> CreateContext {
-        CreateContext {
+    pub fn context(&self, model: impl Into<String>) -> wire::CreateContextRequest {
+        wire::CreateContextRequest { identity: Some(self.identity()), model: model.into(), items: Vec::new() }
+    }
+
+    /// Creates or reconciles the same prepared Context and requires a retained revision.
+    #[tracing::instrument(
+        name = "acyclic.inference.context.create",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn create_context(&self, request: &wire::CreateContextRequest) -> Result<[u8; 32], Error> {
+        obs::finish(async {
+            bounded(request)?;
+            let receipt = self.rpc().create(self.request(request.clone())?).await?.into_inner();
+            validate_receipt(&receipt)?;
+            if !receipt.retained { return Err(Error::Invalid("creation did not retain a revision")); }
+            fixed(&receipt.revision)
+        }.await)
+    }
+
+    /// Reads one retained Context and validates its exact revision and logical identity.
+    #[tracing::instrument(
+        name = "acyclic.inference.context.inspect",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn inspect_context(&self, revision: [u8; 32]) -> Result<wire::ContextView, Error> {
+        obs::finish(async {
+            nonzero(&revision)?;
+            let view = self.rpc().inspect(self.request(wire::InspectContextRequest {
+                revision: revision.to_vec(),
+            })?).await?.into_inner();
+            validate_context_view(&view, revision)?;
+            Ok(view)
+        }.await)
+    }
+
+    /// Submits or reconciles the same prepared mutation and validates its receipt.
+    #[tracing::instrument(
+        name = "acyclic.inference.context.mutate",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn mutate_context(&self, request: &wire::MutateContextRequest) -> Result<wire::MutationReceipt, Error> {
+        obs::finish(async {
+            bounded(request)?;
+            fixed::<32>(&request.source)?;
+            let receipt = self.rpc().mutate(self.request(request.clone())?).await?.into_inner();
+            validate_receipt(&receipt)?;
+            Ok(receipt)
+        }.await)
+    }
+
+    /// Prepares one recoverable Run against an explicit immutable revision.
+    #[must_use]
+    pub fn generate(&self, revision: [u8; 32], input: impl Into<String>, maximum_output: u64) -> GenerateRun {
+        GenerateRun {
             client: self.clone(),
-            request: wire::CreateContextRequest {
-                identity: Some(self.identity()),
-                model: model.into(),
-                items: Vec::new(),
+            request: wire::GenerateRunRequest {
+                identity: Some(self.identity()), context: revision.to_vec(),
+                input: Some(text_item(wire::ItemKind::User, input.into())),
+                maximum_output, seed: None,
             },
         }
     }
 
-    /// Authenticate and attach to an existing immutable retained revision.
-    ///
-    /// # Errors
-    /// Rejects unknown/unretained revisions or an invalid service response.
-    #[tracing::instrument(
-        name = "acyclic.inference.attach",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn attach(&self, revision: [u8; 32]) -> Result<Context, Error> {
-        obs::finish(
-            async {
-                nonzero(&revision)?;
-                let context = Context {
-                    client: self.clone(),
-                    revision,
-                };
-                context.inspect().await?;
-                Ok(context)
-            }
-            .await,
-        )
+    /// Prepares one warm-retention request for an explicit immutable revision.
+    #[must_use]
+    pub fn retention_request(&self, revision: [u8; 32], policy: Retention) -> wire::RetainWarmRequest {
+        wire::RetainWarmRequest {
+            identity: Some(self.identity()), context: revision.to_vec(),
+            latency_profile: if policy.idle_kv.is_some() { Vec::new() } else { policy.latency_profile.to_vec() },
+            expires_at_ms: policy.expires_at_ms,
+            idle_kv: policy.idle_kv.map(|(profile, idle_timeout_ms)| wire::IdleKvPolicy {
+                profile: profile.to_vec(), idle_timeout_ms,
+            }),
+        }
     }
 
     /// Allocates one request identity before effects, retaining this connection's client instance.
@@ -420,73 +464,6 @@ fn bounded<M: prost::Message>(message: &M) -> Result<(), Error> {
     Ok(())
 }
 
-/// Replayable creation builder. Reusing it reconciles the same exact command.
-#[derive(Clone)]
-pub struct CreateContext {
-    client: Inference,
-    request: wire::CreateContextRequest,
-}
-
-impl CreateContext {
-    /// Append exact instruction bytes with a fresh item identity.
-    #[must_use]
-    pub fn instructions(self, text: impl Into<String>) -> Self {
-        self.item(text_item(wire::ItemKind::Instruction, text.into()))
-    }
-
-    /// Add one typed item. Semantic validation belongs to the authenticated service.
-    #[must_use]
-    pub fn item(mut self, item: wire::Item) -> Self {
-        self.request.items.push(item);
-        self
-    }
-
-    /// Caller-known command identity, available before network effects.
-    #[must_use]
-    pub fn identity(&self) -> Option<&wire::RequestIdentity> {
-        self.request.identity.as_ref()
-    }
-
-    /// Create or reconcile this immutable Context; never repeat logical work.
-    ///
-    /// # Errors
-    /// Failed observations require the same builder, not a new creation command.
-    #[tracing::instrument(
-        name = "acyclic.inference.context.create",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn create(&self) -> Result<Context, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                let receipt = self
-                    .client
-                    .rpc()
-                    .create(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                validate_receipt(&receipt)?;
-                if !receipt.retained {
-                    return Err(Error::Invalid("creation did not retain a revision"));
-                }
-                Ok(Context {
-                    client: self.client.clone(),
-                    revision: fixed(&receipt.revision)?,
-                })
-            }
-            .await,
-        )
-    }
-}
-
-/// Immutable revision handle; cloning a handle does not create a fork or retention edge.
-#[derive(Clone)]
-pub struct Context {
-    client: Inference,
-    revision: [u8; 32],
-}
-
 /// Explicit customer warm-retention policy. Distribution and capacity remain
 /// service-owned; the opaque profile must come from model discovery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -514,150 +491,6 @@ impl Retention {
             latency_profile: [0; 32],
             expires_at_ms: 0,
             idle_kv: Some((profile, idle_timeout_ms)),
-        }
-    }
-}
-
-impl Context {
-    /// Portable revision identity for later authenticated attachment.
-    #[must_use]
-    pub const fn id(&self) -> [u8; 32] {
-        self.revision
-    }
-
-    /// Read exact retained content and its pinned logical execution identity.
-    ///
-    /// # Errors
-    /// Returns service rejection or malformed response without fabricating content.
-    #[tracing::instrument(
-        name = "acyclic.inference.context.inspect",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn inspect(&self) -> Result<wire::ContextView, Error> {
-        obs::finish(
-            async {
-                let view = self
-                    .client
-                    .rpc()
-                    .inspect(self.client.request(wire::InspectContextRequest {
-                        revision: self.revision.to_vec(),
-                    })?)
-                    .await?
-                    .into_inner();
-                validate_context_view(&view, self.revision)?;
-                Ok(view)
-            }
-            .await,
-        )
-    }
-
-    /// Prepare an independently retained fork. Sending twice reconciles that fork.
-    #[must_use]
-    pub fn fork(&self) -> ContextMutation {
-        self.mutation(wire::mutate_context_request::Action::Fork(wire::Empty {}))
-    }
-
-    /// Prepare exact atomic item edits, leaving this revision unchanged.
-    #[must_use]
-    pub fn edit(&self, edits: Vec<wire::Edit>) -> ContextMutation {
-        self.mutation(wire::mutate_context_request::Action::Edit(wire::Edits {
-            edits,
-        }))
-    }
-
-    /// Prepare one exact user-message append.
-    #[must_use]
-    pub fn append(&self, text: impl Into<String>) -> ContextMutation {
-        self.edit(vec![wire::Edit {
-            action: Some(wire::edit::Action::Append(text_item(
-                wire::ItemKind::User,
-                text.into(),
-            ))),
-        }])
-    }
-
-    /// Retain exactly the selected prefix; None explicitly means an empty prefix.
-    #[must_use]
-    pub fn truncate(&self, through: Option<[u8; 16]>) -> ContextMutation {
-        self.mutation(wire::mutate_context_request::Action::Truncate(
-            wire::Truncate {
-                through: through.map(|id| id.to_vec()),
-            },
-        ))
-    }
-
-    /// Prepare explicit replacement of selected items; no summary is generated.
-    #[must_use]
-    pub fn compact(
-        &self,
-        selected: Vec<[u8; 16]>,
-        replacement: Vec<wire::Item>,
-    ) -> ContextMutation {
-        self.mutation(wire::mutate_context_request::Action::Compact(
-            wire::Compact {
-                selected: selected.into_iter().map(|id| id.to_vec()).collect(),
-                replacement,
-            },
-        ))
-    }
-
-    /// Release only this revision's own edge, never descendants or physical bytes.
-    #[must_use]
-    pub fn release(&self) -> ContextMutation {
-        self.mutation(wire::mutate_context_request::Action::Release(
-            wire::Empty {},
-        ))
-    }
-
-    /// Resolve a target model revision and replay this exact canonical content into a new Context.
-    #[must_use]
-    pub fn transfer(&self, model: impl Into<String>) -> ContextMutation {
-        self.mutation(wire::mutate_context_request::Action::Transfer(
-            wire::Transfer {
-                model: model.into(),
-            },
-        ))
-    }
-
-    /// Prepare one recoverable generation against this exact immutable revision.
-    #[must_use]
-    pub fn generate(&self, input: impl Into<String>, maximum_output: u64) -> GenerateRun {
-        let identity = self.client.identity();
-        GenerateRun {
-            client: self.client.clone(),
-            request: wire::GenerateRunRequest {
-                identity: Some(identity),
-                context: self.revision.to_vec(),
-                input: Some(text_item(wire::ItemKind::User, input.into())),
-                maximum_output,
-                seed: None,
-            },
-        }
-    }
-
-    /// Prepares one warm-retention request for this exact revision.
-    #[must_use]
-    pub fn retain(&self, policy: Retention) -> wire::RetainWarmRequest {
-        wire::RetainWarmRequest {
-            identity: Some(self.client.identity()),
-            context: self.revision.to_vec(),
-            latency_profile: if policy.idle_kv.is_some() { Vec::new() } else { policy.latency_profile.to_vec() },
-            expires_at_ms: policy.expires_at_ms,
-            idle_kv: policy.idle_kv.map(|(profile, idle_timeout_ms)| wire::IdleKvPolicy {
-                profile: profile.to_vec(), idle_timeout_ms,
-            }),
-        }
-    }
-
-    fn mutation(&self, action: wire::mutate_context_request::Action) -> ContextMutation {
-        ContextMutation {
-            client: self.client.clone(),
-            request: wire::MutateContextRequest {
-                identity: Some(self.client.identity()),
-                source: self.revision.to_vec(),
-                action: Some(action),
-            },
         }
     }
 }
@@ -901,52 +734,12 @@ fn validate_warm_view(
         .map_err(contract_error)
 }
 
-/// Replayable mutation with a pre-dispatch command identity, not an execution retry.
-#[derive(Clone)]
-pub struct ContextMutation {
-    client: Inference,
-    request: wire::MutateContextRequest,
-}
-
-impl ContextMutation {
-    /// Caller-known command identity before dispatch.
-    #[must_use]
-    pub fn identity(&self) -> Option<&wire::RequestIdentity> {
-        self.request.identity.as_ref()
-    }
-
-    /// Submit or reconcile the exact command. The receipt is not a billing/deletion proof.
-    ///
-    /// # Errors
-    /// An unavailable observation does not imply the mutation failed to commit.
-    #[tracing::instrument(
-        name = "acyclic.inference.context.mutate",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn send(&self) -> Result<wire::MutationReceipt, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                let receipt = self
-                    .client
-                    .rpc()
-                    .mutate(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                validate_receipt(&receipt)?;
-                Ok(receipt)
-            }
-            .await,
-        )
-    }
-}
-
 fn validate_receipt(receipt: &wire::MutationReceipt) -> Result<(), Error> {
     contract::validate_receipt(receipt).map_err(contract_error)
 }
 
-fn text_item(kind: wire::ItemKind, text: String) -> wire::Item {
+/// Allocates a fresh item identity before its exact text bytes are dispatched.
+pub fn text_item(kind: wire::ItemKind, text: String) -> wire::Item {
     wire::Item {
         id: uuid::Uuid::now_v7().as_bytes().to_vec(),
         kind: kind as i32,
@@ -1045,14 +838,11 @@ mod tests {
             authorization: authorization("fixture")?,
             client_instance: [7; 16],
         }));
-        let context = Context {
-            client: client.clone(),
-            revision: [2; 32],
-        };
+        let revision = [2; 32];
         let commitment = [1; 32];
         for baseline in [latency.clone(), idle.clone()] {
             let is_idle = baseline.idle_kv.is_some();
-            let retain = context.retain(if is_idle {
+            let retain = client.retention_request(revision, if is_idle {
                 Retention::idle_kv([6; 32], 10)
             } else {
                 Retention::warm_until([6; 32], 110)
@@ -1515,8 +1305,9 @@ mod tests {
             authorization: authorization("secret")?,
             client_instance: [1; 16],
         }));
-        let creation = client.context("model").instructions("prompt text");
-        let Err(Error::Observation(status)) = creation.create().await else {
+        let mut creation = client.context("model");
+        creation.items.push(text_item(wire::ItemKind::Instruction, "prompt text".into()));
+        let Err(Error::Observation(status)) = client.create_context(&creation).await else {
             return Err(Error::Invalid("the RPC did not fail"));
         };
 
