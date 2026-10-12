@@ -110,8 +110,7 @@ async fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<d
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([2; 16]);
     let authority_id = volume_authority_id(volume_id);
-    let head = authority
-        .create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
+    let head = ({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = authority.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
         .value;
     let head = match head {
         crate::storage::CreateAuthorityOutcome::Created(head) => head,
@@ -171,8 +170,7 @@ async fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<d
         _ => return Err("first publication was not committed".into()),
     };
     assert!(matches!(
-        authority
-            .fence(authority_id, committed_head, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
+        ({ let __authority_args = (authority_id, committed_head, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = authority.fence(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?
             .value,
         FenceOutcome::Advanced(_)
     ));
@@ -283,8 +281,7 @@ async fn invalid_closure_never_touches_authority() -> Result<(), Box<dyn std::er
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([6; 16]);
     let authority_id = volume_authority_id(volume_id);
-    let head = match authority
-        .create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
+    let head = match ({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = authority.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
         .value
     {
         crate::storage::CreateAuthorityOutcome::Created(head) => head,
@@ -316,8 +313,7 @@ async fn invalid_closure_never_touches_authority() -> Result<(), Box<dyn std::er
         })
     ));
     assert_eq!(
-        authority
-            .head(authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
+        ({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?
             .value
             .sequence,
         head.sequence
@@ -367,8 +363,7 @@ async fn authenticated_foreign_volume_never_reaches_authority_mutation()
     let requested_volume = VolumeId::from_bytes([51; 16]);
     let actual_volume = VolumeId::from_bytes([52; 16]);
     let authority_id = volume_authority_id(requested_volume);
-    let crate::storage::CreateAuthorityOutcome::Created(head) = authority
-        .create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
+    let crate::storage::CreateAuthorityOutcome::Created(head) = ({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = authority.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
         .value
     else {
         return Err("authority existed".into());
@@ -399,7 +394,7 @@ async fn authenticated_foreign_volume_never_reaches_authority_mutation()
     assert!(failure.work.backend_read_operations > 0);
     assert_eq!(failure.work.authority_records_appended, 0);
     assert_eq!(
-        authority.head(authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value,
+        ({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?.value,
         head
     );
     Ok(())
@@ -412,8 +407,7 @@ async fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutati
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([45; 16]);
     let authority_id = volume_authority_id(volume_id);
-    let crate::storage::CreateAuthorityOutcome::Created(head) = authority
-        .create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
+    let crate::storage::CreateAuthorityOutcome::Created(head) = ({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = authority.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
         .value
     else {
         return Err("authority existed".into());
@@ -462,7 +456,7 @@ async fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutati
         assert!(matches!(failure.error, PublicationError::Work(_)
             | PublicationError::Closure(ClosureError::Work(_))));
         assert_eq!(
-            authority.head(authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value,
+            ({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?.value,
             head
         );
     }
@@ -476,8 +470,7 @@ async fn pre_cancelled_publication_is_inert()
     let async_authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([22; 16]);
     let authority_id = volume_authority_id(volume_id);
-    let async_head = async_authority
-        .create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
+    let async_head = ({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = async_authority.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
         .value;
     let crate::storage::CreateAuthorityOutcome::Created(head) = async_head else {
         return Err("authority unexpectedly existed".into());
@@ -498,8 +491,7 @@ async fn pre_cancelled_publication_is_inert()
         &async_authority,
         PublishGenerationRequest {
             operation_id: OperationId::from_bytes([24; 16]),
-            expected: async_authority
-                .head(authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
+            expected: ({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = async_authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?
                 .value,
             ..request
         },
@@ -913,7 +905,7 @@ async fn native_request(
     authority: &MemoryAuthorityStore, volume_id: VolumeId, generation_root: ObjectId,
 ) -> Result<PublishGenerationRequest, Box<dyn std::error::Error>> {
     let authority_id = volume_authority_id(volume_id);
-    let created = authority.create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    let created = ({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = authority.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?;
     let crate::storage::CreateAuthorityOutcome::Created(expected) = created.value else {
         return Err("native publication fixture authority already existed".into());
     };
@@ -972,7 +964,7 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas()
         },
     );
     assert!(matches!(result, Err(NativePublicationTestError::OwnerStale)));
-    assert_eq!(authority.head(request.authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value, request.expected);
+    assert_eq!(({ let __authority_args = (request.authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?.value, request.expected);
     assert_eq!(original.receipt().authority_records_appended, 0);
     assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
@@ -1019,7 +1011,7 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(original.receipt().authority_records_appended, 0);
         assert_eq!(original.live_allocation_bytes(), baseline);
-        assert_eq!(authority.head(request.authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value, request.expected);
+        assert_eq!(({ let __authority_args = (request.authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?.value, request.expected);
     }
     Ok(())
 }
@@ -1055,9 +1047,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     assert_eq!(original.receipt().authority_records_appended, 1);
     let reopened = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let resolved = crate::AsyncAuthorityStore::find_operation_with_native_work(
-        &authority, request.authority_id, request.operation_id, &reopened, &cancellation,
-    ).await?;
+    let resolved =({ let __authority_args = (request.authority_id, request.operation_id, &reopened, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result =  crate::AsyncAuthorityStore::find_operation(&authority, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result })?;
     let commit = resolved.0.ok_or("lost acknowledgement operation was not durable")?;
     let predecessor = Head {
         epoch: commit.epoch,
@@ -1180,7 +1170,7 @@ async fn native_publication_missing_custody_capability_rejects_after_real_proof_
     assert_eq!(original.receipt().authority_records_appended, 0);
     assert_eq!(original.live_allocation_bytes(), baseline);
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert_eq!(authority.head(request.authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value, request.expected);
+    assert_eq!(({ let __authority_args = (request.authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?.value, request.expected);
     Ok(())
 }
 
