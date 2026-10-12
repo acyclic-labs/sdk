@@ -225,9 +225,8 @@ impl BrowserTransaction {
         #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
     ) -> Result<Ts<BrowserTransactionRebase>, JsValue> {
         let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
-        let outcome = sdk_value!(unbounded_future!(self.engine, rebase(maximum_conflicts)))
-            .map(browser_transaction_rebase)?;
-        ts(outcome)
+        let outcome = sdk_value!(unbounded_future!(self.engine, rebase(maximum_conflicts)))?;
+        ts(browser_transaction_rebase(outcome))
     }
 }
 

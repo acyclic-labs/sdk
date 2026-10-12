@@ -92,25 +92,27 @@ pub(super) fn source_file_metadata(source: crate::demand::SourceMetadata) -> Fil
             .map_or(MetadataField::Unavailable, MetadataField::Value)
     };
     FileMetadata {
-        posix_mode: metadata_u32(source.posix_mode),
-        posix_uid: metadata_u32(source.posix_uid),
-        posix_gid: metadata_u32(source.posix_gid),
-        posix_flags: metadata_u64(source.posix_flags),
-        windows_attributes: metadata_u32(source.windows_attributes),
+        posix_mode: source
+            .posix_mode
+            .map_or(MetadataField::Unavailable, MetadataField::Value),
+        posix_uid: source
+            .posix_uid
+            .map_or(MetadataField::Unavailable, MetadataField::Value),
+        posix_gid: source
+            .posix_gid
+            .map_or(MetadataField::Unavailable, MetadataField::Value),
+        posix_flags: source
+            .posix_flags
+            .map_or(MetadataField::Unavailable, MetadataField::Value),
+        windows_attributes: source
+            .windows_attributes
+            .map_or(MetadataField::Unavailable, MetadataField::Value),
         created_ns: time(source.created_ns),
         modified_ns: time(source.modified_ns),
         accessed_ns: time(source.accessed_ns),
         changed_ns: time(source.changed_ns),
         ..FileMetadata::default()
     }
-}
-
-pub(super) fn metadata_u32(value: Option<u32>) -> MetadataField<u32> {
-    value.map_or(MetadataField::Unavailable, MetadataField::Value)
-}
-
-pub(super) fn metadata_u64(value: Option<u64>) -> MetadataField<u64> {
-    value.map_or(MetadataField::Unavailable, MetadataField::Value)
 }
 
 pub(super) fn path_priority(path: &str) -> u64 {

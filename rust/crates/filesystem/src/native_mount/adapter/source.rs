@@ -408,7 +408,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 fs_error,
             )?;
             carrier
-                .with_work(|work| work.allocate(bytes))
+                .with_work(|work| work.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED))
                 .map_err(super::lazy::mount_demand_error)?;
             (file, None)
         };

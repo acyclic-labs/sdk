@@ -12,8 +12,8 @@ use acyclic_harness::{
     filesystem::{FilesystemExecutionJournal, FilesystemHost},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     mcp::{
-        McpCatalog, McpCatalogInstallation, McpDiscoveryPolicy, McpSchemaExposure,
-        McpToolDefinition, McpToolResult, McpToolTransport,
+        McpCatalog, McpDiscoveryPolicy, McpSchemaExposure,
+        McpToolDefinition, McpToolTransport,
         http::{HttpMcpTransport, NativeMcpHttpProvider},
     },
     resources::ProviderRef,
@@ -186,7 +186,7 @@ fn verify_transport_context(context: &ToolContext) -> Result<()> {
 
 impl McpToolTransport for ScopedHttp {
     fn call<'a>(&'a self, operation: OperationId, name: &'a str, arguments: Value,
-        context: Option<ToolContext>) -> BoxFuture<'a, Result<McpToolResult>> {
+        context: Option<ToolContext>) -> BoxFuture<'a, Result<Value>> {
         Box::pin(async move {
             let context = context.ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
             if context.operation_id() != operation {
@@ -197,7 +197,7 @@ impl McpToolTransport for ScopedHttp {
         })
     }
     fn reconcile<'a>(&'a self, operation: OperationId, context: Option<ToolContext>)
-        -> BoxFuture<'a, Result<Option<McpToolResult>>> {
+        -> BoxFuture<'a, Result<Option<Value>>> {
         Box::pin(async move {
             let context = context.ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
             if context.operation_id() != operation {
@@ -441,6 +441,7 @@ async fn phase(
         Some("session".into()),
         8192,
         2000,
+        None,
     )?));
     let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
     let mut tools = ToolRegistry::default();
@@ -450,15 +451,13 @@ async fn phase(
             None,
             &transport,
             &projection,
-            McpCatalogInstallation {
-                operation: OperationId::from_bytes([46; 16]),
-                interaction: InteractionId::from_bytes([47; 16]),
-                scope: &signed,
-                verifier: &issuer.verifier(&mut None).expect("verifier copy"),
-                approval: approval.as_ref(),
-                maximum_tools: 1,
-                maximum_bytes: 8192,
-            },
+            OperationId::from_bytes([46; 16]),
+            InteractionId::from_bytes([47; 16]),
+            &signed,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            approval.as_ref(),
+            1,
+            8192,
         )
         .await?;
     let definition = tools

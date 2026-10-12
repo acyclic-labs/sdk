@@ -6,22 +6,14 @@ pub(super) trait RegisteredTaskDefinition: Any + acyclic_stream::ProviderPlatfor
     fn output_schema(&self) -> &Value;
     fn requirements(&self) -> &BTreeSet<String>;
     fn machine(&self) -> Option<&dyn ResumableMachine>;
-    fn open_workflow(
-        self: Arc<Self>,
-        context: TaskContext,
-        fence: crate::scheduler::LeaseFence,
-        journal: Arc<dyn WorkflowJournal>,
-    ) -> BoxFuture<'static, Result<ResumableTaskSession>>;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn require_native_identity(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()>;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn open_workflow_with_native_work<'a>(
+    fn open_workflow<'a>(
         self: Arc<Self>,
         context: Arc<TaskContext>,
         fence: &'a crate::scheduler::LeaseFence,
         journal: Arc<dyn WorkflowJournal>,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ResumableTaskSession>>;
+    ) -> Result<crate::store::HistoryContentFuture<'a, ResumableTaskSession>>;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn require_native_identity(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()>;
 }
 
 impl<I: 'static, O: 'static> RegisteredTaskDefinition for TaskDefinition<I, O>
@@ -48,39 +40,17 @@ where
         }
     }
 
-    fn open_workflow(
-        self: Arc<Self>,
-        context: TaskContext,
-        fence: crate::scheduler::LeaseFence,
-        journal: Arc<dyn WorkflowJournal>,
-    ) -> BoxFuture<'static, Result<ResumableTaskSession>> {
-        Box::pin(async move { self.open(&context, fence, journal).await })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn require_native_identity(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        TaskDefinition::require_native_identity(self, work)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn open_workflow_with_native_work<'a>(
+    fn open_workflow<'a>(
         self: Arc<Self>,
         context: Arc<TaskContext>,
         fence: &'a crate::scheduler::LeaseFence,
         journal: Arc<dyn WorkflowJournal>,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ResumableTaskSession>> {
-        TaskDefinition::require_native_identity(self.as_ref(), work)?;
-        if !journal.supports_native_work() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "workflow journal has no native callbacks",
-            });
-        }
-        crate::NativeFutureBundle::new(work, || async move {
-            self.open_with_native_work(context, fence, journal, work)
-                .await
-        })
+    ) -> Result<crate::store::HistoryContentFuture<'a, ResumableTaskSession>> {
+        self.open(context, fence, journal)
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn require_native_identity(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        TaskDefinition::require_native_identity(self, work)
     }
 }
 
@@ -88,8 +58,7 @@ where
 #[derive(Default)]
 pub struct TaskRegistry(
     pub(super) Vec<Arc<dyn RegisteredTaskDefinition>>,
-    #[cfg(target_arch = "wasm32")]
-    Vec<Arc<dyn Any>>,
+    #[cfg(target_arch = "wasm32")] Vec<Arc<dyn Any>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super)  Option<acyclic_fs::NativeAllocation>,
 );
@@ -107,7 +76,10 @@ impl Clone for TaskRegistry {
 }
 
 impl TaskRegistry {
-    fn definition<I: 'static, O: 'static>(&self, definition: &Arc<dyn RegisteredTaskDefinition>) -> Option<Arc<TaskDefinition<I, O>>> {
+    fn definition<I: 'static, O: 'static>(
+        &self,
+        definition: &Arc<dyn RegisteredTaskDefinition>,
+    ) -> Option<Arc<TaskDefinition<I, O>>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let definition: Arc<dyn Any + Send + Sync> = definition.clone();
@@ -115,8 +87,13 @@ impl TaskRegistry {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let slot = self.0.iter().position(|stored| Arc::ptr_eq(stored, definition))?;
-            self.1[slot].downcast_ref::<Arc<TaskDefinition<I, O>>>().cloned()
+            let slot = self
+                .0
+                .iter()
+                .position(|stored| Arc::ptr_eq(stored, definition))?;
+            self.1[slot]
+                .downcast_ref::<Arc<TaskDefinition<I, O>>>()
+                .cloned()
         }
     }
 
@@ -162,7 +139,7 @@ impl TaskRegistry {
         if let Some(work) = registration_work.as_ref() {
             if let Some(original) = native.as_ref() {
                 definition.require_native_identity(original)?;
-                // The definition retains its value; registration allocates the Arc header.
+                // The definition retains its value; registration funds the Arc header.
                 definition
                     .native_metadata_custody
                     .as_mut()
