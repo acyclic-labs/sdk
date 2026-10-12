@@ -26,7 +26,7 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<
-        Option<NativeOwnedCoreState<WorkspaceLineageRecord>>,
+        Option<(WorkspaceLineageRecord, crate::NativeAllocation)>,
         (
             crate::lineage::WorkspaceLineageError<Self::Error>,
             Option<crate::materializer::NativeAllocation>,
@@ -58,7 +58,7 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         &self,
         workspace_id: WorkspaceId,
         expected_revision: u64,
-        replacement: NativeOwnedCoreState<WorkspaceLineageRecord>,
+        replacement: (WorkspaceLineageRecord, crate::NativeAllocation),
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<
@@ -113,7 +113,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<
-        Option<NativeOwnedCoreState<WorkspaceContext>>,
+        Option<(WorkspaceContext, crate::NativeAllocation)>,
         (
             crate::workspace_context::WorkspaceContextError<Self::Error>,
             Option<crate::materializer::NativeAllocation>,
@@ -148,7 +148,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         &self,
         context_id: WorkspaceContextId,
         expected_revision: u64,
-        replacement: NativeOwnedCoreState<WorkspaceContext>,
+        replacement: (WorkspaceContext, crate::NativeAllocation),
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<
@@ -416,13 +416,7 @@ impl Owner {
     pub(super) fn resident<T: Logged>(&self, id: T::Id) -> Option<Option<T>> {
         let residents = self.residents.read().ok()?;
         let value = residents.get(&T::key(id))?;
-        if matches!(
-            value,
-            Some(RecordValue::FlatContext(_)) | Some(RecordValue::FlatChildren(_))
-        ) {
-            return None;
-        }
-        Some(value.as_ref().and_then(T::from_value).cloned())
+        Some(value.as_ref().and_then(T::from_value))
     }
 
     pub(super) fn log(&self) -> MutexGuard<'_, Option<CoreLog>> {

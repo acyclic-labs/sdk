@@ -1,5 +1,4 @@
 use super::*;
-use super::{HostRoot, NativeMetadataError};
 use crate::kernel::{FileMetadata, MetadataField};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
@@ -13,18 +12,16 @@ fn clone_from_a_separate_held_source_is_cow_and_cannot_escape()
     std::fs::create_dir(&source_path)?;
     std::fs::create_dir(&view_path)?;
     std::fs::write(source_path.join("file"), b"original")?;
-    let source = HostRoot::open(&source_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
-    let view = HostRoot::open(&view_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let source = HostRoot::open(&source_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let view = HostRoot::open(&view_path, &mut ordinary_work()).map_err(ordinary_error)?;
     if !view
         .clone_file_from(
             &source,
             Path::new("file"),
             Path::new("clone"),
-            &mut super::ordinary_work(),
+            &mut ordinary_work(),
         )
-        .map_err(super::ordinary_error)?
+        .map_err(ordinary_error)?
     {
         return Ok(()); // This volume does not support APFS cloning.
     }
@@ -35,9 +32,9 @@ fn clone_from_a_separate_held_source_is_cow_and_cannot_escape()
             &source,
             Path::new("../view/clone"),
             Path::new("escape"),
-            &mut super::ordinary_work()
+            &mut ordinary_work()
         )
-        .map_err(super::ordinary_error),
+        .map_err(ordinary_error),
         Ok(true)
     ));
     assert!(!view_path.join("escape").exists());
@@ -47,9 +44,9 @@ fn clone_from_a_separate_held_source_is_cow_and_cannot_escape()
             &source,
             Path::new("pivot/clone"),
             Path::new("escape"),
-            &mut super::ordinary_work()
+            &mut ordinary_work()
         )
-        .map_err(super::ordinary_error),
+        .map_err(ordinary_error),
         Ok(true)
     ));
     assert!(!view_path.join("escape").exists());
@@ -58,15 +55,14 @@ fn clone_from_a_separate_held_source_is_cow_and_cannot_escape()
 #[test]
 fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut work = super::ordinary_work();
+    let mut work = ordinary_work();
     let temporary = tempfile::tempdir()?;
     let root_path = temporary.path().join("root");
     std::fs::create_dir(&root_path)?;
     let original = root_path.join("file");
     std::fs::write(&original, b"old")?;
     let owner = std::fs::metadata(&original)?;
-    let root = HostRoot::open(&root_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
     let target = root.open_macos_metadata_target(Path::new("file"), &mut work)?;
     let moved = root_path.join("moved");
     std::fs::rename(&original, &moved)?;
@@ -141,7 +137,7 @@ fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
 #[test]
 fn fifo_metadata_uses_a_nonblocking_held_handle_and_socket_metadata_fails_closed()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut work = super::ordinary_work();
+    let mut work = ordinary_work();
     use std::os::unix::ffi::OsStrExt as _;
     let temporary = tempfile::tempdir()?;
     let pipe = temporary.path().join("pipe");
@@ -150,8 +146,7 @@ fn fifo_metadata_uses_a_nonblocking_held_handle_and_socket_metadata_fails_closed
     assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
     let socket = temporary.path().join("socket");
     let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     root.open_macos_metadata_target(Path::new("pipe"), &mut work)?
         .apply(
             FileMetadata {
@@ -204,16 +199,15 @@ fn special_node_creation_stays_inside_the_held_root() -> Result<(), Box<dyn std:
     std::fs::create_dir(&root_path)?;
     std::fs::create_dir(&outside)?;
     std::os::unix::fs::symlink(&outside, root_path.join("pivot"))?;
-    let root = HostRoot::open(&root_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
     assert!(
-        root.create_fifo_held(Path::new("pivot/pipe"), 0o600, &mut super::ordinary_work())
-            .map_err(super::ordinary_error)
+        root.create_fifo_held(Path::new("pivot/pipe"), 0o600, &mut ordinary_work())
+            .map_err(ordinary_error)
             .is_err()
     );
     assert!(
-        root.bind_unix_socket(Path::new("pivot/socket"), &mut super::ordinary_work())
-            .map_err(super::ordinary_error)
+        root.bind_unix_socket(Path::new("pivot/socket"), &mut ordinary_work())
+            .map_err(ordinary_error)
             .is_err()
     );
     assert!(
@@ -221,16 +215,16 @@ fn special_node_creation_stays_inside_the_held_root() -> Result<(), Box<dyn std:
             Path::new("pivot/device"),
             u32::from(libc::S_IFCHR) | 0o600,
             0,
-            &mut super::ordinary_work()
+            &mut ordinary_work()
         )
-        .map_err(super::ordinary_error)
+        .map_err(ordinary_error)
         .is_err()
     );
     assert!(std::fs::read_dir(&outside)?.next().is_none());
-    root.create_fifo_held(Path::new("pipe"), 0o600, &mut super::ordinary_work())
-        .map_err(super::ordinary_error)?;
-    root.bind_unix_socket(Path::new("socket"), &mut super::ordinary_work())
-        .map_err(super::ordinary_error)?;
+    root.create_fifo_held(Path::new("pipe"), 0o600, &mut ordinary_work())
+        .map_err(ordinary_error)?;
+    root.bind_unix_socket(Path::new("socket"), &mut ordinary_work())
+        .map_err(ordinary_error)?;
     assert!(
         std::fs::symlink_metadata(root_path.join("pipe"))?
             .file_type()

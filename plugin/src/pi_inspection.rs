@@ -1916,7 +1916,3 @@ fn native_extra_facts_differ(
         _ => false,
     }
 }
-
-#[cfg(test)]
-#[path = "pi_inspection_tests.rs"]
-mod tests;

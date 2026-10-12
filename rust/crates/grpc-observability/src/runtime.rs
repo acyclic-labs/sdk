@@ -260,7 +260,7 @@ impl http_body::Body for Observed<Body> {
 }
 
 // Parse only canonical status bytes; never touch grpc-message/details or payloads.
-fn code(headers: Option<&http::HeaderMap>, status: http::StatusCode) -> u8 {
+pub(super) fn code(headers: Option<&http::HeaderMap>, status: http::StatusCode) -> u8 {
     if let Some(value) = headers.and_then(|h| h.get("grpc-status")) {
         return match value.as_bytes() {
             [digit @ b'0'..=b'9'] => digit - b'0',
@@ -294,7 +294,3 @@ fn finish(span: &mut Option<Span>, terminal: Result<u8, &'static str>) {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;

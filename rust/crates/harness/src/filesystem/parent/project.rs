@@ -275,7 +275,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         if !plan
             .native_custody
             .as_ref()
-            .is_some_and(|guard| guard.matches_work(work))
+            .is_some_and(|guard| guard.work().shares_allocation_context(work))
             || plan.parent_project != self.project
             || plan.parent_scope != self.scope
         {
@@ -312,7 +312,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let owner = Arc::new((binding, project, io.into_native_custody(retained)?));
             let mut guard = move |original: &acyclic_fs::NativeMaterializationWork| {
                 std::future::ready((|| {
-                    if !owner.2.matches_work(original) {
+                    if !owner.2.work().shares_allocation_context(original) {
                         return Err(Error::NativeBoundary {
                             code: crate::wire::ErrorCode::Unauthorized,
                             reason: "merge publication owner belongs to another original resource",
@@ -457,19 +457,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             drop(observer);
             let source_project = plan.child_project.copy(&mut Some(&mut io.history_io()))?;
             let target_project = self.project.copy(&mut Some(&mut io.history_io()))?;
-            let (source_generation, custody) = GenerationRef::new_with_native_work(
-                &self.host.provider,
-                &plan.source_head().digest().into_bytes(),
-                None,
-                work,
-            )?;
+            let (source_generation, custody) = GenerationRef::new(&self.host.provider, &plan.source_head().digest().into_bytes(), None, Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
             io.absorb_native_custody(custody)?;
-            let (expected_target_generation, custody) = GenerationRef::new_with_native_work(
-                &self.host.provider,
-                &plan.target_head().digest().into_bytes(),
-                None,
-                work,
-            )?;
+            let (expected_target_generation, custody) = GenerationRef::new(&self.host.provider, &plan.target_head().digest().into_bytes(), None, Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
             io.absorb_native_custody(custody)?;
             let result_generation = fork_preparer_io::generation_ref(
                 &self.host.provider,

@@ -114,8 +114,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             let name_hold;
             let name = io.capability(&allocation.request.volume, "harness-")?;
             name_hold = io.guard_owned(name.capacity() as u64)?;
-            let read = bounded_io::join_text("volume:read:", &name["harness-".len()..], &io)?;
-            let write = bounded_io::join_text("volume:write:", &name["harness-".len()..], &io)?;
+            let read = crate::contract::preparation_format(
+                format_args!("volume:read:{}", &name["harness-".len()..]),
+                Some(&io),
+            )?;
+            let write = crate::contract::preparation_format(
+                format_args!("volume:write:{}", &name["harness-".len()..]),
+                Some(&io),
+            )?;
             if !context.original_root().grants.contains(&read) {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
@@ -125,7 +131,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             let writable = allocation.publication_lease.is_some()
                 && context.original_root().grants.contains(&write);
             allocation.reauthenticate_with_io(&io).await?;
-            let id = bounded_io::join_text("root-created:", &name, &io)?;
+            let id = crate::contract::preparation_format(
+                format_args!("root-created:{name}"),
+                Some(&io),
+            )?;
             drop(name);
             drop(name_hold);
             io.retain_owned((if writable { 2 } else { 1 }) * std::mem::size_of::<String>() as u64)?;
@@ -257,8 +266,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         io.retain_owned(capture)?;
         io.allocation_attempt(std::mem::size_of::<CreatedFilesystemAccess<A, O>>() as u64)?;
         let name = io.capability(&allocation.volume, "harness-")?;
-        let read = bounded_io::join_text("volume:read:", &name["harness-".len()..], io)?;
-        let write = bounded_io::join_text("volume:write:", &name["harness-".len()..], io)?;
+        let read = crate::contract::preparation_format(
+            format_args!("volume:read:{}", &name["harness-".len()..]),
+            Some(io),
+        )?;
+        let write = crate::contract::preparation_format(
+            format_args!("volume:write:{}", &name["harness-".len()..]),
+            Some(io),
+        )?;
         let id = crate::contract::preparation_format(
             format_args!("created:{}:{name}", proof.preparation),
             Some(io),
@@ -312,22 +327,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let operation_count = count
             .checked_add(2)
             .ok_or_else(|| io.invalid("creator receipt item count overflow"))?;
-        let operation_slots = operation_count
-            .checked_mul(std::mem::size_of::<CreatedResourceOperation>())
-            .ok_or_else(|| io.invalid("creator receipt slot overflow"))?;
-        let reference_slots = count
-            .checked_mul(std::mem::size_of::<CreatedReferenceBinding>())
-            .ok_or_else(|| io.invalid("creator reference slot overflow"))?;
-        io.retain_owned(
-            operation_slots
-                .checked_add(reference_slots)
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<CreatedContentBinding>()))
-                .ok_or_else(|| io.invalid("creator receipt slot overflow"))? as u64,
-        )?;
-        io.allocation_attempt(operation_slots as u64)?;
-        io.allocation_attempt(reference_slots as u64)?;
-        let mut operations = Vec::with_capacity(operation_count);
-        let mut references = Vec::with_capacity(count);
+        let mut operations = bounded_io::vector(operation_count, Some(io))?;
+        let mut references = bounded_io::vector(count, Some(io))?;
         operations.push(CreatedResourceOperation::ReadVolume(
             allocation.volume.clone(),
         ));
@@ -351,7 +352,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             operations.push(CreatedResourceOperation::ReadFile(file.clone()));
             references.push(CreatedReferenceBinding { file, reader });
         }
-        io.allocation_attempt(std::mem::size_of::<CreatedContentBinding>() as u64)?;
+        let mut content = bounded_io::vector(1, Some(io))?;
+        content.push(CreatedContentBinding {
+            default_writer: allocation.authority.is_some(),
+            artifact_writer: allocation.authority.is_none()
+                && allocation.volume.class() == VolumeClass::AgentPrivate,
+            scratch_creation: allocation.authority.as_ref().map(|_| {
+                crate::resource_preparation::ChildScratchCreationProof::new(access.clone())
+            }),
+            authority: allocation.authority,
+            volume: allocation.volume,
+            binding: ContentBindings {
+                reader: access.clone(),
+                writer: Some(access),
+            },
+        });
         Ok(CreatedResourceReceipt {
             origin: allocation.origin,
             resource: proof.resource.clone(),
@@ -359,20 +374,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             allocation_generation: allocation.generation,
             operations,
             references,
-            content: vec![CreatedContentBinding {
-                default_writer: allocation.authority.is_some(),
-                artifact_writer: allocation.authority.is_none()
-                    && allocation.volume.class() == VolumeClass::AgentPrivate,
-                scratch_creation: allocation.authority.as_ref().map(|_| {
-                    crate::resource_preparation::ChildScratchCreationProof::new(access.clone())
-                }),
-                authority: allocation.authority,
-                volume: allocation.volume,
-                binding: ContentBindings {
-                    reader: access.clone(),
-                    writer: Some(access),
-                },
-            }],
+            content,
         })
     }
 }

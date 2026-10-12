@@ -105,7 +105,7 @@ where
                         let payload = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<serde_json::Value>, &body, crate::wire::ErrorCode::Storage)?);
                         drop(body);
                         commands.reconcile_with_native_work(
-                            std::sync::Arc::clone(shared), observed::clone_fence(&fence, Some(io))?,
+                            std::sync::Arc::clone(shared), crate::executor::with_history_io(Some(io), |work| fence.clone_with_work(work))?,
                             observed::clone_command(command, Some(io))?, payload, work,
                         )?.await?
                     } else {

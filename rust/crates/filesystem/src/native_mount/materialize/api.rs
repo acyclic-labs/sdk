@@ -38,7 +38,7 @@ where
         .split_off((std::mem::size_of::<F>()) as u64)
         .map_err(materialize_native_error)
         .map_err(|error| (E::from(error), receipt.custody.work().receipt()))?;
-    let meter = receipt.custody.work().clone();
+    let meter = Arc::clone(&receipt.custody.work().state);
     let mut future = in_heap(move || create(receipt));
     let result = future.as_mut().await;
     drop(future);
@@ -168,7 +168,11 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
-    let cancellation = receipt.custody.work().cancellation().clone();
+    let cancellation = receipt
+        .custody
+        .work()
+        .state
+        .with_original_leaf(|original| original.cancellation().clone());
     let cancellation = &cancellation;
     let reader = match &source {
         GenerationSource::Standalone(checkout) => {
@@ -348,7 +352,7 @@ where
                 }
                 GenerationSource::Original(reader) => {
                     let page = reader
-                        .list_directory_records_with_native_work(
+                        .list_directory_records(
                             &directory.0,
                             after.as_ref(),
                             options.maximum_directory_entries,
@@ -721,7 +725,9 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             drop(stage_root);
             let cleanup = stage_owner
                 .remove_identity(&stage_name.0, stage_identity, work)
-                .and_then(|()| stage_owner.sync(work));
+                .and_then(|()| {
+                    crate::native_host::sync_directory_held(&stage_owner.directory, work)
+                });
             match (result, cleanup) {
                 (Ok(value), Ok(())) => Ok(value),
                 (Ok(_), Err(error)) => Err(restore_demand_error(error)),

@@ -232,10 +232,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             hex::encode_to_slice(graph_root.into_bytes(), &mut identity)
                 .map_err(|_| io.invalid("Root allocation identity encoding failed"))?;
             let suffix = std::str::from_utf8(&identity).expect("hex is ASCII");
-            let creation = IdempotencyKey::new(bounded_io::join_text(
-                "root-bootstrap-journal:",
-                suffix,
-                &io,
+            let creation = IdempotencyKey::new(crate::contract::preparation_format(
+                format_args!("root-bootstrap-journal:{suffix}"),
+                Some(&io),
             )?)?;
             let lifecycle = if self.host.filesystem.capabilities().durable {
                 acyclic_fs::Lifecycle::Durable
@@ -298,10 +297,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 }
             } else {
                 let observed = bounded_io::resolve(&self.host, &journal, Some(&io)).await?;
-                let key = IdempotencyKey::new(bounded_io::join_text(
-                    "root-bootstrap-claim:",
-                    suffix,
-                    &io,
+                let key = IdempotencyKey::new(crate::contract::preparation_format(
+                    format_args!("root-bootstrap-claim:{suffix}"),
+                    Some(&io),
                 )?)?;
                 let path = bounded_io::clone_text("/root-bootstrap.json", Some(&io))?;
                 match bounded_io::apply_generation(
@@ -361,7 +359,7 @@ impl<A, O> FilesystemRootBootstrapAllocation<A, O> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn matches_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> bool {
-        self._custody.matches_work(work)
+        self._custody.work().shares_allocation_context(work)
     }
     /// Shares the paid allocation on its original ledger.
     #[cfg(not(target_arch = "wasm32"))]

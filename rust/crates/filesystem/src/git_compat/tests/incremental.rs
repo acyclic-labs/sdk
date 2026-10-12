@@ -2,33 +2,13 @@ use super::*;
 
 #[tokio::test]
 async fn incremental_capture_honors_unchanged_nested_ignore() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-incremental-nested",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
-    let mut initial = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x65; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let workspace = memory_workspace("git-incremental-nested").await;
+    let mut initial = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x65; 16])).await;
     initial
         .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("directory");
+        .expect("directory")
+        .value;
     initial
         .write_text("/src/.gitignore", "*.tmp\n")
         .await
@@ -46,16 +26,7 @@ async fn incremental_capture_honors_unchanged_nested_ignore() {
     )
     .await
     .expect("capture");
-    let mut changed = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x67; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let mut changed = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x67; 16])).await;
     changed
         .write_text("/src/new.tmp", "ignored")
         .await
@@ -98,9 +69,8 @@ async fn incremental_capture_honors_unchanged_nested_ignore() {
                 &CancellationToken::new()
             )
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .expect("kept")
+            .value
             .as_ref(),
         b"after"
     );
@@ -109,17 +79,7 @@ async fn incremental_capture_honors_unchanged_nested_ignore() {
 
 #[tokio::test]
 async fn newly_ignored_merge_paths_exclude_tracked_changes() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-ignored-merge-paths",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
+    let workspace = memory_workspace("git-ignored-merge-paths").await;
     let mut initial = workspace
         .begin_transaction(
             IdempotencyKey::from_bytes([0x70; 16]),
@@ -127,15 +87,13 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
             &CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("initial transaction");
+        .expect("initial transaction")
+        .value;
     initial
         .create_dir_all("/sub", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("subdirectory");
+        .expect("subdirectory")
+        .value;
     initial
         .write_text("/sub/.gitignore", "*.tmp\n")
         .await
@@ -144,9 +102,8 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
     let before = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("before");
+        .expect("before")
+        .value;
     workspace
         .write_text("/scratch.tmp", "child")
         .await
@@ -162,15 +119,13 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
             &CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("build transaction");
+        .expect("build transaction")
+        .value;
     build
         .create_dir_all("/build", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("build directory");
+        .expect("build directory")
+        .value;
     build
         .write_text("/build/output.bin", "generated")
         .await
@@ -179,9 +134,8 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
     let after = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("after");
+        .expect("after")
+        .value;
     let changes = before
         .diff_to(&after, 16, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
@@ -225,27 +179,8 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
 #[cfg(feature = "local")]
 #[tokio::test]
 async fn incremental_capture_applies_only_changed_eligible_paths() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-capture-incremental",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x51; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let workspace = memory_workspace("git-capture-incremental").await;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x51; 16])).await;
     transaction
         .write_text("/kept.txt", "before")
         .await
@@ -277,16 +212,7 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
         .expect("durable first capture lineage")
         .expect("filtered first capture proof");
 
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x53; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x53; 16])).await;
     transaction
         .write_text("/kept.txt", "after")
         .await
@@ -331,9 +257,8 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
                 &CancellationToken::new()
             )
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .expect("edited file")
+            .value
             .as_ref(),
         b"after"
     );
@@ -347,9 +272,8 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
                 &CancellationToken::new()
             )
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .expect("unchanged file")
+            .value
             .as_ref(),
         b"same"
     );
@@ -383,33 +307,13 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
 
 #[tokio::test]
 async fn nested_gitignore_change_forces_exact_capture() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-capture-nested-ignore",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x61; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let workspace = memory_workspace("git-capture-nested-ignore").await;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x61; 16])).await;
     transaction
         .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("directory");
+        .expect("directory")
+        .value;
     transaction
         .write_text("/src/ignored.txt", "present before ignore")
         .await
@@ -424,16 +328,7 @@ async fn nested_gitignore_change_forces_exact_capture() {
     .await
     .expect("base capture");
 
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x63; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x63; 16])).await;
     transaction
         .write_text("/src/.gitignore", "ignored.txt\n")
         .await

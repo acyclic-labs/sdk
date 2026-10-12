@@ -4,7 +4,7 @@ use super::*;
     any(target_os = "linux", target_os = "macos"),
     feature = "native-mount"
 ))]
-pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
+pub(crate) fn set_extended_attributes<W: NativeHostWork<Error = DemandError>>(
     file: &File,
     attributes: &[(Vec<u8>, acyclic_stream::OwnedBytes)],
     work: &mut W,
@@ -25,7 +25,7 @@ pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
         let fd = file.as_raw_fd() as u32;
         let digits = fd.checked_ilog10().unwrap_or(0) as usize + 1;
         let length = prefix.len() + digits;
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             bytes_copied: prefix.len() as u64,
             bytes_encoded: digits as u64,
             ..WorkCounters::UNCHARGED
@@ -43,11 +43,11 @@ pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
     #[cfg(target_os = "macos")]
     let fd = file.as_raw_fd();
     for (name, value) in attributes {
-        work.charge(ITEM)?;
+        work.started_io(ITEM)?;
         let mut entered = false;
         let result = unix_name(OsStr::from_bytes(name), work, |name, work| {
             entered = true;
-            native_write(work)?;
+            work.started_io(WRITE)?;
             // SAFETY: the held target, terminated name, and value remain live.
             #[cfg(target_os = "linux")]
             let written = unsafe {
@@ -70,15 +70,15 @@ pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
                 .len()
                 .checked_add(1)
                 .ok_or(crate::WorkError::Overflow)?;
-            work.allocate(length as u64)?;
-            let mut readback = vec![0_u8; length];
+            let (mut readback, allocation) = buffer(length, work)?;
+            readback.resize(length, 0u8);
             let result = (|| {
                 work.check()?;
                 work.admit(WorkCounters {
                     source_bytes_read: length as u64,
                     ..WorkCounters::UNCHARGED
                 })?;
-                native_read(work)?;
+                work.started_io(READ)?;
                 // SAFETY: the output buffer is writable for its full length.
                 #[cfg(target_os = "linux")]
                 let read = unsafe {
@@ -110,7 +110,7 @@ pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
                     return Err(NativeMetadataError("named_attributes readback mismatch").into());
                 }
                 for (actual, expected) in readback.iter().zip(value.iter()) {
-                    work.charge(ITEM)?;
+                    work.started_io(ITEM)?;
                     if actual != expected {
                         return Err(
                             NativeMetadataError("named_attributes readback mismatch").into()
@@ -120,7 +120,7 @@ pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
                 Ok(())
             })();
             drop(readback);
-            work.release(length as u64)?;
+            work.release(allocation)?;
             result
         });
         match result {
@@ -137,7 +137,7 @@ pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
 
 #[cfg(target_os = "linux")]
 #[cfg(any(feature = "native-mount", test))]
-pub(crate) fn apply_linux_metadata<W: crate::demand::SourceDemandReadWork>(
+pub(crate) fn apply_linux_metadata<W: NativeHostWork<Error = DemandError>>(
     file: &File,
     metadata: crate::kernel::FileMetadata,
     work: &mut W,
@@ -154,7 +154,7 @@ pub(crate) fn apply_linux_metadata<W: crate::demand::SourceDemandReadWork>(
         _ => libc::gid_t::MAX,
     };
     if requested_uid != libc::uid_t::MAX || requested_gid != libc::gid_t::MAX {
-        native_write(work)?;
+        work.started_io(WRITE)?;
         // SAFETY: AT_EMPTY_PATH acts on the pinned inode, including a final symlink.
         if unsafe {
             libc::fchownat(
@@ -173,7 +173,7 @@ pub(crate) fn apply_linux_metadata<W: crate::demand::SourceDemandReadWork>(
     if let MetadataField::Value(mode) = metadata.posix_mode {
         let desired = mode & 0o7777;
         if desired != observed.st_mode & 0o7777 {
-            native_write(work)?;
+            work.started_io(WRITE)?;
             // SAFETY: fchmodat2 with AT_EMPTY_PATH acts only on the held inode.
             if unsafe {
                 libc::syscall(
@@ -197,7 +197,7 @@ pub(crate) fn apply_linux_metadata<W: crate::demand::SourceDemandReadWork>(
             linux_time_spec(metadata.accessed_ns)?,
             linux_time_spec(metadata.modified_ns)?,
         ];
-        native_write(work)?;
+        work.started_io(WRITE)?;
         // SAFETY: AT_EMPTY_PATH targets the held inode and the timespecs remain live until the syscall returns.
         if unsafe {
             libc::utimensat(
@@ -227,7 +227,7 @@ pub(super) const LINUX_FCHMODAT2_SYSCALL: libc::c_long = libc::SYS_fchmodat2;
 
 #[cfg(target_os = "linux")]
 #[cfg(any(feature = "native-mount", test))]
-pub(super) fn validate_linux_metadata<W: crate::demand::SourceDemandReadWork>(
+pub(super) fn validate_linux_metadata<W: NativeHostWork<Error = DemandError>>(
     observed: libc::stat,
     metadata: crate::kernel::FileMetadata,
     work: &mut W,
@@ -277,10 +277,10 @@ pub(super) fn validate_linux_metadata<W: crate::demand::SourceDemandReadWork>(
 
 #[cfg(target_os = "linux")]
 #[cfg(any(feature = "native-mount", test))]
-pub(super) fn linux_require_fchmodat2<W: crate::demand::SourceDemandReadWork>(
+pub(super) fn linux_require_fchmodat2<W: NativeHostWork<Error = DemandError>>(
     work: &mut W,
 ) -> Result<(), DemandError> {
-    native_write(work)?;
+    work.started_io(WRITE)?;
     let result = unsafe {
         libc::syscall(
             LINUX_FCHMODAT2_SYSCALL,

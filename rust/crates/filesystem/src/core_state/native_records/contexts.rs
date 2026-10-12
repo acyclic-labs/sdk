@@ -78,11 +78,7 @@ fn live_ids(
             let Some((entry, allocation)) = next else {
                 break;
             };
-            let entry = transfer(
-                Owned::from_parts(entry, allocation),
-                work,
-                &mut entry_allocation,
-            )?;
+            let entry = transfer((entry, allocation), work, &mut entry_allocation)?;
             #[cfg(unix)]
             let id = decode_filename(entry.name.as_encoded_bytes(), work)?;
             #[cfg(windows)]
@@ -127,7 +123,7 @@ fn live_ids(
         let id = ids[index];
         match log.get_native_value(root, RecordKey::Context(id), work, cxl)? {
             Some(context) => {
-                if context_link(context.as_state())?.0 != id {
+                if context_link((&context.0))?.0 != id {
                     return Err(Error::Integrity);
                 }
                 index += 1;
@@ -143,7 +139,7 @@ fn live_ids(
             }
         }
     }
-    Ok(Owned::from_parts(ids, held))
+    Ok((ids, held))
 }
 
 struct Bucket {
@@ -228,7 +224,7 @@ fn put_buckets(change: &mut Change, mut buckets: Vec<Bucket>, work: &Work) -> Re
             } = bucket;
             change.put_owned(
                 RecordKey::Children(parent),
-                Owned::from_parts(RecordValue::FlatChildren(children), allocation),
+                (RecordValue::FlatChildren(children), allocation),
                 work,
             )?;
             change.put_scalar(
@@ -282,11 +278,11 @@ fn rebuild_index(
     let ids = live_ids(root, log, work, cxl)?;
     let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut buckets = Vec::new();
-    for id in ids.as_state() {
+    for id in (&ids.0) {
         let value = log
             .get_native_value(root, RecordKey::Context(*id), work, cxl)?
             .ok_or(Error::Integrity)?;
-        let (identity, parent) = context_link(value.as_state())?;
+        let (identity, parent) = context_link((&value.0))?;
         if identity != *id {
             return Err(Error::Integrity);
         }
@@ -295,7 +291,7 @@ fn rebuild_index(
             add_child(&mut buckets[index], identity, work)?;
         }
     }
-    commit_index(root, log, Owned::from_parts(buckets, held), work, cxl)
+    commit_index(root, log, (buckets, held), work, cxl)
 }
 
 pub(in crate::core_state) fn compare_native_context(
@@ -309,11 +305,8 @@ pub(in crate::core_state) fn compare_native_context(
 ) -> Result<bool, Error> {
     check(work, cxl)?;
     let current = load_native_context(root, log, id, work, cxl)?;
-    if current
-        .as_ref()
-        .map_or(0, |record| record.as_state().revision)
-        != expected
-        || replacement.as_state().context_id != id
+    if current.as_ref().map_or(0, |record| (&record.0).revision) != expected
+        || (&replacement.0).context_id != id
     {
         return Ok(false);
     }
@@ -322,11 +315,9 @@ pub(in crate::core_state) fn compare_native_context(
     }
     let old_parent = current
         .as_ref()
-        .and_then(|record| record.as_state().parent_context_id);
-    let new_parent = replacement.as_state().parent_context_id;
-    let old_id = current
-        .as_ref()
-        .map_or(id, |record| record.as_state().context_id);
+        .and_then(|record| (&record.0).parent_context_id);
+    let new_parent = (&replacement.0).parent_context_id;
+    let old_id = current.as_ref().map_or(id, |record| (&record.0).context_id);
     let mut bucket_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut buckets = Vec::new();
     for parent in old_parent.into_iter().chain(new_parent) {
@@ -394,9 +385,9 @@ pub(in crate::core_state) fn compare_native_context(
     }
     drop(current);
     let mut change = Change::new(work)?;
-    let (record, allocation) = replacement.into_parts();
-    let public = Owned::from_parts(RecordValue::Context(record), allocation);
-    let flat = clone_native_record_value(public.as_state(), work, cxl)?;
+    let (record, allocation) = replacement;
+    let public = (RecordValue::Context(record), allocation);
+    let flat = clone_native_record_value((&public.0), work, cxl)?;
     drop(public);
     change.put_owned(RecordKey::Context(id), flat, work)?;
     put_buckets(&mut change, buckets, work)?;

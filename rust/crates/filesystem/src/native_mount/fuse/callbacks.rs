@@ -383,7 +383,7 @@ impl Filesystem for FuseProjection {
             self.with_handle(
                 inode.0,
                 fh.0,
-                Access::Write,
+                AccessMode::ReadWrite,
                 |handle| self.write_handle(inode.0, handle, offset, data, work),
                 work
             ),
@@ -401,7 +401,7 @@ impl Filesystem for FuseProjection {
             self.with_handle(
                 inode.0,
                 fh.0,
-                Access::Read,
+                AccessMode::ReadOnly,
                 |handle| self.flush_handle(inode.0, handle, true, false, work),
                 work
             ),
@@ -626,7 +626,7 @@ impl Filesystem for FuseProjection {
             self.with_handle(
                 inode.0,
                 fh.0,
-                Access::Write,
+                AccessMode::ReadWrite,
                 |handle| self.allocate(inode.0, handle, offset, length, mode, work),
                 work
             ),
@@ -652,7 +652,7 @@ impl Filesystem for FuseProjection {
             self.with_handle(
                 inode.0,
                 fh.0,
-                Access::Read,
+                AccessMode::ReadOnly,
                 |handle| self.seek(inode.0, handle, offset, whence, work),
                 work
             ),
@@ -682,11 +682,11 @@ impl Filesystem for FuseProjection {
             self.with_handle(
                 inode_in.0,
                 fh_in.0,
-                Access::Read,
+                AccessMode::ReadOnly,
                 |handle_in| self.with_handle(
                     inode_out.0,
                     fh_out.0,
-                    Access::Write,
+                    AccessMode::ReadWrite,
                     |handle_out| self.copy_range(
                         inode_in.0,
                         handle_in,

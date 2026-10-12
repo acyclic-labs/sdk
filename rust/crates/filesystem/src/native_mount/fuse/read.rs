@@ -48,10 +48,6 @@ impl PageStores {
         Ok(())
     }
 
-    pub(super) fn land(&mut self, file_id: crate::FileId) {
-        self.in_flight.remove(&file_id);
-    }
-
     pub(super) fn claim(
         &mut self,
         file_id: crate::FileId,
@@ -108,9 +104,7 @@ impl FuseProjection {
         let _names = self.core.names()?;
         let path = fuse_clone_path(self.core.state()?.path(inode)?, work)?;
         let stamp = source.view_stamp_with_meter(work)?;
-        let target = source.read_link(&path, work)?;
-        let target = fuse_owned_source_chunk(target, work)?;
-        // The kernel keeps the target it receives.
+        let target = fuse_owned_source_chunk(source.read_link(&path, work)?, work)?;
         self.core
             .state()?
             .admit_attributes(source, inode, stamp, work)?;
@@ -135,12 +129,11 @@ impl FuseProjection {
                 .file(work)?
                 .read_up_to_with_meter(0, store.length, work)?;
             let bytes = fuse_owned_source_chunk(bytes, work)?;
-            let delta = crate::WorkCounters {
+            work.admit(crate::WorkCounters {
                 backend_write_operations: 1,
                 output_bytes: bytes.bytes.len() as u64,
                 ..crate::WorkCounters::UNCHARGED
-            };
-            work.admit(delta)?;
+            })?;
             work.charge(crate::WorkCounters {
                 backend_write_operations: 1,
                 ..crate::WorkCounters::UNCHARGED
@@ -148,38 +141,34 @@ impl FuseProjection {
             let result = notifier.store(INodeNo(store.inode), 0, &bytes.bytes);
             work.record_admitted(crate::WorkCounters {
                 output_bytes: if result.is_ok() {
-                    delta.output_bytes
+                    bytes.bytes.len() as u64
                 } else {
                     0
                 },
                 ..crate::WorkCounters::UNCHARGED
             })?;
-            result.map_err(NativeMountError::Io)?;
+            result?;
             Ok(true)
-        })();
-        let stored = match stored {
-            Ok(stored) => stored,
-            Err(error) => {
-                self.core.record_handler_failure(work, error);
-                false
-            }
-        };
+        })()
+        .unwrap_or_else(|error| {
+            self.core.record_handler_failure(work, error);
+            false
+        });
         let mut state = self.core.state_to_finish();
-        state.page_stores.land(store.file_id);
+        state.page_stores.in_flight.remove(&store.file_id);
         self.core.page_stored.notify_all();
-        let admitted = match state.admissible(
-            self.core.source.as_ref(),
-            &store.path,
-            Some(store.file_id),
-            Some(store.stamp),
-            work,
-        ) {
-            Ok(admitted) => admitted,
-            Err(error) => {
+        let admitted = state
+            .admissible(
+                self.core.source.as_ref(),
+                &store.path,
+                Some(store.file_id),
+                Some(store.stamp),
+                work,
+            )
+            .unwrap_or_else(|error| {
                 self.core.record_handler_failure(work, error);
                 false
-            }
-        };
+            });
         if !admitted {
             match fuse_reserve(&mut state.invalidation.deferred, 1, work) {
                 Ok(()) => state
@@ -202,49 +191,34 @@ impl FuseProjection {
         size: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, NativeMountError> {
-        let read = self.with_handle(
-            inode,
-            handle,
-            Access::Read,
-            |opened| self.read_handle(inode, opened, offset, size, work),
-            work,
-        );
-        match read {
-            Err(ref error)
+        let read = |opened| -> Result<_, NativeMountError> {
+            let file = self.core.state()?.open_handle(inode, opened, work)?;
+            let bytes = fuse_owned_source_chunk(
+                file.file(work)?.read_up_to_with_meter(offset, size, work)?,
+                work,
+            )?;
+            if self.core.stopping.load(Ordering::Acquire) {
+                return Err(libc::ENODEV.into());
+            }
+            Ok(bytes)
+        };
+        match self.with_handle(inode, handle, AccessMode::ReadOnly, read, work) {
+            Err(error)
                 if handle == 0
                     && self.skips_open
-                    && (matches!(error, NativeMountError::Source(MountSourceError::Stale))
-                        || matches!(error, NativeMountError::Io(error) if error.raw_os_error() == Some(libc::ESTALE))) =>
+                    && (matches!(&error, NativeMountError::Source(MountSourceError::Stale))
+                        || matches!(&error, NativeMountError::Io(error) if error.raw_os_error() == Some(libc::ESTALE))) =>
             {
                 let Some(stale) = self.core.state()?.implicit.get(&inode).map(|held| held.0) else {
                     return Err(libc::ESTALE.into());
                 };
                 let reopened = {
                     let _names = self.core.names()?;
-                    self.reopen_implicit(inode, Some(stale), Access::Read, work)?
+                    self.reopen_implicit(inode, Some(stale), AccessMode::ReadOnly, work)?
                 };
-                self.read_handle(inode, reopened, offset, size, work)
+                read(reopened)
             }
-            read => read,
+            result => result,
         }
-    }
-
-    pub(super) fn read_handle(
-        &self,
-        inode: u64,
-        handle: u64,
-        offset: u64,
-        size: u32,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, NativeMountError> {
-        let open_file = self.core.state()?.open_handle(inode, handle, work)?;
-        let bytes = open_file
-            .file(work)?
-            .read_up_to_with_meter(offset, size, work)?;
-        let bytes = fuse_owned_source_chunk(bytes, work)?;
-        if self.core.stopping.load(Ordering::Acquire) {
-            return Err(libc::ENODEV.into());
-        }
-        Ok(bytes)
     }
 }

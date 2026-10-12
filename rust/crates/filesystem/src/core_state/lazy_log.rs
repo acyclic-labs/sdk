@@ -21,8 +21,7 @@ impl LocalCoreStateStore {
                     return Ok(record
                         .value
                         .as_ref()
-                        .and_then(LazyWorkspaceState::from_value)
-                        .cloned());
+                        .and_then(LazyWorkspaceState::from_value));
                 }
             }
         }

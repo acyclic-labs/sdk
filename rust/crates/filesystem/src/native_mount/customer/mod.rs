@@ -7,7 +7,7 @@ use super::{
 };
 use crate::demand::{DemandSource, SourceNode, SourceNodeKind};
 use crate::kernel::FileKind;
-use crate::lazy_workspace::LazyTreapWork;
+use crate::kernel::KernelAccounting;
 use crate::model::{CheckoutMode, GenerationSelector};
 use crate::native_capture::NativeViewBaseline;
 use crate::workspace::{Workspace, WorkspaceError};
@@ -21,14 +21,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
-mod options;
-mod mount;
 mod lazy_mount;
+mod mount;
+mod options;
 mod working_set;
 use working_set::*;
 mod generation;
-mod publication;
 mod lifecycle;
+mod publication;
 use lifecycle::*;
 mod lazy_workspace;
 pub use lazy_mount::LazyMount;

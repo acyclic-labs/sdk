@@ -16,16 +16,7 @@ fn current_state_round_trips_and_obsolete_versions_are_rejected() {
 #[tokio::test]
 async fn foreign_workspace_tree_is_rejected_before_executor_side_effects() {
     let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
-    let foreign_workspace = WorkspaceId::derive(
-        [8; 16],
-        &WorkspaceName::new("foreign", WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .expect("valid foreign workspace")
-            .value,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .expect("workspace identity")
-    .value;
+    let foreign_workspace = workspace_identity([8; 16], "foreign");
     let executor = TestExecutor::returning(GitFilesystemResult::Applied {
         tree: None,
         tracked_paths: None,
@@ -71,20 +62,7 @@ async fn foreign_completion_tree_is_rejected_without_consuming_the_transition() 
     else {
         panic!("expected prepared commit");
     };
-    let foreign = WorkspaceId::derive(
-        [8; 16],
-        &WorkspaceName::new(
-            "foreign-result",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .expect("valid workspace")
-        .value,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .expect("workspace identity")
-    .value;
+    let foreign = workspace_identity([8; 16], "foreign-result");
     assert!(matches!(
         repository
             .complete_transition_result(

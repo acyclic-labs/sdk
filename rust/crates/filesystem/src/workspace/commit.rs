@@ -67,14 +67,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         }, budget, cancellation, E::from(WorkspaceError::Cancelled(crate::CancellationError)), None, |error| E::from(WorkspaceError::from(error))).await
     }
 
-    fn commit_value(&self, outcome: CheckoutCommitOutcome) -> Option<TransactionCommit<A, O>> {
+    fn commit_value(&self, outcome: LivePublicationObservation) -> Option<TransactionCommit<A, O>> {
         let generation = |id| Generation { workspace: self.workspace.clone(), id, publication_closure: self.checkout.publication_closure(id) };
         Some(match outcome {
-            CheckoutCommitOutcome::Committed { generation_id, .. } => TransactionCommit::Committed(generation(generation_id)),
-            CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => TransactionCommit::AlreadyCommitted(generation(generation_id)),
-            CheckoutCommitOutcome::Conflict { .. } => return None,
-            CheckoutCommitOutcome::Fenced { .. } => TransactionCommit::Fenced,
-            CheckoutCommitOutcome::IdempotencyConflict { .. } => TransactionCommit::IdempotencyConflict,
+            LivePublicationObservation::Committed { generation_id, .. } => TransactionCommit::Committed(generation(generation_id)),
+            LivePublicationObservation::AlreadyCommitted { generation_id, .. } => TransactionCommit::AlreadyCommitted(generation(generation_id)),
+            LivePublicationObservation::Conflict { .. } => return None,
+            LivePublicationObservation::Fenced { .. } => TransactionCommit::Fenced,
+            LivePublicationObservation::IdempotencyConflict { .. } => TransactionCommit::IdempotencyConflict,
         })
     }
 
@@ -103,7 +103,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             Some(self.checkout.publish_pending_with_native_work(self.idempotency_key.operation_id(), context, evidence, fingerprint_permit, permit, original, cancellation, &mut before_publication, None).await?)
         };
         if let Some(value) = outcome.and_then(|outcome| self.commit_value(outcome)) { return Ok(value); }
-        let actual = self.workspace.volume.checkout_with_native_work(GenerationSelector::Head, CheckoutMode::read_only_pinned(), original, cancellation).await?;
+        let actual = self.workspace.volume.checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), original, cancellation).await?;
         Ok(TransactionCommit::Conflict { actual: Generation { workspace: self.workspace.clone(), id: actual.generation_id(), publication_closure: None } })
     }
 

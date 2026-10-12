@@ -8,7 +8,7 @@ use crate::materializer::{
 use crate::workspace_context::WorkspaceContextRoot;
 
 type Error = LocalCoreStateStoreError;
-type Owned<T> = NativeOwnedCoreState<T>;
+type Owned<T> = (T, crate::NativeAllocation);
 
 pub(super) fn check(work: &Work, cxl: &CancellationToken) -> Result<(), Error> {
     cxl.check().map_err(|_| NativeError::Cancelled)?;
@@ -29,18 +29,18 @@ pub(super) fn checked_packet<T>(
     bytes: impl FnOnce(&T) -> Result<u64, Error>,
 ) -> Result<Owned<T>, Error> {
     // Keep the value-first tuple intact through every rejecting branch.
-    let parts = owned.into_parts();
+    let parts = owned;
     if !parts.1.work().shares_allocation_context(work) {
         return Err(Error::NativeLedgerMismatch);
     }
     if parts.1.bytes() != bytes(&parts.0)? {
         return Err(Error::Integrity);
     }
-    Ok(Owned::from_parts(parts.0, parts.1))
+    Ok((parts.0, parts.1))
 }
 
 fn transfer<T>(owned: Owned<T>, work: &Work, held: &mut NativeAllocation) -> Result<T, Error> {
-    let (value, mut allocation) = owned.into_parts();
+    let (value, mut allocation) = owned;
     let result = if allocation.work().shares_allocation_context(work) {
         held.absorb(&mut allocation).map_err(Error::from)
     } else {
@@ -273,7 +273,7 @@ pub(super) fn clone_native_record_value(
         RecordValue::LazyWorkspace(value) => RecordValue::LazyWorkspace(value.clone()),
     };
     held.substitute(native_record_owned_bytes(&value, work)?)?;
-    Ok(Owned::from_parts(value, held))
+    Ok((value, held))
 }
 
 pub(super) fn native_record_owned_bytes(value: &RecordValue, work: &Work) -> Result<u64, Error> {
@@ -320,14 +320,14 @@ fn read<T: DeserializeOwned>(
     let Some((value, allocation)) = measured_read_file::<Option<T>>(path, work)? else {
         return Ok(None);
     };
-    let value = transfer(Owned::from_parts(value, allocation), work, &mut held)?;
+    let value = transfer((value, allocation), work, &mut held)?;
     let Some(value) = value else {
         return Ok(None);
     };
     let mut value = map(value);
     value.normalize(Some(work))?;
     held.substitute(native_record_owned_bytes(&value, work)?)?;
-    Ok(Some(Owned::from_parts(value, held)))
+    Ok(Some((value, held)))
 }
 
 pub(super) fn read_native_record(
@@ -364,7 +364,7 @@ pub(super) fn load_native_lineage(
     let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let value = transfer(owned, work, &mut held)?;
     match value {
-        RecordValue::Lineage(value) => Ok(Some(Owned::from_parts(value, held))),
+        RecordValue::Lineage(value) => Ok(Some((value, held))),
         _ => Err(Error::Integrity),
     }
 }
@@ -386,7 +386,7 @@ pub(super) fn compare_native_lineage(
     let replacement = transfer(replacement, work, &mut held)?;
     if load_native_lineage(root, log, id, work, cxl)?
         .as_ref()
-        .map_or(0, |value| value.as_state().revision)
+        .map_or(0, |value| (&value.0).revision)
         != expected
     {
         return Ok(false);
@@ -394,7 +394,7 @@ pub(super) fn compare_native_lineage(
     let mut change = Change::new(work)?;
     change.put_owned(
         RecordKey::Lineage(id),
-        Owned::from_parts(RecordValue::Lineage(replacement), held),
+        (RecordValue::Lineage(replacement), held),
         work,
     )?;
     cxl.check()
@@ -443,7 +443,7 @@ pub(super) fn load_native_context(
         }
         _ => return Err(Error::Integrity),
     };
-    Ok(Some(Owned::from_parts(value, held)))
+    Ok(Some((value, held)))
 }
 
 pub(super) fn native_lineage_owned_bytes(

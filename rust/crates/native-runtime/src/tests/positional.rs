@@ -2,68 +2,60 @@ use super::*;
 
 #[test]
 fn positional_io_preserves_cursor_and_bounds_ranges() -> io::Result<()> {
-    let temporary = tempfile::tempdir()?;
-    let path = temporary.path().join("positional");
-    let file = OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(path)?;
+    let mut file = tempfile::tempfile()?;
     write_all_at(&file, 2, &[0x22; 3], None)?;
     write_all_at(&file, 16, &[0x33; 5], None)?;
     sync_file(&file, Durability::Full, None)?;
-
-    let mut bytes = [0_u8; 24];
+    let mut bytes = [0; 24];
     assert_eq!(read_at(&file, 0, &mut bytes)?, 21);
     assert_eq!(&bytes[..8], &[0, 0, 0x22, 0x22, 0x22, 0, 0, 0]);
     assert_eq!(&bytes[8..16], &[0; 8]);
     assert_eq!(&bytes[16..21], &[0x33; 5]);
     assert_eq!(read_at(&file, 21, &mut bytes)?, 0);
-
+    let native = NativeFile::from_file(file.try_clone()?, None).map_err(|(error, _)| error)?;
     complete(
-        NativeFile::from_file(file.try_clone()?, None)
-            .map_err(|(error, _)| error)?
-            .write_all_batch_async(vec![
-                OwnedWrite {
-                    offset: 32,
-                    bytes: Bytes::from_static(&[0x44; 5]),
-                },
-                OwnedWrite {
-                    offset: 48,
-                    bytes: Bytes::from_static(&[0x55; 7]),
-                },
-            ]),
+        native.write_all_batch_async(
+            [
+                (32, Bytes::from_static(&[0x44; 5])),
+                (48, Bytes::from_static(&[0x55; 7])),
+            ]
+            .map(|(offset, bytes)| OwnedWrite { offset, bytes })
+            .to_vec(),
+        ),
     )?;
-    let mut batch = [0_u8; 23];
+    let mut batch = [0; 23];
     assert_eq!(read_at(&file, 32, &mut batch)?, 23);
     assert_eq!(&batch[..5], &[0x44; 5]);
     assert_eq!(&batch[5..16], &[0; 11]);
     assert_eq!(&batch[16..], &[0x55; 7]);
-
-    let mut cursor = file.try_clone()?;
-    cursor.seek(SeekFrom::End(0))?;
-    let selected = complete(read_batch_async(
-        file.try_clone()?,
-        vec![OwnedRead {
+    file.seek(SeekFrom::End(0))?;
+    assert_eq!(
+        complete(native.read_batch_async(vec![OwnedRead {
             offset: 16,
-            length: 5,
-        }],
-    ))?;
-    assert_eq!(selected, [Bytes::from_static(&[0x33; 5])]);
-    assert_eq!(cursor.stream_position()?, 55);
-
-    complete(
-        NativeFile::from_file(file.try_clone()?, None)
-            .map_err(|(error, _)| error)?
-            .write_all_batch_async(vec![OwnedWrite {
-                offset: 4,
-                bytes: Bytes::from_static(b"cursor-independent"),
-            }]),
-    )?;
-    let mut written = [0_u8; 18];
+            length: 5
+        }]))?,
+        [Bytes::from_static(&[0x33; 5])]
+    );
+    assert_eq!(file.stream_position()?, 55);
+    complete(native.write_all_batch_async(vec![OwnedWrite {
+        offset: 4,
+        bytes: Bytes::from_static(b"cursor-independent"),
+    }]))?;
+    let mut written = [0; 18];
     assert_eq!(read_at(&file, 4, &mut written)?, written.len());
     assert_eq!(&written, b"cursor-independent");
-    assert_eq!(cursor.stream_position()?, 55);
+    assert_eq!(file.stream_position()?, 55);
+    file.set_len(8)?;
+    write_all_at(&file, 0, b"abcdefgh", None)?;
+    assert_eq!(
+        complete(read_batch_async(
+            file,
+            [(5, 8), (1, 3)]
+                .map(|(offset, length)| OwnedRead { offset, length })
+                .to_vec()
+        ))?,
+        [Bytes::from_static(b"fgh"), Bytes::from_static(b"bcd")]
+    );
     Ok(())
 }
 
@@ -92,35 +84,6 @@ fn batch_larger_than_native_queue_preserves_every_write() -> io::Result<()> {
             assert_eq!(actual.get(start + 3), Some(&0));
         }
     }
-    Ok(())
-}
-
-#[test]
-fn overlapping_batch_writes_fail_before_any_write() -> io::Result<()> {
-    let temporary = tempfile::tempdir()?;
-    let path = temporary.path().join("overlapping-batch");
-    let file = OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(&path)?;
-    std::fs::write(&path, b"unchanged")?;
-    let result = complete(
-        NativeFile::from_file(file, None)
-            .map_err(|(error, _)| error)?
-            .write_all_batch_async(vec![
-                OwnedWrite {
-                    offset: 0,
-                    bytes: Bytes::from_static(b"first"),
-                },
-                OwnedWrite {
-                    offset: 3,
-                    bytes: Bytes::from_static(b"second"),
-                },
-            ]),
-    );
-    assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::InvalidInput));
-    assert_eq!(std::fs::read(&path)?, b"unchanged");
     Ok(())
 }
 
@@ -232,31 +195,6 @@ fn barrier_durability_rejects_targets_without_an_exact_primitive() -> io::Result
     Ok(())
 }
 
-#[test]
-fn native_read_batch_preserves_order_and_short_reads() -> io::Result<()> {
-    let temporary = tempfile::NamedTempFile::new()?;
-    let file = temporary.reopen()?;
-    write_all_at(&file, 0, b"abcdefgh", None)?;
-    let reads = complete(read_batch_async(
-        file,
-        vec![
-            OwnedRead {
-                offset: 5,
-                length: 8,
-            },
-            OwnedRead {
-                offset: 1,
-                length: 3,
-            },
-        ],
-    ))?;
-    assert_eq!(
-        reads,
-        [Bytes::from_static(b"fgh"), Bytes::from_static(b"bcd")]
-    );
-    Ok(())
-}
-
 #[cfg(target_vendor = "apple")]
 #[test]
 fn apple_batches_preserve_unlinked_open_files() -> io::Result<()> {
@@ -291,84 +229,66 @@ fn apple_batches_preserve_unlinked_open_files() -> io::Result<()> {
 
 #[test]
 fn invalid_positional_batches_leave_contents_and_cursor_unchanged() -> io::Result<()> {
-    let temporary = tempfile::tempdir()?;
-    let path = temporary.path().join("invalid-io-uring-offset");
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(&path)?;
+    let temporary = tempfile::NamedTempFile::new()?;
+    let mut file = temporary.reopen()?;
     write_all_at(&file, 0, b"stable", None)?;
     file.seek(SeekFrom::Start(3))?;
-
-    let mut byte = [0_u8; 1];
-    assert!(matches!(
-        read_at(&file, u64::MAX, &mut byte),
-        Err(error) if error.kind() == io::ErrorKind::InvalidInput
-    ));
-    assert!(matches!(
-        write_all_at(&file, u64::MAX, b"x", None),
-        Err(error) if error.kind() == io::ErrorKind::InvalidInput
-    ));
-    assert!(matches!(
+    assert_eq!(
+        read_at(&file, u64::MAX, &mut [0]).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        write_all_at(&file, u64::MAX, b"x", None)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert_eq!(
         complete(read_batch_async(
             file.try_clone()?,
-            vec![
-                OwnedRead {
-                    offset: 0,
-                    length: 1,
-                },
-                OwnedRead {
-                    offset: u64::MAX,
-                    length: 1,
-                },
-            ],
-        )),
-        Err(error) if error.kind() == io::ErrorKind::InvalidInput
-    ));
-    assert!(matches!(
-        complete(NativeFile::from_file(file.try_clone()?, None).map_err(|(error, _)| error)?.write_all_batch_async(vec![
-                OwnedWrite {
-                    offset: 0,
-                    bytes: Bytes::from_static(b"changed"),
-                },
-                OwnedWrite {
-                    offset: u64::MAX,
-                    bytes: Bytes::from_static(b"x"),
-                },
-            ],
-        )),
-        Err(error) if error.kind() == io::ErrorKind::InvalidInput
-    ));
+            [(0, 1), (u64::MAX, 1)]
+                .map(|(offset, length)| OwnedRead { offset, length })
+                .to_vec()
+        ))
+        .unwrap_err()
+        .kind(),
+        io::ErrorKind::InvalidInput
+    );
+    let native = NativeFile::from_file(file.try_clone()?, None).map_err(|(error, _)| error)?;
+    for writes in [
+        [(0, b"changed".as_slice()), (u64::MAX, b"x".as_slice())],
+        [(0, b"first".as_slice()), (3, b"second".as_slice())],
+    ] {
+        let writes = writes
+            .map(|(offset, bytes)| OwnedWrite {
+                offset,
+                bytes: Bytes::from_static(bytes),
+            })
+            .to_vec();
+        assert_eq!(
+            complete(native.write_all_batch_async(writes))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
     assert_eq!(file.stream_position()?, 3);
-    assert_eq!(std::fs::read(path)?, b"stable");
+    assert_eq!(std::fs::read(temporary.path())?, b"stable");
     Ok(())
 }
 
 #[cfg(windows)]
 #[test]
 fn native_read_batch_preserves_empty_and_eof_ranges() -> io::Result<()> {
-    let temporary = tempfile::NamedTempFile::new()?;
-    let file = temporary.reopen()?;
+    let file = tempfile::tempfile()?;
     write_all_at(&file, 0, b"abc", None)?;
-    let reads = complete(read_batch_async(
-        file.try_clone()?,
-        vec![
-            OwnedRead {
-                offset: 0,
-                length: 0,
-            },
-            OwnedRead {
-                offset: 3,
-                length: 4,
-            },
-            OwnedRead {
-                offset: 30,
-                length: 4,
-            },
-        ],
-    ))?;
-    assert_eq!(reads, [Bytes::new(), Bytes::new(), Bytes::new()]);
+    let requests = [(0, 0), (3, 4), (30, 4)]
+        .map(|(offset, length)| OwnedRead { offset, length })
+        .to_vec();
+    assert_eq!(
+        complete(read_batch_async(file.try_clone()?, requests))?,
+        [Bytes::new(), Bytes::new(), Bytes::new()]
+    );
     for (offset, expected) in b"abc".iter().copied().enumerate() {
         let repeated = complete(read_batch_async(
             file.try_clone()?,

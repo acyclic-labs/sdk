@@ -8,11 +8,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         work.finish(result, &accounting)
     }
 
-    pub(super) async fn checkout_accounted(&self, selector: GenerationSelector, mode: CheckoutMode, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken) -> Result<Checkout<A, O>, WorkspaceError> {
+    pub(crate) async fn checkout_accounted(&self, selector: GenerationSelector, mode: CheckoutMode, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken) -> Result<Checkout<A, O>, WorkspaceError> {
         accounting.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            return self.volume.checkout_with_native_work(selector, mode, original, cancellation).await.map_err(WorkspaceError::from);
+            return self.volume.checkout(selector, mode, original, cancellation).await.map_err(WorkspaceError::from);
         }
         let opened = self.volume.checkout(selector, mode, accounting.remaining()?, cancellation).await;
         let (allocations, work, budget, _) = accounting.standalone_parts().ok_or(crate::WorkError::Overflow)?;
@@ -87,7 +87,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn reader(&self, generation: GenerationId, original: &crate::NativeMaterializationWork, cancellation: &CancellationToken) -> Result<crate::PinnedReader<A, O>, WorkspaceError> {
-        self.volume.checkout_with_native_work(GenerationSelector::Exact(generation), CheckoutMode::read_only_pinned(), original, cancellation).await?
+        self.volume.checkout(GenerationSelector::Exact(generation), CheckoutMode::read_only_pinned(), original, cancellation).await?
             .into_pinned_reader_with_native_work(original, cancellation).map_err(WorkspaceError::from)
     }
 
