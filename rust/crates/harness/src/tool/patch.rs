@@ -1,5 +1,4 @@
-//! Exact, bounded V4A update-file transformation over immutable UTF-8.
-
+//! Exact bounded V4A update-file transformation.
 use super::edit::AlgorithmWork;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -17,7 +16,7 @@ pub struct PatchLimits {
 }
 
 impl PatchLimits {
-    /// Rejects absent and unbounded allowances before parsing or source I/O.
+    /// Rejects absent and unbounded allowances.
     pub fn validate(self) -> Result<()> {
         super::edit::validate_edit_bound(self.maximum_bytes)?;
         super::edit::validate_edit_bound(self.maximum_work)?;
@@ -48,10 +47,9 @@ fn parse<'a>(
     meter: &mut AlgorithmWork,
 ) -> Result<Vec<Hunk<'a>>> {
     let mut hunks: Vec<Hunk<'_>> = Vec::new();
-    let mut ended = false;
     for raw in diff.split_inclusive('\n') {
         let line = line_text(raw);
-        if ended {
+        if hunks.last().is_some_and(|hunk| hunk.at_end) {
             return Err(meter.invalid("patch has data after its end-of-file marker"));
         }
         if line == "@@" || line.starts_with("@@ ") {
@@ -75,7 +73,6 @@ fn parse<'a>(
                 .ok_or_else(|| meter.invalid("patch requires a hunk header"))?;
             if line == "*** End of File" {
                 hunk.at_end = true;
-                ended = true;
             } else {
                 let prefix = line
                     .as_bytes()
@@ -201,7 +198,7 @@ fn append(output: &mut String, text: &str, maximum: u64, meter: &mut AlgorithmWo
     Ok(())
 }
 
-/// Applies exact V4A context/add/delete hunks and optional `@@ anchor`/EOF.
+/// Applies exact context/add/delete hunks and optional anchors or EOF.
 pub(crate) fn apply_update(
     source: &str,
     diff: &str,
