@@ -2,7 +2,7 @@
 
 use crate::contract::capability;
 use crate::contract::next_revision;
-use crate::store::{history::HistoryIo, operations};
+use crate::store::{guarded_boundary, history::HistoryIo, operations};
 use crate::wire_codec::CodecQuota;
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
@@ -42,10 +42,7 @@ mod tests;
 pub(crate) use authority::JournalWrite;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use commit::native_call_result;
-pub(crate) use commit::{
-    CommitPhase, SdkCallError, add_condition, add_record, append, commit, commit_request,
-    sdk_error, sdk_source,
-};
+pub(crate) use commit::{CommitPhase, add_condition, add_record, append, commit, commit_request};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) use completion::prepare_materialization_commit;
 pub use coordinator::DistributedCoordinator;
@@ -58,8 +55,8 @@ pub use scheduling::{WorkLease, WorkPull, Worker};
 pub(crate) use serializer::{digest_key, execution_path};
 
 use authority::authorize_operation_scope;
-use commit::{append_if_execution_idle, coordinator_retry_conflict};
-use journal::{coordinator_boundary, coordinator_stream, next_record, read_intent, read_records};
+use commit::append_if_execution_idle;
+use journal::{coordinator_stream, next_record, read_intent, read_records};
 use serializer::{
     decode, decode_json, encode, formatted_text, inspect_envelope, stream_key, stream_path,
     validate_idempotency_key,

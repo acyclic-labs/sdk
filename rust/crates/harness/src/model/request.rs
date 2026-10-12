@@ -89,7 +89,7 @@ impl ModelRequest {
                             .get(name)
                             .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
                         crate::executor::with_history_io(io, |work| {
-                            crate::contract::validate_json_schema_value(
+                            crate::executor::validate_json_schema_value(
                                 &tool.input_schema,
                                 arguments,
                                 "model tool arguments",
@@ -128,7 +128,7 @@ impl ModelRequest {
                                 let envelope =
                                     io.decode(std::marker::PhantomData::<Value>, &bytes, Storage)?;
                                 crate::executor::with_history_io(Some(io), |work| {
-                                    crate::contract::validate_json_schema_value(
+                                    crate::executor::validate_json_schema_value(
                                         &tool.projection_schema,
                                         &envelope.0,
                                         "model tool result",
@@ -139,7 +139,7 @@ impl ModelRequest {
                             _ => {
                                 let envelope = serde_json::to_value(content)
                                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                                crate::contract::validate_json_schema_value(
+                                crate::executor::validate_json_schema_value(
                                     &tool.projection_schema,
                                     &envelope,
                                     "model tool result",

@@ -20,7 +20,7 @@ pub(crate) fn checked_compaction_budget(
             .filter(|(_, selected)| **selected)
             .try_fold(u64::from(count.fixed_tokens), |total, (position, _)| {
                 if let Some(work) = quota.work().as_deref_mut() {
-                    work.codec_charge(crate::contract::JsonCodecCharge::Work {
+                    work.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                         bytes: 0,
                         items: 1,
                     })?;
@@ -140,7 +140,7 @@ pub(crate) fn validate_projected_context(
         for file in context.metadata.values() {
             limits.validate_file(file, work)?;
         }
-        crate::contract::json_byte_length(context, limits.render_bytes, work).map(|_| ())
+        crate::executor::json::json_byte_length(context, limits.render_bytes, work).map(|_| ())
     })
 }
 pub(crate) async fn verify_file(

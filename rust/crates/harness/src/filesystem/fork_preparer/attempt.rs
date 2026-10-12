@@ -62,7 +62,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let attempt = self.attempt(Some(preparation))?;
         self.check_request(request, attempt.io.as_ref(), Some(preparation.as_ref()))?;
         crate::NativeFutureBundle::new(work, || async move {
-            preparation.verify_creation_with_native_work(work)?.await?;
+            preparation.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
             let io = attempt
                 .io
                 .as_ref()
@@ -88,7 +88,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         self.require_native_projection_work(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             preparation
-                .verify_reconciliation_with_native_work(work)?
+                .verify(true, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?
                 .await?;
             let attempt = self.attempt(Some(preparation))?;
             let io = attempt
@@ -98,7 +98,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             self.check_request(request, Some(io), Some(preparation.as_ref()))?;
             let report = attempt.reconcile(request).await?;
             preparation
-                .verify_reconciliation_with_native_work(work)?
+                .verify(true, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?
                 .await?;
             let retained = io.owned_bytes()?;
             let custody = io.take_native_custody(retained)?;
@@ -175,26 +175,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
 
     pub(super) async fn verify_task_lease(&self, settlement: bool) -> Result<()> {
         if let Some(preparation) = &self.task_preparation {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = self
-                .io
-                .as_ref()
-                .and_then(PreparationIo::original_native_work)
-            {
-                return if settlement {
-                    preparation
-                        .verify_reconciliation_with_native_work(work)?
-                        .await
-                } else {
-                    preparation.verify_creation_with_native_work(work)?.await
-                };
-            }
-            if settlement {
-                preparation.verify_reconciliation().await?;
-            } else {
-                preparation.verify_creation().await?;
-            }
+            preparation.verify(settlement, self.io.as_ref())?.await?;
         }
+
         Ok(())
     }
 
@@ -293,7 +276,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let creation_key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("fork:{}:journal", request.operation_id),
                     work,
                 )
@@ -310,7 +293,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("fork:{}:claim", request.operation_id),
                     work,
                 )
@@ -346,7 +329,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("fork:{}:report", report.request.operation_id),
                     work,
                 )
@@ -381,7 +364,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         selection: &ForkSelection,
     ) -> Result<Option<Capture>> {
         let path = crate::executor::with_history_io(self.io.as_ref(), |work| {
-            crate::contract::preparation_format(format_args!("/capture-{index}-result.json"), work)
+            crate::executor::preparation_format(format_args!("/capture-{index}-result.json"), work)
         })?;
         let Some(capture) = read_record::<A, O, Capture>(
             &self.preparer.host,
@@ -395,7 +378,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             return Ok(None);
         };
         let attempt_path = crate::executor::with_history_io(self.io.as_ref(), |work| {
-            crate::contract::preparation_format(format_args!("/capture-{index}-attempt.json"), work)
+            crate::executor::preparation_format(format_args!("/capture-{index}-attempt.json"), work)
         })?;
         read_record::<A, O, Uuid>(
             &self.preparer.host,
@@ -424,7 +407,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         index: usize,
     ) -> Result<bool> {
         let path = crate::executor::with_history_io(self.io.as_ref(), |work| {
-            crate::contract::preparation_format(format_args!("/capture-{index}-attempt.json"), work)
+            crate::executor::preparation_format(format_args!("/capture-{index}-attempt.json"), work)
         })?;
         if read_record::<A, O, Uuid>(
             &self.preparer.host,
@@ -442,7 +425,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!(
                         "fork:{}:capture-attempt:{index}:{attempt}",
                         request.operation_id
@@ -486,12 +469,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
     ) -> Result<Capture> {
         validate_capture(selection, &capture)?;
         let path = crate::executor::with_history_io(self.io.as_ref(), |work| {
-            crate::contract::preparation_format(format_args!("/capture-{index}-result.json"), work)
+            crate::executor::preparation_format(format_args!("/capture-{index}-result.json"), work)
         })?;
         let key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("fork:{}:capture-result:{index}", request.operation_id),
                     work,
                 )

@@ -250,7 +250,7 @@ impl VolumeRef {
 
     /// Exact capability for one operation on this volume.
     pub fn capability(&self, operation: VolumeOperation, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
-        content_label(operation.capability_prefix(), crate::contract::canonical_json_digest(self, u64::MAX, work)?, work)
+        content_label(operation.capability_prefix(), crate::executor::json::canonical_json_digest(self, u64::MAX, work)?, work)
     }
 
     /// Copies identity fields under the optional work observer.
@@ -287,12 +287,12 @@ impl VolumeRef {
         if is_internal_path(prefix) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "internal storage paths cannot be delegated"));
         }
-        content_label("directory:read:", crate::contract::canonical_json_digest(&(self, prefix), u64::MAX, work)?, work)
+        content_label("directory:read:", crate::executor::json::canonical_json_digest(&(self, prefix), u64::MAX, work)?, work)
     }
 
     /// Collision-resistant physical namespace for Filesystem adapters.
     pub fn storage_name(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
-        content_label("harness-", crate::contract::canonical_json_digest(self, u64::MAX, work)?, work)
+        content_label("harness-", crate::executor::json::canonical_json_digest(self, u64::MAX, work)?, work)
     }
 
 }
@@ -365,11 +365,11 @@ impl ContentGrant {
         }
         verifier.verify(scope, &mut None)?;
         if contains_content_label(scope, VolumeOperation::Read.capability_prefix(),
-            crate::contract::canonical_json_digest(file.volume(), u64::MAX, &mut None)?) {
+            crate::executor::json::canonical_json_digest(file.volume(), u64::MAX, &mut None)?) {
             return Ok(Self { volume: file.volume.clone(), operation: VolumeOperation::Read,
                 exact_file: None, directory_prefix: None });
         }
-        if contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file, u64::MAX, &mut None)?) {
+        if contains_content_label(scope, "file:read:", crate::executor::json::canonical_json_digest(file, u64::MAX, &mut None)?) {
             let FileRef { volume, path, version, descriptor, display_name } = file.clone();
             return Ok(Self { volume, operation: VolumeOperation::Read,
                 exact_file: Some((path, version, descriptor, display_name)), directory_prefix: None });
@@ -419,7 +419,7 @@ impl ContentGrant {
         verifier.verify(scope, work)?;
         if operation == VolumeOperation::Write { volume.require_writer(scope.agent(), work)?; }
         volume.validate(work)?;
-        let digest = crate::contract::canonical_json_digest(volume, maximum_bytes, work)?;
+        let digest = crate::executor::json::canonical_json_digest(volume, maximum_bytes, work)?;
         if !contains_content_label(scope, operation.capability_prefix(), digest) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Unauthorized,
                 "volume operation is not granted"));
@@ -435,8 +435,8 @@ impl ContentGrant {
         if !prefix.is_empty() { validate_content_path(prefix, work)?; }
         if is_internal_path(prefix) { return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "internal storage paths cannot be delegated")); }
         if scope.agent().is_none()
-            || !(contains_content_label(scope, "directory:read:", crate::contract::canonical_json_digest(&(volume, prefix), u64::MAX, work)?)
-                || contains_content_label(scope, VolumeOperation::Read.capability_prefix(), crate::contract::canonical_json_digest(volume, u64::MAX, work)?)) {
+            || !(contains_content_label(scope, "directory:read:", crate::executor::json::canonical_json_digest(&(volume, prefix), u64::MAX, work)?)
+                || contains_content_label(scope, VolumeOperation::Read.capability_prefix(), crate::executor::json::canonical_json_digest(volume, u64::MAX, work)?)) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Unauthorized,
                 "private directory read is not granted"));
         }
@@ -454,7 +454,7 @@ impl ContentGrant {
             return Err(Error::Unauthorized("internal storage file is not public content".into()));
         }
         verifier.verify(scope, &mut None)?;
-        if !contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file, u64::MAX, &mut None)?) {
+        if !contains_content_label(scope, "file:read:", crate::executor::json::canonical_json_digest(file, u64::MAX, &mut None)?) {
             return Err(Error::Unauthorized("exact file read is not granted".into()));
         }
         let FileRef { volume, path, version, descriptor, display_name } = file.clone();
@@ -548,7 +548,7 @@ impl FileDescriptor {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<Self> {
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
-            io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: media_type.len() as u64 + 1 })?;
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: media_type.len() as u64 + 1 })?;
         }
         if let Some(reason) = Self::validation_fields(bytes.len() as u64, media_type) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, reason));
@@ -795,7 +795,7 @@ impl FileRef {
     /// Owner-issued capability for reading precisely this immutable version.
     pub fn read_capability(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
         self.validate(work)?;
-        content_label("file:read:", crate::contract::canonical_json_digest(self, crate::store::default_projection_read_limits().maximum_bytes, work)?, work)
+        content_label("file:read:", crate::executor::json::canonical_json_digest(self, crate::store::default_projection_read_limits().maximum_bytes, work)?, work)
     }
 }
 
@@ -1230,7 +1230,7 @@ pub fn decode_attachment_manifest(
             fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut sequence: S) -> std::result::Result<Self::Value, S::Error> {
                 let mut items: Vec<Attachment> = Vec::new();
                 loop {
-                    guard::<_, S::Error>(self.io.remaining(), self.failure)?;
+                    guard::<_, S::Error>(self.io.remaining().map_err(Into::into), self.failure)?;
                     if items.len() == self.maximum {
                         if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
                             return guard::<_, S::Error>(
@@ -1352,7 +1352,7 @@ pub async fn verified_attachment_manifest<'a, V: ContentResidencyVerifier + ?Siz
     for item in &output.0 {
         crate::executor::with_history_io(io, |work| {
             if let Some(observer) = work.as_deref_mut() {
-                observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             limits.validate_file(&item.file, work)
         })?;
@@ -1482,35 +1482,6 @@ impl ConversationMessage {
         }
         Ok(())
     }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn clone_native_reference_text(
-    source: &str, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(String, acyclic_fs::NativeAllocation)> {
-    if source.is_empty() {
-        return Ok((String::new(), work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?));
-    }
-    work.admit(acyclic_fs::WorkCounters {
-        bytes_copied: source.len() as u64, ..acyclic_fs::WorkCounters::default()
-    }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    let mut component = work.claim(source.len() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    let mut text = String::new();
-    work.charge(acyclic_fs::WorkCounters {
-        allocation_operations: 1, ..acyclic_fs::WorkCounters::default()
-    }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    text.try_reserve_exact(source.len()).map_err(|cause| Error::NativeWork {
-        cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause), custody: None,
-    })?;
-    component.reconcile_capacity(text.capacity() as u64)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    work.charge(acyclic_fs::WorkCounters {
-        bytes_copied: source.len() as u64, ..acyclic_fs::WorkCounters::default()
-    }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    text.push_str(source);
-    Ok((text, component))
 }
 
 impl FileRef {
@@ -1669,8 +1640,6 @@ struct NativeConversationCustody {
     indexes: Vec<acyclic_fs::NativeAllocation>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     index_buffer: Option<acyclic_fs::NativeAllocation>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    cache_carrier: Option<acyclic_fs::NativeAllocation>,
 }
 
 const INDEX_ROW_BYTES: usize = std::mem::size_of::<(Uuid, (Option<usize>, Option<usize>))>();
@@ -1700,7 +1669,7 @@ fn native_owned_wire_inspect(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
     if let Some(io) = work.as_deref_mut() {
-        io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
     }
     Ok(())
 }
@@ -1918,7 +1887,7 @@ impl ConversationState {
         cache.adopt(retained)?;
         for (position, message) in state.messages.iter().enumerate() {
             if let Some(io) = cache.work().as_deref_mut() {
-                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             message.validate(cache.work())?;
             if message.sequence <= previous
@@ -1942,7 +1911,7 @@ impl ConversationState {
         }
         for (position, message) in state.messages.iter().enumerate() {
             if let Some(io) = cache.work().as_deref_mut() {
-                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             if let Some(parent) = turn_outcome_parent(message)
                 && !state.by_id.contains_key(&parent) {
@@ -2006,7 +1975,7 @@ impl ConversationState {
         if (self.native_custody.messages.is_some() || self.native_custody.digests.is_some()
             || self.native_custody.archive.is_some()
             || self.native_custody.index_buffer.is_some()
-            || self.native_custody.cache_carrier.is_some() || !self.native_custody.indexes.is_empty())
+            || !self.native_custody.indexes.is_empty())
             && !work.as_deref().is_some_and(|io| io.original_native_work().is_some())
         {
             return Err(Error::NativeBoundary {
@@ -2015,79 +1984,6 @@ impl ConversationState {
             });
         }
         let _ = work;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn native_unclaimed_message_buffer_bytes(&self) -> Result<u64> {
-        if self.native_custody.messages.is_some() { return Ok(0); }
-        conversation_buffer_bytes::<ConversationMessage>(self.messages.capacity())
-            .map_err(|reason| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn native_unclaimed_archived_prefix_bytes(&self) -> Result<u64> {
-        if self.native_custody.archive.is_some() { return Ok(0); }
-        self.archived_prefix.as_ref().map_or(Ok(0), |prefix| prefix.checkpoint.logical_owned_bytes())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn install_native_message_buffer(&mut self, allocation: acyclic_fs::NativeAllocation) {
-        assert!(self.native_custody.messages.is_none(), "message buffer already has custody");
-        self.native_custody.messages = Some(allocation);
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn install_native_archived_prefix(&mut self, allocation: acyclic_fs::NativeAllocation) {
-        assert!(self.native_custody.archive.is_none(), "archived prefix already has custody");
-        self.native_custody.archive = Some(allocation);
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn native_unclaimed_cache_bytes(&self) -> Result<u64> {
-        if self.native_custody.cache_carrier.is_some() { return Ok(0); }
-        let mut bytes = 0_u64;
-        if self.native_custody.digests.is_none() {
-            bytes += conversation_buffer_bytes::<[u8; 32]>(self.prefix_digests.capacity())
-                .map_err(|reason| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason })?;
-        }
-        self.by_id.len().checked_sub(self.native_custody.indexes.len())
-            .and_then(|rows| rows.checked_mul(INDEX_ROW_BYTES))
-            .and_then(|rows| u64::try_from(rows).ok())
-            .and_then(|rows| bytes.checked_add(rows))
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "conversation cache transfer overflows" })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn install_native_preclaimed_caches(
-        &mut self, allocation: acyclic_fs::NativeAllocation,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        if self.native_custody.cache_carrier.is_none() {
-            self.native_custody.cache_carrier = Some(allocation);
-        } else {
-            assert_eq!(allocation.bytes(), 0, "cache source already has custody");
-        }
-        let carrier = self.native_custody.cache_carrier.as_mut().expect("installed cache source custody");
-        if self.native_custody.digests.is_none() {
-            let bytes = conversation_buffer_bytes::<[u8; 32]>(self.prefix_digests.capacity())
-                .map_err(|reason| conversation_error(work, crate::wire::ErrorCode::Invalid, reason))?;
-            self.native_custody.digests = Some(carrier.split_off(bytes)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?);
-        }
-        for _ in self.native_custody.indexes.len()..self.by_id.len() {
-            let io = work.as_deref_mut().filter(|io| io.original_native_work().is_some())
-                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "cache metadata requires original native work" })?;
-            io.check_cancellation()?;
-            grow_conversation_buffer(&mut self.native_custody.indexes, &mut Some(&mut *io),
-                &mut self.native_custody.index_buffer)?;
-            let source = carrier.split_off(INDEX_ROW_BYTES as u64)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            self.native_custody.indexes.push(source);
-        }
-        assert_eq!(carrier.bytes(), 0, "cache source transfer inventory must match");
         Ok(())
     }
 
@@ -2175,15 +2071,6 @@ impl ConversationState {
         Ok(retained)
     }
 
-    /// Logical payload cloned from caches omitted by the wire projection.
-    pub(crate) fn clone_cache_logical_bytes(&self) -> Result<u64> {
-        let digests = self.prefix_digests.len().checked_mul(std::mem::size_of::<[u8; 32]>());
-        let maps = self.by_id.len().checked_mul(INDEX_ROW_BYTES);
-        digests.and_then(|bytes| maps.and_then(|maps| bytes.checked_add(maps)))
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or_else(|| Error::Invalid("conversation clone cache inventory overflows".into()))
-    }
-
     fn history_digest(&self) -> [u8; 32] {
         self.prefix_digests.last().copied().unwrap_or_else(||
             self.archived_prefix.as_ref().map_or([0; 32], |prefix| prefix.history_digest))
@@ -2268,7 +2155,7 @@ impl ConversationState {
         let mut calls = BTreeSet::new();
         for message in self.messages.iter().take_while(|message| message.sequence <= cut) {
             if let Some(io) = temporary.work().as_deref_mut() {
-                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             match message.kind {
                 MessageKind::ToolCall => {
@@ -2431,10 +2318,6 @@ impl ConversationState {
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
-            if self.native_custody.cache_carrier.as_ref().is_some_and(|carrier| carrier.bytes() != 0) {
-                let no_data = io.take_native_custody(0)?;
-                self.install_native_preclaimed_caches(no_data, &mut Some(&mut *io))?;
-            }
             adopt_existing_buffer::<ConversationMessage>(&mut self.native_custody.messages, self.messages.capacity(), io)?;
             adopt_existing_buffer::<[u8; 32]>(&mut self.native_custody.digests, self.prefix_digests.capacity(), io)?;
             if self.native_custody.archive.is_none()
@@ -2557,7 +2440,7 @@ fn advance_history_digest(
     previous: [u8; 32], message: &ConversationMessage, maximum_encoded_bytes: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
-    let digest = crate::contract::canonical_json_digest(
+    let digest = crate::executor::json::canonical_json_digest(
         message, maximum_encoded_bytes, work)?;
     if let Some(work) = work.as_deref_mut() {
         work.hashed_bytes(b"harness:conversation-prefix:v3\0".len() as u64 + 64)?;
@@ -2731,8 +2614,6 @@ mod tests {
         );
         let (held, produced) = source.copy(&mut Some(&mut io), None)?;
         assert_eq!(held, source);
-        assert_eq!(held.native_unclaimed_message_buffer_bytes()?, 0);
-        assert_eq!(held.native_unclaimed_cache_bytes()?, 0);
         let deep = io.into_custody()?;
         assert_eq!(deep.bytes(), produced, "only observer-owned deep payload is reported");
         let original_receipt = first.receipt();
@@ -2762,9 +2643,6 @@ mod tests {
         assert!(components.iter().all(|(_, guard)| guard.work().shares_ledger(&second)));
         assert_eq!(first.receipt(), original_receipt, "cancelled source ledger is neither rebound nor absorbed");
         assert_eq!(suffix.history_digest(), source.history_digest());
-        assert_eq!(suffix.native_unclaimed_message_buffer_bytes()?, 0);
-        assert_eq!(suffix.native_unclaimed_archived_prefix_bytes()?, 0);
-        assert_eq!(suffix.native_unclaimed_cache_bytes()?, 0);
         drop(suffix);
         drop(components);
         second.admit_retained(budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())

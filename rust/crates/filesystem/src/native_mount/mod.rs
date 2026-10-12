@@ -164,7 +164,7 @@ fn errno(error: MountSourceError) -> i32 {
         MountSourceError::NativeWork(error) => native_materialization_errno(error),
         MountSourceError::WorkspaceCause(error) => native_workspace_errno(error),
         MountSourceError::WorkspacePrefixFailure { source, .. } => native_workspace_errno(source),
-        MountSourceError::NativeWorkspaceCause(cause , _ ) => native_workspace_errno(cause),
+        MountSourceError::NativeWorkspaceCause(cause, _) => native_workspace_errno(cause),
         MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
         MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ESTALE,
         MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
@@ -178,7 +178,6 @@ fn errno(error: MountSourceError) -> i32 {
         | MountSourceError::MutationFinalization { .. }
         | MountSourceError::OriginalSnapshotUnavailable
         | MountSourceError::Indeterminate
-        | MountSourceError::SelectedPublication(_)
         | MountSourceError::PublicationRetryLimit
         | MountSourceError::NativeRecordJson(_, _)
         | MountSourceError::NativeRecordLockTimeout(_, _)

@@ -17,6 +17,7 @@ use acyclic_fs::{
 };
 use acyclic_stream::OwnedBytes;
 use serde_json::json;
+use acyclic_fs::FsWork;
 
 fn component(value: &str) -> Vec<u8> {
     value.encode_utf16().flat_map(u16::to_le_bytes).collect()
@@ -114,23 +115,18 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
         "ntfs-source-links",
         demand,
         MemoryLazyWorkspaceStore::default(),
-    crate::VolumeConfig::portable(if (&fs).capabilities().durable {
-            crate::Lifecycle::Durable
+    acyclic_fs::VolumeConfig::portable(if (&fs).capabilities().durable {
+            acyclic_fs::Lifecycle::Durable
         } else {
-            crate::Lifecycle::Ephemeral
+            acyclic_fs::Lifecycle::Ephemeral
         }),
-        crate::OperationId::new(),
-        &mut crate::kernel::KernelAccounting::Standalone {
-            allocations: Default::default(),
-            work: crate::WorkCounters::UNCHARGED,
-            budget: crate::WorkBudget::UNBOUNDED,
-            cancellation: &crate::CancellationToken::new(),
-        }, )
+        acyclic_fs::OperationId::new(),
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()), )
     .await .map(|(lazy, _)| lazy) ?;
     let cancellation = CancellationToken::new();
-    let work = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
     let exact = lazy
-        .exactify("/hot", PublicationPermit::Unrestricted, &work)
+        .exactify("/hot", PublicationPermit::Unrestricted, &mut work)
         .await?;
     let file = exact
         .stat(
@@ -452,18 +448,13 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         "windows-ntfs-costs",
         demand,
         MemoryLazyWorkspaceStore::default(),
-    crate::VolumeConfig::portable(if (&fs).capabilities().durable {
-            crate::Lifecycle::Durable
+    acyclic_fs::VolumeConfig::portable(if (&fs).capabilities().durable {
+            acyclic_fs::Lifecycle::Durable
         } else {
-            crate::Lifecycle::Ephemeral
+            acyclic_fs::Lifecycle::Ephemeral
         }),
-        crate::OperationId::new(),
-        &mut crate::kernel::KernelAccounting::Standalone {
-            allocations: Default::default(),
-            work: crate::WorkCounters::UNCHARGED,
-            budget: crate::WorkBudget::UNBOUNDED,
-            cancellation: &crate::CancellationToken::new(),
-        }, )
+        acyclic_fs::OperationId::new(),
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()), )
     .await .map(|(lazy, _)| lazy) ?;
     let attach_us = started.elapsed().as_micros();
 
@@ -565,24 +556,19 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         "windows-ntfs-phases",
         phase_demand,
         MemoryLazyWorkspaceStore::default(),
-    crate::VolumeConfig::portable(if (&phase_fs).capabilities().durable {
-            crate::Lifecycle::Durable
+    acyclic_fs::VolumeConfig::portable(if (&phase_fs).capabilities().durable {
+            acyclic_fs::Lifecycle::Durable
         } else {
-            crate::Lifecycle::Ephemeral
+            acyclic_fs::Lifecycle::Ephemeral
         }),
-        crate::OperationId::new(),
-        &mut crate::kernel::KernelAccounting::Standalone {
-            allocations: Default::default(),
-            work: crate::WorkCounters::UNCHARGED,
-            budget: crate::WorkBudget::UNBOUNDED,
-            cancellation: &crate::CancellationToken::new(),
-        }, )
+        acyclic_fs::OperationId::new(),
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()), )
     .await .map(|(lazy, _)| lazy) ?;
     let started = Instant::now();
     let cancellation = CancellationToken::new();
-    let work = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
     let phase_exact = phase_lazy
-        .exactify("/hot", PublicationPermit::Unrestricted, &work)
+        .exactify("/hot", PublicationPermit::Unrestricted, &mut work)
         .await?;
     let exactify_us = started.elapsed().as_micros();
     let phase_view = tempfile::tempdir()?;
@@ -649,13 +635,8 @@ async fn native_lazy_workspace_lists_windows_source_directories()
         demand,
         MemoryLazyWorkspaceStore::default(),
         VolumeConfig::native(Lifecycle::Durable),
-    crate::OperationId::new(),
-        &mut crate::kernel::KernelAccounting::Standalone {
-            allocations: Default::default(),
-            work: crate::WorkCounters::UNCHARGED,
-            budget: crate::WorkBudget::UNBOUNDED,
-            cancellation: &crate::CancellationToken::new(),
-        }, )
+    acyclic_fs::OperationId::new(),
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()), )
     .await .map(|(lazy, _)| lazy) ?;
     for directory in ["/", "/dir"] {
         let page = lazy
@@ -663,11 +644,10 @@ async fn native_lazy_workspace_lists_windows_source_directories()
                 directory,
                 None,
                 64,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
+                &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
             )
             .await?
-            .value;
+            .0;
         assert_eq!(page.entries.len(), 1, "{directory}");
     }
     Ok(())

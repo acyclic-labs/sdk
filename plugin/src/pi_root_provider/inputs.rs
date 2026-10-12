@@ -6,7 +6,7 @@ fn pi_input_write_grant_with_native_work(
     work: &NativeMaterializationWork,
 ) -> Result<(ContentGrant, NativeAllocation)> {
     let authority = owner.authority(work)?;
-    let mut io = acyclic_harness::store::native_work_io(work)?;
+    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
     let grant = ContentGrant::verify(
         &authority.verifier,
         &authority.signed,
@@ -15,7 +15,7 @@ fn pi_input_write_grant_with_native_work(
         owner.policy().maximum_payload_bytes,
         &mut Some(&mut io),
     )?;
-    Ok((grant, io.into_custody()))
+    Ok((grant, io.into_custody()?))
 }
 
 fn validate_pi_input_media(
@@ -364,7 +364,7 @@ pub(crate) async fn load_original_preparation_with_native_work(
     filesystem: &Host,
     expected_binding: &crate::PiTaskBinding,
     expected_root: &PiRootIntent,
-    context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+    context: Arc<acyclic_harness::runtime::TaskContext>,
     work: &NativeMaterializationWork,
 ) -> Result<PiRootPreparation> {
     let missing = || Error::NativeBoundary {
@@ -377,7 +377,7 @@ pub(crate) async fn load_original_preparation_with_native_work(
             .ok_or_else(missing)?;
     let plan = read_root_artifact_with_native_work::<acyclic_harness::effect_host::TaskEffectPlan>(
         owner,
-        context.context(),
+        context.as_ref(),
         &payload.0,
         work,
     )
@@ -402,7 +402,7 @@ pub(crate) async fn load_original_preparation_with_native_work(
     }
     let request = read_root_artifact_with_native_work::<PiRootRequest>(
         owner,
-        context.context(),
+        context.as_ref(),
         &root.0,
         work,
     )
@@ -415,7 +415,7 @@ pub(crate) async fn load_original_preparation_with_native_work(
     }
     let schema = read_root_artifact_with_native_work::<serde_json::Value>(
         owner,
-        context.context(),
+        context.as_ref(),
         &schema_reference.0,
         work,
     )

@@ -1,5 +1,6 @@
+use crate::executor::stock_boundary;
 use super::*;
-use crate::filesystem::fork_preparer_io::{self, failure};
+use crate::filesystem::fork_preparer_io;
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FsRootProjectSourceProvider<A, O>
@@ -22,7 +23,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                         custody: None,
                     };
                 }
-                failure(
+                stock_boundary(
                     io,
                     crate::wire::ErrorCode::Unauthorized,
                     "project source operation cancelled",
@@ -36,14 +37,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             || context.graph_root != self.graph_root
             || !context.created_project_authenticated
         {
-            return Err(failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
                 "project source lacks this graph's authenticated creator",
             ));
         }
         if self.native_source(&snapshot.project).is_some() && snapshot.native_snapshot.is_none() {
-            return Err(failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
                 "bound lazy project requires its original native snapshot",
@@ -57,14 +58,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             || snapshot.project.provider() != &self.host.provider
             || snapshot.generation.as_resource().provider() != &self.host.provider
         {
-            return Err(failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
                 "project source belongs to another namespace or provider",
             ));
         }
         let budget = source_budget(context.maximum_work, context.maximum_bytes).map_err(|_| {
-            failure(
+            stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "project source requires finite positive admission",
@@ -81,7 +82,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         };
         io.check_cancellation()?;
         if !io.contains_capability(&context.source.grants, &snapshot.project, "volume:read:")? {
-            return Err(failure(
+            return Err(stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Unauthorized,
                 "selected source admission lacks original project read authority",
@@ -110,14 +111,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         drop(selected);
         if let Some(value) = &snapshot.native_snapshot {
             let lazy = self.native_source(&snapshot.project).ok_or_else(|| {
-                failure(
+                stock_boundary(
                     Some(io),
                     crate::wire::ErrorCode::Unauthorized,
                     "native source has no original provider binding",
                 )
             })?;
             if lazy.backing.workspace_id() != opened.id() {
-                return Err(failure(
+                return Err(stock_boundary(
                     Some(io),
                     crate::wire::ErrorCode::Unauthorized,
                     "native source names another original workspace",
@@ -130,7 +131,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             };
             let (frozen, _frozen) = source_snapshot(value, bounds, io)?;
             if frozen.workspace_id != opened.id() || frozen.authored_generation != generation_id {
-                return Err(failure(
+                return Err(stock_boundary(
                     Some(io),
                     crate::wire::ErrorCode::Unauthorized,
                     "native capture does not match the selected generation",
@@ -187,10 +188,10 @@ pub(super) fn source_snapshot<'a>(
     bounds: JsonBounds,
     io: &'a crate::filesystem::PreparationIo,
 ) -> Result<(LazySnapshotRef, crate::filesystem::DecodeReservation<'a>)> {
-    crate::contract::json_owned_value_shape_bounded(
+    crate::executor::json::json_owned_value_shape_bounded(
         value,
         bounds,
-        crate::contract::JsonValueSchema::None,
+        crate::executor::json::JsonValueSchema::None,
         &mut |charge| io.codec_charge(charge, false),
     )?;
     let bytes = io.encode(value, bounds.maximum_bytes, true)?;

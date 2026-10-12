@@ -8,7 +8,6 @@ use acyclic_fs::{
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters,
 };
 use acyclic_harness::runtime::TaskStateProvider;
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     Error, OperationId, Outcome, Result, TaskId,
     durable_host::TaskJournalOwner,
@@ -75,7 +74,7 @@ async fn authenticate<P: StreamProvider>(
         });
     }
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     Ok(owner.task_id())
 }
@@ -113,7 +112,7 @@ pub(crate) async fn prepare_send<P: StreamProvider, F: FnOnce(TaskId, TaskId) ->
     )
     .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     Ok((command.0, command.1))
 }
@@ -191,7 +190,7 @@ pub(crate) async fn stage_send(
 /// A normal control command; the hosting root must resume its original passive checkpoint before executing it.
 pub(crate) async fn execute_send<P, A, O>(
     runtime: &FilesystemTaskRuntime<P, A, O>,
-    context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+    context: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
     owner: &TaskJournalOwner<P>,
     fence: LeaseFence,
     command: WorkflowCommand,
@@ -202,7 +201,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    authenticate(context.context(), owner, work).await?;
+    authenticate(context.as_ref(), owner, work).await?;
     if command.kind != MAIL_SEND_TASK_COMMAND_KIND {
         return Err(Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Invalid,
@@ -210,7 +209,6 @@ where
         });
     }
     let bytes = context
-        .context()
         .read_file_with_native_work(&command.payload, work)
         .await?;
     let payload = decode::<MailSendTaskCommand>(bytes.as_ref(), work)?;

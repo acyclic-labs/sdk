@@ -35,13 +35,9 @@ impl NativeGate {
     ) -> Result<PublicationPermit> {
         if let Some(reservation) = self.reservation.as_ref() {
             owner
-                .verify(false, &mut Some(&mut native_work_io(meter)?))
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))
                 .await?;
-            owner.require_volume_grant(
-                volume,
-                VolumeOperation::Write,
-                &mut Some(&mut native_work_io(meter)?),
-            )?;
+            owner.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))?;
             return Ok(reservation.0);
         }
         let recover_original = existing_only || self.requires_original_recovery;
@@ -95,7 +91,7 @@ pub(super) struct BoundEffect {
     pub(super) effects: Arc<Effects>,
     pub(super) owner: Arc<TaskJournalOwner<LocalStream>>,
     pub(super) journal: Arc<Journal>,
-    pub(super) context: Arc<NativeTaskContext>,
+    pub(super) context: Arc<TaskContext>,
     pub(super) command: OperationId,
 }
 
@@ -128,7 +124,7 @@ pub(super) struct LiveHandles {
     pub(super) dispose_requested: bool,
     pub(super) preparation_owner: Option<(
         Arc<TaskJournalOwner<LocalStream>>,
-        Arc<NativeTaskContext>,
+        Arc<TaskContext>,
         OperationId,
     )>,
     // The actual SDK proof owns its original view and intrinsic allocation custody.

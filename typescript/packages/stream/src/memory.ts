@@ -1,8 +1,8 @@
 import { fromBinary } from "@bufbuild/protobuf";
 import { is_stream_error_code, projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
-import type { StreamErrorCode as WasmStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
+import type { StreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
-  ChildrenResponseSchema, ReadResponseSchema, TailResponseSchema,
+  ReadResponseSchema, TailResponseSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
 import { validateAppend } from "./client.js";
 import { ensureStreamWasm, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
@@ -57,8 +57,9 @@ class RustStreamProvider implements StreamProvider {
   }
 
   async tail(path: string): Promise<Sequence> {
-    const request = await this.#request("tail", path);
-    return fromBinary(TailResponseSchema, await this.#dispatch("tail", request)).tail;
+    const request = { kind: "tail" as const, path };
+    await validateWireRequest(request);
+    return fromBinary(TailResponseSchema, await this.#dispatch("tail", wireRequest(request))).tail;
   }
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions = {}): Promise<AppendResult> {
     const records = values.map(value => value.slice());
@@ -107,18 +108,6 @@ class RustStreamProvider implements StreamProvider {
     }
   }
 
-  async *children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }> {
-    await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) });
-    const request = wireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) });
-    let values: Uint8Array[];
-    try { values = await (await this.#inner).children(request); }
-    catch (error) { throw streamError(error, "children"); }
-    for (const value of values) {
-      const response = fromBinary(ChildrenResponseSchema, value);
-      if (response.child === undefined) throw new StreamError("invalid_response", "Rust children response omitted its child");
-      yield { path: response.child.path };
-    }
-  }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") {
       throw new StreamError("invalid_argument", "children page request must be an object");
@@ -147,16 +136,7 @@ class RustStreamProvider implements StreamProvider {
     return this.#project<CommittedEnvelope>("read_commit", request);
   }
 
-  async #request(kind: "tail", path: string): Promise<Uint8Array> {
-    await validateWireRequest({ kind, path });
-    return wireRequest({ kind, path });
-  }
-
 }
-
-export type StreamErrorCode = WasmStreamErrorCode;
-
-const isKnownStreamErrorCode = (value: string): value is StreamErrorCode => is_stream_error_code(value);
 
 function streamError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
@@ -172,10 +152,10 @@ function streamError(error: unknown, operation: string): Error {
   } catch {
     rawCode = undefined;
   }
-  if (typeof rawCode !== "string" || !isKnownStreamErrorCode(rawCode)) {
+  if (typeof rawCode !== "string" || !is_stream_error_code(rawCode)) {
     return error instanceof Error ? error : new Error(message);
   }
-  let code: StreamFailureCode = rawCode;
+  let code: StreamFailureCode = rawCode as StreamErrorCode;
   if (rawCode === "not_found") code = operation === "read_commit" ? "commit_not_found" : "stream_not_found";
   else if (rawCode === "already_exists") code = "destination_exists";
   else if (rawCode === "prefix_not_retained" && operation === "commit") code = "invalid_argument";

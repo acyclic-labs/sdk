@@ -79,14 +79,14 @@ pub fn reduction_invocation_digest(
     reducer: &EntrypointRef,
     values: &[(String, FileRef)],
 ) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(&(reducer, values))
+    crate::executor::json::canonical_json_digest(&(reducer, values), u64::MAX, &mut None)
 }
 /// Canonical identity of an aggregate encoding and ordered inputs.
 pub fn assembly_invocation_digest(
     assembly: AssemblyKind,
     values: &[(String, FileRef)],
 ) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(&(assembly, values))
+    crate::executor::json::canonical_json_digest(&(assembly, values), u64::MAX, &mut None)
 }
 
 #[derive(Clone, Copy)]
@@ -126,7 +126,7 @@ impl Plan<'_> {
             Self::Cancelled => Outcome::Cancelled,
             Self::Indeterminate(operation_id) => Outcome::Indeterminate { operation_id },
             Self::ChildFailed(slot, message) => Outcome::Failed {
-                message: crate::contract::preparation_format(
+                message: crate::executor::preparation_format(
                     format_args!("child {slot} failed: {message}"),
                     work,
                 )?,
@@ -374,7 +374,7 @@ impl Scheduler {
                     return Ok(false);
                 }
                 Ok(digest
-                    == Some(crate::contract::canonical_json_digest_with_work(
+                    == Some(crate::executor::json::canonical_json_digest(
                         &(
                             assembly,
                             Values {
@@ -392,7 +392,7 @@ impl Scheduler {
                     return Ok(false);
                 }
                 Ok(digest
-                    == Some(crate::contract::canonical_json_digest_with_work(
+                    == Some(crate::executor::json::canonical_json_digest(
                         &(
                             expected,
                             Values {

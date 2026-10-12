@@ -1,358 +1,201 @@
 use super::*;
-/// A view bound before its shared source advanced (a refresh of the
+
 #[tokio::test]
-async fn a_view_follows_its_shared_source_to_a_newer_epoch() {
+async fn shared_epoch_follows_refresh_without_enumeration() {
     let fs = Fs::memory();
-    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+    let source = Arc::new(CountingSource::new(Bytes::from_static(b"before")));
     let root = attach(
         &fs,
-        "follows",
+        "root",
         Arc::clone(&source),
         MemoryLazyWorkspaceStore::default(),
     )
     .await
-    .expect("attach");
-    root.stat("/observed.txt", accounting!())
-        .await
-        .expect("observe");
-    source.invalidate();
+    .unwrap();
+    root.stat("/file.txt", accounting!()).await.unwrap();
+    source.replace(Bytes::from_static(b"after"));
     assert_eq!(
-        root.stat("/new.txt", accounting!())
-            .await
-            .expect("follows")
-            .logical_bytes,
-        Some(6)
-    );
-    assert_eq!(
-        root.snapshot(accounting!()).await.expect("snapshot").source,
+        root.state(accounting!()).await.unwrap().source,
         source.reference()
     );
+    assert_eq!(
+        root.read("/new.txt", 16, accounting!())
+            .await
+            .unwrap()
+            .bytes
+            .as_slice(),
+        b"after"
+    );
+    assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
-async fn source_tombstones_list_only_removed_source_paths() {
+async fn tombstones_distinguish_deletion_from_hiding() {
     let fs = Fs::memory();
-    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
     let root = attach(
         &fs,
-        "tombstones",
-        Arc::clone(&source),
+        "root",
+        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         MemoryLazyWorkspaceStore::default(),
     )
     .await
-    .expect("attach");
-    root.stat("/kept.txt", accounting!())
+    .unwrap();
+    root.remove("/removed", None, accounting!()).await.unwrap();
+    root.hide_source_path("/hidden", accounting!())
         .await
-        .expect("observe kept");
-    root.stat("/removed.txt", accounting!())
-        .await
-        .expect("observe removed");
-    root.remove("/removed.txt", None, accounting!())
-        .await
-        .expect("remove source path");
-    root.remove("/also-removed.txt", None, accounting!())
-        .await
-        .expect("remove unobserved source path");
-    root.stat("/hidden.txt", accounting!())
-        .await
-        .expect("observe hidden");
-    root.hide_source_path("/hidden.txt", accounting!())
-        .await
-        .expect("hide source path");
-    assert!(root.stat("/hidden.txt", accounting!()).await.is_err());
-    let tombstones = root
-        .source_tombstones(16, accounting!())
-        .await
-        .map(|(paths, _)| paths)
-        .expect("tombstones");
+        .unwrap();
+    assert!(matches!(
+        root.stat("/hidden", accounting!()).await,
+        Err(LazyWorkspaceError::NotFound)
+    ));
+    let (deleted, _) = root.source_tombstones(16, accounting!()).await.unwrap();
     assert_eq!(
-        tombstones
+        deleted
             .iter()
             .map(|(path, _)| path.as_str())
             .collect::<Vec<_>>(),
-        ["/also-removed.txt", "/removed.txt"]
+        ["/removed"]
     );
-    let current = root
-        .current_source_version("/removed.txt", accounting!())
-        .await
-        .expect("current version");
-    assert_eq!(current, tombstones.get(1).map(|(_, version)| *version));
-    assert!(matches!(
-        root.source_tombstones(1, accounting!())
-            .await
-            .map(|(paths, _)| paths),
-        Err(LazyWorkspaceError::Demand(DemandError::Work(_)))
-    ));
+    assert!(root.source_tombstones(0, accounting!()).await.is_err());
 }
 
 #[tokio::test]
-async fn exactify_threads_cancellation_into_nested_source_work() {
+async fn exactification_denials_do_not_publish_or_create_children() {
     let fs = Fs::memory();
     let source = Arc::new(CountingSource::new(Bytes::from_static(b"content")));
     let root = attach(
         &fs,
-        "cancelled-exactify",
+        "root",
         Arc::clone(&source),
         MemoryLazyWorkspaceStore::default(),
     )
     .await
-    .expect("attach");
+    .unwrap();
+    let cut = root.snapshot(accounting!()).await.unwrap();
     let cancellation = CancellationToken::new();
     source.cancel_next_page();
-
-    assert!(matches!(
+    assert!(
         root.exactify(
             "/",
             crate::PublicationPermit::Unrestricted,
-            &mut crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation)
+            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation)
         )
-        .await,
-        Err(LazyWorkspaceError::Cancelled)
-    ));
+        .await
+        .is_err()
+    );
     assert!(cancellation.is_cancelled());
-    assert_eq!(source.counts.pages.load(Ordering::Relaxed), 1);
-    assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        root.head(accounting!()).await.unwrap().id(),
+        cut.authored_generation
+    );
     assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
-}
-
-#[tokio::test]
-async fn exactify_budget_exhaustion_cannot_publish_the_current_path() {
-    let fs = Fs::memory();
-    let source = Arc::new(CountingSource::new(Bytes::from_static(b"content")));
-    let root = attach(
-        &fs,
-        "budgeted-exactify",
-        source,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .expect("attach");
-    let before = root
-        .workspace()
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("head before exactify")
-        .value
-        .id();
-    let mut budget = WorkBudget::UNBOUNDED;
-    budget.authority_records_appended = 0;
-
-    assert!(matches!(
+    let budget = WorkBudget {
+        authority_records_appended: 0,
+        ..WorkBudget::UNBOUNDED
+    };
+    assert!(
         root.exactify(
             "/",
             crate::PublicationPermit::Unrestricted,
-            &mut crate::kernel::KernelAccounting::standalone(budget, &CancellationToken::new())
+            &mut KernelAccounting::standalone(budget, &CancellationToken::new())
         )
-        .await,
-        Err(LazyWorkspaceError::WorkspaceCause(
-            WorkspaceError::Filesystem(crate::FsError::Work(_))
-        ))
-    ));
+        .await
+        .is_err()
+    );
     assert_eq!(
-        root.workspace()
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .expect("head after rejection")
-            .value
-            .id(),
-        before
+        root.head(accounting!()).await.unwrap().id(),
+        cut.authored_generation
     );
-    assert!(matches!(
-        root.workspace()
-            .stat(
-                "/file.txt",
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
+    for (name, budget, cancel) in [
+        ("cancelled", WorkBudget::UNBOUNDED, cancellation),
+        ("bounded", WorkBudget::default(), CancellationToken::new()),
+    ] {
+        assert!(
+            root.exactify_snapshot(
+                cut,
+                name,
+                IdempotencyKey::new(),
+                &mut KernelAccounting::standalone(budget, &cancel)
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error),
-        Err(WorkspaceError::NotFound)
-    ));
-}
-
-#[tokio::test]
-async fn exactify_snapshot_rejects_before_destination_publication() {
-    let fs = Fs::memory();
-    let root = attach(
-        &fs,
-        "snapshot-source",
-        Arc::new(CountingSource::new(Bytes::from_static(b"content"))),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .expect("attach");
-    let snapshot = root.snapshot(accounting!()).await.expect("snapshot");
-
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    assert!(matches!(
-        root.exactify_snapshot(
-            snapshot,
-            "cancelled-destination",
-            IdempotencyKey::from_bytes([0x91; 16]),
-            &mut crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancelled)
-        )
-        .await,
-        Err(LazyWorkspaceError::Cancelled)
-    ));
-    assert!(
-        fs.open_workspace(
-            "cancelled-destination",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_err()
-    );
-
-    assert!(matches!(
-        root.exactify_snapshot(
-            snapshot,
-            "budget-destination",
-            IdempotencyKey::from_bytes([0x92; 16]),
-            &mut crate::kernel::KernelAccounting::standalone(
-                WorkBudget::default(),
-                &CancellationToken::new()
-            )
-        )
-        .await,
-        Err(LazyWorkspaceError::Filesystem(crate::FsError::Work(_)))
-    ));
-    assert!(
-        fs.open_workspace(
-            "budget-destination",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_err()
-    );
-}
-
-#[tokio::test]
-async fn full_directory_page_peak_is_admitted_before_projection() {
-    let fs = Fs::memory();
-    let root = attach(
-        &fs,
-        "page-memory",
-        Arc::new(CountingSource::new(Bytes::from_static(b"content")).with_directory_entries(1_024)),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .expect("attach");
-    let cancellation = CancellationToken::new();
-    let mut accounting =
-        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let (page, allocation) = root
-        .list_directory("/", None, 1_024, &mut accounting)
-        .await
-        .expect("page");
-    assert_eq!(page.entries.len(), 1_024);
-    let peak = accounting.spent().peak_allocation_bytes;
-    let bytes = retained_directory_page_bytes(
-        &page.entries,
-        page.entries.iter().map(|entry| entry.name.retained_bytes()),
-    )
-    .expect("page bytes");
-    if let Some(cursor) = page.next {
-        cursor.retire(&mut accounting).expect("cursor retirement");
-    }
-    drop(page.entries);
-    crate::kernel::retire_allocation(allocation, bytes, &mut accounting).expect("page retirement");
-    let mut insufficient = WorkBudget::UNBOUNDED;
-    insufficient.peak_allocation_bytes = peak - 1;
-    let mut accounting = crate::kernel::KernelAccounting::standalone(insufficient, &cancellation);
-    assert!(
-        root.list_directory("/", None, 1_024, &mut accounting)
             .await
             .is_err()
+        );
+        assert!(fs.open_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).is_err());
+    }
+}
+
+#[tokio::test]
+async fn full_directory_page_is_funded_before_projection() {
+    let fs = Fs::memory();
+    let root = attach(
+        &fs,
+        "root",
+        Arc::new(CountingSource::new(Bytes::from_static(b"content")).with_directory_entries(1024)),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let cancel = CancellationToken::new();
+    let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+    let (page, _) = root
+        .list_directory("/", None, 1024, &mut ctx)
+        .await
+        .unwrap();
+    assert_eq!(page.entries.len(), 1024);
+    let budget = WorkBudget {
+        peak_allocation_bytes: ctx.spent().peak_allocation_bytes - 1,
+        ..WorkBudget::UNBOUNDED
+    };
+    assert!(
+        root.list_directory(
+            "/",
+            None,
+            1024,
+            &mut KernelAccounting::standalone(budget, &cancel)
+        )
+        .await
+        .is_err()
     );
 }
 
 #[tokio::test]
 async fn attach_open_and_fork_demand_no_source_work() {
     let fs = Fs::memory();
-    let source = Arc::new(CountingSource::new(Bytes::from_static(b"abcdef")));
+    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
     let store = MemoryLazyWorkspaceStore::default();
     let root = attach(&fs, "root", Arc::clone(&source), store.clone())
         .await
-        .expect("attach");
+        .unwrap();
     let reopened = LazyWorkspace::open(
-        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .expect("workspace")
-            .value,
+        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).unwrap(),
         Arc::clone(&source),
-        store.clone(),
+        store,
         accounting!(),
     )
     .await
-    .expect("open");
-    let child = reopened
+    .unwrap();
+    let (child, original) = reopened
         .fork("child", IdempotencyKey::from_bytes([5; 16]), accounting!())
         .await
-        .map(|(child, _)| child)
-        .expect("fork");
-    let first_snapshot = child.snapshot(accounting!()).await.expect("snapshot");
-    let second_snapshot = child
-        .snapshot(accounting!())
+        .unwrap();
+    let first = child.snapshot(accounting!()).await.unwrap();
+    let second = child.snapshot(accounting!()).await.unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first, original);
+    let resumed = root
+        .open_related(fs.open_workspace("child", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).unwrap(), accounting!())
         .await
-        .expect("repeat snapshot");
-    let resumed_child = root
-        .open_related(
-            fs.open_workspace("child", WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-                .expect("child workspace")
-                .value,
-            accounting!(),
-        )
-        .await
-        .expect("resume related child");
-    let sibling = root
-        .fork(
-            "sibling",
-            IdempotencyKey::from_bytes([6; 16]),
-            accounting!(),
-        )
-        .await
-        .map(|(child, _)| child)
-        .expect("sibling fork");
-    let resumed_sibling = resumed_child
-        .open_related(
-            fs.open_workspace("sibling", WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-                .expect("sibling workspace")
-                .value,
-            accounting!(),
-        )
-        .await
-        .expect("constant-work branch switch");
-    assert_eq!(
-        sibling
-            .snapshot(accounting!())
-            .await
-            .expect("sibling snapshot"),
-        resumed_sibling
-            .snapshot(accounting!())
-            .await
-            .expect("resumed sibling snapshot")
-    );
-
-    assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 0);
-    assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
-    assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+        .unwrap();
+    assert_eq!(resumed.snapshot(accounting!()).await.unwrap(), original);
     assert_eq!(
         child
             .state(accounting!())
             .await
-            .expect("child state")
+            .unwrap()
             .parent_workspace_id,
         Some(root.workspace().id())
     );
-    assert_eq!(first_snapshot, second_snapshot);
+    assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 0);
+    assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
+    assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
 }

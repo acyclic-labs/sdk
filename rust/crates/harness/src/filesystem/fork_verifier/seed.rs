@@ -287,7 +287,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         {
             crate::model::charge_items(Some(&io), 1)?;
             if file.volume().provider() == &self.host.provider {
-                let key = match Some(&io) { Some(io) => io.capability(file, "file:read:"), None => file.read_capability() }?;
+                let key = match Some(&io) { Some(io) => io.capability(file, "file:read:"), None => file.read_capability(&mut None) }?;
                 let owned = key.len() as u64;
                 if !fork_verify_insert(
                     &mut unique_files,
@@ -422,7 +422,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 let mut examine = |file: &FileRef| -> Result<()> {
                     crate::model::charge_items(Some(&io), 1)?;
                     let digest = crate::executor::with_history_io(Some(&io), |work|
-                        crate::contract::canonical_json_digest(file, u64::MAX, work))?;
+                        crate::executor::json::canonical_json_digest(file, u64::MAX, work))?;
                     fork_verify_insert(&mut observed, digest, Ord::cmp, &io).map(|_| ())
                 };
                 for message in &context.0.messages {
@@ -441,7 +441,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             for file in summary.payloads.iter().chain(&summary.references) {
                 crate::model::charge_items(Some(&io), 1)?;
                 let digest = crate::executor::with_history_io(Some(&io), |work|
-                    crate::contract::canonical_json_digest(file, u64::MAX, work))?;
+                    crate::executor::json::canonical_json_digest(file, u64::MAX, work))?;
                 fork_verify_insert(&mut declared, digest, Ord::cmp, &io)?;
             }
             _declared_hold =
@@ -622,7 +622,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     io.release(original_owned)?;
                     io.release(final_owned)?;
                 }
-                let path = crate::executor::with_history_io(Some(&io), |work| crate::contract::preparation_format(format_args!("/{}", file.path()), work))?;
+                let path = crate::executor::with_history_io(Some(&io), |work| crate::executor::preparation_format(format_args!("/{}", file.path()), work))?;
                 let owned = path.len() as u64;
                 if !fork_verify_insert(&mut expected, path, Ord::cmp, &io)? {
                     io.release(owned)?;

@@ -128,38 +128,30 @@ impl NativeSession {
                 .await
                 .map_err(storage)?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let from_workspace = filesystem
-            .open_workspace(
-                binding.from_project.storage_name(&mut None)?,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(storage)?;
-        let to_workspace = filesystem
-            .open_workspace(
-                binding.to_project.storage_name(&mut None)?,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(storage)?;
-        let from = from_workspace
-            .generation(binding.from, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(storage)?;
-        let to = to_workspace
-            .generation(binding.to, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(storage)?;
+        let mut generations = Vec::with_capacity(2);
+        for (project, generation) in [
+            (&binding.from_project, binding.from),
+            (&binding.to_project, binding.to),
+        ] {
+            let workspace = filesystem
+                .open_workspace(
+                    project.storage_name(&mut None)?,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(|failure| storage(failure.error))?
+                .value;
+            generations.push(
+                workspace
+                    .generation(generation, WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                    .map_err(|failure| storage(failure.error))?
+                    .value,
+            );
+        }
+        let [from, to] = <[_; 2]>::try_from(generations)
+            .map_err(|_| Error::Conflict("publication generations missing".into()))?;
         Ok((from, to))
     }
 }

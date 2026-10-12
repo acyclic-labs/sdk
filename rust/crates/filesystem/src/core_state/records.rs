@@ -46,7 +46,10 @@ impl RecordPaths<'_> {
         #[cfg(unix)]
         let observed = crate::native_host::stat_leaf(&parent, leaf, &mut &*work);
         #[cfg(windows)]
-        let observed = crate::native_host::with_wide_path(Path::new(leaf), &mut &*work, |name, work| crate::native_host::stat_windows_leaf(&parent, name, work));
+        let observed =
+            crate::native_host::with_wide_path(Path::new(leaf), &mut &*work, |name, work| {
+                crate::native_host::stat_windows_leaf(&parent, name, work)
+            });
         match observed {
             Ok(_) => Ok(true),
             Err(crate::materializer::NativeTreeMaterializationError::Io(error))
@@ -98,7 +101,7 @@ impl RecordPaths<'_> {
             materialization_open_options(from, &crate::native_host::NativeOpenOptions::Read, work)?;
         let length = crate::native_host::stat_file(&file, &mut &*work)?.len();
         let mut source = MaterializationReader {
-            file,
+            file: &file,
             work,
             remaining_file_bytes: length,
             original_length: length,
@@ -373,11 +376,6 @@ pub(super) fn write_journaled<T: Serialize>(
         .allocation
         .as_ref()
         .map(|allocation| allocation.work());
-    let bytes = if work.is_none() {
-        Some(serde_json::to_vec(value)?)
-    } else {
-        None
-    };
     let file = match work {
         Some(work) => {
             let file = materialization_open_options(
@@ -399,10 +397,7 @@ pub(super) fn write_journaled<T: Serialize>(
         work,
         encoded: true,
     };
-    match bytes {
-        Some(bytes) => temporary.write_all(&bytes)?,
-        None => serde_json::to_writer(&mut temporary, value).map_err(measured_json_error)?,
-    }
+    serde_json::to_writer(&mut temporary, value)?;
     match work {
         Some(work) => crate::native_host::sync_file_held(&temporary.file, &mut &*work)?,
         None => temporary.file.sync_all()?,

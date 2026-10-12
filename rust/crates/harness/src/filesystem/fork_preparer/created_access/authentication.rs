@@ -28,7 +28,9 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
     };
     request.validate(&mut Some(&mut io.history_io()))?;
-    proof.validate(&mut None)?;
+    proof.provider.validate(&mut None)?;
+    proof.resource.validate(&mut None)?;
+    proof.evidence.validate(&mut None)?;
     if request.provider != host.provider
         || proof.provider != host.provider
         || request.creation_grant != capability::FORK_PUBLISH
@@ -176,7 +178,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             "project"
         };
         let creation = IdempotencyKey::new(crate::executor::with_history_io(Some(io), |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!(
                     "fork:{}:{}:{suffix}",
                     fork.operation_id,

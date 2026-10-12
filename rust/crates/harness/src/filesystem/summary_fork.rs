@@ -26,13 +26,13 @@ pub(super) fn summary_keys(
 ) -> Result<[IdempotencyKey; 2]> {
     Ok([
         IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!("{}:summary-payloads", key.as_str()),
                 work,
             )
         })?)?,
         IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!("{}:summary-context", key.as_str()),
                 work,
             )
@@ -57,7 +57,7 @@ pub(super) fn split_references<'a>(
         .chain(prepared.context().metadata.values())
     {
         let key = crate::executor::with_history_io(io, |work| {
-            crate::contract::canonical_json_digest(file, u64::MAX, work)
+            crate::executor::json::canonical_json_digest(file, u64::MAX, work)
         })?;
         let selected = if crate::conversation::is_internal_path(file.path())
             && !crate::conversation::is_inherited_context_path(file.path())
@@ -96,7 +96,7 @@ fn rewritten_context(
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         if let Some(copy) = replacements.get(&crate::executor::with_history_io(io, |work| {
-            crate::contract::canonical_json_digest(file, u64::MAX, work)
+            crate::executor::json::canonical_json_digest(file, u64::MAX, work)
         })?) {
             *file = crate::executor::with_history_io(io, |work| copy.copy(work))?;
         }
@@ -165,7 +165,7 @@ fn copy_references(
         if let Some(io) = io { io.retain_owned(std::mem::size_of::<([u8; 32], FileRef)>() as u64)?; }
         let encoded = fork_preparer_io::hex_key(key, io)?;
         let path = crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!(".system/inherited-conversation/summary-payloads/{encoded}"),
                 work,
             )
@@ -294,12 +294,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             Some(work) => native_creation_guard.ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native summary publication requires its original issued creation guard",
-            })?.verify_creation_with_native_work(work)?.await?,
-            None => if let Some(preparation) = preparation { preparation.verify_creation().await?; },
+            })?.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?,
+            None => if let Some(preparation) = preparation { preparation.verify(false, io)?.await?; },
         }
         #[cfg(target_arch = "wasm32")]
         if let Some(preparation) = preparation {
-            preparation.verify_creation().await?;
+            preparation.verify(false, io)?.await?;
         }
         if let Some(io) = io {
             let capability = io.capability(&self.project, "volume:read:")?;
@@ -502,7 +502,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 let encoded = fork_preparer_io::hex_key(key, io)?;
                 writes.push(WorkspaceMutation::PutFile {
                     path: crate::executor::with_history_io(io, |work| {
-                        crate::contract::preparation_format(
+                        crate::executor::preparation_format(
                             format_args!(
                                 "/.system/inherited-conversation/summary-payloads/{encoded}"
                             ),

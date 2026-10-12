@@ -25,13 +25,13 @@ where
             for volume in std::iter::once(&caller.private_volume)
                 .chain(project_read.then_some(&caller.project))
             {
-                fsio::item(Some(io), 0)?;
+                crate::model::charge_items(Some(io), 1)?;
                 if !io.contains_capability(
                     context.effective_scope().grants(),
                     volume,
                     "volume:read:",
                 )? {
-                    return Err(fsio::failure(
+                    return Err(crate::executor::stock_boundary(
                         Some(io),
                         crate::wire::ErrorCode::Unauthorized,
                         "native recursive tool effective scope denies its selected volume operation",

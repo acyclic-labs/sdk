@@ -2,7 +2,7 @@
 #![cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 
 use acyclic_fs::demand::{
-    DemandDirectoryObserver, DemandError, DemandResult, DemandSource, FilteredDemandSource,
+    DemandDirectoryObserver, DemandError, DemandResult, DemandSource,
     SourceReference, native::NativeDemandSource,
 };
 use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, LogicalName, NameEncoding, NamespacePath};
@@ -33,14 +33,10 @@ fn finite_budget() -> Result<WorkBudget, serde_json::Error> {
 struct DirectoryObserver(AtomicUsize);
 
 impl DemandDirectoryObserver for DirectoryObserver {
-    fn observe_directory(
-        &self, _directory: &NamespacePath, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> DemandResult<()> {
-        cancellation.check().map_err(|_| OperationFailure::before_work(DemandError::Cancelled))?;
-        let work = WorkCounters { items_examined: 1, ..WorkCounters::default() };
-        work.verify(budget).map_err(|error| OperationFailure::before_work(DemandError::Work(error)))?;
+    fn observe_directory(&self, _directory: &NamespacePath, accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>) -> Result<(), DemandError> {
+        accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }).map_err(DemandError::from)?;
         self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(OperationReceipt { value: (), work })
+        Ok(())
     }
 }
 
@@ -204,9 +200,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     for stage in 1..=4 {
         let operation = OperationId::new();
-        let prior = Fs::memory().create_workspace_with_operation(
-            "companion-fault", config, operation, budget, &CancellationToken::new(),
-        ).await?;
+        let prior = Fs::memory().create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>("companion-fault", config, operation, budget, &CancellationToken::new(), None).await?;
         let fs = Fs::memory();
         let store = FaultingCompanion::new(stage);
         let failure = async { let cancellation = &CancellationToken::new(); let budget = budget; let mut accounting = budget.accounting(cancellation); let result = LazyWorkspace::attach(&fs, "companion-fault", source.clone(), store.clone(), config, operation, &mut accounting).await; budget.finish(result, &accounting) }.await.err().ok_or("real companion fault did not fail attachment")?;
@@ -216,7 +210,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         let initial = workspace.operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("companion failure lost the real committed creation")?;
         assert_eq!(initial.id(), prior.value.id());
         assert_eq!(initial.workspace_id(), prior.value.workspace_id());
-        assert_eq!(store.inner.load_lazy_workspace(workspace.id()).await?.is_some(), stage == 4);
+        assert_eq!(store.inner.load_lazy_workspace(workspace.id(), &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new())).await?.is_some(), stage == 4);
         workspace.write_text("/later.txt", "later authored head").await?;
         let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         assert_ne!(head, initial.id());
@@ -226,12 +220,10 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         assert_eq!(original.id(), initial.id());
         assert_eq!(original.workspace_id(), initial.workspace_id());
         assert_eq!(lazy.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
-        let state = store.inner.load_lazy_workspace(workspace.id()).await?
+        let state = store.inner.load_lazy_workspace(workspace.id(), &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new())).await?
             .ok_or("retry did not publish the companion binding")?;
         assert_eq!(state.source, reference);
-        let snapshot = lazy.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
-            WorkBudget::UNBOUNDED, &CancellationToken::new(),
-        )).await?;
+        let snapshot = lazy.snapshot(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new())).await?;
         assert_eq!(snapshot.workspace_id, original.workspace_id());
         assert_eq!(snapshot.authored_generation, head);
         assert_eq!(snapshot.source, reference);
@@ -261,9 +253,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     let created = async { let cancellation = &cancellation; let budget = budget; let mut accounting = budget.accounting(cancellation); let result = LazyWorkspace::attach(&fs, "epoch-attachment", source.clone(), store.clone(), config, operation, &mut accounting).await; budget.finish(result, &accounting) }.await?;
     created.work.verify(budget)?;
     let (lazy, original) = created.value;
-    let initial = lazy.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
-        WorkBudget::UNBOUNDED, &cancellation,
-    )).await?;
+    let initial = lazy.snapshot(&mut WorkBudget::UNBOUNDED.accounting(&cancellation)).await?;
     assert_eq!(initial.authored_generation, original.id());
     assert_eq!(initial.workspace_id, original.workspace_id());
     assert_eq!(initial.source, reference);
@@ -273,15 +263,15 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     let head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     assert_ne!(head, original_id);
     let advanced = source.invalidate(&mut acyclic_fs::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation))?;
-    let rebind_work = acyclic_fs::lazy_workspace::LazyTreapWork::new(budget, &cancellation);
-    let result = lazy.rebind_source(&rebind_work).await;
-    let rebound = rebind_work.measured(result, |error, work| error.with_prior_work(work))?;
+    let mut accounting = budget.accounting(&cancellation);
+    let result = lazy.state(&mut accounting).await;
+    let rebound = budget.finish(result, &accounting)?;
     rebound.work.verify(budget)?;
-    assert_eq!(rebound.value.as_state().source, advanced);
+    assert_eq!(rebound.value.source, advanced);
     assert_eq!(advanced.identity, reference.identity);
     assert_eq!(advanced.epoch, reference.epoch + 1);
-    assert_eq!(rebound.value.as_state().overlay, initial.overlay);
-    assert_eq!(rebound.value.as_state().shadows, initial.shadows);
+    assert_eq!(rebound.value.overlay, initial.overlay);
+    assert_eq!(rebound.value.shadows, initial.shadows);
     drop(original);
     drop(lazy);
     drop(source);
@@ -294,8 +284,8 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     assert_eq!(recovered.value.1.id(), original_id);
     assert_eq!(recovered.value.1.workspace_id(), workspace_id);
     assert_eq!(recovered.value.0.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
-    assert_eq!(recovered.value.0.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await?.source, advanced);
-    assert_eq!(store.load_lazy_workspace(workspace_id).await?.ok_or("lost binding")?.source, advanced);
+    assert_eq!(recovered.value.0.snapshot(&mut WorkBudget::UNBOUNDED.accounting(&cancellation)).await?.source, advanced);
+    assert_eq!(store.load_lazy_workspace(workspace_id, &mut WorkBudget::UNBOUNDED.accounting(&cancellation)).await?.ok_or("lost binding")?.source, advanced);
 
     let foreign_source = Arc::new(NativeDemandSource::open(
         std::borrow::Cow::Owned(directory.path().to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(),
@@ -304,7 +294,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     let rejected = async { let cancellation = &cancellation; let budget = budget; let mut accounting = budget.accounting(cancellation); let result = LazyWorkspace::attach(&fs, "epoch-attachment", foreign_source, store.clone(), config, operation, &mut accounting).await; budget.finish(result, &accounting) }.await.err().ok_or("foreign source adopted an original binding")?;
     assert!(matches!(rejected.error.semantic_error(), LazyWorkspaceError::StaleSource));
     rejected.work.verify(budget)?;
-    assert_eq!(store.load_lazy_workspace(workspace_id).await?.as_ref(), Some(rebound.value.as_state()));
+    assert_eq!(store.load_lazy_workspace(workspace_id, &mut WorkBudget::UNBOUNDED.accounting(&cancellation)).await?.as_ref(), Some(&rebound.value));
     assert_eq!(fs.open_workspace("epoch-attachment", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
     assert_eq!(observer.0.load(Ordering::SeqCst), 0);
     Ok(())
@@ -419,13 +409,13 @@ async fn native_continuation_replays_consumed_entries_after_budget_denial() -> T
     assert!(matches!(failure.error, DemandError::Work(_)));
     assert_eq!(failure.work.source_entries_visited, 0);
     failure.work.verify(limited)?;
-    let mut names = first.value.entries.iter().map(|entry| entry.name().as_bytes().to_vec()).collect::<Vec<_>>();
+    let mut names = first.value.entries.iter().map(|entry| entry.name.as_bytes().to_vec()).collect::<Vec<_>>();
     let mut next = Some(cursor);
     while let Some(cursor) = next {
         let mut page = source.list_page(source.reference(), &path, Some(cursor), 2, budget, &token).await?;
         page.work.verify(budget)?;
         acyclic_fs::demand::accept_publication(&mut page.value.publication, page.work.remaining(budget)?, &token).await?;
-        names.extend(page.value.entries.iter().map(|entry| entry.name().as_bytes().to_vec()));
+        names.extend(page.value.entries.iter().map(|entry| entry.name.as_bytes().to_vec()));
         next = page.value.next;
     }
     names.sort();
@@ -453,7 +443,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
     let mut page = source.list_page(source.reference(), &requested("")?, None, 8, budget, &token).await?;
     acyclic_fs::demand::accept_publication(&mut page.value.publication, page.work.remaining(budget)?, &token).await?;
     assert_eq!(page.value.entries.len(), 1);
-    assert_eq!(page.value.entries[0].name(), &name);
+    assert_eq!(page.value.entries[0].name, name);
     page.work.verify(budget)?;
     let read = source.read_range(source.reference(), &path, node.version, 0, 6, budget, &token).await?;
     assert_eq!(read.value.bytes.as_ref(), b"opaque");
@@ -478,7 +468,7 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
     let directory = tempfile::tempdir()?;
     for name in ["a", "b", "c"] { std::fs::write(directory.path().join(name), b"actual")?; }
     let native = NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(directory.path()).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let source = FilteredDemandSource::new(native, vec![requested("private")?, requested("excluded")?]);
+    let source = native.exclude(vec![requested("private")?, requested("excluded")?], WorkBudget::UNBOUNDED, &CancellationToken::new())?.value;
     let root = requested("")?;
     let token = CancellationToken::new();
     let budget = finite_budget()?;
@@ -499,7 +489,7 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
     next.work.verify(budget)?;
     assert!(next.value.next.is_none());
     let mut names = first.value.entries.iter().chain(next.value.entries.iter())
-        .map(|entry| entry.name().as_bytes().to_vec()).collect::<Vec<_>>();
+        .map(|entry| entry.name.as_bytes().to_vec()).collect::<Vec<_>>();
     names.sort();
     assert_eq!(names, [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
     Ok(())
@@ -519,15 +509,15 @@ async fn native_unpublished_pages_restore_initial_and_continuation_positions() -
         page.work.verify(budget)?;
         assert_eq!(page.work.source_bytes_read, 0);
         assert!(page.value.retained_bytes() > 0);
-        let expected = page.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>();
+        let expected = page.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>();
         drop(page);
         let mut retry = source.list_page(source.reference(), &root, position.clone(), 1, budget, &token).await?;
-        assert_eq!(retry.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>(), expected);
+        assert_eq!(retry.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>(), expected);
         let aborted = acyclic_fs::demand::abort_publication(&mut retry.value.publication, retry.work.remaining(budget)?)?;
         aborted.work.verify(retry.work.remaining(budget)?)?;
         retry.work.checked_add(aborted.work)?.verify(budget)?;
         let mut accepted = source.list_page(source.reference(), &root, position.clone(), 1, budget, &token).await?;
-        assert_eq!(accepted.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>(), expected);
+        assert_eq!(accepted.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>(), expected);
         let committed = acyclic_fs::demand::accept_publication(&mut accepted.value.publication, accepted.work.remaining(budget)?, &token).await?;
         accepted.work.checked_add(committed.work)?.verify(budget)?;
         position = accepted.value.next;
@@ -550,7 +540,7 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
         assert!(page.work.items_examined > 0);
         assert!(page.work.allocation_operations > 0);
         page.work.verify(budget)?;
-        let expected = page.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>();
+        let expected = page.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>();
         let projected = CancellationToken::new();
         let mut remaining = page.work.remaining(budget)?;
         if cancelled { projected.cancel(); } else { remaining.items_examined = 0; }
@@ -570,7 +560,7 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
         let retained = page.work.checked_add(*failure.work)?.checked_add(aborted.work)?;
         retained.verify(budget)?;
         let mut retry = source.list_page(source.reference(), &root, None, 2, budget, &live).await?;
-        assert_eq!(retry.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>(), expected);
+        assert_eq!(retry.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>(), expected);
         acyclic_fs::demand::abort_publication(&mut retry.value.publication, retry.work.remaining(budget)?)?;
     }
     let mut committed = source.list_page(source.reference(), &root, None, 2, budget, &live).await?;

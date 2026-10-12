@@ -1,6 +1,5 @@
 //! Journaled local persistence for filesystem control-plane state.
 
-use crate::lazy_workspace::MemoryLazyNode;
 use crate::record_store::Revisioned;
 use crate::workspace_context::{
     WorkspaceContextChildren, discard_context_subtree, plan_context_subtree_discard,
@@ -151,14 +150,7 @@ enum Admission {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct MultiRootParentClaim {
-    revision: u64,
     operation_id: OperationId,
-}
-
-impl Revisioned for MultiRootParentClaim {
-    fn revision(&self) -> u64 {
-        self.revision
-    }
 }
 
 impl LocalCoreStateStore {
@@ -360,9 +352,6 @@ impl LocalCoreStateStore {
         &self,
         operation_id: OperationId,
     ) -> Result<(), LocalCoreStateStoreError> {
-        if let Some(work) = &self.journal_work {
-            return self.remove_journal(operation_id, work).await;
-        }
         self.transaction(move |namespace| {
             let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
             with_lock(&mut paths, |paths| {
@@ -393,73 +382,76 @@ impl Namespace {
         family: &str,
         key: &[u8],
     ) -> Result<RecordPaths<'_>, LocalCoreStateStoreError> {
-        if let Some(allocation) = &self._allocation {
-            let work = allocation.work();
-            let key_bytes = key
-                .len()
-                .checked_mul(2)
-                .ok_or(crate::WorkError::Overflow)
-                .map_err(crate::materializer::NativeTreeMaterializationError::from)?;
-            let mut name = [0_u8; 96];
-            let encoded = name.get_mut(..key_bytes).ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "record identity exceeds the bounded key width",
-                )
-            })?;
-            let encoding = crate::WorkCounters {
-                bytes_encoded: key_bytes as u64,
-                ..Default::default()
-            };
+        let work = self
+            ._allocation
+            .as_ref()
+            .map(|allocation| allocation.work());
+        let key_bytes = key
+            .len()
+            .checked_mul(2)
+            .ok_or(crate::WorkError::Overflow)
+            .map_err(crate::NativeTreeMaterializationError::from)?;
+        let mut name = [0_u8; 96];
+        let encoded = name.get_mut(..key_bytes).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "record identity exceeds the bounded key width",
+            )
+        })?;
+        let encoding = crate::WorkCounters {
+            bytes_encoded: key_bytes as u64,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        if let Some(work) = work {
             work.admit(encoding)?;
-            hex::encode_to_slice(key, encoded).map_err(std::io::Error::other)?;
-            work.spent(encoding)?;
-            let mut allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-            let directory = measured_record_path(&self.root, family, work, &mut allocation)?;
-            let mut entry = |suffix: &str| -> Result<PathBuf, LocalCoreStateStoreError> {
-                let end = key_bytes
-                    .checked_add(suffix.len())
-                    .ok_or(crate::WorkError::Overflow)
-                    .map_err(crate::materializer::NativeTreeMaterializationError::from)?;
-                name.get_mut(key_bytes..end)
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "record identity and suffix exceed the bounded key width",
-                        )
-                    })?
-                    .copy_from_slice(suffix.as_bytes());
-                measured_record_path(
-                    &directory,
-                    std::str::from_utf8(&name[..end]).map_err(std::io::Error::other)?,
-                    work,
-                    &mut allocation,
-                )
-            };
-            let current = entry(".json")?;
-            let previous = entry(".previous.json")?;
-            let temporary = entry(".next.json")?;
-            let lock = entry(".lock")?;
-            return Ok(RecordPaths {
-                directory,
-                current,
-                previous,
-                temporary,
-                lock,
-                namespace: PhantomData,
-                allocation: Some(allocation),
-            });
         }
-        let directory = self.family(family);
-        let stem = hex::encode(key);
+        hex::encode_to_slice(key, encoded).map_err(std::io::Error::other)?;
+        if let Some(work) = work {
+            work.spent(encoding)?;
+        }
+        let mut allocation = work
+            .map(|work| work.claim(0, 0, crate::WorkCounters::UNCHARGED))
+            .transpose()?;
+        let mut path = |parent: &Path, leaf: &str| match work {
+            Some(work) => measured_record_path(
+                parent,
+                leaf,
+                work,
+                allocation.as_mut().expect("native path allocation"),
+            ),
+            None => Ok(parent.join(leaf)),
+        };
+        let directory = path(&self.root, family)?;
+        let mut entry = |suffix: &str| -> Result<PathBuf, LocalCoreStateStoreError> {
+            let end = key_bytes
+                .checked_add(suffix.len())
+                .ok_or(crate::WorkError::Overflow)
+                .map_err(crate::NativeTreeMaterializationError::from)?;
+            name.get_mut(key_bytes..end)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "record identity and suffix exceed the bounded key width",
+                    )
+                })?
+                .copy_from_slice(suffix.as_bytes());
+            path(
+                &directory,
+                std::str::from_utf8(&name[..end]).map_err(std::io::Error::other)?,
+            )
+        };
+        let current = entry(".json")?;
+        let previous = entry(".previous.json")?;
+        let temporary = entry(".next.json")?;
+        let lock = entry(".lock")?;
         Ok(RecordPaths {
-            current: directory.join(format!("{stem}.json")),
-            previous: directory.join(format!("{stem}.previous.json")),
-            temporary: directory.join(format!("{stem}.next.json")),
-            lock: directory.join(format!("{stem}.lock")),
             directory,
+            current,
+            previous,
+            temporary,
+            lock,
             namespace: PhantomData,
-            allocation: None,
+            allocation,
         })
     }
 
@@ -526,7 +518,7 @@ impl Drop for DeferredDurability {
 pub enum LocalCoreStateStoreError {
     /// Native filesystem operation failed.
     #[error("core state I/O failed: {0}")]
-    Io(#[from] std::io::Error),
+    Io(#[source] std::io::Error),
     /// Another owner held a record lock beyond the bounded transaction deadline.
     #[error("core state record lock timed out: {}", .0.display())]
     LockTimeout(PathBuf),
@@ -535,7 +527,7 @@ pub enum LocalCoreStateStoreError {
     OwnershipConflict(PathBuf),
     /// A persisted record was malformed or incompatible with its schema.
     #[error("core state serialization failed: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(#[source] serde_json::Error),
     /// A nonterminal materialization journal cannot be discarded.
     #[error("materialization is still in progress")]
     MaterializationInProgress,
@@ -545,15 +537,41 @@ pub enum LocalCoreStateStoreError {
     /// Content-addressed state did not match its claimed digest.
     #[error("core state content address does not match its payload")]
     Integrity,
-    /// A transferred native payload belonged to a different original ledger.
-    #[error("native core-state payload belongs to another operation ledger")]
-    NativeLedgerMismatch,
     /// A durable workspace-context transaction was malformed or incompatible.
     #[error("workspace-context transaction is incompatible: {0}")]
     ContextTransaction(String),
     /// The core-state log holds an intact frame that does not decode, so it may commit changes this store cannot apply.
     #[error("core state log holds an undecodable intact frame: {}", .0.display())]
     Corrupt(PathBuf),
+}
+
+impl From<std::io::Error> for LocalCoreStateStoreError {
+    fn from(error: std::io::Error) -> Self {
+        if !error
+            .get_ref()
+            .is_some_and(|cause| cause.is::<crate::NativeTreeMaterializationError>())
+        {
+            return Self::Io(error);
+        }
+        let kind = error.kind();
+        match error.into_inner() {
+            Some(inner) => match inner.downcast::<crate::NativeTreeMaterializationError>() {
+                Ok(error) => Self::from(*error),
+                Err(error) => Self::Io(std::io::Error::new(kind, error)),
+            },
+            None => Self::Io(kind.into()),
+        }
+    }
+}
+
+impl From<serde_json::Error> for LocalCoreStateStoreError {
+    fn from(error: serde_json::Error) -> Self {
+        if error.is_io() {
+            Self::from(std::io::Error::from(error))
+        } else {
+            Self::Json(error)
+        }
+    }
 }
 
 impl From<crate::NativeTreeMaterializationError> for LocalCoreStateStoreError {
@@ -589,7 +607,6 @@ mod publications;
 use nodes::*;
 mod collection;
 mod lazy_log;
-use lazy_log::*;
 mod records;
 use records::*;
 mod native_records;

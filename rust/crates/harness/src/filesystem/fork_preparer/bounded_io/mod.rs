@@ -1,7 +1,7 @@
 //! Finite work and owned-byte limits for filesystem preparation.
 use super::*;
 use crate::conversation::FileRef;
-use acyclic_fs::kernel::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
+use acyclic_fs::kernel::{allocation::AllocationLedger, KernelAccounting, KernelOwnedAllocation};
 use acyclic_fs::{
     CancellationToken, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError,
 };
@@ -255,7 +255,8 @@ impl PreparationIo {
                     .peak_allocation_bytes
                     .checked_add(allocations.live_bytes())
                     .ok_or(acyclic_fs::WorkError::Overflow)?;
-                work.try_add_assign(&next).map_err(Into::into)
+                *work = work.checked_add(next)?;
+                Ok(())
             } else {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Self::Native { work, .. } = self {
@@ -462,7 +463,7 @@ impl PreparationIo {
         let hex = blake3::Hash::from_bytes(hash).to_hex();
         self.charge(encoding)?;
         crate::executor::with_history_io(Some(self), |work| {
-            crate::contract::preparation_format(format_args!("{prefix}{hex}"), work)
+            crate::executor::preparation_format(format_args!("{prefix}{hex}"), work)
         })
     }
     pub(crate) fn contains_capability<T: Serialize>(

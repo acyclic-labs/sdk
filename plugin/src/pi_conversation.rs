@@ -128,9 +128,9 @@ pub(crate) async fn observe_task_conversation<P: StreamProvider>(
         ));
     }
     let verifier = {
-        let mut io = acyclic_harness::store::history::native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     let operation = acyclic_harness::filesystem::native_root_output_binding_operation(
         &authority.0.0,

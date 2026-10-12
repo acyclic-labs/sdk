@@ -98,7 +98,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let private_key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("fork:{}:{request_digest}:scratch", request.operation_id),
                     work,
                 )
@@ -133,7 +133,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let project_key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("fork:{}:{request_digest}:project", request.operation_id),
                     work,
                 )
@@ -158,7 +158,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 let key = IdempotencyKey::new(crate::executor::with_history_io(
                     self.io.as_ref(),
                     |work| {
-                        crate::contract::preparation_format(
+                        crate::executor::preparation_format(
                             format_args!("fork:{}:{request_digest}:result", request.operation_id),
                             work,
                         )
@@ -205,7 +205,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             let context_key = IdempotencyKey::new(crate::executor::with_history_io(
                 self.io.as_ref(),
                 |work| {
-                    crate::contract::preparation_format(
+                    crate::executor::preparation_format(
                         format_args!("fork:{}:{request_digest}:context", request.operation_id),
                         work,
                     )
@@ -281,7 +281,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             let key = IdempotencyKey::new(crate::executor::with_history_io(
                 self.io.as_ref(),
                 |work| {
-                    crate::contract::preparation_format(
+                    crate::executor::preparation_format(
                         format_args!("fork:{}:{request_digest}:context", request.operation_id),
                         work,
                     )
@@ -476,12 +476,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         )?;
         if let Some(preparation) = &self.task_preparation {
             for grant in &report.reference_grants {
-                require_reference_donor(preparation.grants(), grant, self.io.as_ref())?;
+                require_reference_donor(&preparation.origin().source_grants, grant, self.io.as_ref())?;
                 if grant.reader == report.request.child_agent
                     && !{
                         let key = match self.io.as_ref() {
                             Some(io) => io.capability(&grant.file, "file:read:"),
-                            None => grant.file.read_capability(),
+                            None => grant.file.read_capability(&mut None),
                         }?;
                         preparation.request().child.grants.contains(&key)
                     }

@@ -30,7 +30,7 @@ use std::{
 impl NativeProcessRequest {
     fn validate(&self) -> Result<()> {
         if let Some(exchange) = &self.mcp_stdio {
-            exchange.validate()?;
+            drop(exchange.exchange(None)?);
         }
         if !self.executable.is_absolute()
             || !self.cwd.is_absolute()

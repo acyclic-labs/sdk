@@ -1,13 +1,11 @@
 use super::*;
 
 pub(super) const ROOT_FILE_DOMAIN: &[u8] = b"acyclic-fs-root-file-v1\0";
-
 pub(super) const CREATION_OPERATION_DOMAIN: &[u8] = b"acyclic-fs-create-operation-v1\0";
-
 pub(super) const CREATION_FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-create-fingerprint-v1\0";
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
-    /// Creates a fresh volume identity and its authenticated empty generation.
+    /// Creates a fresh volume and its authenticated empty generation.
     pub async fn create_volume(
         &self,
         config: VolumeConfig,
@@ -17,7 +15,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         self.create_volume_with_id(VolumeId::new(), config, budget, cancellation)
             .await
     }
-
     /// Idempotently creates one caller-selected volume identity.
     pub async fn create_volume_with_id(
         &self,
@@ -26,37 +23,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Volume<A, O>> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.create_volume",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty,
-            volume_id = crate::obs::hex(&volume_id.into_bytes()),
-        );
-        let result = crate::obs::in_span(
-            &span,
-            self.create_volume_with_id_operation(volume_id, config, None, budget, cancellation),
-        )
-        .await;
-        result.observe_on(&span, "create_volume")
-    }
-    pub(super) async fn create_volume_with_id_operation(
-        &self,
-        volume_id: VolumeId,
-        config: VolumeConfig,
-        operation_id: Option<OperationId>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<Volume<A, O>> {
-        let mut accounting = budget.accounting(cancellation);
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = self
-            .create_volume_with_id_operation_with_accounting(
+            .create_volume_operation(
                 volume_id,
                 config,
-                operation_id,
+                None,
                 &mut accounting,
                 cancellation,
                 None::<&mut ()>,
@@ -65,7 +37,83 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .map(|(volume, _)| volume);
         measured(result, &accounting)
     }
-    pub(super) async fn create_volume_with_id_operation_with_accounting<E, G>(
+    /// Opens one volume using its authenticated immutable configuration.
+    pub async fn open_volume(
+        &self,
+        volume_id: VolumeId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Volume<A, O>> {
+        cancellation
+            .check()
+            .map_err(|error| OperationFailure::before_work(error.into()))?;
+        let observed = self
+            .read_creation_record(volume_id, budget, cancellation)
+            .await?;
+        let config = observed.value.0.config;
+        validate_volume_capabilities(config, self.inner.capabilities)
+            .map_err(|error| OperationFailure::new(error, observed.work))?;
+        Ok(OperationReceipt {
+            value: Volume {
+                fs: self.clone(),
+                id: volume_id,
+                config,
+            },
+            work: observed.work,
+        })
+    }
+    /// Restores a volume authority from a fully imported immutable generation.
+    pub async fn restore_volume(
+        &self,
+        manifest: &GenerationExportManifest,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Volume<A, O>> {
+        cancellation
+            .check()
+            .map_err(|error| OperationFailure::before_work(error.into()))?;
+        validate_volume_capabilities(manifest.config, self.inner.capabilities)
+            .map_err(OperationFailure::before_work)?;
+        let proven_at = self.inner.objects.collection_sweeps();
+        let proof = authenticate_generation_export_manifest_async(
+            &self.inner.objects,
+            manifest,
+            closure_limits(manifest.config),
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| {
+            OperationFailure::new(map_transfer_error(failure.error), *failure.work)
+        })?;
+        let mut work = proof.work;
+        drop(proof);
+        let mut allocations = AllocationLedger::default();
+        let mut accounting = KernelAccounting::borrowed_standalone(
+            &mut allocations,
+            &mut work,
+            budget,
+            cancellation,
+        );
+        let result = self
+            .publish_creation(
+                VolumeCreated {
+                    volume_id: manifest.volume_id,
+                    config: manifest.config,
+                    initial_generation_root: manifest.generation_root,
+                },
+                Some(operation_id),
+                &manifest.objects,
+                proven_at,
+                &mut accounting,
+                cancellation,
+                None::<&mut ()>,
+            )
+            .await;
+        measured(result, &accounting)
+    }
+    pub(super) async fn create_volume_operation<E, G>(
         &self,
         volume_id: VolumeId,
         config: VolumeConfig,
@@ -83,7 +131,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         validate_volume_capabilities(config, self.inner.capabilities)?;
         let proven_at = self.inner.objects.collection_sweeps();
         let produced = self
-            .build_empty_generation_with_accounting(volume_id, config, accounting, cancellation)
+            .build_empty_generation(volume_id, config, accounting, cancellation)
             .await?;
         let generation_root = produced[3];
         let proof = self
@@ -97,7 +145,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )
             .await?;
         let result = self
-            .publish_volume_creation_with_accounting(
+            .publish_creation(
                 VolumeCreated {
                     volume_id,
                     config,
@@ -114,142 +162,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         proof.retire(accounting)?;
         result.map(|volume| (volume, generation_root))
     }
-
-    /// Opens one volume by reconstructing its immutable configuration from the
-    pub async fn open_volume(
-        &self,
-        volume_id: VolumeId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<Volume<A, O>> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.open_volume",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty,
-            volume_id = crate::obs::hex(&volume_id.into_bytes()),
-        );
-        let result = crate::obs::in_span(&span, async move {
-            cancellation
-                .check()
-                .map_err(|error| OperationFailure::before_work(error.into()))?;
-            let observed = self
-                .read_creation_record(volume_id, budget, cancellation)
-                .await?;
-            let creation = observed.value.0;
-            let work = observed.work;
-            validate_volume_capabilities(creation.config, self.inner.capabilities)
-                .map_err(|error| OperationFailure::new(error, work))?;
-            Ok(OperationReceipt {
-                value: Volume {
-                    fs: self.clone(),
-                    id: volume_id,
-                    config: creation.config,
-                },
-                work,
-            })
-        })
-        .await;
-        result.observe_on(&span, "open_volume")
-    }
-
-    /// Restores a volume authority from a fully imported immutable generation.
-    pub async fn restore_volume(
-        &self,
-        manifest: &GenerationExportManifest,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<Volume<A, O>> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.restore_volume",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty,
-        );
-        let result = crate::obs::in_span(&span, async move {
-            cancellation
-                .check()
-                .map_err(|error| OperationFailure::before_work(error.into()))?;
-            validate_volume_capabilities(manifest.config, self.inner.capabilities)
-                .map_err(OperationFailure::before_work)?;
-            let proven_at = self.inner.objects.collection_sweeps();
-            let proof = authenticate_generation_export_manifest_async(
-                &self.inner.objects,
-                manifest,
-                closure_limits(manifest.config),
-                budget,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| {
-                OperationFailure::new(map_transfer_error(failure.error), *failure.work)
-            })?;
-            let work = proof.work;
-            drop(proof);
-            self.publish_volume_creation(
-                VolumeCreated {
-                    volume_id: manifest.volume_id,
-                    config: manifest.config,
-                    initial_generation_root: manifest.generation_root,
-                },
-                Some(operation_id),
-                &manifest.objects,
-                0,
-                proven_at,
-                work,
-                budget,
-                cancellation,
-            )
-            .await
-        })
-        .await;
-        result.observe_on(&span, "restore_volume")
-    }
-    pub(super) async fn publish_volume_creation(
-        &self,
-        creation: VolumeCreated,
-        operation_id: Option<OperationId>,
-        closure: &[ObjectId],
-        closure_owned_bytes: u64,
-        proven_at: u64,
-        mut work: WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<Volume<A, O>> {
-        let mut allocations = AllocationLedger::default();
-        allocations
-            .claim_bytes(closure_owned_bytes, 0, &mut work, budget)
-            .map_err(|error| {
-                OperationFailure::new(crate::collection::handle_allocation_error(error), work)
-            })?;
-        let result = self
-            .publish_volume_creation_with_accounting(
-                creation,
-                operation_id,
-                closure,
-                proven_at,
-                &mut KernelAccounting::borrowed_standalone(
-                    &mut allocations,
-                    &mut work,
-                    budget,
-                    cancellation,
-                ),
-                cancellation,
-                None::<&mut ()>,
-            )
-            .await;
-        result
-            .map(|value| OperationReceipt { value, work })
-            .map_err(|error| OperationFailure::new(error, work))
-    }
-    pub(super) async fn publish_volume_creation_with_accounting<E, G>(
+    pub(super) async fn publish_creation<E, G>(
         &self,
         creation: VolumeCreated,
         operation_id: Option<OperationId>,
@@ -284,7 +197,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 crate::kernel::encode_volume_created(creation, observe, allocation_error)
             })?;
         let capacity = encoded.0.capacity() as u64;
-        let commit = creation_commit_with_accounting(operation_id, encoded, accounting)?;
+        let commit = creation_commit(operation_id, encoded, accounting)?;
         let hold = self
             .flush_publication(
                 crate::PublicationScope::Closure {
@@ -325,7 +238,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             config,
         })
     }
-
     pub(crate) async fn read_creation_record<W: FsWork>(
         &self,
         volume_id: VolumeId,
@@ -356,8 +268,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .await;
         budget.finish(result, &accounting)
     }
-
-    pub(super) async fn build_empty_generation_with_accounting(
+    pub(super) async fn build_empty_generation(
         &self,
         volume_id: VolumeId,
         config: VolumeConfig,
@@ -456,40 +367,6 @@ pub(super) fn identity_hash_work(domain: &[u8]) -> WorkCounters {
     }
 }
 
-/// Transfers an already admitted canonical buffer without recharging its allocation.
-pub(super) fn creation_commit(
-    operation_id: OperationId,
-    encoded: OperationReceipt<Vec<u8>>,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> crate::MeasuredResult<OperationReceipt<(ProposedCommit, u64)>, FsError> {
-    let capacity = encoded.value.capacity() as u64;
-    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
-    let mut work = encoded.work;
-    let result = {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
-            &mut allocations,
-            &mut work,
-            budget,
-            cancellation,
-        );
-        creation_commit_with_accounting(
-            operation_id,
-            (
-                encoded.value,
-                crate::kernel::allocation::KernelOwnedAllocation::Standalone,
-            ),
-            &mut accounting,
-        )
-    };
-    result
-        .map(|value| OperationReceipt {
-            value: (value, capacity),
-            work,
-        })
-        .map_err(|error| OperationFailure::new(error, work))
-}
-
 pub(super) fn creation_fingerprint(payload: &[u8]) -> Digest {
     let mut hasher = blake3::Hasher::new();
     hasher.update(CREATION_FINGERPRINT_DOMAIN);
@@ -497,7 +374,7 @@ pub(super) fn creation_fingerprint(payload: &[u8]) -> Digest {
     Digest::from_bytes(*hasher.finalize().as_bytes())
 }
 
-pub(super) fn creation_commit_with_accounting(
+pub(super) fn creation_commit(
     operation_id: OperationId,
     encoded: (Vec<u8>, crate::kernel::allocation::KernelOwnedAllocation),
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -544,7 +421,6 @@ pub(super) fn creation_commit_with_accounting(
             payload,
         });
     }
-    // Audited bytes 1.12: only a spare-capacity Vec allocates the private owner.
     let owner = WorkCounters {
         allocation_operations: u64::from(encoded.0.capacity() != encoded.0.len()),
         ..WorkCounters::default()

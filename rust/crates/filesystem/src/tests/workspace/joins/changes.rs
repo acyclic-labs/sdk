@@ -8,13 +8,13 @@ async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<
     main.write_text("/shared", "base").await?;
     let base = main.head(B, &cancel).await?.value;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -36,7 +36,7 @@ async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
+            }, std::collections::BTreeMap::new(),
             PublicationPermit::Unrestricted
         )
         .await?,
@@ -84,14 +84,14 @@ async fn contiguous_change_sets_compose_by_outer_semantics() -> Result<(), Box<d
 
     let first = workspace.diff(&base, &middle, 32, B, &cancel).await?.value;
     let second = workspace.diff(&middle, &end, 32, B, &cancel).await?.value;
-    let composed = first.compose(&second, 32).await?;
+    let composed = first.compose(&second, 32, B, &cancel).await?.value;
     let direct = workspace.diff(&base, &end, 32, B, &cancel).await?.value;
     assert_eq!(composed.from().id(), base.id());
     assert_eq!(composed.to().id(), end.id());
     assert_eq!(composed.changes(), direct.changes());
     assert!(matches!(
-        second.compose(&first, 32).await,
-        Err(WorkspaceError::ChangeSetContinuity)
+        second.compose(&first, 32, B, &cancel).await,
+        Err(crate::OperationFailure { error: WorkspaceError::ChangeSetContinuity, .. })
     ));
     Ok(())
 }

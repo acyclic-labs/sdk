@@ -5,7 +5,7 @@ impl CoreLog {
     pub(in crate::core_state) fn commit(
         &mut self,
         root: &Namespace,
-        mut change: Change,
+        change: Change,
     ) -> Result<(), LocalCoreStateStoreError> {
         let work = root
             ._allocation
@@ -17,85 +17,43 @@ impl CoreLog {
         let next_sequence = self.sequence.checked_add(1).ok_or(
             crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
         )?;
-        let mut install_allocation = work
-            .map(|work| work.claim(0, 0, crate::WorkCounters::UNCHARGED))
-            .transpose()?;
-        let mut installs: Vec<(usize, bool)> = Vec::new();
-        if let Some(work) = work {
-            reserve(
-                &mut installs,
-                change.0.len(),
-                work,
-                install_allocation.as_mut().expect("install buffer"),
+        let installation = if let Some(work) = work {
+            let mut residents = self.residents();
+            let count = change.0.len();
+            let resident_count = residents.0.len();
+            let needed = resident_count.checked_add(count).ok_or(
+                crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
             )?;
-            {
-                let mut residents = self.residents();
-                let needed = residents.0.len().checked_add(change.0.len()).ok_or(
-                    crate::materializer::NativeTreeMaterializationError::Work(
-                        crate::WorkError::Overflow,
-                    ),
-                )?;
-                let Residents(values, slots) = &mut *residents;
-                reserve_slots(values, needed, work, slots)?;
-                let mut next = residents.0.len();
-                for (ordinal, record) in change.0.iter().enumerate() {
-                    let mut resident = None;
-                    for (index, preceding) in residents.0.iter().enumerate() {
-                        work.charge(crate::WorkCounters {
-                            items_examined: 1,
-                            ..Default::default()
-                        })?;
-                        if preceding.key == record.key {
-                            resident = Some(index);
-                            break;
-                        }
-                    }
-                    let mut prior = None;
-                    for (index, preceding) in change.0[..ordinal].iter().enumerate() {
-                        work.charge(crate::WorkCounters {
-                            items_examined: 1,
-                            ..Default::default()
-                        })?;
-                        if preceding.key == record.key {
-                            prior = Some(installs[index].0);
-                            break;
-                        }
-                    }
-                    let resident = resident.or(prior).unwrap_or_else(|| {
-                        let index = next;
-                        next += 1;
-                        index
-                    });
-                    let mut dirty = prior.is_none();
-                    for key in &self.dirty {
-                        work.charge(crate::WorkCounters {
-                            items_examined: 1,
-                            ..Default::default()
-                        })?;
-                        if *key == record.key {
-                            dirty = false;
-                            break;
-                        }
-                    }
-                    installs.push((resident, dirty));
-                }
-            }
-            let needed = self
-                .dirty
-                .len()
-                .checked_add(installs.iter().filter(|(_, dirty)| *dirty).count())
-                .ok_or(crate::materializer::NativeTreeMaterializationError::Work(
+            let Residents(values, slots) = &mut *residents;
+            reserve_slots(values, needed, work, slots)?;
+            drop(residents);
+            let needed = self.dirty.len().checked_add(count).ok_or(
+                crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
+            )?;
+            reserve_slots(&mut self.dirty, needed, work, &mut self.slots)?;
+            let scans = resident_count
+                .checked_add(self.dirty.len())
+                .and_then(|length| {
+                    count
+                        .checked_mul(2)
+                        .and_then(|growth| length.checked_add(growth))
+                })
+                .and_then(|length| length.checked_mul(count))
+                .ok_or(crate::NativeTreeMaterializationError::Work(
                     crate::WorkError::Overflow,
                 ))?;
-            reserve_slots(&mut self.dirty, needed, work, &mut self.slots)?;
-        }
+            Some(work.reserve_work(crate::WorkCounters {
+                items_examined: scans as u64,
+                ..Default::default()
+            })?)
+        } else {
+            None
+        };
         let mut buffer = LogBuffer {
             bytes: Vec::new(),
             allocation: work
                 .map(|work| work.claim(0, 0, crate::WorkCounters::UNCHARGED))
                 .transpose()?,
-            work,
-            failure: None,
         };
         if let Some(work) = work {
             reserve(
@@ -110,18 +68,14 @@ impl CoreLog {
             })?;
         }
         buffer.bytes.extend_from_slice(&[b' '; 65]);
-        let encoded = serde_json::to_writer(
+        serde_json::to_writer(
             &mut buffer,
             &LogFrame {
                 epoch: self.epoch,
                 sequence: self.sequence,
                 change: &change,
             },
-        );
-        if let Some(error) = buffer.failure.take() {
-            return Err(error);
-        }
-        encoded?;
+        )?;
         if let Some(work) = work {
             work.charge(crate::WorkCounters {
                 bytes_hashed: (buffer.bytes.len() - 65) as u64,
@@ -254,23 +208,10 @@ impl CoreLog {
             crash_point("frame flushed", self.flushed);
         }
         self.sequence = next_sequence;
-        if work.is_some() {
-            for (record, (resident, dirty)) in change.0.drain(..).zip(installs) {
-                let key = record.key;
-                let mut residents = self.residents();
-                if resident < residents.0.len() {
-                    residents.0[resident] = record;
-                } else {
-                    residents.0.push(record);
-                }
-                drop(residents);
-                if dirty {
-                    self.dirty.push(key);
-                }
-            }
-        } else {
-            self.apply(change);
-        }
+        self.apply(change, installation.as_ref()).map_err(|error| {
+            self.broken = true;
+            error
+        })?;
         Ok(())
     }
 

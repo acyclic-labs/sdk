@@ -46,7 +46,7 @@ impl TaskModelClaims {
 }
 
 /// Pure projection of dependency, capacity, ownership and cancellation events.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Scheduler {
     operations: BTreeMap<OperationId, OperationState>,
     child_slots: BTreeMap<(OperationId, String), OperationId>,
@@ -55,34 +55,6 @@ pub struct Scheduler {
     sessions: BTreeMap<OperationId, SessionLimits>,
     #[serde(default)]
     model_claims: BTreeMap<OperationId, TaskModelClaims>,
-    // Payloads retire before their original allocation guards.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[serde(skip)]
-    native_operations: BTreeMap<OperationId, [Option<acyclic_fs::NativeAllocation>; 6]>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[serde(skip)]
-    native_completion: crate::NativeCustody,
-}
-impl Clone for Scheduler {
-    fn clone(&self) -> Self {
-        Self {
-            operations: self.operations.clone(),
-            child_slots: self.child_slots.clone(),
-            completion_order: self.completion_order.clone(),
-            sessions: self.sessions.clone(),
-            model_claims: self.model_claims.clone(),
-            ..Self::default()
-        }
-    }
-}
-impl PartialEq for Scheduler {
-    fn eq(&self, other: &Self) -> bool {
-        self.operations == other.operations
-            && self.child_slots == other.child_slots
-            && self.completion_order == other.completion_order
-            && self.sessions == other.sessions
-            && self.model_claims == other.model_claims
-    }
 }
 impl Scheduler {
     /// Creates an empty projection.
@@ -94,10 +66,6 @@ impl Scheduler {
             completion_order: Vec::new(),
             sessions: BTreeMap::new(),
             model_claims: BTreeMap::new(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_operations: BTreeMap::new(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_completion: None,
         }
     }
     /// Returns one operation's current projection.
@@ -121,7 +89,7 @@ impl Scheduler {
 fn observe(work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
     if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
-        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
     }
     Ok(())
 }

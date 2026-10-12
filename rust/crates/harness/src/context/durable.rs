@@ -105,7 +105,7 @@ impl DurableContextProvider {
                 "context payload exceeds file limit".into(),
             ));
         }
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             &(
                 "harness:context-payload:v1",
                 self.path.as_str(),

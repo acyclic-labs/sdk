@@ -19,11 +19,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
             code: ErrorCode::Unauthorized,
             reason: "root source is not selected by its original admission",
         })?;
-    current_owner.require_volume_grant(
-        project,
-        VolumeOperation::Read,
-        &mut Some(&mut native_work_io(work)?),
-    )?;
+    current_owner.require_volume_grant(project, VolumeOperation::Read, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
     context
         .verify_original_volume_read_with_native_work(current_owner, project, work)
         .await?;
@@ -50,7 +46,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
         reason: "root source has no original configured binding",
     })?;
     current_owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let identity = work.root_identity(Path::new(path))?;
     if let Some(expected) = expected {
@@ -68,7 +64,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
         .verify_original_volume_read_with_native_work(current_owner, project, work)
         .await?;
     current_owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     Ok(identity)
 }
@@ -86,7 +82,7 @@ impl PiRootProvider {
         let context = &self.preparation.context;
         let request = &self.preparation.request;
         if current_read_owner.task_id() != request.binding.task_id
-            || context.context().durable_task_id() != Some(request.binding.task_id)
+            || context.durable_task_id() != Some(request.binding.task_id)
         {
             return Err(Error::NativeBoundary {
                 code: ErrorCode::Unauthorized,
@@ -95,7 +91,6 @@ impl PiRootProvider {
         }
         for volume in request.binding.project_volumes.values() {
             context
-                .context()
                 .verify_original_volume_read_with_native_work(current_read_owner, volume, work)
                 .await?;
         }
@@ -141,7 +136,6 @@ impl PiRootProvider {
             });
         }
         context
-            .context()
             .verify_original_volume_read_with_native_work(
                 current_read_owner,
                 &request.binding.project_volumes[key],
@@ -166,17 +160,12 @@ pub(crate) async fn prove_root_project_source_with_native_work(
     intent: &PiRootIntent,
     project: &VolumeRef,
     snapshot: acyclic_fs::LazySnapshotRef,
-    context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+    context: Arc<acyclic_harness::runtime::TaskContext>,
     current_owner: &TaskJournalOwner<LocalStream>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    current_owner.require_volume_grant(
-        project,
-        VolumeOperation::Read,
-        &mut Some(&mut native_work_io(work)?),
-    )?;
+    current_owner.require_volume_grant(project, VolumeOperation::Read, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
     context
-        .context()
         .verify_original_volume_read_with_native_work(current_owner, project, work)
         .await?;
     let preparation = load_original_preparation_with_native_work(
@@ -301,7 +290,6 @@ pub(crate) async fn prove_root_project_source_with_native_work(
     provider
         .preparation
         .context
-        .context()
         .verify_original_volume_read_with_native_work(current_owner, project, work)
         .await?;
     Ok(())
@@ -325,7 +313,7 @@ impl PiRootProvider {
                         Self::native_failure("root source identity guard is poisoned")
                     })?;
                     let identity = guard_root_preparation_source_with_native_work(
-                        self.preparation.context.context(),
+                        self.preparation.context.as_ref(),
                         owner,
                         &self.preparation,
                         key,

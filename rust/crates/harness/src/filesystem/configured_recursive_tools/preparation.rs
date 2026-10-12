@@ -1,5 +1,6 @@
 use super::*;
-use crate::filesystem::{PreparationIo, crate::executor::stock_boundary, task_runtime::WorkerContext};
+use crate::filesystem::{PreparationIo, task_runtime::WorkerContext};
+use crate::executor::stock_boundary;
 use crate::wire::ErrorCode;
 
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
@@ -23,7 +24,7 @@ where
         let preparation = token.request();
         crate::executor::with_history_io(io, |work| preparation.validate(work))?;
         let caller_task = preparation.child.parent.ok_or_else(|| {
-            failure(
+            stock_boundary(
                 io,
                 ErrorCode::Unauthorized,
                 "configured preparation has no original caller",
@@ -32,7 +33,7 @@ where
         if reader.durable_task_id() != Some(token.origin().preparation_task)
             || token.origin().parent_task != caller_task
         {
-            return Err(failure(
+            return Err(stock_boundary(
                 io,
                 ErrorCode::Unauthorized,
                 "source restore lacks the actual sealed helper and original caller",
@@ -42,10 +43,10 @@ where
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             reader.owned_task_binding_with_native_work(work)?;
             if reconciliation_only {
-                token.verify_reconciliation_with_native_work(work)?.await?;
+                token.verify(true, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
             } else {
                 reader.require_original_native_dispatch(work)?;
-                token.verify_creation_with_native_work(work)?.await?;
+                token.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
             }
         }
         let caller = self.caller(caller_task, io)?;
@@ -61,7 +62,7 @@ where
                 .project_source()
                 .map(ProjectSourceReadHandle::authorization)
         {
-            return Err(failure(
+            return Err(stock_boundary(
                 io,
                 ErrorCode::Unauthorized,
                 "preparation changed its retained sealed Project source",
@@ -92,7 +93,7 @@ where
                 || record.caller != caller_task
                 || record.child_operation_id != preparation.child.operation_id
             {
-                return Err(failure(
+                return Err(stock_boundary(
                     io,
                     ErrorCode::Unauthorized,
                     "configured preparation checkpoint changed original caller/request",
@@ -114,7 +115,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if let WorkerContext::Native(shared) = context {
             let io = io.ok_or_else(|| {
-                failure(
+                stock_boundary(
                     io,
                     ErrorCode::Unsupported,
                     "native source requires original IO",
@@ -150,9 +151,9 @@ where
                 .await?;
             io.absorb_native_custody(source.1)?;
             if reconciliation_only {
-                token.verify_reconciliation_with_native_work(work)?.await?;
+                token.verify(true, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
             } else {
-                token.verify_creation_with_native_work(work)?.await?;
+                token.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
             }
             check_cancellation(cancellation, Some(io))?;
             return Ok(source.0);

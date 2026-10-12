@@ -258,14 +258,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             crate::model::charge_items(io, 1)?;
 if let Some(io) = io { io.retain_owned(std::mem::size_of::<(String, FileRef)>() as u64)?; }
             direct.insert(
-                match io { Some(io) => io.capability(&message.content, "file:read:"), None => &message.content.read_capability() }?,
+                match io { Some(io) => io.capability(&message.content, "file:read:"), None => message.content.read_capability(&mut None) }?,
                 crate::executor::with_history_io(io, |work| message.content.copy(work))?,
             );
             for reference in message.extensions.values() {
                 crate::model::charge_items(io, 1)?;
 if let Some(io) = io { io.retain_owned(std::mem::size_of::<(String, FileRef)>() as u64)?; }
                 direct.insert(
-                    match io { Some(io) => io.capability(reference, "file:read:"), None => reference.read_capability() }?,
+                    match io { Some(io) => io.capability(reference, "file:read:"), None => reference.read_capability(&mut None) }?,
                     crate::executor::with_history_io(io, |work| reference.copy(work))?,
                 );
             }
@@ -275,7 +275,7 @@ if let Some(io) = io { io.retain_owned(std::mem::size_of::<(String, FileRef)>() 
                         crate::model::charge_items(io, 1)?;
 if let Some(io) = io { io.retain_owned(std::mem::size_of::<(String, FileRef)>() as u64)?; }
                         direct.insert(
-                            match io { Some(io) => io.capability(&item.file, "file:read:"), None => &item.file.read_capability() }?,
+                            match io { Some(io) => io.capability(&item.file, "file:read:"), None => item.file.read_capability(&mut None) }?,
                             crate::executor::with_history_io(io, |work| item.file.copy(work))?,
                         );
                     }
@@ -310,7 +310,7 @@ if let Some(io) = io { io.retain_owned(std::mem::size_of::<(String, FileRef)>() 
                             "inherited attachment manifest count mismatch",
                         ));
                     }
-                    let key = match io { Some(io) => io.capability(manifest, "file:read:"), None => manifest.read_capability() }?;
+                    let key = match io { Some(io) => io.capability(manifest, "file:read:"), None => manifest.read_capability(&mut None) }?;
                     crate::model::charge_items(io, 1)?;
 if let Some(io) = io { io.retain_owned((2 * std::mem::size_of::<(String, FileRef)>()) as u64)?; }
                     direct.insert(
@@ -327,7 +327,7 @@ if let Some(io) = io { io.retain_owned(std::mem::size_of::<((String, String), (F
                         member.insert(
                             (
                                 stock_string_copy(&key, io)?,
-                                match io { Some(io) => io.capability(&item.file, "file:read:"), None => &item.file.read_capability() }?,
+                                match io { Some(io) => io.capability(&item.file, "file:read:"), None => item.file.read_capability(&mut None) }?,
                             ),
                             (
                                 crate::executor::with_history_io(io, |work| manifest.copy(work))?,
@@ -441,10 +441,10 @@ if let Some(io) = io { io.retain_owned(std::mem::size_of::<((String, String), (F
             native_creation_guard.ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native inherited publication requires its original issued creation guard",
-            })?.verify_creation_with_native_work(work)?.await?;
+            })?.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         if !native && let Some(preparation) = preparation {
-            preparation.verify_creation().await?;
+            preparation.verify(false, io)?.await?;
         }
         if let Some(io) = io {
             let project = io.capability(&self.project, "volume:read:")?;
@@ -616,7 +616,7 @@ if let Some(io) = Some(io) { io.retain_owned(std::mem::size_of::<AgentId>() as u
                     path: stock_string_copy("/.system/inherited-conversation", io)?,
                 },
                 WorkspaceMutation::PutFile {
-                    path: crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/{path}"), work))?,
+                    path: crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("/{path}"), work))?,
                     bytes: copied,
                 },
             ];

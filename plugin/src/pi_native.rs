@@ -1,6 +1,5 @@
 //! Pi's pinned native command over the existing task/effect and namespace owners.
 use acyclic_harness::runtime::TaskSpawner as _;
-use acyclic_harness::store::native_work_io;
 
 use super::{PiScratchAllocation, PiTaskBinding, pi_caller};
 use acyclic_fs::{
@@ -26,7 +25,7 @@ use acyclic_harness::{
         NativeProcessRequest, NativeTaskViewDrainReceipt, NativeViewManifest, NativeViewOptions,
         NativeVolumeMapping, NativeVolumeNamespace, NativeVolumeView,
     },
-    runtime::{NativeTaskContext, NativeVolumeCallbackGuard, TaskContext},
+    runtime::{NativeVolumeCallbackGuard, TaskContext},
     workflow::WorkflowCommand,
 };
 use serde::{Deserialize, Serialize};
@@ -1337,7 +1336,7 @@ pub(crate) async fn approve_command(
     work: &NativeMaterializationWork,
 ) -> Result<InteractionId> {
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let native_capability = "effect:provider:acyclic.pi.native";
     if context.durable_task_id() != Some(owner.task_id())
@@ -1383,7 +1382,7 @@ pub(crate) async fn approve_command(
         .open_interaction_with_native_work(approval, &interaction.0, work)?
         .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let respond = native_fixed_text(format_args!("interaction:respond:{approval}"))?;
     let encoded_grants = super::pi_root_provider::guarded_pi_bytes(
@@ -1421,7 +1420,7 @@ pub(crate) async fn approve_command(
         )?
         .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     Ok(approval)
 }
@@ -1459,7 +1458,7 @@ impl PiNativeRoot {
     pub(crate) async fn create_directories_into_with_work<'a>(
         &mut self,
         owner: &'a Arc<TaskJournalOwner<acyclic_stream::LocalStream>>,
-        shared: &Arc<NativeTaskContext>,
+        shared: &Arc<TaskContext>,
         binding: &PiTaskBinding,
         options: &NativeViewOptions,
         intent: &PiNativeLaunchIntent,
@@ -1472,16 +1471,16 @@ impl PiNativeRoot {
         meter: &NativeMaterializationWork,
     ) -> Result<()> {
         owner
-            .verify(false, &mut Some(&mut native_work_io(meter)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))
             .await?;
         if owner.task_id() != self.task
             || binding.task_id != self.task
-            || shared.context().durable_task_id() != Some(self.task)
+            || shared.durable_task_id() != Some(self.task)
             || binding.scratch.volume != self.scratch
             || options.root != self.view_root
             || self.packet.operation_id()
                 != NativePreparationRoot::operation(owner.task_id(), meter)?
-            || !self._metadata_custody.matches_work(meter)
+            || !self._metadata_custody.work().shares_allocation_context(meter)
             || bindings.len() != 1
             || bindings[0].volume != &self.scratch
             || bindings[0].path != "scratch"
@@ -1515,17 +1514,12 @@ impl PiNativeRoot {
                 bindings[0].scope,
                 &self.scratch,
                 operation,
-                shared.context().scope().limits().file_bytes,
-                &mut Some(&mut native_work_io(meter)?),
+                shared.scope().limits().file_bytes,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)),
             )?;
-            owner.require_volume_grant(
-                &self.scratch,
-                operation,
-                &mut Some(&mut native_work_io(meter)?),
-            )?;
+            owner.require_volume_grant(&self.scratch, operation, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))?;
         }
         let bytes = shared
-            .context()
             .read_file_with_native_work(session, meter)
             .await?;
         if bytes.as_ref() != intent.session_bytes.as_bytes() {
@@ -1587,7 +1581,7 @@ impl PiNativeRoot {
             self.packet
                 .create_into_guarded(index, meter, || async {
                     owner
-                        .verify(false, &mut Some(&mut native_work_io(meter)?))
+                        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))
                         .await?;
                     creator
                         .authorize_settlement_with_native_work(owner, meter)
@@ -1630,7 +1624,7 @@ impl PiNativeRoot {
     pub(crate) async fn mount_project_with_work(
         &self,
         owner: &Arc<TaskJournalOwner<acyclic_stream::LocalStream>>,
-        shared: &Arc<NativeTaskContext>,
+        shared: &Arc<TaskContext>,
         binding: &PiTaskBinding,
         root_key: &str,
         workspace: &crate::LocalLazyWorkspace,
@@ -1651,14 +1645,14 @@ impl PiNativeRoot {
         NativeVolumeCallbackGuard<acyclic_stream::LocalStream>,
         acyclic_fs::NativeAllocation,
     )> {
-        let context = shared.context();
+        let context = shared.as_ref();
         if !authority.2.work().shares_ledger(meter) || !original_volume_work.shares_ledger(meter) {
             return Err(acyclic_harness::Error::from(
                 acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
             ));
         }
         owner
-            .verify(false, &mut Some(&mut native_work_io(meter)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))
             .await?;
         if owner.task_id() != self.task
             || binding.task_id != self.task
@@ -1683,13 +1677,9 @@ impl PiNativeRoot {
                 volume,
                 operation,
                 context.scope().limits().file_bytes,
-                &mut Some(&mut native_work_io(meter)?),
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)),
             )?;
-            owner.require_volume_grant(
-                volume,
-                operation,
-                &mut Some(&mut native_work_io(meter)?),
-            )?;
+            owner.require_volume_grant(volume, operation, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))?;
         }
         let allocation = self.witnessed_allocation()?;
         let route = native_root_route(root_key, meter)?;
@@ -1793,7 +1783,7 @@ impl PiNativeRoot {
             return Err(Error::Conflict("Pi lazy mount differs from the original actual filesystem workspace or seed generation".into()));
         }
         owner
-            .verify(false, &mut Some(&mut native_work_io(meter)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))
             .await?;
         let authority_revision = native_digest(
             &(authority.0.audience(), &authority.1),
@@ -1804,9 +1794,9 @@ impl PiNativeRoot {
                 .min(super::MAXIMUM_ADAPTER_STATE_BYTES),
             meter,
         )?;
-        let mut volume_io = native_work_io(meter)?;
+        let mut volume_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?);
         let volume_copy = volume.copy(&mut Some(&mut volume_io))?;
-        let mut volume_copy = (volume_copy, volume_io.into_custody());
+        let mut volume_copy = (volume_copy, volume_io.into_custody()?);
         let reference = original_generation.as_resource();
         let mut generation_copy = acyclic_harness::resources::GenerationRef::new_with_native_work(
             reference.provider(),
@@ -1869,7 +1859,7 @@ impl PiNativeRoot {
         meter: &'a NativeMaterializationWork,
     ) -> Result<()> {
         owner
-            .verify(false, &mut Some(&mut native_work_io(meter)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))
             .await?;
         let allocation = self.witnessed_allocation()?;
         if self.task != owner.task_id()
@@ -1912,7 +1902,7 @@ impl PiNativeRoot {
             });
         }
         owner
-            .verify(false, &mut Some(&mut native_work_io(meter)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))
             .await?;
         self.view = Some(view.into_arc_with_native_work(meter)?);
         Ok(())
@@ -1932,7 +1922,7 @@ impl PiNativeRoot {
             || proof.volume() != &self.scratch
             || self.packet.operation_id()
                 != NativePreparationRoot::operation(owner.task_id(), meter)?
-            || !self._metadata_custody.matches_work(original)
+            || !self._metadata_custody.work().shares_allocation_context(original)
             || self.view.as_ref().is_some_and(|view| {
                 view.preparation().task != self.task
                     || view.preparation().manifest.volumes[0].volume != self.scratch
@@ -2054,7 +2044,7 @@ pub(crate) async fn native_root<'a>(
     root_session: &str,
     protected: &super::pi_owner::PiOwnerConfig,
     owner: &'a Arc<TaskJournalOwner<acyclic_stream::LocalStream>>,
-    shared: &Arc<NativeTaskContext>,
+    shared: &Arc<TaskContext>,
     binding: &PiTaskBinding,
     options: &NativeViewOptions,
     intent: &PiNativeLaunchIntent,
@@ -2067,7 +2057,7 @@ pub(crate) async fn native_root<'a>(
     meter: &NativeMaterializationWork,
 ) -> Result<PiNativeRoot> {
     meter.admit(WorkCounters::default())?;
-    if shared.context().durable_task_id() != Some(owner.task_id())
+    if shared.durable_task_id() != Some(owner.task_id())
         || owner.task_id() != binding.task_id
         || bindings.len() != 1
         || bindings[0].volume != &binding.scratch.volume
@@ -2136,9 +2126,9 @@ pub(crate) async fn native_root<'a>(
         ],
         meter,
     )?;
-    let mut scratch_io = native_work_io(meter)?;
+    let mut scratch_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?);
     let scratch = binding.scratch.volume.copy(&mut Some(&mut scratch_io))?;
-    let mut scratch = (scratch, scratch_io.into_custody());
+    let mut scratch = (scratch, scratch_io.into_custody()?);
     let mut view_root = meter.copy_path(&options.root)?;
     let mut custody = meter.claim(
         std::mem::size_of::<PiNativeRoot>() as u64,
@@ -2205,7 +2195,7 @@ pub(crate) fn pi_native_vec<T>(
         .ok_or_else(|| {
             acyclic_fs::NativeTreeMaterializationError::from(acyclic_fs::WorkError::Overflow)
         });
-    if let Err(cause) = actual.and_then(|bytes| custody.resize_retained(bytes as u64)) {
+    if let Err(cause) = actual.and_then(|bytes| custody.resize(bytes as u64)) {
         drop(value);
         return Err(Error::NativeWork {
             cause,

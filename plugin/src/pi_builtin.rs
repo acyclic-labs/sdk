@@ -1,6 +1,5 @@
 //! Pi builtin IO is mediated by the original task owner, not by its cwd.
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{Error, OperationId, Result, TaskId};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
@@ -738,13 +737,13 @@ type Owner = acyclic_harness::durable_host::TaskJournalOwner<acyclic_stream::Loc
 impl<'a> crate::pi_selected_host::PiControlHost<'a> {
     async fn root_read(
         &self,
-        native_context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+        native_context: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
         owner: std::sync::Arc<Owner>,
         request: &PiBuiltinRequest,
     ) -> Result<(serde_json::Value, NativeAllocation)> {
         request.validate()?;
         request.require_root_source_read(self.protected.policy().root_task)?;
-        let context = native_context.context();
+        let context = native_context.as_ref();
         authorize_owner(context, &owner, request.caller, &self.work).await?;
         let work = &self.work;
         let decoded = self.admission_input(request.caller, &self.work).await?;
@@ -830,7 +829,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
 
     pub(crate) async fn run_builtin(
         &self,
-        context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
         fence: acyclic_harness::scheduler::LeaseFence,
         command: acyclic_harness::workflow::WorkflowCommand,
         payload: serde_json::Value,
@@ -856,7 +855,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let request = decoded.0;
         request.validate()?;
         request.require_root_source_read(self.protected.policy().root_task)?;
-        if context.context().durable_task_id() != Some(request.caller) {
+        if context.durable_task_id() != Some(request.caller) {
             return Err(denied(
                 "builtin command differs from its original native task actor",
             ));
@@ -933,7 +932,7 @@ pub(crate) async fn authorize_owner(
         ));
     }
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await
 }
 
