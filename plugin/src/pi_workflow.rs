@@ -365,12 +365,12 @@ impl<'a> PiWorkflowHost<'a> {
 
     async fn root_control_context(
         &self,
-        context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: Arc<acyclic_harness::runtime::TaskContext>,
         fence: &LeaseFence,
         protected: Arc<pi_owner::PiOwnerConfig>,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<Arc<acyclic_harness::runtime::NativeTaskContext>> {
-        if context.context().durable_task_id() != Some(protected.policy().root_task) {
+    ) -> acyclic_harness::Result<Arc<acyclic_harness::runtime::TaskContext>> {
+        if context.durable_task_id() != Some(protected.policy().root_task) {
             return Err(acyclic_harness::Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi Root controls require their original Root context",
@@ -422,7 +422,7 @@ impl<'a> PiWorkflowHost<'a> {
 
     async fn root_effects(
         &self,
-        context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: Arc<acyclic_harness::runtime::TaskContext>,
         fence: &LeaseFence,
         command: &WorkflowCommand,
         payload: &Value,
@@ -431,7 +431,7 @@ impl<'a> PiWorkflowHost<'a> {
     ) -> acyclic_harness::Result<
         Arc<acyclic_harness::effect_host::ConversationEffectHost<LocalStream>>,
     > {
-        if context.context().durable_task_id() != Some(owner.policy().root_task) {
+        if context.durable_task_id() != Some(owner.policy().root_task) {
             return Err(acyclic_harness::Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi root effect belongs to another task",
@@ -514,7 +514,7 @@ impl<'a> PiWorkflowHost<'a> {
 
     async fn dispatch_native(
         &self,
-        context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: Arc<acyclic_harness::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -523,7 +523,6 @@ impl<'a> PiWorkflowHost<'a> {
     ) -> acyclic_harness::Result<TaskCommandProgress> {
         let task =
             context
-                .context()
                 .durable_task_id()
                 .ok_or(acyclic_harness::Error::NativeBoundary {
                     code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -621,7 +620,7 @@ impl TaskCommandHost for PiWorkflowHost<'_> {
 
     fn execute_with_native_work<'a>(
         &'a self,
-        context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: Arc<acyclic_harness::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -634,7 +633,7 @@ impl TaskCommandHost for PiWorkflowHost<'_> {
 
     fn reconcile_with_native_work<'a>(
         &'a self,
-        context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: Arc<acyclic_harness::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,

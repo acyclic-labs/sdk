@@ -109,7 +109,7 @@ fn decode(bytes: &[u8], io: &super::super::PreparationIo,
     if bytes.len() > acyclic_stream::MAX_RECORD_BYTES { return Err(boundary(crate::wire::ErrorCode::Storage, "native receipt exceeds Stream limit")); }
     let decoded = io.decode(std::marker::PhantomData::<Receipt>, bytes, crate::wire::ErrorCode::Storage)?;
     let (receipt, mut payload) = crate::filesystem::native_decoded(decoded)?;
-    payload.release(payload.bytes().checked_sub(receipt_bytes(&receipt)?).ok_or(acyclic_fs::WorkError::Overflow)?)?;
+    payload.release(payload.bytes().checked_sub(receipt_bytes(&receipt)?).ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))?)?;
     custody.absorb(&mut payload)?;
     Ok(receipt)
 }

@@ -170,7 +170,7 @@ pub(crate) struct PiWritebackPublicationGuard {
         >,
     >,
     stream: std::sync::Arc<LocalStream>,
-    context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+    context: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
     owner: std::sync::Arc<TaskJournalOwner<LocalStream>>,
     request: crate::pi_root_inputs::PiRootRequest,
     allocation: crate::pi_root_allocation::PiRootAllocation,
@@ -195,7 +195,7 @@ impl PiWritebackPublicationGuard {
             >,
         >,
         stream: std::sync::Arc<LocalStream>,
-        context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
         owner: std::sync::Arc<TaskJournalOwner<LocalStream>>,
         request: (
             crate::pi_root_inputs::PiRootRequest,
@@ -207,7 +207,7 @@ impl PiWritebackPublicationGuard {
     ) -> Result<std::sync::Arc<Self>> {
         if request.0.binding.task_id != protected.policy().root_task
             || owner.task_id() != request.0.binding.task_id
-            || context.context().durable_task_id() != Some(owner.task_id())
+            || context.durable_task_id() != Some(owner.task_id())
             || !request.0.binding.project_volumes.contains_key(key)
         {
             return Err(selected_unauthorized(
@@ -307,10 +307,9 @@ impl PiWritebackPublicationGuard {
             .project_volumes
             .get(&self.key)
             .ok_or_else(|| selected_unauthorized("writeback lost its retained original project"))?;
-        if self.context.context().durable_task_id() != Some(self.owner.task_id())
+        if self.context.durable_task_id() != Some(self.owner.task_id())
             || !self
                 .context
-                .context()
                 .scope()
                 .grants()
                 .contains(&self.write_capability)
@@ -366,7 +365,7 @@ impl PiWritebackPublicationGuard {
 
 pub(crate) async fn build_writeback_generations<'a>(
     root: &PiOriginalWritebackRoot,
-    native_context: &std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+    native_context: &std::sync::Arc<acyclic_harness::runtime::TaskContext>,
     owner: &std::sync::Arc<TaskJournalOwner<LocalStream>>,
     verifier: &acyclic_harness::core::AuthorityVerifier,
     scope: &acyclic_harness::core::Scope,
@@ -389,7 +388,7 @@ pub(crate) async fn build_writeback_generations<'a>(
     native_work: &acyclic_fs::NativeMaterializationWork,
     publication_guard: std::sync::Arc<PiWritebackPublicationGuard>,
 ) -> Result<PiWritebackGenerations<'a>> {
-    let context = native_context.context();
+    let context = native_context.as_ref();
 
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let _read_grant = {
@@ -537,9 +536,9 @@ fn phase_operation(
 
 /// Owns the actual issued caller/destination contexts, not copied scopes.
 struct PiSelectedPublicationGuard<P> {
-    caller: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+    caller: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
     caller_owner: std::sync::Arc<TaskJournalOwner<P>>,
-    destination: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+    destination: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
     destination_owner: std::sync::Arc<TaskJournalOwner<P>>,
     volume: VolumeRef,
     write_capability: String,
@@ -549,9 +548,9 @@ struct PiSelectedPublicationGuard<P> {
 
 impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
     fn new(
-        caller: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+        caller: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
         caller_owner: std::sync::Arc<TaskJournalOwner<P>>,
-        destination: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+        destination: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
         destination_owner: std::sync::Arc<TaskJournalOwner<P>>,
         mount_guard: Option<std::sync::Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>>,
         volume: &VolumeRef,
@@ -626,9 +625,8 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
                     &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await?;
-            if context.context().durable_task_id() != Some(owner.task_id())
+            if context.durable_task_id() != Some(owner.task_id())
                 || !context
-                    .context()
                     .scope()
                     .grants()
                     .contains(&self.write_capability)
@@ -1358,9 +1356,9 @@ where
 /// The source's sealed canonical selected plan preserves actual recorded metadata, directories and negative proofs.
 pub(crate) async fn import_native_project<P, A, O, D, S>(
     source: &PiNativeSelectedSource<'_, A, O, D, S>,
-    caller_native: &std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+    caller_native: &std::sync::Arc<acyclic_harness::runtime::TaskContext>,
     caller_owner: &std::sync::Arc<TaskJournalOwner<P>>,
-    destination_native: &std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+    destination_native: &std::sync::Arc<acyclic_harness::runtime::TaskContext>,
     destination_owner: &std::sync::Arc<TaskJournalOwner<P>>,
     destination_workspace: &acyclic_fs::LazyWorkspace<A, O, D, S>,
     mount: Option<&acyclic_fs::LazyMount<A, O, D, S>>,
@@ -1384,8 +1382,8 @@ where
     D: acyclic_fs::demand::DemandSource + 'static,
     S: acyclic_fs::LazyWorkspaceStore + 'static,
 {
-    let caller = caller_native.context();
-    let destination = destination_native.context();
+    let caller = caller_native.as_ref();
+    let destination = destination_native.as_ref();
 
     if mount.is_some() != mount_guard.is_some() {
         return Err(selected_unauthorized(

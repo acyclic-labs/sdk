@@ -235,7 +235,7 @@ impl PiOwnerConfig {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(native_work_error)?;
         if !self._native_custody.as_ref().is_some_and(|custody| {
-            custody.matches_work(work) && custody.bytes() >= std::mem::size_of::<Self>() as u64
+            custody.work().shares_allocation_context(work) && custody.bytes() >= std::mem::size_of::<Self>() as u64
         }) {
             return Err(native_invalid(
                 "Pi owner sharing requires its original native metadata custody",

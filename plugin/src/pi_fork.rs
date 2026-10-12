@@ -662,7 +662,7 @@ impl PiForkCoordinator {
     )]
     pub(crate) async fn begin(
         &self,
-        shared: &Arc<acyclic_harness::runtime::NativeTaskContext>,
+        shared: &Arc<acyclic_harness::runtime::TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>,
         fence: &LeaseFence,
         parent: StreamAggregate<LocalStream>,
@@ -673,7 +673,7 @@ impl PiForkCoordinator {
         budget: WorkBudget,
         cancel: CancellationToken,
     ) -> Result<PiForkPlan> {
-        let context = shared.context();
+        let context = shared.as_ref();
         let work = &self.work;
         let admission = self.authenticate(context, owner, fence).await?;
         let caller_input: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(
@@ -1657,7 +1657,7 @@ impl PiForkCoordinator {
     )]
     async fn native_preparer(
         &self,
-        shared: &Arc<acyclic_harness::runtime::NativeTaskContext>,
+        shared: &Arc<acyclic_harness::runtime::TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>,
         plan: &PiForkPlan,
         source: Arc<LocalLazyWorkspace>,
@@ -1672,7 +1672,7 @@ impl PiForkCoordinator {
             >,
         >,
     > {
-        let context = shared.context();
+        let context = shared.as_ref();
         let admission = self
             .runtime
             .runtime
@@ -1862,7 +1862,7 @@ impl PiForkCoordinator {
     /// Advances only the ordinary registered preparation task.
     pub(crate) async fn prepare(
         &self,
-        shared: &Arc<acyclic_harness::runtime::NativeTaskContext>,
+        shared: &Arc<acyclic_harness::runtime::TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>,
         fence: &LeaseFence,
         plan: &PiForkPlan,
@@ -1870,7 +1870,7 @@ impl PiForkCoordinator {
         budget: WorkBudget,
         cancel: CancellationToken,
     ) -> Result<Option<(ForkReport, acyclic_fs::NativeAllocation)>> {
-        let context = shared.context();
+        let context = shared.as_ref();
         let work = &self.work;
         self.authenticate(context, owner, fence).await?;
         self.validate_plan(plan, owner.task_id())?;
@@ -2037,7 +2037,7 @@ impl PiForkCoordinator {
     )]
     pub(crate) async fn advance(
         &self,
-        shared: &Arc<acyclic_harness::runtime::NativeTaskContext>,
+        shared: &Arc<acyclic_harness::runtime::TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>,
         fence: &LeaseFence,
         plan: &PiForkPlan,
@@ -2045,7 +2045,7 @@ impl PiForkCoordinator {
         budget: WorkBudget,
         cancel: CancellationToken,
     ) -> Result<Option<PreparedPiFork>> {
-        let context = shared.context();
+        let context = shared.as_ref();
         let Some(report) = self
             .prepare(
                 shared,
@@ -2123,14 +2123,14 @@ impl PiForkCoordinator {
     /// Reopens only a previously published and bound admitted child.
     pub(crate) async fn restore_admitted(
         &self,
-        shared: &Arc<acyclic_harness::runtime::NativeTaskContext>,
+        shared: &Arc<acyclic_harness::runtime::TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>,
         fence: &LeaseFence,
         plan: &PiForkPlan,
         source: Arc<LocalLazyWorkspace>,
         cancel: CancellationToken,
     ) -> Result<PreparedPiFork> {
-        let context = shared.context();
+        let context = shared.as_ref();
         let admission = self.authenticate(context, owner, fence).await?;
         self.validate_plan(plan, plan.commit.caller)?;
         if owner.task_id() != plan.request.child.task_id() || admission.0 != plan.request.child {

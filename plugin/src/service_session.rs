@@ -830,7 +830,7 @@ impl PiSession {
             },
         )?;
         context_custody
-            .resize_retained(actual_context_bytes)
+            .resize(actual_context_bytes)
             .map_err(|cause| RootError::NativeWork {
                 cause,
                 custody: None,
@@ -1189,7 +1189,7 @@ impl PiSession {
             .task_context_with_native_work(caller, &fence, &work)
             .await?;
         let command = pi_mail::prepare_send(
-            context.context(),
+            context.as_ref(),
             &journal_owner,
             owner,
             &self.filesystem,
@@ -1343,7 +1343,7 @@ impl PiSession {
                                             acyclic_fs::WorkError::Overflow,
                                         ))
                                     })?;
-                                custody.resize_retained(quota).map_err(native)
+                                custody.resize(quota).map_err(native)
                             } else {
                                 pi_root_provider::native_buffer_codec_charge(
                                     &query_work,

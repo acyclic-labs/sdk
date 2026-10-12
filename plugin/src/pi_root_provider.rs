@@ -380,7 +380,7 @@ pub(crate) async fn guard_created_root_source_with_native_work<P: StreamProvider
     let context = Arc::clone(&preparation.context);
     let request = &preparation.request;
     if current_read_owner.task_id() != request.binding.task_id
-        || context.context().durable_task_id() != Some(request.binding.task_id)
+        || context.durable_task_id() != Some(request.binding.task_id)
     {
         return Err(Error::NativeBoundary {
             code: ErrorCode::Unauthorized,
@@ -389,7 +389,6 @@ pub(crate) async fn guard_created_root_source_with_native_work<P: StreamProvider
     }
     for volume in request.binding.project_volumes.values() {
         context
-            .context()
             .verify_original_volume_read_with_native_work(current_read_owner, volume, work)
             .await?;
     }
@@ -443,7 +442,6 @@ pub(crate) async fn guard_created_root_source_with_native_work<P: StreamProvider
         });
     }
     context
-        .context()
         .verify_original_volume_read_with_native_work(
             current_read_owner,
             &observer.preparation.request.binding.project_volumes[key],
@@ -510,7 +508,7 @@ pub(crate) fn root_provider<P: StreamProvider + 'static>(
         || request.binding.agent_id != owner.policy().agent
         || journal_owner.as_ref().is_some_and(|current| {
             current.task_id() != request.binding.task_id
-                || preparation.context.context().durable_task_id() != Some(request.binding.task_id)
+                || preparation.context.durable_task_id() != Some(request.binding.task_id)
         })
         || !matches!(
             request.binding.scratch.allocation,
@@ -650,7 +648,7 @@ pub(crate) async fn observe_root_allocation<P: StreamProvider + 'static>(
     reason = "actual caller, original protected creator and bounded producers"
 )]
 pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider + 'static>(
-    context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+    context: Arc<acyclic_harness::runtime::TaskContext>,
     current_owner: &Arc<TaskJournalOwner<P>>,
     owner: Arc<PiOwnerConfig>,
     resources: &ServiceResources,
@@ -659,15 +657,15 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
     binding: &super::PiTaskBinding,
     root: &PiRootIntent,
     work: &NativeMaterializationWork,
-) -> Result<Arc<acyclic_harness::runtime::NativeTaskContext>> {
+) -> Result<Arc<acyclic_harness::runtime::TaskContext>> {
     work.admit(WorkCounters::UNCHARGED)?;
     let invalid = || Error::NativeBoundary {
         code: ErrorCode::Unauthorized,
         reason: "root output context differs from its original admitted task scope",
     };
-    if context.context().durable_task_id() != Some(current_owner.task_id())
+    if context.durable_task_id() != Some(current_owner.task_id())
         || current_owner.task_id() != owner.policy().root_task
-        || context.context().scope().grants() != &owner.policy().grants
+        || context.scope().grants() != &owner.policy().grants
         || binding.task_id != owner.policy().root_task
     {
         return Err(invalid());
@@ -785,7 +783,7 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
     intent: &PiRootIntent,
     project: &VolumeRef,
     snapshot: acyclic_fs::LazySnapshotRef,
-    context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+    context: Arc<acyclic_harness::runtime::TaskContext>,
     current_owner: &TaskJournalOwner<P>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
@@ -795,7 +793,6 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
         &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
     )?;
     context
-        .context()
         .verify_original_volume_read_with_native_work(current_owner, project, work)
         .await?;
     let preparation = load_original_preparation_with_native_work(
@@ -926,7 +923,6 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
     provider
         .preparation
         .context
-        .context()
         .verify_original_volume_read_with_native_work(current_owner, project, work)
         .await?;
     Ok(())
@@ -1338,7 +1334,7 @@ pub(crate) async fn load_original_preparation_with_native_work(
     filesystem: &Host,
     expected_binding: &super::PiTaskBinding,
     expected_root: &PiRootIntent,
-    context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+    context: Arc<acyclic_harness::runtime::TaskContext>,
     work: &NativeMaterializationWork,
 ) -> Result<PiRootPreparation> {
     let missing = || Error::NativeBoundary {
@@ -1351,7 +1347,7 @@ pub(crate) async fn load_original_preparation_with_native_work(
             .ok_or_else(missing)?;
     let plan = read_root_artifact_with_native_work::<acyclic_harness::effect_host::TaskEffectPlan>(
         owner,
-        context.context(),
+        context.as_ref(),
         &payload.0,
         work,
     )
@@ -1376,7 +1372,7 @@ pub(crate) async fn load_original_preparation_with_native_work(
     }
     let request = read_root_artifact_with_native_work::<PiRootRequest>(
         owner,
-        context.context(),
+        context.as_ref(),
         &root.0,
         work,
     )
@@ -1389,7 +1385,7 @@ pub(crate) async fn load_original_preparation_with_native_work(
     }
     let schema = read_root_artifact_with_native_work::<serde_json::Value>(
         owner,
-        context.context(),
+        context.as_ref(),
         &schema_reference.0,
         work,
     )
@@ -1547,7 +1543,7 @@ fn encode_pi<T>(
                 let mut quota = work
                     .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(native)?;
-                quota.resize_retained(parser_owned).map_err(native)?;
+                quota.resize(parser_owned).map_err(native)?;
                 parser_quota = Some(quota);
                 Ok(())
             }
@@ -1568,9 +1564,9 @@ fn encode_pi<T>(
                 }
                 if let Some(mut quota) = parser_quota.take() {
                     custody.absorb(&mut quota).map_err(native)?;
-                    custody.substitute(observed).map_err(native)
+                    custody.release(custody.bytes().checked_sub(observed).ok_or_else(|| native(NativeTreeMaterializationError::Work(WorkError::Overflow)))?).map_err(native)
                 } else {
-                    custody.resize_retained(observed).map_err(native)
+                    custody.resize(observed).map_err(native)
                 }
             }
             charge => native_buffer_codec_charge(work, &mut custody, charge),
@@ -1664,13 +1660,13 @@ pub(crate) fn native_buffer_codec_charge(
             maximum_owned_bytes,
             ..
         } => custody
-            .resize_retained(maximum_owned_bytes)
+            .resize(maximum_owned_bytes)
             .map_err(native_error),
         JsonCodecCharge::Retain { bytes } => {
             let retained = custody.bytes().checked_add(bytes).ok_or_else(|| {
                 native_error(NativeTreeMaterializationError::Work(WorkError::Overflow))
             })?;
-            custody.resize_retained(retained).map_err(native_error)
+            custody.resize(retained).map_err(native_error)
         }
         JsonCodecCharge::Release { .. } => unreachable!(),
     }
@@ -1811,13 +1807,13 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
                         .ok_or_else(|| {
                             native_error(NativeTreeMaterializationError::Work(WorkError::Overflow))
                         })?;
-                    custody.resize_retained(admitted).map_err(native_error)
+                    custody.resize(admitted).map_err(native_error)
                 }
                 JsonCodecCharge::Retain { bytes } => {
                     let retained = custody.bytes().checked_add(bytes).ok_or_else(|| {
                         native_error(NativeTreeMaterializationError::Work(WorkError::Overflow))
                     })?;
-                    custody.resize_retained(retained).map_err(native_error)
+                    custody.resize(retained).map_err(native_error)
                 }
 
                 charge => native_buffer_codec_charge(work, &mut custody, charge),
@@ -1826,7 +1822,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
     );
     match result {
         Ok(value) => {
-            custody.substitute(retained_owned).map_err(native_error)?;
+            custody.release(custody.bytes().checked_sub(retained_owned).ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))?).map_err(native_error)?;
             Ok((value, custody))
         }
         Err(Error::NativeDecode {
@@ -1840,7 +1836,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
         }),
         Err(error) => {
             // The SDK has already destroyed its partial DTO and parser here.
-            custody.substitute(0).map_err(native_error)?;
+            custody.release(custody.bytes()).map_err(native_error)?;
             drop(custody);
             Err(error)
         }
@@ -1977,7 +1973,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                         Self::native_failure("root source identity guard is poisoned")
                     })?;
                     let identity = guard_root_preparation_source_with_native_work(
-                        self.preparation.context.context(),
+                        self.preparation.context.as_ref(),
                         owner,
                         &self.preparation,
                         key,
@@ -2182,7 +2178,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                     .await?;
                 self.require_native_creation()?;
                 let identity = guard_root_preparation_source_with_native_work(
-                    self.preparation.context.context(),
+                    self.preparation.context.as_ref(),
                     owner,
                     &self.preparation,
                     key,
@@ -2858,7 +2854,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
     ) -> Result<(T, NativeAllocation)> {
         read_root_artifact_with_native_work(
             &self.owner,
-            self.preparation.context.context(),
+            self.preparation.context.as_ref(),
             reference,
             work,
         )

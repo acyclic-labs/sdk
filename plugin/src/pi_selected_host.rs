@@ -16,7 +16,7 @@ use acyclic_harness::{
     conversation::VolumeRef,
     durable_host::TaskJournalOwner,
     filesystem::{TaskCommandProgress, TaskSourceInspection},
-    runtime::{NativeTaskContext, TaskContext},
+    runtime::{TaskContext},
     scheduler::LeaseFence,
     workflow::WorkflowCommand,
 };
@@ -315,7 +315,7 @@ impl<'a> PiControlHost<'a> {
     pub(crate) async fn selected(
         &self,
         context: &TaskContext,
-        native_context: &Arc<NativeTaskContext>,
+        native_context: &Arc<TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>,
         task: TaskId,
         requested: Option<&str>,
@@ -503,17 +503,17 @@ impl<'a> PiControlHost<'a> {
     }
     pub(crate) async fn run_selected(
         &self,
-        context: Arc<NativeTaskContext>,
+        context: Arc<TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
         reconcile: bool,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskCommandProgress> {
-        let caller_custody = self.caller(context.context(), &fence, work).await?;
+        let caller_custody = self.caller(context.as_ref(), &fence, work).await?;
         let (owner, caller, _) = &caller_custody;
         let native_context = &context;
-        let context = context.context();
+        let context = context.as_ref();
         let scratch = &caller.binding.scratch.volume;
         if context.output_volume() != Some(scratch) {
             return Err(denied(
@@ -831,7 +831,7 @@ impl<'a> PiControlHost<'a> {
     }
     pub(crate) async fn run(
         &self,
-        context: Arc<NativeTaskContext>,
+        context: Arc<TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -1083,7 +1083,7 @@ impl PiControlHost<'_> {
     async fn publish_selection(
         &self,
         context: &TaskContext,
-        native_context: &Arc<NativeTaskContext>,
+        native_context: &Arc<TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>,
         binding: &PiTaskBinding,
         input: &PiSelectedCommand,
@@ -1324,7 +1324,7 @@ impl PiControlHost<'_> {
                     .as_ref()
                     .ok_or_else(|| denied("destination original native view unavailable"))?;
                 let (snapshot, custody) = crate::pi_lazy_capture::freeze_child_source(
-                    live.context.context(),
+                    live.context.as_ref(),
                     &live.owner,
                     &live.view,
                     &workspace,
@@ -1552,7 +1552,7 @@ impl PiControlHost<'_> {
     async fn writeback(
         &self,
         context: &TaskContext,
-        native_context: &Arc<NativeTaskContext>,
+        native_context: &Arc<TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>,
         input: &PiSelectedCommand,
         key: &str,

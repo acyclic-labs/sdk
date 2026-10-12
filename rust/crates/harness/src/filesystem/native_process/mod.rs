@@ -171,7 +171,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         drop(value);
         drop(bytes);
         drop(io);
-        custody.release(custody.bytes().checked_sub(reference.logical_owned_bytes()?).ok_or(acyclic_fs::WorkError::Overflow)?)?;
+        custody.release(custody.bytes().checked_sub(reference.logical_owned_bytes()?).ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))?)?;
         Ok(Some((reference, custody)))
     }
 

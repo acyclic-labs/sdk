@@ -1572,7 +1572,7 @@ fn native_control_codec_charge(
                 .checked_add(bytes)
                 .ok_or_else(|| native_control_error(acyclic_fs::WorkError::Overflow.into()))?;
             return allocation
-                .resize_retained(retained)
+                .resize(retained)
                 .map_err(native_control_error);
         }
         JsonCodecCharge::Release { bytes } => {
@@ -1746,7 +1746,7 @@ impl ControlResponseFrame {
         self.allocation = Some(replacement);
         if let Some(allocation) = self.allocation.as_mut() {
             allocation
-                .resize_retained(self.bytes.capacity() as u64)
+                .resize(self.bytes.capacity() as u64)
                 .map_err(native_control_error)?;
         }
         Ok(())
@@ -2363,7 +2363,7 @@ fn decode_native_control_json<T: serde::de::DeserializeOwned>(
                         native_control_error(acyclic_fs::WorkError::Overflow.into())
                     })?;
                     return allocation
-                        .resize_retained(owned)
+                        .resize(owned)
                         .map_err(native_control_error);
                 }
                 _ => {}

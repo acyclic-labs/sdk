@@ -671,7 +671,7 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
                 let (additional, diagnostics) = recovery_conversion_quota(value_shape)?;
                 retained_owned = checked_quota(maximum_owned_bytes, additional)?;
                 custody
-                    .resize_retained(checked_quota(retained_owned, diagnostics)?)
+                    .resize(checked_quota(retained_owned, diagnostics)?)
                     .map_err(native_error)
             } else {
                 super::pi_root_provider::native_buffer_codec_charge(work, &mut custody, charge)
@@ -680,7 +680,7 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
     );
     match result {
         Ok(value) => {
-            custody.substitute(retained_owned).map_err(native_error)?;
+            custody.release(custody.bytes().checked_sub(retained_owned).ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))?).map_err(native_error)?;
             Ok((value, custody))
         }
         Err(Error::NativeDecode {

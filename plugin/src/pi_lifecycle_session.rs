@@ -119,7 +119,6 @@ impl PiSession {
             if &live.binding != self.binding(caller)?
                 || !live
                     .context
-                    .context()
                     .scope()
                     .grants()
                     .contains("operation:cancel")
