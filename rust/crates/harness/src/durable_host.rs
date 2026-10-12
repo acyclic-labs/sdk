@@ -4252,21 +4252,22 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self: &'a Arc<Self>,
         witness: &'a TaskAdmissionReadonlyWitness<P>,
         query: &'a Arc<crate::runtime::NativeTaskContext>,
-        claim: crate::filesystem::OriginalForkAllocationClaim,
+        claim: (crate::filesystem::AllocationClaim, crate::resource_preparation::ResourcePreparationRequest, acyclic_fs::NativeAllocation),
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (
         Arc<TaskJournalOwner<P>>,
         (crate::resource_preparation::ResourcePreparationRequest, acyclic_fs::NativeAllocation),
     )>> {
-        if !claim.matches_work(work) {
+        if !claim.2.matches_work(work) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "protected fork claim differs from its original allocation context" });
         }
+        let failed = |(_, _, custody), cause| Error::NativeWork { cause, custody: Some(custody) };
         let qualified = self.require_preparation_query_with_native_work(query, work)
             .and_then(|_| witness.require_query_with_native_work(query, work));
         if let Err(error) = qualified {
             return Err(match error {
-                Error::NativeWork { cause, .. } => claim.into_native_error(cause),
+                Error::NativeWork { cause, .. } => failed(claim, cause),
                 error => error,
             });
         }
@@ -4275,22 +4276,23 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let claim = pending.take().expect("funded original fork claim");
             async move {
                 let result: Result<Arc<TaskJournalOwner<P>>> = async {
+                    let origin = claim.0.task_origin.as_ref().expect("authenticated original fork origin");
                     witness.verify_query_with_native_work(query, work).await?;
                     witness.verify_preparation_origin_with_native_work(
-                        query, claim.request(), claim.origin(), work,
+                        query, &claim.1, origin, work,
                     )?;
                     let mut io = crate::store::history::native_work_io(work)
                         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                     let original = crate::distributed::original_reservation_proof_with_work(
                         &self.stream, &self.owner, &self.owner_scope, &self.verifier,
-                        witness.admission_operation(), &claim.origin().creation_fence,
+                        witness.admission_operation(), &origin.creation_fence,
                         &mut Some(&mut io),
                     ).await?;
                     let owner = self.journal_owner_with_work(
-                        witness.task(), std::borrow::Cow::Borrowed(&claim.origin().creation_fence),
+                        witness.task(), std::borrow::Cow::Borrowed(&origin.creation_fence),
                         Some(original), &mut Some(&mut io),
                     ).await?;
-                    if owner.original_admission_digest != claim.origin().admission_digest {
+                    if owner.original_admission_digest != origin.admission_digest {
                         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                             reason: "original Started admission differs from the protected fork claim" });
                     }
@@ -4300,15 +4302,24 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     owner.into_native_shared(work)
                 }.await;
                 match result {
-                    Ok(owner) => Ok((owner, claim.into_request()?)),
-                    Err(Error::NativeWork { cause, .. }) => Err(claim.into_native_error(cause)),
+                    Ok(owner) => {
+                        let (claim, request, mut custody) = claim;
+                        let retired = crate::filesystem::UploadRecord::logical_owned_bytes(&claim)?;
+                        drop(claim);
+                        if let Err(cause) = custody.release(retired) {
+                            drop(request);
+                            return Err(Error::NativeWork { cause, custody: Some(custody) });
+                        }
+                        Ok((owner, (request, custody)))
+                    },
+                    Err(Error::NativeWork { cause, .. }) => Err(failed(claim, cause)),
                     Err(error) => Err(error),
                 }
             }
         });
         match bundle {
-            Err(Error::NativeWork { cause, .. }) => Err(pending.take()
-                .expect("unfunded original fork claim").into_native_error(cause)),
+            Err(Error::NativeWork { cause, .. }) => Err(failed(pending.take()
+                .expect("unfunded original fork claim"), cause)),
             result => result,
         }
     }
