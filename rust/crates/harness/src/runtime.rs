@@ -7437,7 +7437,7 @@ impl TaskContext {
             operation_id: self.task_id,
             step: u32::try_from(step)
                 .map_err(|_| Error::Invalid("model step exceeds portable bound".into()))?,
-            request_digest: request.manifest().request_digest,
+            request_digest: request.request_digest(),
         };
         let mut stream = binding.provider.generate(request, dispatch);
         loop {
@@ -10307,7 +10307,7 @@ mod tests {
             request: &crate::model::PreparedModelRequest,
         ) -> Result<crate::context::ModelTokenCount> {
             Ok(crate::context::ModelTokenCount {
-                request_digest: request.manifest().request_digest,
+                request_digest: request.request_digest(),
                 fixed_tokens: u32::try_from(request.bytes().len())
                     .map_err(|_| Error::Invalid("fixture token count overflow".into()))?,
                 message_tokens: vec![0; request.request().messages.len()],
@@ -10319,7 +10319,7 @@ mod tests {
             request: crate::model::PreparedModelRequest,
             dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-            assert_eq!(dispatch.request_digest, request.manifest().request_digest);
+            assert_eq!(dispatch.request_digest, request.request_digest());
             let request = request.request().clone();
             let Ok(mut requests) = self.requests.lock() else {
                 return Box::pin(futures::stream::iter([Err(Error::Storage(

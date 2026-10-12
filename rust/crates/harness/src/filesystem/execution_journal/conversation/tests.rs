@@ -24,7 +24,7 @@ impl ModelProvider for CountedModel {
     }
     fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
         Ok(ModelTokenCount {
-            request_digest: request.manifest().request_digest,
+            request_digest: request.request_digest(),
             fixed_tokens: 512,
             message_tokens: vec![512; request.request().messages.len()],
         })
@@ -32,7 +32,7 @@ impl ModelProvider for CountedModel {
     fn generate<'a>(&'a self, request: PreparedModelRequest, dispatch: ModelDispatch)
         -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>>
     {
-        assert_eq!(request.manifest().request_digest, dispatch.request_digest);
+        assert_eq!(request.request_digest(), dispatch.request_digest);
         assert!(request.request().messages.len() <= 8);
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(futures::stream::iter([

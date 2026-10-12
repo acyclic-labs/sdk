@@ -216,7 +216,7 @@ impl ModelProvider for InterruptedModel {
             .map_err(|error| Error::Invalid(error.to_string()))?
             .len();
         Ok(acyclic_harness::context::ModelTokenCount {
-            request_digest: request.manifest().request_digest,
+            request_digest: request.request_digest(),
             fixed_tokens: u32::try_from(fixed)
                 .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
             message_tokens,

@@ -496,7 +496,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
         Limits::default(),
         None,
     )?;
-    let request_digest = prepared.manifest().request_digest;
+    let request_digest = prepared.request_digest();
     let paged_request = journal_a
         .stage(
             paged,
