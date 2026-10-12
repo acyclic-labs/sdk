@@ -957,8 +957,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         before_publication: F,
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError>
     where
-        F: FnMut(crate::WorkBudget) -> Fut + StorageFuture,
-        Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
+        F: FnMut(crate::WorkBudget) -> Fut + ProviderTask,
+        Fut: Future<Output = crate::FsResult<()>> + ProviderTask,
     {
         self.restore_path_records(
             source, paths, if_current, idempotency_key, permit, budget, cancellation,
