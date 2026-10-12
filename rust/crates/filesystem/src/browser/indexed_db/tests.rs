@@ -494,7 +494,35 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
         second_commit.clone(),
     )
     .await?;
-    verify_fencing(&store, authority_id, &cancellation, second_commit).await
+    verify_fencing(&store, authority_id, &cancellation, second_commit).await?;
+    let budget = WorkBudget {
+        durability_operations: 1,
+        ..WorkBudget::UNBOUNDED
+    };
+    let mut work = crate::AuthorityWork::new(budget, &cancellation);
+    let head = AsyncAuthorityStore::head(&store, authority_id, &mut work)
+        .await
+        .map_err(js_error)?;
+    let FenceOutcome::Advanced(next) =
+        AsyncAuthorityStore::fence(&store, authority_id, head, &mut work)
+            .await
+            .map_err(js_error)?
+    else {
+        panic!("first fence must advance")
+    };
+    assert!(matches!(
+        AsyncAuthorityStore::fence(&store, authority_id, next, &mut work).await,
+        Err(AuthorityStoreError::Work(_))
+    ));
+    assert_eq!(work.spent().durability_operations, 1);
+    let mut verify = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    assert_eq!(
+        AsyncAuthorityStore::head(&store, authority_id, &mut verify)
+            .await
+            .map_err(js_error)?,
+        next
+    );
+    Ok(())
 }
 
 #[wasm_bindgen_test]

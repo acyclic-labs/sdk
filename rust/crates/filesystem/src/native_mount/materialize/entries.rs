@@ -9,7 +9,7 @@ pub(super) async fn materialize_entry<A, O, E, F, Fut>(
     reader: &PinnedReader<A, O>,
     host_root: &Arc<(HostRoot, crate::NativeAllocation)>,
     path: &NamespacePath,
-    host_path: &Arc<(GenerationHostPath, crate::NativeAllocation)>,
+    host_path: &Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
     directory: Option<Arc<(NamespacePath, crate::NativeAllocation)>>,
     file_id: FileId,
     kind: FileKind,
@@ -17,14 +17,14 @@ pub(super) async fn materialize_entry<A, O, E, F, Fut>(
     #[cfg(any(target_os = "macos", windows))] metadata_id: ObjectId,
     options: &MaterializeOptions,
     cancellation: &CancellationToken,
-    known_files: &mut Vec<(FileId, Arc<(GenerationHostPath, crate::NativeAllocation)>)>,
+    known_files: &mut Vec<(FileId, Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>)>,
     #[cfg(any(target_os = "macos", windows))] known_payloads: &mut Vec<(
         (u64, ObjectId, ObjectId),
-        Arc<(GenerationHostPath, crate::NativeAllocation)>,
+        Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
     )>,
     pending: &mut Vec<(
         Arc<(NamespacePath, crate::NativeAllocation)>,
-        Arc<(GenerationHostPath, crate::NativeAllocation)>,
+        Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
     )>,
     receipt: &mut GenerationReceipt,
     mode: MaterializeMode,
@@ -59,7 +59,22 @@ where
         })?;
         if *identity == file_id {
             generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-            receipt.run(|work| host_path.0.hard_link(&host_root.0, &existing.0, work))?;
+            receipt.run(|work| {
+                #[cfg(unix)]
+                {
+                    host_root.0.hard_link(
+                        super::work::host_path(&existing.0),
+                        super::work::host_path(&host_path.0),
+                        work,
+                    )
+                }
+                #[cfg(windows)]
+                {
+                    host_root
+                        .0
+                        .hard_link_wide_measured(&existing.0, &host_path.0, work)
+                }
+            })?;
             generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
             receipt.value.files = receipt
                 .value
@@ -75,7 +90,18 @@ where
     match (kind, payload) {
         (FileKind::Directory, FilePayload::Directory { .. }) => {
             generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-            receipt.run(|work| host_path.0.create_dir(&host_root.0, work))?;
+            receipt.run(|work| {
+                #[cfg(unix)]
+                {
+                    host_root
+                        .0
+                        .create_dir(super::work::host_path(&host_path.0), work)
+                }
+                #[cfg(windows)]
+                {
+                    host_root.0.create_dir_wide_measured(&host_path.0, work)
+                }
+            })?;
             generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
             let directory = directory.ok_or(MaterializeError::InvalidOptions)?;
             receipt.value.directories = receipt
@@ -146,8 +172,26 @@ where
                     payload_known = true;
                     generation_action(before_effect, NativeMaterializationActionPhase::Before)
                         .await?;
-                    cloned = receipt
-                        .run(|work| host_path.0.clone_file(&host_root.0, &source.0, work))?;
+                    cloned = receipt.run(|work| {
+                        #[cfg(target_os = "macos")]
+                        {
+                            host_root.0.clone_file_from(
+                                &host_root.0,
+                                super::work::host_path(&source.0),
+                                super::work::host_path(&host_path.0),
+                                work,
+                            )
+                        }
+                        #[cfg(windows)]
+                        {
+                            host_root.0.clone_file_from_wide_measured(
+                                &host_root.0,
+                                &source.0,
+                                &host_path.0,
+                                work,
+                            )
+                        }
+                    })?;
                     generation_action(before_effect, NativeMaterializationActionPhase::Completed)
                         .await?;
                     break;
@@ -208,14 +252,18 @@ where
                 if mode == MaterializeMode::DurableOutput {
                     #[cfg(target_os = "macos")]
                     let file = receipt
-                        .run(|work| host_root.0.open_file(host_path.0.path(), work))?
+                        .run(|work| {
+                            host_root
+                                .0
+                                .open_file(super::work::host_path(&host_path.0), work)
+                        })?
                         .into_std();
                     #[cfg(windows)]
                     let file = receipt
                         .run(|work| {
                             host_root
                                 .0
-                                .open_file_positional_wide_with_work(&host_path.0.units, work)
+                                .open_file_positional_wide_with_work(&host_path.0, work)
                         })?
                         .into_std();
                     let meter = receipt.custody.work().runtime_meter();
