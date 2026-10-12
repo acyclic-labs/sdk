@@ -899,7 +899,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         };
         let resolver = self.native_resolver(context, owner, work)?;
         super::recursive::restore_recursive_fork_source_with_native_work(
-            Arc::clone(&self.filesystem), &self.stream, reducer, &verifier, &caller.owner.scope,
+            Arc::clone(&self.filesystem), &self.stream.provider, reducer, &verifier, &caller.owner.scope,
             &caller.project, &self.config.stream_provider, request, self.config.history_limits,
             selected.as_ref().map(|selected| &selected.0), resolver, cancellation, work,
         ).await
@@ -1122,7 +1122,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             caller.owner.issuer().verifier(&mut observer)?
         };
         let source = super::recursive::restore_recursive_fork_source_with_native_work(
-            Arc::clone(&self.filesystem), &self.stream, parent.0.into_reducer(), &verifier, &caller.owner.scope,
+            Arc::clone(&self.filesystem), &self.stream.provider, parent.0.into_reducer(), &verifier, &caller.owner.scope,
             &caller.project, &self.config.stream_provider, request, self.config.history_limits,
             selected.as_ref().map(|selected| &selected.0), resolver, cancellation, work,
         ).await?;
@@ -1508,7 +1508,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         };
         let request_guard = io.take_native_custody(copied_request.1)?;
         let source = super::recursive::restore_recursive_fork_source_with_native_work(
-            Arc::clone(&self.filesystem), &self.stream, restored, &verifier, &caller.owner.scope,
+            Arc::clone(&self.filesystem), &self.stream.provider, restored, &verifier, &caller.owner.scope,
             &caller.project, &self.config.stream_provider, (copied_request.0, request_guard),
             self.config.history_limits, token.project_source(), resolver, cancellation, work,
         ).await?;

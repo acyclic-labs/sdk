@@ -1355,8 +1355,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                             if seed.summary.is_none() {
                                 return Err(interaction_host::interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid, "inherited file is not pinned to the selected private generation"));
                             }
-                            let selected = crate::conversation::FileRef::new_with_io(file.volume(), file.path(), &version,
-                                file.descriptor(), file.display_name(), Some(&io))?;
+                            let selected = { let io = Some(&io); let descriptor = file.descriptor(); crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((file.volume()).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(file.path(), io)?, crate::filesystem::fork_preparer_io::clone_text(&version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text(file.display_name(), io)?, work)) }?;
                             let original = self.host.read_pinned_io(file, self.maximum_inherited_bytes, Some(&io)).await?;
                             let final_bytes = self.host.read_pinned_io(&selected, self.maximum_inherited_bytes, Some(&io)).await?;
                             if original != final_bytes {
@@ -2634,8 +2633,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             fork_preparer_io::retain(&committed, Some(io)).await?;
         } else { self.host.retain_generation(&workspace, &generation).await?; }
         let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
-        let reference = crate::conversation::FileRef::new_with_io(child_private, path,
-            &version, &descriptor, "inherited-conversation.json", io)?;
+        let reference = { let io = io; let descriptor = &descriptor; crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((child_private).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(path, io)?, crate::filesystem::fork_preparer_io::clone_text(&version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text("inherited-conversation.json", io)?, work)) }?;
         let committed = self.host.read_pinned_io(&reference, maximum_bytes, io).await?;
         if committed.as_ref() != bytes.as_ref() {
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Conflict, "inherited-context retry identity belongs to different prefix"));
@@ -3552,8 +3550,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
         }
         let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
-        let reference = crate::conversation::FileRef::new_with_io(volume, recorded.path(),
-            &version, recorded.descriptor(), recorded.display_name(), io)?;
+        let reference = { let io = io; let descriptor = recorded.descriptor(); crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((volume).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(recorded.path(), io)?, crate::filesystem::fork_preparer_io::clone_text(&version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text(recorded.display_name(), io)?, work)) }?;
         self.read_pinned_io(&reference, maximum_bytes, io).await?;
         Ok(Some(reference))
     }
@@ -3784,7 +3781,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             if indexed.as_ref() != metadata_bytes.as_slice() {
                 return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Conflict, "upload metadata index does not match"));
             }
-            let reference = crate::conversation::FileRef::new_with_io(volume, path, &version, &descriptor, display_name, io)?;
+            let reference = { let io = io; let descriptor = &descriptor; crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((volume).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(path, io)?, crate::filesystem::fork_preparer_io::clone_text(&version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text(display_name, io)?, work)) }?;
             let committed = self
                 .read_pinned_io(&reference, maximum_bytes, io)
                 .await?;
@@ -3919,7 +3916,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None => { generation.pin(format!("harness-generation-{version}")).await.map_err(map_error)?; }
             }
         }
-        let reference = crate::conversation::FileRef::new_with_io(volume, path, &version, &descriptor, display_name, io)?;
+        let reference = { let io = io; let descriptor = &descriptor; crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((volume).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(path, io)?, crate::filesystem::fork_preparer_io::clone_text(&version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text(display_name, io)?, work)) }?;
         self.read_pinned_io(&reference, maximum_bytes, io).await?;
         Ok(reference)
     }
