@@ -1,5 +1,6 @@
 //! Bounded authenticated named-attribute lookup.
 
+use crate::kernel::Child;
 use super::allocation::{AllocationError, AllocationLedger, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 use super::attribute::attribute_page_decode_shape;
 use super::attribute_mutation::AttributeFormat;
@@ -9,7 +10,7 @@ use super::persistent_btree::within_bounds;
 use super::persistent_point::{Owned, retire_allocation, split_allocation};
 use super::search::{counted_binary_search, counted_partition_point};
 use super::{
-    AttributeChild, AttributeEntry, AttributeName, AttributePage, CanonicalDecodeError,
+    AttributeEntry, AttributeName, AttributePage, CanonicalDecodeError,
     DecodeLimits, decode_attribute_page,
 };
 use crate::async_storage::AsyncObjectStore;
@@ -236,15 +237,15 @@ impl RoutingState {
 }
 
 fn advance_internal(
-    children: Vec<AttributeChild>,
+    children: Vec<Child<AttributeName>>,
     name: &AttributeName,
     routing: &mut RoutingState,
     decoded_bytes: u64,
     mut allocation: KernelOwnedAllocation,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<ObjectId, crate::FsError> {
-    let first = children.first().map(|child| &child.first_name);
-    let last = children.last().map(|child| &child.first_name);
+    let first = children.first().map(|child| &child.first);
+    let last = children.last().map(|child| &child.first);
     let step = (|| -> Result<_, crate::FsError> {
         if !within_bounds(first, last, routing.lower.as_ref().map(|bound| &bound.value), routing.upper.as_ref().map(|bound| &bound.value)) {
             return Err(AttributeLookupError::ChildBoundsMismatch.into());
@@ -252,9 +253,9 @@ fn advance_internal(
         let partition = upper_bound_children_with_accounting(&children, name, accounting)?;
         let selected = partition.saturating_sub(1);
         let child = children.get(selected).ok_or(AttributeLookupError::InvalidRouting)?;
-        let lower_bytes = routing_name_bytes(&child.first_name, &allocation);
+        let lower_bytes = routing_name_bytes(&child.first, &allocation);
         let upper_bytes = children.get(selected + 1)
-            .map(|next| routing_name_bytes(&next.first_name, &allocation));
+            .map(|next| routing_name_bytes(&next.first, &allocation));
         let retained = lower_bytes.checked_add(upper_bytes.unwrap_or(0)).ok_or(WorkError::Overflow)?;
         decoded_bytes.checked_sub(retained).ok_or(WorkError::Overflow)?;
         Ok((selected, lower_bytes, upper_bytes, retained))
@@ -269,10 +270,10 @@ fn advance_internal(
     };
     let mut selected_children = children.into_iter().skip(selected);
     let child = selected_children.next().ok_or(AttributeLookupError::InvalidRouting)?;
-    let next_upper = selected_children.next().map(|next| next.first_name);
+    let next_upper = selected_children.next().map(|next| next.first);
     drop(selected_children);
     let next_page = child.page;
-    let mut lower = Owned::new(child.first_name, KernelOwnedAllocation::Standalone, lower_bytes);
+    let mut lower = Owned::new(child.first, KernelOwnedAllocation::Standalone, lower_bytes);
     let mut upper = next_upper.zip(upper_bytes)
         .map(|(name, bytes)| Owned::new(name, KernelOwnedAllocation::Standalone, bytes));
     lower.allocation = split_allocation(&mut allocation, lower_bytes)?;
@@ -337,7 +338,7 @@ async fn read_page<S: AsyncObjectStore>(
                 })?.into_read();
             let mut scope = super::file_read::OriginalReadAccounting::new(accounting)?;
             let decoded = super::attribute::decode_attribute_page(&read, limits, &mut |step| -> Result<(), crate::FsError> { (&mut |step| scope.observe(step)
-                    .map_err(super::file_read::ReadDecodeError::into_original_fs_error))(step) }, crate::kernel::AttributePage::Leaf, crate::kernel::AttributePage::Internal, |first_name, page| crate::kernel::AttributeChild { first_name, page }, |child| &child.first_name);
+                    .map_err(super::file_read::ReadDecodeError::into_original_fs_error))(step) });
             let allocation = scope.into_allocation();
             drop(read);
             match decoded {
@@ -418,7 +419,7 @@ async fn read_page_standalone<S: AsyncObjectStore>(
     *work = decoded_work;
     let container_bytes = match shape.kind {
         DecodedPageKind::Leaf => shape.items.checked_mul(size_of::<AttributeEntry>()),
-        DecodedPageKind::Internal => shape.items.checked_mul(size_of::<AttributeChild>()),
+        DecodedPageKind::Internal => shape.items.checked_mul(size_of::<Child<AttributeName>>()),
     }
     .map(usize_to_u64)
     .ok_or_else(|| failed(AttributeLookupError::AllocationFailed, *work))?;
@@ -428,7 +429,7 @@ async fn read_page_standalone<S: AsyncObjectStore>(
     allocations
         .claim_bytes(logical_bytes, u64::from(logical_bytes != 0), work, budget)
         .map_err(|error| failed(map_allocation(error), *work))?;
-    let page = decode_attribute_page(&receipt.value, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::AttributePage::Leaf, crate::kernel::AttributePage::Internal, |first_name, page| crate::kernel::AttributeChild { first_name, page }, |child| &child.first_name)
+    let page = decode_attribute_page(&receipt.value, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))
         .map_err(|error| failed(error.into(), *work))?;
     allocations
         .release(retained_bytes)
@@ -464,8 +465,8 @@ fn search_entries(entries: &[AttributeEntry], name: &AttributeName) -> (Result<u
     counted_binary_search(entries, |entry| entry.name.cmp(name))
 }
 
-fn upper_bound_children(children: &[AttributeChild], name: &AttributeName) -> (usize, u64) {
-    counted_partition_point(children, |child| child.first_name <= *name)
+fn upper_bound_children(children: &[Child<AttributeName>], name: &AttributeName) -> (usize, u64) {
+    counted_partition_point(children, |child| child.first <= *name)
 }
 
 fn search_entries_with_accounting(
@@ -481,11 +482,11 @@ fn search_entries_with_accounting(
 }
 
 fn upper_bound_children_with_accounting(
-    children: &[AttributeChild], name: &AttributeName, accounting: &mut KernelAccounting<'_>,
+    children: &[Child<AttributeName>], name: &AttributeName, accounting: &mut KernelAccounting<'_>,
 ) -> Result<usize, crate::FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     if accounting.native_work().is_some() {
-        return super::search::partition_point_with_accounting(children, accounting, |child| child.first_name <= *name);
+        return super::search::partition_point_with_accounting(children, accounting, |child| child.first <= *name);
     }
     let (partition, comparisons) = upper_bound_children(children, name);
     accounting.charge(WorkCounters { items_examined: comparisons, ..WorkCounters::UNCHARGED })?;

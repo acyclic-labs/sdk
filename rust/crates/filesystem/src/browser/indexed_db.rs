@@ -71,7 +71,6 @@ impl std::io::Write for WindowEncoder {
     }
 }
 
-#[derive(Clone, Copy)]
 struct ObjectBatchState {
     work: WorkCounters,
     retained: u64,
@@ -271,10 +270,6 @@ impl IndexedDbObjectStore {
                 ..WorkCounters::default()
             })
             .map_err(|error| ObjectFailure::new(error.into(), state.work))?;
-        state.work.peak_allocation_bytes = state
-            .work
-            .peak_allocation_bytes
-            .max(state.retained.saturating_add(OBJECT_KEY_BYTES));
         state
             .work
             .verify(state.budget)
@@ -328,10 +323,6 @@ impl IndexedDbObjectStore {
                 ..WorkCounters::default()
             })
             .map_err(|error| ObjectFailure::new(error.into(), state.work))?;
-        state.work.peak_allocation_bytes = state
-            .work
-            .peak_allocation_bytes
-            .max(state.retained.saturating_add(transient));
         state
             .work
             .verify(state.budget)
@@ -341,7 +332,6 @@ impl IndexedDbObjectStore {
             .retained
             .checked_add(length)
             .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), state.work))?;
-        state.work.peak_allocation_bytes = state.work.peak_allocation_bytes.max(state.retained);
         Ok(value)
     }
 
@@ -507,7 +497,6 @@ pub struct IndexedDbAuthorityStore {
 
 struct PreparedAppend {
     durable: DurableCommit,
-    next_head: Head,
     encoded_commit: Vec<u8>,
     encoded_operation: Vec<u8>,
     encoded_head: Vec<u8>,
@@ -961,21 +950,15 @@ impl IndexedDbAuthorityStore {
             digest,
             payload: commit.payload,
         };
-        let next_head = Head {
-            epoch,
-            sequence,
-            digest,
-        };
         let encoded_commit = encode_commit(&durable).map_err(|error| Self::backend(error, work))?;
         Ok(PreparedAppend {
             encoded_operation: encode_operation(OperationRecord {
                 sequence,
                 fingerprint: durable.fingerprint,
             }),
-            encoded_head: encode_head(next_head),
+            encoded_head: encode_head(Head { epoch, sequence, digest }),
             encoded_commit,
             durable,
-            next_head,
             work: write_work,
         })
     }
@@ -1009,7 +992,7 @@ impl IndexedDbAuthorityStore {
             let commits = transaction
                 .object_store(AUTHORITY_COMMITS)
                 .map_err(|error| Self::backend(error, prepared.work))?;
-            Self::write_record(&commits, &commit_key(authority_id, prepared.next_head.sequence), JsValue::from(commit_blob), false, cancellation, prepared.work)
+            Self::write_record(&commits, &commit_key(authority_id, prepared.durable.sequence), JsValue::from(commit_blob), false, cancellation, prepared.work)
             .await?;
         }
         {

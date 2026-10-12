@@ -331,7 +331,7 @@ impl NativeSession {
         caller_lease: &WorkLease,
         request: ResourcePreparationRequest,
     ) -> Result<Admission<RuntimeTask<ForkReport>>> {
-        request.validate()?;
+        request.validate(&mut None)?;
         if request.child.parent != Some(parent) {
             return Err(Error::Unauthorized("preparation child belongs to a different caller".into()));
         }
@@ -427,7 +427,7 @@ impl NativeSession {
         }
         let input: ResourcePreparationRequest = serde_json::from_value(admission.input)
             .map_err(|error| Error::Invalid(format!("retained preparation input: {error}")))?;
-        input.validate()?;
+        input.validate(&mut None)?;
         let Some(acyclic_harness::Outcome::Succeeded(value)) = self.runtime.task_host().outcome(preparation).await? else {
             return Err(Error::Conflict("preparation has no authoritative successful report".into()));
         };
