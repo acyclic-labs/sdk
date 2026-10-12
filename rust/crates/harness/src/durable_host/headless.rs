@@ -97,7 +97,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let mut snapshots = Vec::new();
         for proof in &admission.resource_proofs {
             if let Some(io) = quota.work().as_deref_mut() {
-                io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             let (preparation, retained) = self
                 .read_retained_admission_counted(
@@ -151,7 +151,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
             for content in &receipt.content {
                 if let Some(io) = quota.work().as_deref_mut() {
-                    io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
                 }
                 if !matches!(content.volume.class(), VolumeClass::Project | VolumeClass::AgentPrivate) {
                     continue;

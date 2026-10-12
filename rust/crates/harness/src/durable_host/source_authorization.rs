@@ -220,7 +220,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 Some(parent) => {
                     operation = parent.operation_id;
                     if let Some(io) = work.as_deref_mut() {
-                        io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
                     }
                     if operation == anchor {
                         return Err(admission_boundary(
@@ -416,7 +416,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .source_admission(parent, &mut budget, quota.work())
             .await?;
         quota.adopt(retained)?;
-        if crate::contract::canonical_json_digest(
+        if crate::executor::json::canonical_json_digest(
             &caller,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             quota.work(),

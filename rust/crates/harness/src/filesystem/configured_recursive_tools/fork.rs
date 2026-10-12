@@ -132,7 +132,7 @@ where
                 )?;
                 let bytes_hold = observer.guard_bytes(&bytes)?;
                 let path = crate::executor::with_history_io(io, |work| {
-                    crate::contract::preparation_format(
+                    crate::executor::preparation_format(
                         format_args!(
                             "recursive-tools/{}/source-checkpoint.json",
                             context.operation_id()

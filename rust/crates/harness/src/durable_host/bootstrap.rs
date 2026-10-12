@@ -33,7 +33,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<crate::AgentId> {
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
-            io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
         }
         if !self.input_grants.contains(capability::FORK_PUBLISH) {
             return Err(admission_boundary(
@@ -315,7 +315,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let mut io = crate::filesystem::PreparationIo::from_native_work(work)
             .map(crate::store::HistoryWork::new)?;
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             root,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut Some(&mut io),
@@ -502,7 +502,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "bootstrap binding differs from its canonical original root reservation",
             ));
         }
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             root,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,

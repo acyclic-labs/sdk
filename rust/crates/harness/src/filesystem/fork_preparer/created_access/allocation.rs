@@ -143,7 +143,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             hex::encode_to_slice(root.original_task().into_bytes(), &mut key_bytes).map_err(|_| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "Root allocation identity encoding failed" })?;
             let suffix = std::str::from_utf8(&key_bytes).map_err(|_| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "Root allocation identity is not ASCII" })?;
             let create = IdempotencyKey::new(crate::executor::with_history_io(Some(&io), |work|
-                crate::contract::preparation_format(format_args!("root-bootstrap-journal:{suffix}"), work))?)?;
+                crate::executor::preparation_format(format_args!("root-bootstrap-journal:{suffix}"), work))?)?;
             let lifecycle = if self.host.filesystem.capabilities().durable {
                 acyclic_fs::Lifecycle::Durable
             } else {
@@ -197,7 +197,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             } else {
                 let observed = bounded_io::resolve(&self.host, &journal, Some(&io)).await?;
                 let key = IdempotencyKey::new(crate::executor::with_history_io(Some(&io), |work|
-                    crate::contract::preparation_format(format_args!("root-bootstrap-claim:{suffix}"), work))?)?;
+                    crate::executor::preparation_format(format_args!("root-bootstrap-claim:{suffix}"), work))?)?;
                 let path = crate::executor::stock_string_copy("/root-bootstrap.json", Some(&io))?;
                 let mutations = [WorkspaceMutation::PutFile { path, bytes: record }];
                 let outcome = bounded_io::apply_generation(&self.host, &journal, Some(&observed.generation),
@@ -234,7 +234,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             io.absorb_native_custody(generation_custody)?;
             let snapshot = if let Some(snapshot) = native_snapshot {
                 let remaining = io.remaining()?;
-                let value = crate::contract::json_value_bounded(&snapshot, crate::contract::JsonBounds {
+                let value = crate::executor::json::json_value_bounded(&snapshot, crate::executor::json::JsonBounds {
                     maximum_bytes: remaining.bytes_encoded, maximum_items: remaining.items_examined, maximum_depth: 32,
                 }, Some(crate::wire::ErrorCode::Invalid), &mut |charge| io.codec_charge(charge, true))?;
                 io.release(std::mem::size_of::<serde_json::Value>() as u64)?;

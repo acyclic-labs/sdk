@@ -188,8 +188,8 @@ impl HistoryIo for HistoryWork {
     fn admit_encoding(&self, bytes: u64) -> Result<()> {
         HistoryIo::admit_encoding(&&self.io, bytes)
     }
-    fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()> {
-        use crate::contract::JsonCodecCharge;
+    fn codec_charge(&mut self, charge: crate::executor::json::JsonCodecCharge) -> Result<()> {
+        use crate::executor::json::JsonCodecCharge;
         if let JsonCodecCharge::Release { bytes } = charge {
             return self.release_owned(bytes);
         }

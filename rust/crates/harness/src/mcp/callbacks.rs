@@ -70,7 +70,7 @@ impl McpCallbackRequest {
         }
         let id = self.message.get("id").filter(|id| id.is_string() || id.is_i64())
             .ok_or_else(|| Error::Invalid("invalid MCP callback ID".into()))?;
-        let digest = crate::contract::canonical_json_digest(&("harness/mcp-callback/v1", self.parent, &self.policy.server, &self.policy.revision, id), u64::MAX, &mut None)?;
+        let digest = crate::executor::json::canonical_json_digest(&("harness/mcp-callback/v1", self.parent, &self.policy.server, &self.policy.revision, id), u64::MAX, &mut None)?;
         let mut bytes = [0;16];
         for (byte, source) in bytes.iter_mut().zip(digest) { *byte = source; }
         Ok(OperationId::from_bytes(bytes))
@@ -84,7 +84,7 @@ impl McpCallbackRequest {
             Some("sampling/createMessage") if self.policy.sampling => validate_sampling(params),
             Some("elicitation/create") if self.policy.elicitation => {
                 let _: rmcp::model::ElicitRequestParams = rmcp::model::ElicitRequestParams::deserialize(params).map_err(|error| Error::Invalid(error.to_string()))?;
-                if let Some(schema) = params.get("requestedSchema") { crate::contract::compile_json_schema(schema, "MCP elicitation", &mut None)?; }
+                if let Some(schema) = params.get("requestedSchema") { crate::executor::compile_json_schema(schema, "MCP elicitation", &mut None)?; }
                 Ok(())
             }
             _ => Err(Error::Unsupported("MCP callback is not enabled by pinned policy".into())),
@@ -105,7 +105,7 @@ impl McpCallbackRequest {
                     && let Some(schema) = self.message.pointer("/params/requestedSchema")
                 {
                     let content = response.result.get("content").ok_or_else(|| Error::Invalid("accepted MCP form has no content".into()))?;
-                    crate::contract::validate_json_schema_value(schema, content, "MCP elicitation answer", &mut None)?;
+                    crate::executor::validate_json_schema_value(schema, content, "MCP elicitation answer", &mut None)?;
                 }
                 Ok(())
             }
@@ -150,7 +150,7 @@ impl McpRuntimeCallbacks {
         Ok(Self { executor: executor.with_tool_registry(crate::tool::ToolRegistry::default()), journal, model_name, sampling })
     }
     async fn run(&self, context: ToolContext, request: &McpCallbackRequest) -> Result<Value> {
-        crate::contract::json_byte_length(request, context.scope().limits().file_bytes, &mut None).map(|_| ())?;
+        crate::executor::json::json_byte_length(request, context.scope().limits().file_bytes, &mut None).map(|_| ())?;
         request.validate()?;
         if request.parent != context.operation_id() { return Err(Error::Unauthorized("MCP callback parent differs from admitted call".into())); }
         let operation = request.operation()?;
@@ -270,7 +270,7 @@ impl SamplingRequest {
                         let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| Error::Invalid("MCP media base64 invalid".into()))?;
                         if bytes.len() as u64 > maximum_bytes { return Err(Error::Invalid("MCP media exceeds selected byte allowance".into())); }
                         let mime = block.get("mimeType").and_then(Value::as_str).ok_or_else(|| Error::Invalid("MCP media MIME type absent".into()))?;
-                        let digest = crate::contract::canonical_json_digest(&("harness/mcp-sampling-media/v1", operation, message_index, block_index), u64::MAX, &mut None)?;
+                        let digest = crate::executor::json::canonical_json_digest(&("harness/mcp-sampling-media/v1", operation, message_index, block_index), u64::MAX, &mut None)?;
                         let mut identity = [0;16];
                         for (byte, source) in identity.iter_mut().zip(digest) { *byte = source; }
                         let path = format!("mcp/{operation}/sampling/{message_index}-{block_index}");

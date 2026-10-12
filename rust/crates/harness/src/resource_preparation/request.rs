@@ -50,7 +50,7 @@ impl ResourcePreparationRequest {
             self.provider.logical_owned_bytes()?,
             self.child.logical_owned_bytes()?,
             self.creation_grant.capacity() as u64,
-            crate::contract::json_value_logical_owned_bytes(&self.payload)?,
+            crate::executor::json::json_value_logical_owned_bytes(&self.payload)?,
             vector_bytes(&self.input_files, FileRef::logical_owned_bytes)?,
             self.source_checkpoint
                 .as_ref()

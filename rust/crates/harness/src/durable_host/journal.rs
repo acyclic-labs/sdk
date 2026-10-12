@@ -229,7 +229,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         if let crate::workflow::MachineStatus::Completed { value } = &proof.1.status {
             crate::executor::with_history_io(io, |work| {
-                crate::contract::validate_json_schema_value(
+                crate::executor::validate_json_schema_value(
                     &self.output_schema,
                     value,
                     "task output",
@@ -521,7 +521,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             "workflows"
         };
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let text = crate::contract::preparation_format(
+        let text = crate::executor::preparation_format(
             format_args!("harness/v2/{class}/{}", self.operation_id()),
             quota.work(),
         )?;
@@ -595,7 +595,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let encoded_fence = crate::store::history::canonical_bytes_for_bounds_with_work(
             &self.fence,
-            crate::contract::JsonBounds {
+            crate::executor::json::JsonBounds {
                 maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
                 maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64,
                 maximum_depth: 256,

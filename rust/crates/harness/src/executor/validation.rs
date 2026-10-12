@@ -1,6 +1,12 @@
-use super::*;
+//! Schema admission and diagnostic formatting on the invocation ledger.
+use crate::executor::json::{
+    JsonBounds, JsonCodecCharge, JsonValueSchema, json_owned_value_shape_bounded,
+};
 use crate::store::history::HistoryIo;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::wire::ErrorCode;
 use crate::wire_codec::CodecQuota;
+use crate::{Error, Result};
 use std::sync::Arc;
 
 /// Compiles a schema under the optional original ledger.
@@ -9,6 +15,33 @@ pub(crate) fn compile_json_schema(
     label: &str,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Arc<jsonschema::Validator>> {
+    if work.is_none() {
+        use std::sync::{Arc, Mutex, PoisonError};
+        type Cache = std::collections::BTreeMap<[u8; 32], Arc<jsonschema::Validator>>;
+        static CACHE: Mutex<Cache> = Mutex::new(Cache::new());
+        let key = *blake3::hash(
+            &serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?,
+        )
+        .as_bytes();
+        let cached = CACHE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+            .cloned();
+        if let Some(validator) = cached {
+            return Ok(validator);
+        }
+        let validator = Arc::new(
+            jsonschema::validator_for(schema)
+                .map_err(|error| Error::Invalid(format!("invalid {label} schema: {error}")))?,
+        );
+        let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        cache.insert(key, Arc::clone(&validator));
+        return Ok(validator);
+    }
     let mut scope = CodecQuota::new(work, 0)?;
     admit_schema_value(schema, &mut scope)?;
     compile_validator(schema, label, &mut scope)
@@ -21,6 +54,11 @@ pub(crate) fn validate_json_schema_value(
     label: &str,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
+    if work.is_none() {
+        return compile_json_schema(schema, label, work)?
+            .validate(value)
+            .map_err(|error| Error::Invalid(format!("{label} failed validation: {error}")));
+    }
     let mut scope = CodecQuota::new(work, 0)?;
     admit_schema_value(schema, &mut scope)?;
     let validator = compile_validator(schema, label, &mut scope)?;
@@ -144,4 +182,61 @@ fn schema_error(
     }
     preparation_format(format_args!("{context}: {source}"), scope.work())
         .map_or_else(|error| error, Error::Invalid)
+}
+
+pub(crate) fn preparation_format(
+    message: std::fmt::Arguments<'_>,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<String> {
+    let Some(work) = work.as_deref_mut() else {
+        return Ok(message.to_string());
+    };
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(native) = work.original_native_work() {
+        let (text, custody) = native.display(&message)?;
+        work.absorb_native_custody(custody)?;
+        return Ok(text);
+    }
+    struct Diagnostic<'a> {
+        text: String,
+        work: &'a mut dyn crate::store::history::HistoryIo,
+        error: Option<Error>,
+    }
+    impl std::fmt::Write for Diagnostic<'_> {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            let result = (|| -> Result<()> {
+                let length = self
+                    .text
+                    .len()
+                    .checked_add(text.len())
+                    .ok_or_else(|| Error::Invalid("schema diagnostic size overflow".into()))?;
+                self.work
+                    .codec_charge(JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                self.work.admit_copy(text.len() as u64)?;
+                self.work.reserve_text(&mut self.text, length)?;
+                self.text.push_str(text);
+                self.work.copy_bytes(text.len() as u64)
+            })();
+            if let Err(error) = result {
+                self.error = Some(error);
+                return Err(std::fmt::Error);
+            }
+            Ok(())
+        }
+    }
+    let mut diagnostic = Diagnostic {
+        text: String::new(),
+        work,
+        error: None,
+    };
+    if std::fmt::write(&mut diagnostic, message).is_err() {
+        let Diagnostic { text, work, error } = diagnostic;
+        let capacity = text.capacity() as u64;
+        drop(text);
+        let _ = work.release_owned(capacity);
+        return Err(
+            error.unwrap_or_else(|| Error::Invalid("schema diagnostic formatting failed".into()))
+        );
+    }
+    Ok(diagnostic.text)
 }

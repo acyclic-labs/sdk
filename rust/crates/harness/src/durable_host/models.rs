@@ -97,7 +97,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     .map_or(u64::MAX, |value| value as u64),
             )
             .min(session.model_steps);
-        let lease_digest = crate::contract::canonical_json_digest(
+        let lease_digest = crate::executor::json::canonical_json_digest(
             fence,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             work,

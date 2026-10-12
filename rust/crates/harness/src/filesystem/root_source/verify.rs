@@ -187,10 +187,10 @@ pub(super) fn source_snapshot<'a>(
     bounds: JsonBounds,
     io: &'a crate::filesystem::PreparationIo,
 ) -> Result<(LazySnapshotRef, crate::filesystem::DecodeReservation<'a>)> {
-    crate::contract::json_owned_value_shape_bounded(
+    crate::executor::json::json_owned_value_shape_bounded(
         value,
         bounds,
-        crate::contract::JsonValueSchema::None,
+        crate::executor::json::JsonValueSchema::None,
         &mut |charge| io.codec_charge(charge, false),
     )?;
     let bytes = io.encode(value, bounds.maximum_bytes, true)?;

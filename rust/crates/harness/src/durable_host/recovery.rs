@@ -172,8 +172,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             acyclic_stream::MAX_RECORD_BYTES as u64
         };
-        let digest = crate::contract::canonical_json_digest(&outcome, maximum, work)?;
-        let fence_digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(&outcome, maximum, work)?;
+        let fence_digest = crate::executor::json::canonical_json_digest(
             &fence,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             work,
@@ -196,7 +196,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let outcome = match outcome {
             Outcome::Succeeded(value) => {
                 if work.is_some() {
-                    let validator = crate::contract::compile_json_schema(
+                    let validator = crate::executor::compile_json_schema(
                         &admission.output_schema,
                         "task output",
                         work,
@@ -209,7 +209,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         ));
                     }
                 } else {
-                    crate::contract::validate_json_schema_value(
+                    crate::executor::validate_json_schema_value(
                         &admission.output_schema,
                         &value,
                         "task output",

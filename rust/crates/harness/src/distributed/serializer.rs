@@ -107,7 +107,7 @@ fn scheduler_json_owned_bytes(input_bytes: u64, items: u64) -> Result<u64> {
     let strings = input_bytes * (CONTENT_LAYERS + 2);
     let scratch = input_bytes.max(8) * 2;
     const LABEL_BYTES: u64 = 9955;
-    let diagnostics = crate::contract::audited_serde_diagnostic_bytes(input_bytes, LABEL_BYTES)?;
+    let diagnostics = crate::executor::json::audited_serde_diagnostic_bytes(input_bytes, LABEL_BYTES)?;
     Ok(content_bytes
         + typed_bytes * 2
         + strings
@@ -118,11 +118,11 @@ fn scheduler_json_owned_bytes(input_bytes: u64, items: u64) -> Result<u64> {
 
 pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
     input: &[u8],
-    schema: crate::contract::JsonValueSchema,
+    schema: crate::executor::json::JsonValueSchema,
     owned: fn(&T) -> Result<u64>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(T, u64)> {
-    use crate::contract::{JsonCodecCharge, JsonValueSchema};
+    use crate::executor::json::{JsonCodecCharge, JsonValueSchema};
     let result_value = matches!(schema, JsonValueSchema::Root);
     let code = if result_value {
         wire::ErrorCode::Invalid
@@ -145,7 +145,7 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
         .as_deref()
         .is_some_and(operations::original_native_decode_mode);
     let diagnostic = if result_value {
-        crate::contract::audited_serde_diagnostic_bytes(
+        crate::executor::json::audited_serde_diagnostic_bytes(
             input.len() as u64,
             "Value Number map sequence string number boolean null invalid type invalid value".len()
                 as u64,
@@ -164,7 +164,7 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
     observer.check_cancellation()?;
     let decoded = operations::decode_preclaimed_json_with_mode::<T, _>(
         input,
-        crate::contract::JsonBounds {
+        crate::executor::json::JsonBounds {
             maximum_bytes: bound,
             maximum_items: bound + 1,
             maximum_depth: 256,
@@ -177,7 +177,7 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
             let charged = (|| match charge {
                 JsonCodecCharge::Admission { value_shape, .. } => {
                     let planned = if result_value {
-                        crate::contract::json_value_decode_owned_bytes(value_shape)?
+                        crate::executor::json::json_value_decode_owned_bytes(value_shape)?
                             .checked_add(diagnostic)
                     } else {
                         scheduler_json_owned_bytes(
@@ -185,7 +185,7 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
                             value_shape.lexical_items(),
                         )?
                         .checked_add(
-                            crate::contract::json_value_virtual_owned_bytes(value_shape)?,
+                            crate::executor::json::json_value_virtual_owned_bytes(value_shape)?,
                         )
                     }
                     .ok_or_else(|| {
@@ -237,7 +237,7 @@ pub(super) fn inspect_envelope<'a>(
     let (mut payload, mut buffers, mut key) = (0, 0, None);
     while !input.is_empty() {
         if let Some(io) = work.as_deref_mut() {
-            io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
         let (tag, kind) = decode_key(&mut input).map_err(|_| {
             coordinator_boundary(
@@ -297,7 +297,7 @@ pub(super) fn decode(
 ) -> Result<(u64, String, [u8; 32], u64, SchedulerEvent)> {
     let bytes = record.value.as_ref();
     let diagnostic = if work.is_some() {
-        crate::contract::audited_serde_diagnostic_bytes(bytes.len() as u64, 335)?
+        crate::executor::json::audited_serde_diagnostic_bytes(bytes.len() as u64, 335)?
     } else {
         0
     };
@@ -362,7 +362,7 @@ pub(super) fn decode(
     }
     let (event, retained) = decode_json(
         &envelope.canonical_event_json,
-        crate::contract::JsonValueSchema::SchedulerEvent,
+        crate::executor::json::JsonValueSchema::SchedulerEvent,
         SchedulerEvent::logical_owned_bytes,
         quota.work(),
     )?;

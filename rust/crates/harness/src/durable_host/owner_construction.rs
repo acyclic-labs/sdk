@@ -104,7 +104,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             None => None,
         };
-        let request_digest = crate::contract::canonical_json_digest(
+        let request_digest = crate::executor::json::canonical_json_digest(
             &admission,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             work,

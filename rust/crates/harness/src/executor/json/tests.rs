@@ -5,7 +5,7 @@ use super::*;
     #[test]
     fn exact_byte_item_depth_and_escape_admission() -> Result<()> {
         let value = serde_json::json!({"z": ["\u{0}\"\\\n", u64::MAX], "a": i64::MIN});
-        let expected = super::super::canonical_json_bytes(&value)?;
+        let expected = crate::contract::canonical_json_bytes(&value)?;
         let bounds = JsonBounds { maximum_bytes: expected.len() as u64, maximum_items: 7, maximum_depth: 2 };
         assert_eq!(canonical_json_bytes_bounded(&value, bounds, None, &mut |_| Ok(()))?, expected);
         assert!(canonical_json_bytes_bounded(&value, JsonBounds { maximum_bytes: bounds.maximum_bytes - 1, ..bounds }, None, &mut |_| Ok(())).is_err());

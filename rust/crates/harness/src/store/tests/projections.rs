@@ -317,7 +317,7 @@ fn forge_projection_payload(location: &mut Value, payload: &mut Vec<u8>, mode: u
         let mut forged: Value = crate::contract::json_from_slice(payload)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         forged["projection"]["lifecycle"] = json!("completed");
-        let digest = crate::contract::canonical_json_digest(&(
+        let digest = crate::executor::json::canonical_json_digest(&(
             &forged["format_version"],
             &forged["authority"],
             &forged["revision"],

@@ -15,7 +15,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
-            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
         }
         crate::core::inspect_metadata(&(scope.grants(), &self.input_grants), work)?;
         if scope.grants() != &self.input_grants || scope.limits() != self.input_limits {
@@ -158,10 +158,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         ] {
             add(text.capacity() as u64)?;
         }
-        add(crate::contract::json_value_logical_owned_bytes(
+        add(crate::executor::json::json_value_logical_owned_bytes(
             &self.workflow.initial.state,
         )?)?;
-        add(crate::contract::json_value_logical_owned_bytes(
+        add(crate::executor::json::json_value_logical_owned_bytes(
             &self.output_schema,
         )?)?;
         add(self.input_grants.logical_owned_bytes()?)?;
@@ -558,7 +558,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let mut permitted = false;
         for grant in self.input_grants.iter() {
             if let Some(io) = work.as_deref_mut() {
-                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             if grant.strip_prefix("effect:provider:") == Some(provider) {
                 permitted = true;

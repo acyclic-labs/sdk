@@ -26,7 +26,7 @@ pub(in crate::executor) async fn stage_bytes(
         })?;
     }
     copied = with_history_io(io, |work| {
-        crate::contract::preparation_format(format_args!("{key}:{}", identity.to_hex()), work)
+        crate::executor::preparation_format(format_args!("{key}:{}", identity.to_hex()), work)
     })?;
     let reference = journal
         .stage(operation, &copied, bytes, "application/json", io)?
@@ -257,7 +257,7 @@ pub(in crate::executor) fn native_output_payload_bytes(output: &TurnOutput) -> R
     let mut bytes = native_size_add(output.text.capacity() as u64, slots)?;
     bytes = native_size_add(
         bytes,
-        crate::contract::json_value_logical_owned_bytes(&output.metadata)?,
+        crate::executor::json::json_value_logical_owned_bytes(&output.metadata)?,
     )?;
     for attachment in &output.attachments {
         bytes = native_size_add(bytes, attachment.file.logical_owned_bytes()?)?;

@@ -104,7 +104,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             for grant in scope.grants().iter() {
                 if let Some(io) = work.as_deref_mut() {
                     io.check_cancellation()?;
-                    io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
                 }
                 if grant
                     .strip_prefix("task:spawn:")

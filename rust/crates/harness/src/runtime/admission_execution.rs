@@ -96,7 +96,7 @@ impl AgentHarness {
             ));
         };
         let extension_leases = self.retain_task_extensions(definition, &scope)?;
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             &definition.input_schema,
             &serde_json::to_value(&input).map_err(|error| Error::Invalid(error.to_string()))?,
             "task input",
@@ -143,7 +143,7 @@ impl AgentHarness {
                     None => run.await?,
                 };
                 drop(extension_leases);
-                crate::contract::validate_json_schema_value(
+                crate::executor::validate_json_schema_value(
                     &output_schema,
                     &serde_json::to_value(&output)
                         .map_err(|error| Error::Invalid(error.to_string()))?,

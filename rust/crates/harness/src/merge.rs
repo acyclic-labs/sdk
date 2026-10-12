@@ -166,7 +166,7 @@ fn proof_numbers_are_js_safe(
     while let Some(value) = pending.pop() {
         if let Some(io) = quota.work().as_deref_mut() {
             io.check_cancellation()?;
-            io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
         }
         match value {
             serde_json::Value::Number(number) => {
@@ -213,7 +213,7 @@ fn provider_operation_has_nonzero(
 ) -> Result<bool> {
     for byte in bytes {
         if let Some(io) = work.as_deref_mut() {
-            io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
         }
         if *byte != 0 { return Ok(true); }
     }

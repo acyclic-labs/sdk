@@ -81,7 +81,7 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
         + key_bytes
         + size_of::<acyclic_stream::IdempotencyObservation>() as u64
         + size_of::<Error>() as u64
-        + crate::contract::sdk_json_diagnostic_bytes()
+        + crate::executor::json::sdk_json_diagnostic_bytes()
         + size_of::<(
             crate::filesystem::NativePreparationCompletionTemplate,
             acyclic_stream::PreparedNativeCommit,

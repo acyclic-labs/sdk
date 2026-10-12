@@ -229,7 +229,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                             "preparation identity comparison work overflows",
                         )
                     })?;
-                observer.codec_charge(crate::contract::JsonCodecCharge::Work {
+                observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                     bytes: input.len() as u64,
                     items: comparisons,
                 })?;

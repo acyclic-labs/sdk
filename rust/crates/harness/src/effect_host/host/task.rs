@@ -195,7 +195,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         action: TaskEffectAction<'_>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<crate::core::ApplyResult> {
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             &("task-effect", effect_id, phase),
             acyclic_stream::MAX_RECORD_BYTES as u64,
             work,
@@ -271,7 +271,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let mut retained = crate::wire_codec::CodecQuota::new(work, 0)?;
         let attestation = attestation;
         retained.adopt(attestation_owned_bytes(&attestation)?)?;
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             &(effect_id, &attestation),
             acyclic_stream::MAX_RECORD_BYTES as u64,
             retained.work(),

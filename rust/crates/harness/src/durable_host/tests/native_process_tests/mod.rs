@@ -50,7 +50,7 @@ fn assert_native_receipt_binding<P: StreamProvider>(
             provider: plan.provider.clone(),
             effect_id,
             attempt_id: crate::EffectAttemptId::from_bytes(effect_id.into_bytes()),
-            request_digest: crate::contract::canonical_json_digest(&(
+            request_digest: crate::executor::json::canonical_json_digest(&(
                 &plan.provider,
                 plan.guarantee,
                 &plan.effect_kind,

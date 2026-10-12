@@ -235,7 +235,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &mut None,
         )?;
         let input =
-            crate::contract::compile_json_schema(&request.input_schema, "batch input", &mut None)?;
+            crate::executor::compile_json_schema(&request.input_schema, "batch input", &mut None)?;
         for value in &request.inputs {
             input.validate(value).map_err(|error| {
                 Error::Invalid(format!("batch input failed validation: {error}"))

@@ -156,15 +156,15 @@ impl Snapshot {
     ) -> Result<Self> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut admitted = 0;
-        let admission = crate::contract::snapshot_json_admission(
+        let admission = crate::executor::json::snapshot_json_admission(
             bytes,
-            crate::contract::JsonBounds {
+            crate::executor::json::JsonBounds {
                 maximum_bytes,
                 maximum_items: maximum_bytes,
                 maximum_depth: 256,
             },
             &mut |charge| {
-                if let crate::contract::JsonCodecCharge::Admission {
+                if let crate::executor::json::JsonCodecCharge::Admission {
                     maximum_owned_bytes,
                     ..
                 } = charge

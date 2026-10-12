@@ -215,7 +215,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             );
         }
         if let Some(io) = work.as_deref_mut() {
-            io.codec_charge(crate::contract::JsonCodecCharge::AllocationOperation {
+            io.codec_charge(crate::executor::json::JsonCodecCharge::AllocationOperation {
                 bytes: std::mem::size_of::<CreatedTaskPublicationLease<P>>() as u64,
             })?;
         }
@@ -299,7 +299,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<bool> {
         for value in values {
             if let Some(io) = work.as_deref_mut() {
-                io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             if value == wanted {
                 return Ok(true);
@@ -378,7 +378,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let mut selected = None;
             for provider in &self.resource_creation {
                 if let Some(io) = custody.work().as_deref_mut() {
-                    io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
                 }
                 if provider.provider() == &proof.provider {
                     selected = Some(provider);
@@ -513,7 +513,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     let mut found = false;
                     while let Some(operation) = cursor {
                         if let Some(io) = lineage_custody.work().as_deref_mut() {
-                            io.codec_charge(crate::contract::JsonCodecCharge::Inspect {
+                            io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
                                 items: 1,
                             })?;
                         }
@@ -586,13 +586,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 || receipt.origin.preparation_task != proof.preparation
                 || receipt.origin.intended_child != request.child.operation_id
                 || receipt.origin.admission_digest
-                    != crate::contract::canonical_json_digest(
+                    != crate::executor::json::canonical_json_digest(
                         &preparation,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         proof_custody.work(),
                     )?
                 || receipt.origin.request_digest
-                    != crate::contract::canonical_json_digest(
+                    != crate::executor::json::canonical_json_digest(
                         &request,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         proof_custody.work(),

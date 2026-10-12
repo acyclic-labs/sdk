@@ -87,7 +87,7 @@ impl<O: DeserializeOwned> RuntimeTask<O> {
                 extensions: _,
             } => match host.wait_outcome(task_id).await? {
                 Outcome::Succeeded(value) => {
-                    crate::contract::validate_json_schema_value(&output_schema, &value, "task output", &mut None)?;
+                    crate::executor::validate_json_schema_value(&output_schema, &value, "task output", &mut None)?;
                     let value = serde_json::from_value(value)
                         .map_err(|error| Error::Invalid(error.to_string()))?;
                     Ok(Outcome::Succeeded(value))

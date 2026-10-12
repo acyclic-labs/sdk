@@ -57,14 +57,14 @@ fn observe_value(value: &Value, work: &mut Option<&mut dyn HistoryIo>) -> Result
     {
         let io = work.as_deref_mut().expect("native selection observer");
         let remaining = io.remaining()?;
-        crate::contract::json_owned_value_shape_bounded(
+        crate::executor::json::json_owned_value_shape_bounded(
             value,
-            crate::contract::JsonBounds {
+            crate::executor::json::JsonBounds {
                 maximum_bytes: remaining.bytes_encoded,
                 maximum_items: remaining.items_examined,
                 maximum_depth: 256,
             },
-            crate::contract::JsonValueSchema::None,
+            crate::executor::json::JsonValueSchema::None,
             &mut |charge| io.codec_charge(charge),
         )?;
     }

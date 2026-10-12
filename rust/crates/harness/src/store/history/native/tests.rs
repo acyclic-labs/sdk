@@ -248,9 +248,9 @@ fn accepted_completion_spends_owned_credit_after_cancellation_without_aliasing()
     io.admit_acknowledgment(3, 1)
         .expect("owned acknowledgment credit");
     io.acknowledged(3, 1).expect("confirmed SDK acknowledgment");
-    io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 3, items: 1 })
+    io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 3, items: 1 })
         .expect("prepaid writer work");
-    io.codec_charge(crate::contract::JsonCodecCharge::Copy { bytes: 3 })
+    io.codec_charge(crate::executor::json::JsonCodecCharge::Copy { bytes: 3 })
         .expect("prepaid writer actual copy");
     io.hashed_bytes(3)
         .expect("actual canonical SDK digest input");

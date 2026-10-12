@@ -13,7 +13,7 @@ pub(in crate::executor) fn stock_tool_definitions(
         let mut selected = Vec::new();
         for definition in definitions {
             let key = with_history_io(Some(io), |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("tool:call:{}", definition.name),
                     work,
                 )
@@ -305,12 +305,9 @@ impl StockExecution<'_> {
             );
             let approval = stock_task_interaction_id(task, approval_operation, Some(io))?;
             journal
-                .open_interaction_with_native_work(approval, &request, work)?
+                .open_interaction(approval, &request, Some(io))?
                 .await?;
-            let (outcome, custody) = journal
-                .interaction_outcome_with_native_work(approval, work)?
-                .await?;
-            io.absorb_native_custody(custody)?;
+            let outcome = journal.interaction_outcome(approval, Some(io))?.await?;
             let Some(outcome) = outcome else {
                 return if started {
                     Err(Error::Indeterminate(invocation.operation_id))
@@ -350,14 +347,14 @@ pub(in crate::executor) fn stock_validate_invocation(
     if let Some(io) = io
         && io.original_native_work().is_some()
     {
-        crate::contract::json_owned_value_shape_bounded(
+        crate::executor::json::json_owned_value_shape_bounded(
             &invocation.arguments,
-            crate::contract::JsonBounds {
+            crate::executor::json::JsonBounds {
                 maximum_bytes: u64::MAX,
                 maximum_items: io.remaining()?.items_examined,
                 maximum_depth: 256,
             },
-            crate::contract::JsonValueSchema::None,
+            crate::executor::json::JsonValueSchema::None,
             &mut |next| io.codec_charge(next, false),
         )?;
         return Ok(());

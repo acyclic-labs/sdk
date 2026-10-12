@@ -134,11 +134,11 @@ fn projection_contract_is_required_validated_and_pinned() -> Result<()> {
             )
             .is_err()
     );
-    crate::contract::validate_json_schema_value(&definition.output_schema, &json!({"count": 2}), "result", &mut None)?;
-    crate::contract::validate_json_schema_value(&definition.projection_schema, &json!({"kind":"json","value":"two"}), "projection", &mut None)?;
-    assert!(crate::contract::validate_json_schema_value(&definition.output_schema, &json!("two"), "result", &mut None).is_err());
+    crate::executor::validate_json_schema_value(&definition.output_schema, &json!({"count": 2}), "result", &mut None)?;
+    crate::executor::validate_json_schema_value(&definition.projection_schema, &json!({"kind":"json","value":"two"}), "projection", &mut None)?;
+    assert!(crate::executor::validate_json_schema_value(&definition.output_schema, &json!("two"), "result", &mut None).is_err());
     assert!(
-        crate::contract::validate_json_schema_value(&definition.projection_schema, &json!({"count": 2}), "projection", &mut None)
+        crate::executor::validate_json_schema_value(&definition.projection_schema, &json!({"count": 2}), "projection", &mut None)
         .is_err()
     );
     let mut changed = definition.clone();

@@ -702,14 +702,11 @@ where
         None,
     )?);
     approvals
-        .open_interaction(
-            approval,
-            Interaction::approval(
+        .open_interaction(approval, &Interaction::approval(
                 "Run the exact admitted process".into(),
                 command,
                 request.approval_digest(owner.task_binding().0, command, None)?,
-            )?,
-        )
+            )?, None)?
         .await?;
     approvals
         .resolve_interaction(

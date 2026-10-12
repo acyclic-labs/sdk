@@ -35,7 +35,7 @@ impl RemoteTool {
                 .structured_content
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("MCP structured result missing".into()))?;
-            crate::contract::validate_json_schema_value(schema, value, "MCP output", &mut None)?;
+            crate::executor::validate_json_schema_value(schema, value, "MCP output", &mut None)?;
         }
         let value =
             serde_json::to_value(result).map_err(|error| Error::Invalid(error.to_string()))?;

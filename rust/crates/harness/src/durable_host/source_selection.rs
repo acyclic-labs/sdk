@@ -138,7 +138,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 "source selection is not one provider's project generation",
             ));
         }
-        let bytes = crate::contract::json_byte_length(snapshot, maximum_bytes, quota.work())?;
+        let bytes = crate::executor::json::json_byte_length(snapshot, maximum_bytes, quota.work())?;
         let mut budget = Verification {
             remaining: Some((maximum_work, maximum_bytes)),
             path: Vec::new(),
@@ -149,7 +149,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .source_admission(self.task_id, &mut budget, quota.work())
             .await?;
         quota.adopt(caller_held)?;
-        if crate::contract::canonical_json_digest(
+        if crate::executor::json::canonical_json_digest(
             &caller,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             quota.work(),

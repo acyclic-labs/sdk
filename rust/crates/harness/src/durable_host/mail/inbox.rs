@@ -144,7 +144,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
             write!(&mut message_id, "{}", event.message_id).expect("reserved canonical UUID text");
             if let Some(observer) = work.as_deref_mut() {
-                observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             items.push(InboxItem {
                 task_id: task,

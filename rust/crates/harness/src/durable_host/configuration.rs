@@ -47,7 +47,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     .saturating_sub(std::mem::size_of::<DistributedCoordinator<P>>())
                     as u64,
             )?;
-            observer.codec_charge(crate::contract::JsonCodecCharge::AllocationOperation {
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::AllocationOperation {
                 bytes: std::mem::size_of::<Mutex<DistributedCoordinator<P>>>() as u64,
             })?;
         }

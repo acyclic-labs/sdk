@@ -32,7 +32,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         let path = crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!(
                     "harness/v2/workflows/{}",
                     owner.workflow_admission().operation_id
@@ -355,7 +355,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if let Some(access) = access.as_ref() {
             for binding in &access.references {
                 if let Some(io) = quota.work().as_deref_mut() {
-                    io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
                 }
                 if &binding.file == payload {
                     reader = Some(binding.reader.as_ref());
@@ -365,7 +365,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             if reader.is_none() {
                 for binding in &access.content {
                     if let Some(io) = quota.work().as_deref_mut() {
-                        io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
                     }
                     if &binding.volume == payload.volume() {
                         reader = Some(binding.binding.reader.as_ref());

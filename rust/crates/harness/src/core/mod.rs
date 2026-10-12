@@ -82,4 +82,4 @@ pub(in crate::core) use records::{
 pub use reducer::Reducer;
 pub(in crate::core) use registry::ExtensionBinding;
 
-pub(in crate::core) use crate::contract::json_value_logical_owned_bytes;
+pub(in crate::core) use crate::executor::json::json_value_logical_owned_bytes;

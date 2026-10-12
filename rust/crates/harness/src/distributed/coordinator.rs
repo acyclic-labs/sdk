@@ -228,7 +228,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         .into_iter()
         .flatten()
         {
-            crate::contract::validate_json_schema_value(schema, &value, "scheduler result", custody.work())?;
+            crate::executor::validate_json_schema_value(schema, &value, "scheduler result", custody.work())?;
         }
         Ok(())
     }

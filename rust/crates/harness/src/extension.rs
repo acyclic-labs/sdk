@@ -488,7 +488,7 @@ impl ExtensionRuntime {
                 let mut found = false;
                 for linked in self.selected() {
                     if let Some(io) = work.as_deref_mut() {
-                        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                        io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
                     }
                     if selected.name == linked.name && selected.version == linked.version {
                         found = true; break;

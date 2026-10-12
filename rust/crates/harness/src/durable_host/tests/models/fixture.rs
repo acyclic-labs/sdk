@@ -329,7 +329,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         assert!(execution.replay(operation, 0, 1).await.is_err());
         assert!(matches!(
             execution
-                .interaction_outcome(InteractionId::from_bytes([91; 16]))
+                .interaction_outcome(InteractionId::from_bytes([91; 16]), None)?
                 .await,
             Err(Error::Unsupported(_))
         ));
@@ -456,16 +456,13 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             Interaction::approval("approve exact action".into(), attempt, [5; 32])?;
         for _ in 0..2 {
             approval
-                .open_interaction(id, approval_request.clone())
+                .open_interaction(id, &approval_request, None)?
                 .await?;
         }
-        assert_eq!(approval.interaction_outcome(id).await?, None);
+        assert_eq!(approval.interaction_outcome(id, None)?.await?, None);
         assert!(matches!(
             approval
-                .open_interaction(
-                    id,
-                    Interaction::approval("changed".into(), attempt, [6; 32])?
-                )
+                .open_interaction(id, &Interaction::approval("changed".into(), attempt, [6; 32])?, None)?
                 .await,
             Err(Error::Conflict(_))
         ));
@@ -587,11 +584,11 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         let request = Interaction::approval("approve exact action".into(), attempt, [5; 32])?;
         assert!(
             approval
-                .open_interaction(id, request.clone())
+                .open_interaction(id, &request, None)?
                 .await
                 .is_err()
         );
-        assert!(approval.interaction_outcome(id).await.is_err());
+        assert!(approval.interaction_outcome(id, None)?.await.is_err());
         let replacement_approval = crate::filesystem::FilesystemExecutionJournal::for_task(
             host.journal_owner(task_id, fence.clone()).await?,
             attempt,
@@ -610,8 +607,8 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             &volume,
             None,
         )?;
-        replacement_approval.open_interaction(id, request).await?;
-        assert_eq!(replacement_approval.interaction_outcome(id).await?, None);
+        replacement_approval.open_interaction(id, &request, None)?.await?;
+        assert_eq!(replacement_approval.interaction_outcome(id, None)?.await?, None);
         let mut pending = Vec::new();
         for (path, tail) in [
             (format!("harness/v2/workflows/{operation}"), 1),
@@ -809,14 +806,11 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         let id = InteractionId::from_bytes([91; 16]);
         assert!(
             replacement_approval
-                .open_interaction(
-                    id,
-                    Interaction::approval("approve exact action".into(), attempt, [5; 32])?
-                )
+                .open_interaction(id, &Interaction::approval("approve exact action".into(), attempt, [5; 32])?, None)?
                 .await
                 .is_err()
         );
-        assert_eq!(replacement_approval.interaction_outcome(id).await?, None);
+        assert_eq!(replacement_approval.interaction_outcome(id, None)?.await?, None);
         for (path, tail) in [
             (format!("harness/v2/workflows/{operation}"), 1),
             (conversation_verifier.audience().stream_path(&mut None)?, 2),
