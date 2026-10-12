@@ -2885,7 +2885,7 @@ mod restore_recovery_tests {
             ),
         ] {
             assert!(matches!(
-                apply_host_metadata_offloaded(&root.0, &host_path.0, metadata, &mut receipt).await,
+                apply_host_metadata_offloaded(&root, &host_path, metadata, &mut receipt).await,
                 Err(failure) if matches!(failure.error, MaterializeError::UnsupportedMetadata(field) if field == expected)
             ));
         }
@@ -2896,7 +2896,7 @@ mod restore_recovery_tests {
         };
         #[cfg(windows)]
         assert!(matches!(
-            apply_host_metadata_offloaded(&root.0, &host_path.0, metadata, &mut receipt).await,
+            apply_host_metadata_offloaded(&root, &host_path, metadata, &mut receipt).await,
             Err(failure) if matches!(failure.error, MaterializeError::UnsupportedMetadata(_))
         ));
         Ok(())
