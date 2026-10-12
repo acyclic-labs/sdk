@@ -1,6 +1,5 @@
 //! Pi's pinned native command over the existing task/effect and namespace owners.
 use acyclic_harness::runtime::TaskSpawner as _;
-use acyclic_harness::store::native_work_io;
 
 use super::{PiScratchAllocation, PiTaskBinding, pi_caller};
 use acyclic_fs::{
@@ -1337,7 +1336,7 @@ pub(crate) async fn approve_command(
     work: &NativeMaterializationWork,
 ) -> Result<InteractionId> {
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false)
         .await?;
     let native_capability = "effect:provider:acyclic.pi.native";
     if context.durable_task_id() != Some(owner.task_id())
@@ -1383,7 +1382,7 @@ pub(crate) async fn approve_command(
         .open_interaction_with_native_work(approval, &interaction.0, work)?
         .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false)
         .await?;
     let respond = native_fixed_text(format_args!("interaction:respond:{approval}"))?;
     let encoded_grants = super::pi_root_provider::guarded_pi_bytes(
@@ -1421,7 +1420,7 @@ pub(crate) async fn approve_command(
         )?
         .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false)
         .await?;
     Ok(approval)
 }
@@ -1472,7 +1471,7 @@ impl PiNativeRoot {
         meter: &NativeMaterializationWork,
     ) -> Result<()> {
         owner
-            .verify(false, &mut Some(&mut native_work_io(meter)?))
+            .verify(false)
             .await?;
         if owner.task_id() != self.task
             || binding.task_id != self.task
@@ -1516,13 +1515,9 @@ impl PiNativeRoot {
                 &self.scratch,
                 operation,
                 shared.scope().limits().file_bytes,
-                &mut Some(&mut native_work_io(meter)?),
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)),
             )?;
-            owner.require_volume_grant(
-                &self.scratch,
-                operation,
-                &mut Some(&mut native_work_io(meter)?),
-            )?;
+            owner.require_volume_grant(&self.scratch, operation)?;
         }
         let bytes = shared
             .read_file_with_native_work(session, meter)
@@ -1586,7 +1581,7 @@ impl PiNativeRoot {
             self.packet
                 .create_into_guarded(index, meter, || async {
                     owner
-                        .verify(false, &mut Some(&mut native_work_io(meter)?))
+                        .verify(false)
                         .await?;
                     creator
                         .authorize_settlement_with_native_work(owner, meter)
@@ -1657,7 +1652,7 @@ impl PiNativeRoot {
             ));
         }
         owner
-            .verify(false, &mut Some(&mut native_work_io(meter)?))
+            .verify(false)
             .await?;
         if owner.task_id() != self.task
             || binding.task_id != self.task
@@ -1682,13 +1677,9 @@ impl PiNativeRoot {
                 volume,
                 operation,
                 context.scope().limits().file_bytes,
-                &mut Some(&mut native_work_io(meter)?),
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)),
             )?;
-            owner.require_volume_grant(
-                volume,
-                operation,
-                &mut Some(&mut native_work_io(meter)?),
-            )?;
+            owner.require_volume_grant(volume, operation)?;
         }
         let allocation = self.witnessed_allocation()?;
         let route = native_root_route(root_key, meter)?;
@@ -1792,7 +1783,7 @@ impl PiNativeRoot {
             return Err(Error::Conflict("Pi lazy mount differs from the original actual filesystem workspace or seed generation".into()));
         }
         owner
-            .verify(false, &mut Some(&mut native_work_io(meter)?))
+            .verify(false)
             .await?;
         let authority_revision = native_digest(
             &(authority.0.audience(), &authority.1),
@@ -1803,9 +1794,9 @@ impl PiNativeRoot {
                 .min(super::MAXIMUM_ADAPTER_STATE_BYTES),
             meter,
         )?;
-        let mut volume_io = native_work_io(meter)?;
+        let mut volume_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?);
         let volume_copy = volume.copy(&mut Some(&mut volume_io))?;
-        let mut volume_copy = (volume_copy, volume_io.into_custody());
+        let mut volume_copy = (volume_copy, volume_io.into_custody()?);
         let reference = original_generation.as_resource();
         let mut generation_copy = acyclic_harness::resources::GenerationRef::new_with_native_work(
             reference.provider(),
@@ -1868,7 +1859,7 @@ impl PiNativeRoot {
         meter: &'a NativeMaterializationWork,
     ) -> Result<()> {
         owner
-            .verify(false, &mut Some(&mut native_work_io(meter)?))
+            .verify(false)
             .await?;
         let allocation = self.witnessed_allocation()?;
         if self.task != owner.task_id()
@@ -1911,7 +1902,7 @@ impl PiNativeRoot {
             });
         }
         owner
-            .verify(false, &mut Some(&mut native_work_io(meter)?))
+            .verify(false)
             .await?;
         self.view = Some(view.into_arc_with_native_work(meter)?);
         Ok(())
@@ -2135,9 +2126,9 @@ pub(crate) async fn native_root<'a>(
         ],
         meter,
     )?;
-    let mut scratch_io = native_work_io(meter)?;
+    let mut scratch_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?);
     let scratch = binding.scratch.volume.copy(&mut Some(&mut scratch_io))?;
-    let mut scratch = (scratch, scratch_io.into_custody());
+    let mut scratch = (scratch, scratch_io.into_custody()?);
     let mut view_root = meter.copy_path(&options.root)?;
     let mut custody = meter.claim(
         std::mem::size_of::<PiNativeRoot>() as u64,

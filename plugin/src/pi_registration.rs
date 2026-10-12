@@ -121,10 +121,10 @@ pub(crate) async fn register(
     let project = &project_metadata.0;
     let binding_session = work.display(session)?;
     let project_key = work.display(&root_label.0)?;
-    let mut binding_io = acyclic_harness::store::history::native_work_io(work)?;
+    let mut binding_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
     let project_copy = project.copy(&mut Some(&mut binding_io))?;
     let scratch_copy = scratch.copy(&mut Some(&mut binding_io))?;
-    let _binding_custody = binding_io.into_custody();
+    let _binding_custody = binding_io.into_custody()?;
     let path_key = work.display(&root_label.0)?;
     let root_path = work.display(path_text)?;
     let binding = PiTaskBinding {
@@ -170,38 +170,38 @@ pub(crate) async fn register(
             super::pi_native::PI_NATIVE_PROVIDER
         ))?,
         {
-            let mut io = acyclic_harness::store::history::native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value =
                 journal.directory_read_capability(ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         },
         {
-            let mut io = acyclic_harness::store::history::native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = journal.directory_read_capability(
                 super::pi_root_provider::OPERATOR_INPUT_DIRECTORY,
                 &mut Some(&mut io),
             )?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         },
         {
-            let mut io = acyclic_harness::store::history::native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = scratch.capability(VolumeOperation::Read, &mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         },
         {
-            let mut io = acyclic_harness::store::history::native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = scratch.capability(VolumeOperation::Write, &mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         },
         {
-            let mut io = acyclic_harness::store::history::native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = project.capability(VolumeOperation::Read, &mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         },
         {
-            let mut io = acyclic_harness::store::history::native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = project.capability(VolumeOperation::Write, &mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         },
     ];
     let capabilities = Capabilities::new_with_native_work(
@@ -211,7 +211,7 @@ pub(crate) async fn register(
             .chain(grants.iter().map(|grant| grant.0.as_str())),
         work,
     )?;
-    let mut policy_io = acyclic_harness::store::history::native_work_io(work)?;
+    let mut policy_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
     let policy_journal = journal.copy(&mut Some(&mut policy_io))?;
     let policy = (
         PiOwnerPolicy {
@@ -230,7 +230,7 @@ pub(crate) async fn register(
             concurrency: 16,
             maximum_payload_bytes: 1024 * 1024,
         },
-        policy_io.into_custody(),
+        policy_io.into_custody()?,
         capabilities.1,
     );
     let owner_path = work.join_path(relative_directory, Path::new("pi-owner.v1"))?;
@@ -268,9 +268,9 @@ pub(crate) async fn register(
         Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
     )?;
     let journal_name = {
-        let mut io = acyclic_harness::store::history::native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let value = journal.storage_name(&mut Some(&mut io))?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     let journal_generation = resources
         .fs

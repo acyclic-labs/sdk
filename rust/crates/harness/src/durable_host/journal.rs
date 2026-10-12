@@ -83,7 +83,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         )
     }
 
-    pub(crate) fn require_volume_grant(
+    /// Requires the volume grant retained by this task admission.
+    pub fn require_volume_grant(
         &self,
         volume: &crate::conversation::VolumeRef,
         operation: crate::conversation::VolumeOperation,
@@ -227,7 +228,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .await
     }
 
-    pub(crate) async fn verify(
+    /// Verifies the current task fence for dispatch or settlement.
+    pub async fn verify(
         &self,
         settlement: bool,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,

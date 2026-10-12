@@ -255,10 +255,6 @@ impl DemandWork {
             .iter()
             .any(|entry| entry.2.is_some() && Arc::ptr_eq(&entry.0, token))
     }
-    pub(crate) fn new_cancellation(&mut self) -> Result<CancellationToken, crate::WorkError> {
-        self.reconcile_cancellation_registry()?;
-        CancellationToken::new_measured(&mut self.allocations, &mut self.work, self.budget)
-    }
     pub(crate) fn prepare_cancelled(
         &mut self,
         token: &CancellationToken,

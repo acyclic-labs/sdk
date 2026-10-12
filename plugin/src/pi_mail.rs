@@ -8,7 +8,6 @@ use acyclic_fs::{
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters,
 };
 use acyclic_harness::runtime::TaskStateProvider;
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     Error, OperationId, Outcome, Result, TaskId,
     durable_host::TaskJournalOwner,
@@ -75,7 +74,7 @@ async fn authenticate<P: StreamProvider>(
         });
     }
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false)
         .await?;
     Ok(owner.task_id())
 }
@@ -113,7 +112,7 @@ pub(crate) async fn prepare_send<P: StreamProvider, F: FnOnce(TaskId, TaskId) ->
     )
     .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false)
         .await?;
     Ok((command.0, command.1))
 }

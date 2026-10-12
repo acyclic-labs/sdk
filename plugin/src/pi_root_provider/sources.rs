@@ -19,11 +19,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
             code: ErrorCode::Unauthorized,
             reason: "root source is not selected by its original admission",
         })?;
-    current_owner.require_volume_grant(
-        project,
-        VolumeOperation::Read,
-        &mut Some(&mut native_work_io(work)?),
-    )?;
+    current_owner.require_volume_grant(project, VolumeOperation::Read)?;
     context
         .verify_original_volume_read_with_native_work(current_owner, project, work)
         .await?;
@@ -50,7 +46,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
         reason: "root source has no original configured binding",
     })?;
     current_owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false)
         .await?;
     let identity = work.root_identity(Path::new(path))?;
     if let Some(expected) = expected {
@@ -68,7 +64,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
         .verify_original_volume_read_with_native_work(current_owner, project, work)
         .await?;
     current_owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false)
         .await?;
     Ok(identity)
 }
@@ -168,11 +164,7 @@ pub(crate) async fn prove_root_project_source_with_native_work(
     current_owner: &TaskJournalOwner<LocalStream>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    current_owner.require_volume_grant(
-        project,
-        VolumeOperation::Read,
-        &mut Some(&mut native_work_io(work)?),
-    )?;
+    current_owner.require_volume_grant(project, VolumeOperation::Read)?;
     context
         .verify_original_volume_read_with_native_work(current_owner, project, work)
         .await?;

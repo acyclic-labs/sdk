@@ -21,7 +21,7 @@ impl<'a> PiForkCoordinator<'a> {
             self.runtime
                 .verify_owner_with_native_work(&self.owner, work)?;
             owner
-                .verify(false, &mut Some(&mut native_work_io(work)?))
+                .verify(false)
                 .await?;
             let (value, allocation) = host
                 .observe_admission_with_native_work(owner.task_id(), work)
@@ -93,7 +93,7 @@ impl<'a> PiForkCoordinator<'a> {
         )?;
         let mut project = None;
         for volume in original.0.binding.project_volumes.values() {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             if volume.storage_name(&mut Some(&mut io))? == source.workspace().name().as_str() {
                 project = Some(volume);
                 break;
@@ -238,9 +238,9 @@ impl<'a> PiForkCoordinator<'a> {
             .verify_original_volume_read_with_native_work(owner, volume, work)
             .await?;
         let name = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = volume.storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let workspace = self
             .resources
@@ -249,14 +249,14 @@ impl<'a> PiForkCoordinator<'a> {
             .await
             .map_err(native_workspace_error)?;
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false)
             .await?;
         let head = workspace
             .head(work, work.cancellation())
             .await
             .map_err(|error| native_workspace_error((error, None)))?;
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false)
             .await?;
         acyclic_harness::resources::GenerationRef::new_with_native_work(
             volume.provider(),
