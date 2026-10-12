@@ -145,12 +145,8 @@ impl Fixture {
         let journal = Arc::new(runtime.runtime.task_host().journal_owner(task, fence.clone()).await.unwrap());
         let context = runtime.runtime.task_context(task, fence.clone()).await.unwrap();
         let authority = owner.authority().unwrap();
-        let reader = Arc::new(acyclic_harness::filesystem::FilesystemContentVerifier::new(
-            filesystem.clone(), authority.verifier.clone(), authority.signed.clone(), owner.policy().maximum_payload_bytes,
-        ).unwrap());
-        let writer = Arc::new(acyclic_harness::filesystem::FilesystemContentPublisher::new(filesystem.clone(),
-            request.binding.scratch.volume.clone(), &authority.verifier, &authority.signed,
-            owner.policy().maximum_payload_bytes).unwrap());
+        let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(filesystem.clone(), &authority.verifier, &authority.signed, owner.policy().maximum_payload_bytes, None).unwrap();
+        let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(filesystem.clone(), &request.binding.scratch.volume, &authority.verifier, &authority.signed, owner.policy().maximum_payload_bytes, None).unwrap();
         let context = context.with_content_bindings(acyclic_harness::runtime::ContentBindings {
             reader, writer: Some(writer),
         }).unwrap();

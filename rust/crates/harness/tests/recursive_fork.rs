@@ -182,14 +182,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
-    .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
-        host.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &grant_scope,
-        1_024, None,
-    )?))
+    .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 1_024, None)?)
     .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-        Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+        FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
     ], &mut None)?));
     aggregate
@@ -429,12 +424,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         } else {
             Vec::new()
         };
-        let parent_resolver = FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &grant_scope,
-            64 * 1_024, None,
-        )?;
+        let parent_resolver = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 64 * 1_024, None)?;
         if level == 1 {
             let dirty_private = volume(
                 &provider,
@@ -605,12 +595,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
             let reader_scope =
                 child_issuer.issue("deep-attached-reader", &readable, Some(attached), None, &mut None).expect("scope proof");
-            let reader = FilesystemContentVerifier::new(
-                host.clone(),
-                &child_issuer.verifier(&mut None).expect("verifier copy"),
-                &reader_scope,
-                1_024, None,
-            )?;
+            let reader = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &reader_scope, 1_024, None)?;
             reader
                 .verify_manifest(&seed.attachment_manifests[0], 1, &Limits::default())
                 .await?;
@@ -723,12 +708,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 "a retained original grant cannot authorize extra unpublished FileRef metadata"
             );
             let child_reference_scope = child_issuer.issue("child-reference-reader", &seed.reference_capabilities(child_agent)?, None, None, &mut None).expect("scope proof");
-            let child_reference_resolver = FilesystemContentVerifier::new(
-                host.clone(),
-                &child_issuer.verifier(&mut None).expect("verifier copy"),
-                &child_reference_scope,
-                1_024, None,
-            )?;
+            let child_reference_resolver = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_reference_scope, 1_024, None)?;
             child_reference_resolver
                 .verify_manifest(&root_manifest, 1, &Limits::default())
                 .await?;
@@ -754,12 +734,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     .as_ref(),
                 b"root"
             );
-            let inherited_resolver = FilesystemContentVerifier::new(
-                host.clone(),
-                &child_issuer.verifier(&mut None).expect("verifier copy"),
-                &reader_scope,
-                1_024, None,
-            )?;
+            let inherited_resolver = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &reader_scope, 1_024, None)?;
             inherited_resolver.verify(&previous_file).await?;
             inherited_resolver.verify(&root_attachment).await?;
             inherited_resolver
@@ -816,10 +791,8 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-                Arc::new(
-                    FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?
-                        .with_total_reference_bytes(1)?,
-                ),
+                FilesystemForkVerifier::new(host.clone(), 64 * 1_024, Some(1), None)?,
+                ,
                 Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
             ], &mut None)?));
             assert!(
@@ -840,9 +813,8 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 issuer.verifier(&mut None).expect("verifier copy"),
                 SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
-            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[Arc::new(
-                FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?,
-            )], &mut None)?));
+            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
+            ], &mut None)?));
             assert!(
                 incomplete
                     .execute(fork_command(
@@ -1019,7 +991,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         assert_eq!(report.clone().into_seed(&mut None)?, seed);
         if level == 1 {
             let verifier = CompositeForkVerifier::new(&[
-                Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+                FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
                 Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
             ], &mut None)?;
             let fence = verifier.activate(&seed).await?;
@@ -1046,14 +1018,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             child_issuer.verifier(&mut None).expect("verifier copy"),
             SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
-        .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
-            host.clone(),
-            &child_issuer.verifier(&mut None).expect("verifier copy"),
-            &child_scope,
-            1_024, None,
-        )?))
+        .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, 1_024, None)?)
         .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-            Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+            FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
             Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
         ], &mut None)?));
         if level == 1 {
@@ -1212,21 +1179,11 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 checkpoint: None,
             };
             let source_scope = child_issuer.issue("inherited-source", &seed.reference_capabilities(child_agent)?, Some(child_agent), None, &mut None).expect("scope proof");
-            let source_reader = FilesystemContentVerifier::new(
-                host.clone(),
-                &child_issuer.verifier(&mut None).expect("verifier copy"),
-                &source_scope,
-                1_024, None,
-            )?;
+            let source_reader = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &source_scope, 1_024, None)?;
             let projected =
                 select_model_context(&loaded, (&loaded).logical_revision(), selection.clone(), &source_reader, acyclic_harness::conversation::Limits { context_messages: 2, attachments: 4, render_bytes: 64 * 1_024, ..Default::default() }, 4, None)
                     .await?;
-            let denied_reader = FilesystemContentVerifier::new(
-                host.clone(),
-                &child_issuer.verifier(&mut None).expect("verifier copy"),
-                &child_issuer.issue("denied-source", &Capabilities::default(), Some(child_agent), None, &mut None).expect("scope proof"),
-                1_024, None,
-            )?;
+            let denied_reader = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_issuer.issue("denied-source", &Capabilities::default(), Some(child_agent), None, &mut None).expect("scope proof"), 1_024, None)?;
             assert!(
                 select_model_context(&loaded, (&loaded).logical_revision(), selection, &denied_reader, acyclic_harness::conversation::Limits { context_messages: 2, attachments: 4, render_bytes: 64 * 1_024, ..Default::default() }, 4, None)
                     .await
@@ -1268,14 +1225,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 issuer.verifier(&mut None).expect("verifier copy"),
                 SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
-            .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
-                host.clone(),
-                &issuer.verifier(&mut None).expect("verifier copy"),
-                &grant_scope,
-                1_024, None,
-            )?))
+            .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 1_024, None)?)
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-                Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+                FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
                 Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
             ], &mut None)?));
             child_aggregate = StreamAggregate::open(
@@ -1284,14 +1236,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 child_issuer.verifier(&mut None).expect("verifier copy"),
                 SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
-            .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
-                host.clone(),
-                &child_issuer.verifier(&mut None).expect("verifier copy"),
-                &child_scope,
-                1_024, None,
-            )?))
+            .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, 1_024, None)?)
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-                Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+                FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
                 Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
             ], &mut None)?));
             assert_eq!(aggregate.reducer().fork(&child_authority), Some(&seed));
@@ -1501,12 +1448,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         .reducer()
         .conversation()
         .ok_or_else(|| acyclic_harness::Error::Invalid("conversation not bound".into()))?;
-    let resolver = FilesystemContentVerifier::new(
-        host.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &grant_scope,
-        1_024, None,
-    )?;
+    let resolver = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 1_024, None)?;
     let selected = select_model_context(
         state,
         (state).logical_revision(),

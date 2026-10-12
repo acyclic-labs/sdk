@@ -71,6 +71,10 @@ mod memory;
 pub use memory::MemoryHarnessStorage;
 mod text_tools;
 pub use text_tools::ExactTextReplacement;
+#[cfg(not(target_arch = "wasm32"))]
+mod root_binding;
+#[cfg(not(target_arch = "wasm32"))]
+pub use root_binding::{bind_original_root_conversation_with_native_work, native_root_output_binding_operation};
 mod root_source;
 pub use root_source::{FsRootNativeSource, FsRootProjectSourceProvider};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -127,7 +131,6 @@ pub use native_execution::{
     NativeViewPublicationError, NativeViewPublicationReceipt,
     NativeTaskViewDrainReceipt,
     copy_native_mapping_with_work,
-    bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
 };
 pub use task_commands::{
     EFFECT_TASK_COMMAND_KIND, FilesystemTaskCommands, MAIL_RECEIVE_TASK_COMMAND_KIND,

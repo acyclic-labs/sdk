@@ -105,19 +105,8 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     let read_cap = volume.capability(VolumeOperation::Read)?;
     let write_cap = volume.capability(VolumeOperation::Write)?;
     let scope = issuer.issue("owner", &Capabilities::new([read_cap.clone(), write_cap.clone()]), Some(agent), None, &mut None).expect("scope proof");
-    let writer = Arc::new(FilesystemContentPublisher::new(
-        host.clone(),
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        4096, None,
-    )?);
-    let reader = Arc::new(FilesystemContentVerifier::new(
-        host,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        4096, None,
-    )?);
+    let writer = FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4096, None)?;
+    let reader = FilesystemContentVerifier::new(host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4096, None)?;
     let source = writer
         .stage(
             OperationId::new(),

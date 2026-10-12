@@ -116,7 +116,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         (page, page_custody) = generation.list_after_with_native_work(
             &requested, after, maximum_entries as usize + usize::from(path.is_empty()),
             work, work.cancellation(),
-        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+        ).await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
         output.absorb_native_custody(page_custody)?;
         guard().await?;
         if path.is_empty() {
@@ -215,34 +215,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok((reference, bytes))
     }
 
-    /// Reads only a finite authenticated prefix at an explicitly pinned generation.
+    /// Reads a finite private prefix at an explicitly pinned generation.
     pub async fn read_private_prefix(
-        &self,
-        volume: &VolumeRef,
-        grant: &ContentGrant,
-        path: &str,
-        generation: &GenerationRef,
-        maximum_bytes: u64,
+        &self, volume: &VolumeRef, grant: &ContentGrant, path: &str,
+        generation: &GenerationRef, maximum_bytes: u64, io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        self.require_private_directory(volume, grant, path, None)?;
-        crate::conversation::validate_content_path(path, &mut None)?;
+        self.require_private_directory(volume, grant, path, io)?;
+        crate::executor::with_history_io(io, |work| crate::conversation::validate_content_path(path, work))?;
         if maximum_bytes == 0 {
-            return Err(Error::Invalid("prefix read limit must be positive".into()));
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "prefix read limit must be positive"));
         }
-        let reference = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
-        self.retain_generation(&reference, generation).await?;
-        let workspace = self.open(&reference).await?;
-        let pinned = self.generation(&workspace, generation).await?;
-        let path = format!("/{path}");
-        let stat = pinned.stat(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?;
-        if stat.kind != FileKind::Regular {
-            return Err(Error::Invalid("prefix requires a regular file".into()));
-        }
-        let length = stat
-            .logical_bytes
-            .ok_or_else(|| Error::Storage("file length is missing".into()))?;
-        pinned.read_range(&path, 0, maximum_bytes.min(length), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)
-            .map_err(map_error)
+        let unmeasured;
+        let io = match io {
+            Some(io) => io,
+            None => { unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?; &unmeasured }
+        };
+        let reference = fork_preparer_io::content_workspace(&self.provider, volume, Some(io))?;
+        let reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
+        let workspace = fork_preparer_io::open(self, &reference, io).await?;
+        let pinned = fork_preparer_io::generation(self, &workspace, generation, io).await?;
+        fork_preparer_io::retain(&pinned, Some(io)).await?;
+        let path = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
+        let path_hold = io.guard_owned(path.capacity() as u64)?;
+        let stat = fork_preparer_io::filesystem_call!(io, work,
+            async { pinned.stat(&path, work, io.cancellation()).await.map_err(|error| (error, None)) },
+            pinned.stat(&path, io.remaining()?, io.cancellation()))?;
+        if stat.kind != FileKind::Regular { return Err(io.invalid("prefix requires a regular file")); }
+        let length = stat.logical_bytes.ok_or_else(|| fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Storage, "file length is missing"))?;
+        let chunk = fork_preparer_io::filesystem_call!(io, work,
+            async { pinned.read_range(&path, 0, maximum_bytes.min(length), work, io.cancellation()).await.map_err(|error| (error, None)) },
+            pinned.read_range(&path, 0, maximum_bytes.min(length), io.remaining()?, io.cancellation()))?;
+        drop(path); drop(path_hold); drop(reference); drop(reference_hold);
+        Ok(chunk.bytes)
     }
 
     pub(in crate::filesystem) fn require_private_directory(

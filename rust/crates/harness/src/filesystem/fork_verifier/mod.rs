@@ -106,66 +106,34 @@ where
 }
 
 impl<A, O> FilesystemForkVerifier<A, O> {
-    /// Binds one Filesystem provider and a per-file fork-reference limit.
-    pub fn new(host: Arc<FilesystemHost<A, O>>, maximum_inherited_bytes: u64) -> Result<Self> {
-        if maximum_inherited_bytes == 0 {
-            return Err(Error::Invalid(
-                "fork inherited-content limit must be positive".into(),
-            ));
-        }
-        Ok(Self {
-            host,
-            maximum_inherited_bytes,
-            maximum_total_reference_bytes: maximum_inherited_bytes.saturating_mul(1_024),
-            #[cfg(not(target_arch = "wasm32"))]
-            native_binding: None,
-        })
-    }
-
-    /// Copies the authentic scoped verifier without creating a new issuer or grant.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_with_native_work(
+    /// Binds fork-reference limits and optional original scoped authority.
+    pub fn new(
         host: Arc<FilesystemHost<A, O>>, maximum_inherited_bytes: u64,
-        verifier: &AuthorityVerifier, scope: &Scope,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        if maximum_inherited_bytes == 0 {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "fork inherited-content limit must be positive" });
+        maximum_total_reference_bytes: Option<u64>,
+        original: Option<(&AuthorityVerifier, &Scope, &PreparationIo)>,
+    ) -> Result<Arc<Self>> {
+        let maximum_total_reference_bytes = maximum_total_reference_bytes
+            .unwrap_or_else(|| maximum_inherited_bytes.saturating_mul(1_024));
+        let io = original.map(|(_, _, io)| io);
+        if maximum_inherited_bytes == 0 || maximum_total_reference_bytes == 0 {
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "fork reference limits must be positive"));
         }
-        host.provider.validate(&mut Some(&mut crate::store::native_work_io(work)?))?;
-        let binding = NativeFilesystemVerificationBinding::new(verifier, scope, work)?;
-        Ok(Self { host, maximum_inherited_bytes,
-            maximum_total_reference_bytes: maximum_inherited_bytes.saturating_mul(1_024),
-            native_binding: Some(binding) })
-    }
-
-
-
-    /// Admits the one actual shared provider allocation before constructing it.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn into_native_shared(mut self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
-        let binding = self.native_binding.as_mut().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized, reason: "Filesystem verifier has no native authority" })?;
-        binding.authenticate(work)?;
-        let mut header = work.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(Error::from)?;
-        binding.custody.absorb(&mut header)
-            .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
-        Ok(Arc::new(self))
-    }
-    /// Narrows the aggregate bytes inspected during one fork publication.
-    pub fn with_total_reference_bytes(mut self, maximum_bytes: u64) -> Result<Self> {
-        if maximum_bytes == 0 {
-            return Err(Error::Invalid(
-                "fork total reference limit must be positive".into(),
-            ));
-        }
-        self.maximum_total_reference_bytes = maximum_bytes;
-        Ok(self)
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_binding = original.map(|(verifier, scope, io)| {
+            let work = io.original_native_work().ok_or_else(|| io.invalid("fork verifier requires original native work"))?;
+            host.provider.validate(&mut Some(&mut io.history_io()))?;
+            let mut binding = NativeFilesystemVerificationBinding::new(verifier, scope, work)?;
+            let mut header = work.claim(std::mem::size_of::<Self>() as u64, 1, WorkCounters::UNCHARGED)?;
+            binding.custody.absorb(&mut header)
+                .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
+            Ok(binding)
+        }).transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        if original.is_some() { return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Unsupported, "native fork verification is unavailable")); }
+        Ok(Arc::new(Self { host, maximum_inherited_bytes, maximum_total_reference_bytes,
+            #[cfg(not(target_arch = "wasm32"))] native_binding }))
     }
 }
-
 
 pub(in crate::filesystem) fn fork_io(work: &Option<&mut dyn crate::store::history::HistoryIo>) -> Result<PreparationIo> {
     #[cfg(not(target_arch = "wasm32"))]
@@ -197,18 +165,13 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                     let binding = self.native_binding.as_ref().ok_or(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unauthorized, reason: "Filesystem verifier has no native authority" })?;
                     binding.require_seed(seed, native)?;
-                    for file in &seed.inherited_context {
-                        if file.volume().provider() == &self.host.provider { self.require_seed_file_with_io(seed, file, &io).await?; }
-                    }
-                    for grant in &seed.reference_grants {
-                        if grant.file.volume().provider() == &self.host.provider { self.require_seed_file_with_io(seed, &grant.file, &io).await?; }
-                    }
-                    for file in &seed.attachment_manifests {
-                        if file.volume().provider() == &self.host.provider { self.require_seed_file_with_io(seed, file, &io).await?; }
-                    }
-                    if let Some(summary) = &seed.summary {
-                        for file in std::iter::once(&summary.context).chain(&summary.payloads).chain(&summary.references) {
-                            if file.volume().provider() == &self.host.provider { self.require_seed_file_with_io(seed, file, &io).await?; }
+                    for file in seed.inherited_context.iter()
+                        .chain(seed.reference_grants.iter().map(|grant| &grant.file))
+                        .chain(seed.attachment_manifests.iter())
+                        .chain(seed.summary.iter().flat_map(|summary| std::iter::once(&summary.context)
+                            .chain(&summary.payloads).chain(&summary.references))) {
+                        if file.volume().provider() == &self.host.provider {
+                            self.require_seed_file_with_io(seed, file, &io).await?;
                         }
                     }
                 }

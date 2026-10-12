@@ -946,12 +946,7 @@ async fn worker_restart_with_options(
                 &signed,
                 65_536, None,
             )?);
-            let reader = Arc::new(FilesystemContentVerifier::new(
-                filesystem.clone(),
-                &issuer.verifier(&mut None).expect("verifier copy"),
-                &signed,
-                65_536, None,
-            )?);
+            let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
             if with_policy && !reopened {
                 Box::pin(async {
                     let mut aggregate = acyclic_harness::store::StreamAggregate::open(
@@ -2193,12 +2188,7 @@ async fn stock_restart_with_publication_fault(
             &signed,
             65_536, None,
         )?);
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            filesystem.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &signed,
-            65_536, None,
-        )?);
+        let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
         let host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
                 .await?, stream.clone(), payloads.clone(), reader.clone(), &(authority), signed.clone(), issuer.verifier(&mut None).expect("verifier copy"), scope.clone(), tasks.clone(), machines.clone(), Arc::new(SystemUnixMillisClock), None)?
         .with_session_limits(if reopened {

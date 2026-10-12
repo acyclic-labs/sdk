@@ -904,8 +904,7 @@ impl PiForkCoordinator {
             let _seed_custody = seed_io.into_custody();
             let capture = PiLazyCapture::new(source, plan.frozen, self.remaining(budget)?, work).await?;
             let filesystem: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
-                acyclic_harness::filesystem::FilesystemForkVerifier::new_with_native_work(self.filesystem.clone(),
-                    plan.request.maximum_bytes, &verifier.0, &authority.0.2, work)?.into_native_shared(work)?;
+                acyclic_harness::filesystem::FilesystemForkVerifier::new(self.filesystem.clone(), plan.request.maximum_bytes, None, Some((&verifier.0, &authority.0.2, &acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
             let stream_provider = acyclic_harness::resources::ProviderRef::new_with_native_work("local", "stream", "1", work)?;
             let history: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
                 acyclic_harness::fork::StreamHistoryForkVerifier::new_with_native_work(&stream_provider.0, work)?

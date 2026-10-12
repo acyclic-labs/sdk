@@ -210,8 +210,8 @@ impl Fixture {
             control_timeout_ms: capture.control_timeout_ms, cancellation_poll_ms: capture.cancellation_poll_ms,
             maximum_output_bytes: capture.maximum_output_bytes, maximum_result_bytes: capture.maximum_result_bytes };
         let request = invocation.request_with_work(&binding, view.manifest(), &work)?;
-        let results = Arc::new(FilesystemContentPublisher::new(files.clone(), results_volume.clone(), &issuer.verifier(&mut None).unwrap(), &scope, 1_048_576)?);
-        let content = Arc::new(FilesystemContentVerifier::new(files.clone(), issuer.verifier(&mut None).unwrap(), scope.clone(), 1_048_576)?);
+        let results = FilesystemContentPublisher::new(files.clone(), &results_volume, &issuer.verifier(&mut None).unwrap(), &scope, 1_048_576, None)?;
+        let content = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None).unwrap(), &scope, 1_048_576, None)?;
         let bytes = crate::pi_root_provider::guarded_pi_bytes(&request.0, 1_048_576, &work)?;
         let mut request_file = results.stage_once_with_native_work(
             native_artifact_operation(command, "request", &work)?,

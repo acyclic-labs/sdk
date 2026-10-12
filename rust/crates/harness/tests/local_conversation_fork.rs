@@ -96,14 +96,9 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         );
         let project_head = host.create_volume(&project).await?;
         host.create_volume(&private).await?;
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &scope,
-            64 * 1_024, None,
-        )?);
+        let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 64 * 1_024, None)?;
         let forks = Arc::new(CompositeForkVerifier::new(&[
-            Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+            FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
             Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
         ], &mut None)?);
         let mut aggregate = StreamAggregate::open(

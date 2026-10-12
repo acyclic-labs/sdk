@@ -26,13 +26,7 @@ type Files<A = MemoryAuthorityBackend, O = MemoryObjectBackend> = FilesystemHost
 async fn result_storage_cannot_mutate_a_pinned_native_view() -> Result<()> {
     let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     let mut authority = fixture.authority();
-    authority.results = Arc::new(FilesystemContentPublisher::new(
-        fixture.files.clone(),
-        &fixture.destination,
-        &fixture.issuer.verifier(&mut None).expect("verifier copy"),
-        &fixture.scope,
-        65_536, None,
-    )?);
+    authority.results = FilesystemContentPublisher::new(fixture.files.clone(), &fixture.destination, &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, 65_536, None)?;
     assert!(matches!(async {
         Process::new(fixture.owner.clone(), fixture.command, &fixture.plan, fixture.view.clone(),
             fixture.approval(), authority, fixture.view.work())?.await
@@ -1260,19 +1254,8 @@ where
             request.argv[3].push_str("; for index in {0..15}; do IFS= read -r value < extra-$index/input.txt; printf '%s|' \"$value\"; done > dst/many.txt");
         }
     }
-    let content = Arc::new(FilesystemContentVerifier::new(
-        files.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_000_000, None,
-    )?);
-    let results = Arc::new(FilesystemContentPublisher::new(
-        files.clone(),
-        &result_volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_000_000, None,
-    )?);
+    let content = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?;
+    let results = FilesystemContentPublisher::new(files.clone(), &result_volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?;
     let request_ref = results
         .stage(
             command,
@@ -2210,19 +2193,8 @@ async fn reopen_native(
             .map_err(|error| Error::Storage(error.to_string()))?,
         ProviderRef::new("native-test".into(), "filesystem".into(), "1".into(), &mut None)?,
     )?);
-    let content = Arc::new(FilesystemContentVerifier::new(
-        files.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &seed.scope,
-        1_000_000, None,
-    )?);
-    let results = Arc::new(FilesystemContentPublisher::new(
-        files.clone(),
-        &seed.result_volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &seed.scope,
-        1_000_000, None,
-    )?);
+    let content = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &seed.scope, 1_000_000, None)?;
+    let results = FilesystemContentPublisher::new(files.clone(), &seed.result_volume, &issuer.verifier(&mut None).expect("verifier copy"), &seed.scope, 1_000_000, None)?;
     let reopened = Arc::new(
         acyclic_stream::LocalStream::open(storage.join("coordinator"), Default::default())
             .await

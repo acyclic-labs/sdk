@@ -671,7 +671,7 @@ impl MemoryHarnessStorage {
                 action: Action::BindConversation { agent },
             }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
-        let input = Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &scope, maximum_file_bytes, None)?);
+        let input = FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &scope, maximum_file_bytes, None)?;
         let journal = Arc::new(
             FilesystemExecutionJournal::new(
                 stream.clone(),

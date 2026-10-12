@@ -282,8 +282,7 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
         ReferencedAttachments::Manifest { manifest, .. } => manifest.clone(),
         _ => return Err(Error::Invalid("real manifest publisher did not return a manifest".into())),
     };
-    let reader = Arc::new(FilesystemContentVerifier::new(fixture.host.clone(), &fixture.issuer.verifier(&mut None).expect("verifier copy"),
-        &fixture.scope, 8192, None)?);
+    let reader = FilesystemContentVerifier::new(fixture.host.clone(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, 8192, None)?;
     fixture.parent = fixture.parent.with_content_verifier(reader.clone());
     fixture.parent.execute(Command {
         operation_id: OperationId::from_bytes([60; 16]), idempotency_key: IdempotencyKey::new("history-message")?,
@@ -343,11 +342,13 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
     let private = workspace_ref(fixture.private.provider().clone(), &fixture.private.storage_name(&mut None)?)?;
     let stream_provider = ProviderRef::new("recursive-default-test".into(), "stream".into(), "1".into(), &mut None)?;
     let request = ForkRequest {
+        authorized_source: None,
         operation_id: effect, parent: fixture.parent.reducer().authority().clone(),
         parent_revision: fixture.parent.reducer().revision(),
         child: Authority { kind: AggregateKind::Conversation, id: "new-source-pin-child".into() },
         child_agent, attached_agents: Vec::new(),
         preparation: crate::fork::ForkPreparation {
+            child_result_volume: None,
             child_project_volume: VolumeRef::new(fixture.project.provider().clone(), "new-source-pin-project".into(),
                 VolumeClass::Project, VolumeOwner::Project("new-source-pin-child".into()), &mut None)?,
             child_private_volume: VolumeRef::new(fixture.private.provider().clone(), "new-source-pin-private".into(),
@@ -373,8 +374,7 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
     let pinned = machine.transition(&initial, &encode(&(SourcePin { intent: intent.clone(), command: command.clone() }), None)?)?;
     assert_eq!(pinned.status, MachineStatus::Suspended);
     assert_eq!(pinned.commands, vec![command.clone()]);
-    fixture.parent = fixture.parent.with_content_verifier(Arc::new(FilesystemContentVerifier::new(
-        fixture.host.clone(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, 8192, None)?));
+    fixture.parent = fixture.parent.with_content_verifier(FilesystemContentVerifier::new(fixture.host.clone(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, 8192, None)?);
     fixture.parent.execute(Command {
         operation_id: OperationId::from_bytes([67; 16]), idempotency_key: IdempotencyKey::new("later-parent-history")?,
         expected_revision: fixture.parent.reducer().revision(), scope: fixture.scope.clone(), causal_parent: None,

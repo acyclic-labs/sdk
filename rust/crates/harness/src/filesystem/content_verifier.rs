@@ -11,44 +11,32 @@ pub struct FilesystemContentVerifier<A, O> {
 }
 
 impl<A, O> FilesystemContentVerifier<A, O> {
-    /// Authenticates and copies the caller configuration with optional accounting.
+    /// Binds authenticated read authority with optional preparation accounting.
     pub fn new(
         host: Arc<FilesystemHost<A, O>>, verifier: &AuthorityVerifier,
         scope: &Scope, maximum_bytes: u64, io: Option<&PreparationIo>,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         if maximum_bytes == 0 {
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "content admission limit must be positive"));
         }
-        let mut history = io.map(PreparationIo::history_io);
-        let mut work = history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        verifier.verify(scope, &mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let verifier = verifier.copy(&mut work)?;
-        let scope = scope.copy(&mut work)?;
+        let (verifier, scope) = crate::executor::with_history_io(io, |work| {
+            verifier.verify(scope, work)?;
+            Ok((verifier.copy(work)?, scope.copy(work)?))
+        })?;
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
             Some(io) => {
                 io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+                io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
                 Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
-                    .ok_or_else(|| fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "content verifier custody underflows"))?)?)
+                    .ok_or_else(|| io.invalid("content verifier custody underflows"))?)?)
             }
             None => None,
         };
-        Ok(Self { host, verifier, scope, maximum_bytes,
-            #[cfg(not(target_arch = "wasm32"))] _native_metadata })
-    }
-
-    /// Shares the already-funded verifier without copying configuration payloads.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn into_native_shared(self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
-        if !self._native_metadata.as_ref().is_some_and(|custody| custody.matches_work(work)) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "native content sharing requires original resource metadata custody" });
-        }
-        let io = PreparationIo::from_native_work(work)?;
-        io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-        Ok(Arc::new(self))
+        Ok(Arc::new(Self { host, verifier, scope, maximum_bytes,
+            #[cfg(not(target_arch = "wasm32"))] _native_metadata }))
     }
 }
 
@@ -83,35 +71,11 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
             if maximum_bytes == 0 || maximum_bytes > self.maximum_bytes {
                 return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "prefix read exceeds provider limit"));
             }
-            let mut history = io.map(PreparationIo::history_io);
-            let grant = ContentGrant::verify_directory_read(&self.verifier, &self.scope, volume,
-                granted_prefix, &mut history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?;
-            let Some(io) = io else {
-                return self.host.read_private_prefix(volume, &grant, path, generation, maximum_bytes).await;
-            };
-            grant.require_directory_path(volume, path, Some(io))?;
-            let reference = fork_preparer_io::content_workspace(&self.host.provider, volume, Some(io))?;
-            let reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
-            let workspace = fork_preparer_io::open(&self.host, &reference, io).await?;
-            let pinned = fork_preparer_io::generation(&self.host, &workspace, generation, io).await?;
-            fork_preparer_io::retain(&pinned, Some(io)).await?;
-            let path = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
-            let path_hold = io.guard_owned(path.capacity() as u64)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.original_native_work() {
-                let stat = pinned.stat(&path, work, io.cancellation()).await.map_err(|error| (error, None))
-                    .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
-                if stat.kind != FileKind::Regular { return Err(io.invalid("prefix requires a regular file")); }
-                let length = stat.logical_bytes.ok_or_else(|| io.invalid("file length is missing"))?;
-                return pinned.read_range(&path, 0, maximum_bytes.min(length), work, io.cancellation()).await
-                    .map(|chunk| chunk.bytes).map_err(|source| Error::NativeWorkspace { source, custody: None });
-            }
-            let stat = io.receive(pinned.stat(&path, io.remaining()?, io.cancellation()).await)?;
-            if stat.kind != FileKind::Regular { return Err(io.invalid("prefix requires a regular file")); }
-            let length = stat.logical_bytes.ok_or_else(|| io.invalid("file length is missing"))?;
-            let read = io.receive(pinned.read_range(&path, 0, maximum_bytes.min(length), io.remaining()?, io.cancellation()).await)?;
-            let bytes = read.bytes;
-            drop(path); drop(path_hold); drop(reference); drop(reference_hold);
+            let grant = crate::executor::with_history_io(io, |work|
+                ContentGrant::verify_directory_read(&self.verifier, &self.scope, volume, granted_prefix, work))?;
+            let grant_hold = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
+            let bytes = self.host.read_private_prefix(volume, &grant, path, generation, maximum_bytes, io).await?;
+            drop(grant); drop(grant_hold);
             Ok(bytes)
         })
     }

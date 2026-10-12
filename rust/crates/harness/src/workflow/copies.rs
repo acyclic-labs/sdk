@@ -18,9 +18,21 @@ macro_rules! copy {
     };
 }
 
-copy!(MachineIdentity, self, quota, Ok(Self {
-    name: copy_text(&self.name, quota)?, version: copy_text(&self.version, quota)?, digest: self.digest,
-}));
+impl MachineIdentity {
+    fn copy_fields(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
+        Ok(Self { name: copy_text(&self.name, quota)?, version: copy_text(&self.version, quota)?, digest: self.digest })
+    }
+}
+
+pub(crate) fn workflow_copy_identity(source: &MachineIdentity, io: Option<&PreparationIo>) -> Result<MachineIdentity> {
+    if io.is_none() { return Ok(source.clone()); }
+    with_history_io(io, |work| {
+        let mut quota = CodecQuota::new(work, 0)?;
+        let value = source.copy_fields(&mut quota)?;
+        quota.transfer();
+        Ok(value)
+    })
+}
 copy!(MachineCheckpoint, self, quota, Ok(Self {
     machine: self.machine.copy_fields(quota)?, revision: self.revision, state: copy_value(&self.state, quota)?,
 }));

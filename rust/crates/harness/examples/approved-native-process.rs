@@ -410,19 +410,8 @@ where
     if restart_path.is_some() {
         request.timeout_ms = 30_000;
     }
-    let content = Arc::new(FilesystemContentVerifier::new(
-        files.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_000_000, None,
-    )?);
-    let results = Arc::new(FilesystemContentPublisher::new(
-        files.clone(),
-        &results_volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_000_000, None,
-    )?);
+    let content = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?;
+    let results = FilesystemContentPublisher::new(files.clone(), &results_volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?;
     let request_ref = results
         .stage(
             command,
@@ -765,18 +754,10 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let content: Arc<dyn ContentResidencyVerifier> = Arc::new(FilesystemContentVerifier::new(
-        files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None,
-    )?);
+    let content: Arc<dyn ContentResidencyVerifier> = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?;
     Ok(NativeProcessAuthority { verifier: issuer.verifier(&mut None).expect("verifier copy"), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 },
     content: content.clone(), result_content: content,
-    results: Arc::new(FilesystemContentPublisher::new(
-        files.clone(),
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_000_000, None,
-    )?),
+    results: FilesystemContentPublisher::new(files.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?,
     approvals: execution_journal(stream, files, volume, issuer, scope)?, authority_custody: None, })
 }
 

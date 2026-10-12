@@ -18,9 +18,7 @@
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let verifier = FilesystemForkVerifier::new_with_native_work(
-            Arc::clone(&host), 4096, &issuer.verifier(&mut None).expect("verifier copy"), &scope, &work)?
-            .into_native_shared(&work)?;
+        let verifier = FilesystemForkVerifier::new(Arc::clone(&host), 4096, None, Some((&issuer.verifier(&mut None).expect("verifier copy"), &scope, &crate::filesystem::PreparationIo::from_native_work(&work)?)))?;
         let other = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -74,7 +72,7 @@
         assert_eq!(
             host.read(&reference, Some(&updated), "/hello.txt", 16)
                 .await?,
-            Bytes::from_static(b"hello").into()
+            acyclic_stream::OwnedBytes::from_static(b"hello")
         );
         assert!(matches!(
             host.apply(
@@ -183,14 +181,14 @@
                 .is_err()
             );
         }
-        assert_ne!(first.version(), second.version());
+        assert_ne!(first.version().into(), second.version());
         assert_eq!(
             host.read_content(&first, &read, 16, None).await?,
-            Bytes::from_static(b"one").into()
+            acyclic_stream::OwnedBytes::from_static(b"one")
         );
         assert_eq!(
             host.read_content(&second, &read, 16, None).await?,
-            Bytes::from_static(b"two").into()
+            acyclic_stream::OwnedBytes::from_static(b"two")
         );
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -198,8 +196,7 @@
             let work = acyclic_fs::NativeMaterializationWork::new(
                 acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let native = FilesystemForkVerifier::new_with_native_work(
-                Arc::clone(&host), 16, &verifier, &scope, &work)?;
+            let native = FilesystemForkVerifier::new(Arc::clone(&host), 16, None, Some((&verifier, &scope, &crate::filesystem::PreparationIo::from_native_work(&work)?)))?;
             let io = PreparationIo::from_native_work(&work)?;
             let binding = native.native_binding.as_ref().unwrap();
             binding.require_file(&first, &io)?;
@@ -210,12 +207,11 @@
             let bytes = host.read_pinned_io(&second, 16, Some(&io)).await?;
             assert_eq!(bytes.as_ref(), b"two");
             drop(bytes);
-            let tampered = FileRef::new(first.volume().clone(), first.path(), first.version(),
-                second.descriptor().clone(), first.display_name(), &mut None)?;
+            let tampered = FileRef::new(first.volume().clone(), first.path().into(), first.version().into(),
+                second.descriptor().clone(), first.display_name().into(), &mut None)?;
             assert!(host.read_pinned_io(&tampered, 16, Some(&io)).await.is_err());
             let denied_scope = issuer.issue("no-files", &Capabilities::default(), Some(owner), None, &mut None).expect("scope proof");
-            let denied = FilesystemForkVerifier::new_with_native_work(
-                Arc::clone(&host), 16, &verifier, &denied_scope, &work)?;
+            let denied = FilesystemForkVerifier::new(Arc::clone(&host), 16, None, Some((&verifier, &denied_scope, &crate::filesystem::PreparationIo::from_native_work(&work)?)))?;
             let before = work.receipt().backend_read_operations;
             assert!(matches!(denied.native_binding.as_ref().unwrap().require_file(&first, &io),
                 Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
@@ -245,8 +241,8 @@
                 "messages",
                 Some(&listed_generation),
                 None,
-                10, None,
-            )?
+                10,
+            )
             .await?;
         assert_eq!(portable_page.generation, listed_generation);
         assert_eq!(
@@ -294,8 +290,8 @@
                 "messages",
                 Some(&listed_generation),
                 None,
-                10, None,
-            )?
+                10,
+            )
             .await?;
         assert_eq!(old_generation, listed_generation);
         assert_eq!(old_page.entries, page.entries);
@@ -322,7 +318,7 @@
         let delegated =
             ContentGrant::verify_directory_read(&verifier, &delegated_scope, &volume, "messages", &mut None)?;
         let (discovered, bytes) = host
-            .read_private_path(&volume, &delegated, "messages/first.txt", None, 16, None)?
+            .read_private_path(&volume, &delegated, "messages/first.txt", None, 16, None)
             .await?;
         assert_eq!(bytes.as_ref(), b"two");
         assert_ne!(discovered.version(), second.version());
@@ -368,10 +364,10 @@
         assert!(host.read_content(&empty, &read, 16, None).await?.is_empty());
         let wrong_digest = FileRef::new(
             volume.clone(),
-            first.path(),
-            first.version(),
+            first.path().into(),
+            first.version().into(),
             FileDescriptor::new([0; 32], 3, "text/plain".into())?,
-            first.display_name(),
+            first.display_name().into(),
          &mut None)?;
         assert!(host.read_content(&wrong_digest, &read, 16, None).await.is_err());
         assert!(
@@ -459,7 +455,7 @@
                 &IdempotencyKey::new("attachment-list")?,
             )
             .await?;
-        let verifier = Arc::new(FilesystemContentVerifier::new(Arc::new(host), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4_096, None)?);
+        let verifier = FilesystemContentVerifier::new(Arc::new(host), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4_096, None)?;
         let stream = Arc::new(MemoryStream::default());
         let mut aggregate =
             StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
@@ -508,7 +504,7 @@
         assert!(aggregate.execute(command(3, missing)?, #[cfg(feature = "filesystem")] None, &mut None).await.is_err());
         assert_eq!(aggregate.reducer().revision(), 1);
         let mut missing_attachment = message.clone();
-        missing_attachment.attachments = vec![Attachment {
+        missing_attachment.attachments = crate::conversation::ReferencedAttachments::Inline { items: vec![Attachment {
             file: FileRef::new(
                 file.volume().clone(),
                 "attachments/missing.bin".into(),
@@ -517,8 +513,7 @@
                 "missing.bin".into(),
              &mut None)?,
             label: None,
-        }]
-        .into();
+        }] };
         assert!(
             aggregate
                 .execute(command(5, missing_attachment)?, #[cfg(feature = "filesystem")] None, &mut None)

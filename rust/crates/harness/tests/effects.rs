@@ -103,12 +103,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         files.push(host.put_content(&volume, &write, path, bytes, mime, name, 4_096, &IdempotencyKey::new(key)?, None, None).await?);
     }
     let [request, result, schema, invalid_schema]: [FileRef; 4] = files.try_into().unwrap();
-    let verifier = Arc::new(FilesystemContentVerifier::new(
-        host,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        4_096, None,
-    )?);
+    let verifier = FilesystemContentVerifier::new(host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4_096, None)?;
     let provider = Arc::new(test_stream::LostSessionAck::<MemoryStream>::default());
     let stream = provider.clone();
     let mut aggregate = StreamAggregate::open(

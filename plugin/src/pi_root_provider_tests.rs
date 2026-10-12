@@ -797,9 +797,7 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
         &fixture.owner, &fixture.filesystem, operation, "native-mail", &work).await.unwrap().unwrap();
     assert_eq!(original, file);
     let (authority, authority_custody) = fixture.owner.authority_with_native_work(&work).unwrap();
-    let verifier = FilesystemContentVerifier::new_with_native_work(fixture.filesystem.clone(),
-        &authority.verifier, &authority.signed,
-        fixture.owner.policy().maximum_payload_bytes, &work).unwrap();
+    let verifier = FilesystemContentVerifier::new(fixture.filesystem.clone(), &authority.verifier, &authority.signed, fixture.owner.policy().maximum_payload_bytes, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(&work).unwrap())).unwrap();
     let bytes = verifier.read_with_native_work(&original,
         fixture.owner.policy().maximum_payload_bytes, &work).await.unwrap();
     let (decoded, decoded_custody) = guarded_pi_decode::<PiMailEnvelope>(bytes.as_ref(), fixture.owner.policy().maximum_payload_bytes, std::mem::size_of::<PiMailEnvelope>() as u64, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None, pi_serde_diagnostic_labels_bytes(&["PiMailEnvelope", "PiMailKind", "kind", "message", "steer"]), &work).unwrap();

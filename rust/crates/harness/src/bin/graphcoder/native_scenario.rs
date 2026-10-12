@@ -639,9 +639,9 @@ async fn aggregate(stream: &std::sync::Arc<LocalStream>, files: Arc<Files>,
     owner: &AuthorityBinding, config: &Config) -> Result<StreamAggregate<LocalStream>>
 {
     let verifier = AuthorityIssuer::new(&owner.issuer, owner.key, owner.authority.clone()).verifier(&mut None).expect("verifier copy");
-    let content = Arc::new(FilesystemContentVerifier::new(files.clone(), &verifier, &owner.scope, PAYLOAD_BYTES, None)?);
+    let content = FilesystemContentVerifier::new(files.clone(), &verifier, &owner.scope, PAYLOAD_BYTES, None)?;
     let forks = Arc::new(CompositeForkVerifier::new(&[
-        Arc::new(FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES)?),
+        FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES, None, None)?,
         Arc::new(StreamHistoryForkVerifier::new(&config.stream_provider, &mut None)?),
     ], &mut None)?);
     let mut aggregate = StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?

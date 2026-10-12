@@ -154,12 +154,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             &IdempotencyKey::new("scheduler-initial")?,
          None, None)
         .await?;
-    let verifier = Arc::new(FilesystemContentVerifier::new(
-        host.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_024, None,
-    )?);
+    let verifier = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_024, None)?;
     let stager = Arc::new(FilesystemSchedulerPayloadStore::new(
         host.clone(),
         &volume,

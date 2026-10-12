@@ -194,10 +194,10 @@ where
         let machine = PiTaskMachine::new(work)?;
         let mut tasks = TaskRegistry::default();
         let definition = machine.definition(work)?;
-        tasks.register_with_native_work(definition.0, definition.1, work)?;
+        tasks.register(definition)?;
         let fork_machine = acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?;
         let fork = fork_machine.definition_with_native_work(work)?;
-        tasks.register_with_native_work(fork.0, fork.1, work)?;
+        tasks.register(fork)?;
         let fork_definition = tasks.get_version("acyclic.fork_preparation", "1", Some(work))?;
         let definition = tasks.get_version::<PiTaskInput, FileRef>("acyclic.pi", "1", Some(work))?;
         let mut machines = (MachineRegistry::default(), None, None);

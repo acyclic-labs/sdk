@@ -100,10 +100,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(work) = io.original_native_work() {
             let _changes_custody;
             let (changes, custody) = initial.diff_to_with_native_work(head, u32::MAX, work, work.cancellation())
-                .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                .await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             _changes_custody = custody;
             let (paths, custody) = changes.changed_paths_with_native_work(u32::MAX, work, work.cancellation())
-                .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                .await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             drop(changes);
             drop(_changes_custody);
             io.absorb_native_custody(custody)?;
@@ -318,11 +318,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                                 return Err(interaction_host::interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid, "inherited file is not pinned to the selected private generation"));
                             }
                             let selected = crate::executor::with_history_io(Some(&io), |work| FileRef::new(
-                                file.volume().copy(work)?, fork_preparer_io::clone_text(file.path(), Some(&io))?,
+                                file.volume().copy(work)?, fork_preparer_io::clone_text(file.path().into(), Some(&io))?,
                                 fork_preparer_io::clone_text(&version, Some(&io))?,
                                 FileDescriptor::new(*file.descriptor().sha256(), file.descriptor().byte_length(),
                                     fork_preparer_io::clone_text(file.descriptor().media_type(), Some(&io))?)?,
-                                fork_preparer_io::clone_text(file.display_name(), Some(&io))?, work))?;
+                                fork_preparer_io::clone_text(file.display_name().into(), Some(&io))?, work))?;
                             let original = self.host.read_pinned_io(file, self.maximum_inherited_bytes, Some(&io)).await?;
                             let final_bytes = self.host.read_pinned_io(&selected, self.maximum_inherited_bytes, Some(&io)).await?;
                             if original != final_bytes {

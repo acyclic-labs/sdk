@@ -218,13 +218,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             volume.capability(VolumeOperation::Write)?,
         ]), Some(agent), None, &mut None).expect("scope proof");
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
-    let writer = Arc::new(FilesystemContentPublisher::new(
-        filesystem.clone(),
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &signed,
-        65_536, None,
-    )?);
+    let writer = FilesystemContentPublisher::new(filesystem.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
     let text = "original\r\n🦀 exact bytes\r\n";
     let source = writer
         .stage(
@@ -372,12 +366,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             Some(runtime.task_host().clone()),
             None,
             Some(ContentBindings {
-                reader: Arc::new(FilesystemContentVerifier::new(
-                    filesystem.clone(),
-                    &issuer.verifier(&mut None).expect("verifier copy"),
-                    &signed,
-                    65_536, None,
-                )?),
+                reader: FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?,
                 writer: Some(writer.clone()),
             }),
             None,

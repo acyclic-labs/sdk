@@ -760,9 +760,7 @@ mod native_metadata_controls {
             acyclic_fs::Fs::memory(),
             crate::resources::ProviderRef::new("effect-metadata-control".into(), "filesystem".into(), "2".into(), &mut None)?,
         )?);
-        let content = Arc::new(crate::filesystem::FilesystemContentVerifier::new(
-            files, &issuer.verifier(&mut None).expect("verifier copy"), &scope, crate::conversation::Limits::default().file_bytes, None,
-        )?);
+        let content = crate::filesystem::FilesystemContentVerifier::new(files, &issuer.verifier(&mut None).expect("verifier copy"), &scope, crate::conversation::Limits::default().file_bytes, None)?;
         ConversationEffectHost::new(
             Arc::new(MemoryStream::default()),
             authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(None)?, None, None,

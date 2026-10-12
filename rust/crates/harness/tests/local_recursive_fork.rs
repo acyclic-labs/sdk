@@ -162,12 +162,7 @@ where
         capabilities.push(file.read_capability()?);
     }
     let read_scope = issuer.issue("prefix-owner-approved-reader", &Capabilities::new(capabilities), Some(agent), None, &mut None).expect("scope proof");
-    let reader = Arc::new(FilesystemContentVerifier::new(
-        host.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &read_scope,
-        64 * 1024, None,
-    )?);
+    let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &read_scope, 64 * 1024, None)?;
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
@@ -426,14 +421,9 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let reader = Arc::new(FilesystemContentVerifier::new(
-        host.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        64 * 1_024, None,
-    )?);
+    let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 64 * 1_024, None)?;
     let forks = Arc::new(CompositeForkVerifier::new(&[
-        Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+        FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
     ], &mut None)?);
     Ok(
@@ -609,12 +599,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             VolumeOwner::Project("local-project".into()),
         )?;
         let child_scope = scope(&child_issuer, child_agent, &child_private, &child_project)?;
-        let parent_reader = Arc::new(FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &grant_scope,
-            64 * 1_024, None,
-        )?);
+        let parent_reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 64 * 1_024, None)?;
         let preparer = FilesystemForkPreparer::new(
             host.clone(),
             aggregate.reducer().clone(),
@@ -801,12 +786,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 authority.stream_path(&mut None)?.into_bytes(),
                 Some(aggregate.reducer().revision().to_string()),
             )?);
-            let reader = Arc::new(FilesystemContentVerifier::new(
-                host.clone(),
-                &issuer.verifier(&mut None).expect("verifier copy"),
-                &grant_scope,
-                64 * 1024, None,
-            )?);
+            let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 64 * 1024, None)?;
             let sibling_preparer = FilesystemForkPreparer::new(
                 host.clone(),
                 aggregate.reducer().clone(),
@@ -942,12 +922,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 .as_ref(),
             format!("child attachment {level}").as_bytes(),
         );
-        let denied = FilesystemContentVerifier::new(
-            host.clone(),
-            &child_issuer.verifier(&mut None).expect("verifier copy"),
-            &child_scope,
-            64 * 1024, None,
-        )?;
+        let denied = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, 64 * 1024, None)?;
         assert!(
             PreparedModelRequest::inherit(
                 ModelRequest {
@@ -1399,12 +1374,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             VolumeOwner::Project("deep-project".into()),
         )?;
         let child_scope = scope(&child_issuer, child_agent, &child_private, &child_project)?;
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &grant_scope,
-            8 * 1_024, None,
-        )?);
+        let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 8 * 1_024, None)?;
         let preparer = FilesystemForkPreparer::new(
             host.clone(),
             aggregate.reducer().clone(),
