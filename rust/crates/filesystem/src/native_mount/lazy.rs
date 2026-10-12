@@ -4429,9 +4429,7 @@ where
                     .await.map_err(mount_engine_error)?;
             } else {
                 let (budget, prior_live) = work.sdk_scope()?;
-                let result = candidate.remove(
-                    namespace.value.take().expect("original removal namespace"), Some(*removed_id), budget, cancellation,
-                ).await;
+                let result = candidate.mutate(vec![crate::kernel::Mutation::Remove { path: namespace.value.take().expect("original removal namespace"), expected_file_id: (Some(*removed_id)).map_or(crate::kernel::MetadataField::Unavailable, crate::kernel::MetadataField::Value) }], budget, cancellation).await;
                 work.accept_sdk(result, prior_live, mount_engine_error)?;
             }
             work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;

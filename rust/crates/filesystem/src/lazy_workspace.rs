@@ -17672,12 +17672,7 @@ mod tests {
                 .workspace().checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("checkout");
             checkout
-                .create_file(
-                    path.clone(),
-                    content.clone(),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
+                .create(crate::AuthoredMutation::CreateFile { path: path.clone(), bytes: (content.clone()).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .expect("stage content");
             let identity = checkout
@@ -17687,7 +17682,7 @@ mod tests {
                 .value
                 .expect("staged file");
             checkout
-                .remove(path.clone(), None, WorkBudget::UNBOUNDED, &cancellation)
+                .mutate(vec![crate::kernel::Mutation::Remove { path: path.clone(), expected_file_id: (None).map_or(crate::kernel::MetadataField::Unavailable, crate::kernel::MetadataField::Value) }], WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .expect("remove");
             root.prepare_mount_removals(&[], &[(identity.record, identity.metadata)], removal)
