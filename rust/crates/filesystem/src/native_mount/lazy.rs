@@ -21,7 +21,7 @@ use crate::heap_future::in_heap;
 use crate::kernel::{
     FileKind, FileMetadata, FileMutation, FilePayload, FileRecord, MetadataField, Mutation,
 };
-use crate::lazy_workspace::{logical_child_path, InspectBasis, LazyReadonlyNode, LazyTreapWork};
+use crate::lazy_workspace::{InspectBasis, LazyReadonlyNode, LazyTreapWork};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, FileId, IdempotencyKey, LazyDirectoryCursor, LazyLookup,
     LazyWorkspace, LazyWorkspaceError, LazyWorkspaceStore, NativeRootIdentity, WorkBudget, WorkspaceMetadata,
@@ -1222,21 +1222,17 @@ impl<'a, 'w> DirectoryCarrierScratch<'a, 'w> {
         Ok(())
     }
 
-    fn restore_final_allowances(work: &mut crate::demand::DemandWork, items: u64, copies: u64) {
-        work.refund(crate::materializer::NativeResourceCredit::Items, items).expect("original reservation is balanced");
-        work.refund(crate::materializer::NativeResourceCredit::Copy, copies).expect("original reservation is balanced");
-    }
 
-    fn restore_final_work(&mut self) {
-        let items = std::mem::take(&mut self.reserved_items);
-        let copies = std::mem::take(&mut self.reserved_copies);
-        self.carrier.with_work(|work| Self::restore_final_allowances(work, items, copies));
-    }
 }
 
 impl Drop for DirectoryCarrierScratch<'_, '_> {
     fn drop(&mut self) {
-        self.restore_final_work();
+        let items = std::mem::take(&mut self.reserved_items);
+        let copies = std::mem::take(&mut self.reserved_copies);
+        self.carrier.with_work(|work| {
+            work.refund(crate::materializer::NativeResourceCredit::Items, items).expect("original reservation is balanced");
+            work.refund(crate::materializer::NativeResourceCredit::Copy, copies).expect("original reservation is balanced");
+        });
         drop(self.finalization.take());
         let bytes = self.bytes;
         if bytes == 0 { return; }
@@ -1266,14 +1262,6 @@ fn directory_lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::Demand(DemandError::StaleVersion) => MountSourceError::Stale,
         _ => lazy_error(error),
     }
-}
-
-fn directory_child_with_work(
-    path: &MountPath,
-    name: &[u8],
-    work: &mut crate::demand::DemandWork,
-) -> Result<(MountPath, u64), MountSourceError> {
-    mount_components_with_work(path.components(), Some(name), work)
 }
 
 fn mount_components_with_scratch<S: super::adapter::CaptureInputScratch>(
@@ -5398,7 +5386,7 @@ where
             let (name, mut allocation, name_bytes) = name.into_parts();
             if let Some(allocation) = &mut allocation { scratch.absorb_native(allocation)?; }
             scratch.track(name_bytes)?;
-            let (mounted_child, mounted_bytes) = scratch.carrier.with_work(|work| directory_child_with_work(path, &name, work))?;
+            let (mounted_child, mounted_bytes) = scratch.carrier.with_work(|work| mount_components_with_work(path.components(), Some(&name), work))?;
             scratch.track(mounted_bytes)?;
             let child = mount_path_text_with_carrier(&self.root, &mounted_child, scratch.carrier)?;
             scratch.track(child.legacy_owned_bytes())?;
@@ -8244,12 +8232,6 @@ mod tests {
             .collect::<Vec<_>>();
         let windows = LogicalName::new(NameEncoding::WindowsUtf16Le, utf16.clone(), 510)?;
         let portable = LogicalName::new(NameEncoding::Utf8, text.as_bytes().to_vec(), 255)?;
-        for name in [&windows, &portable] {
-            assert_eq!(
-                logical_child_path("/parent", name).as_deref(),
-                Some("/parent/dir-\u{e9}")
-            );
-        }
         if cfg!(windows) {
             for name in [&windows, &portable] {
                 assert_eq!(super::super::adapter::native_mount_name(name, &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())))?.0, utf16);

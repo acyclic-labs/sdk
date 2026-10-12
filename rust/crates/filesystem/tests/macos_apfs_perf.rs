@@ -192,13 +192,7 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     let attach_us = started.elapsed().as_micros();
 
     let started = Instant::now();
-    let exact = lazy
-        .exactify(
-            "/hot",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            PublicationPermit::Unrestricted,
-        )
+    let exact = (async { let cancellation = &CancellationToken::new(); let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = lazy.exactify("/hot", PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) })
         .await?;
     let exactify_us = started.elapsed().as_micros();
     eprintln!(
