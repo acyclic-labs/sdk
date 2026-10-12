@@ -473,7 +473,6 @@ fn mount_watch_error(error: crate::watch::NativeWatchError) -> MountSourceError 
         WatchError::RescanInProgress => "filesystem engine failure: source demand failed: native watcher baseline scan is in progress",
         WatchError::ZeroPollLimit => "filesystem engine failure: source demand failed: native watcher poll limit must be non-zero",
         WatchError::SequenceExhausted => "filesystem engine failure: source demand failed: native watcher sequence is exhausted",
-        WatchError::AllocationFailed => "filesystem engine failure: source demand failed: native watcher output allocation failed",
     };
     MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Engine, text: reason }
 }
