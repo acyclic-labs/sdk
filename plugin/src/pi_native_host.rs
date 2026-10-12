@@ -245,7 +245,7 @@ impl PiNativeCommandHost {
     }
 
     async fn register_binding(&self, prepared: PreparedPiFork, observed: bool) -> Result<()> {
-        let original_work = prepared.original_work().clone();
+        let original_work = prepared._metadata_custody.work().clone();
         prepared.report.validate_with_native_work(&original_work)?;
         let binding = &prepared.binding;
         binding.validate_with_native_work(None, binding.project_volumes.keys().map(String::as_str), false, &original_work)?;

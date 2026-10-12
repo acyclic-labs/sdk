@@ -656,9 +656,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let projection = crate::executor::load_json::<
             crate::executor::ResponseProjection>(self, projection, io).await?;
-        crate::context::validate_projected_context(&projection.context, limits, io)?;
-        let Some(reference) = &projection.checkpoint else {
-            if projection.canonical.is_some() {
+        crate::context::validate_projected_context(&projection.0.context, limits, io)?;
+        let Some(reference) = &projection.0.checkpoint else {
+            if projection.0.canonical.is_some() {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
                     "canonical publication has no checkpoint"));
             }
@@ -669,24 +669,24 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let envelope = crate::executor::load_json::<
             crate::context::CanonicalContextCheckpoint>(self, reference, io).await?;
-        envelope.validate(limits, io)?;
+        envelope.0.validate(limits, io)?;
         if *step != 0
-            || envelope.operation_id != operation_id
-            || projection.canonical.as_ref() != Some(&envelope.source)
-            || &envelope.compaction != compaction
+            || envelope.0.operation_id != operation_id
+            || projection.0.canonical.as_ref() != Some(&envelope.0.source)
+            || &envelope.0.compaction != compaction
         {
             return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
                 "canonical publication differs from its envelope"));
         }
         let source = crate::executor::load_json::<crate::context::Context>(
-            self, &envelope.source, io).await?;
+            self, &envelope.0.source, io).await?;
         let retained = crate::executor::load_json::<crate::context::Context>(
-            self, &envelope.retained, io).await?;
+            self, &envelope.0.retained, io).await?;
         let proof = crate::executor::load_json::<crate::context::CompactionReference>(
             self, compaction, io).await?;
-        envelope.validate_projection(&source, &retained, &proof, limits, io)?;
-        self.verify_canonical_source_with_io(&envelope, &source, limits, io).await?;
-        self.verify_canonical_summary_with_io(operation_id, &envelope, &source, &proof, limits, io).await
+        envelope.0.validate_projection(&source.0, &retained.0, &proof.0, limits, io)?;
+        self.verify_canonical_source_with_io(&envelope.0, &source.0, limits, io).await?;
+        self.verify_canonical_summary_with_io(operation_id, &envelope.0, &source.0, &proof.0, limits, io).await
     }
 
     pub(super) fn context_history_limits(
@@ -851,8 +851,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     ExecutionEvent::Model { event, .. } => {
                         let event = crate::executor::load_json::<ModelEvent>(
                             self, event, io).await?;
-                        admission.observe(&event, limits, io)?;
-                        match &*event {
+                        admission.observe(&event.0, limits, io)?;
+                        match &event.0 {
                             ModelEvent::Content { delta } => {
                                 canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
                             }
@@ -867,7 +867,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         "canonical summary selection is invalid")),
                 }
             }
-            if prepared.as_ref().and_then(|projection| projection.canonical.as_ref())
+            if prepared.as_ref().and_then(|projection| projection.0.canonical.as_ref())
                 != Some(&envelope.source) || !admission.completed || output.is_empty() {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                     "canonical summary lacks its prepared source or settled output"));
@@ -1016,7 +1016,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             _ => unreachable!("execution authority validated before assembly"),
         };
         #[cfg(not(target_arch = "wasm32"))]
-        let _native_metadata = io.filter(|io| io.uses_native_work())
+        let _native_metadata = io.filter(|io| io.original_native_work().is_some())
             .map(|io| io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| io.invalid("execution journal custody underflows"))?)).transpose()?;
         Ok(Self {
@@ -1045,7 +1045,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         scope: &Scope, private_volume: &VolumeRef, io: Option<&PreparationIo>,
     ) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io.filter(|io| io.uses_native_work()) {
+        if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             let guard = self._native_metadata.as_mut().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "native interaction binding requires original journal custody",
@@ -1521,7 +1521,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         }
                         crate::filesystem::retain_decoded(parsed)
                     }
-                    None => decode_json::<ModelEvent>(&bytes, None)?.into_retained(),
+                    None => decode_json::<ModelEvent>(&bytes, None)?.0,
                 });
             }
         }
@@ -2150,9 +2150,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             committed.conversation_revision,
             committed,
             &resolver,
-            messages,
-            attachments,
-            render_bytes,
+            crate::conversation::Limits { context_messages: messages, attachments: attachments, render_bytes: render_bytes, ..Default::default() },
             attachments,
             io,
         ).await?;
@@ -2412,13 +2410,18 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     for id in &selection.message_ids { crate::executor::stock_vec_push(&mut message_ids, *id, io)?; }
     let selection = crate::conversation::ModelContextSelection {
         conversation_revision: selection.conversation_revision, message_ids,
-        checkpoint: selection.checkpoint.as_ref().map(|file| super::fork_preparer_io::clone_file(file, io)).transpose()?,
+        checkpoint: selection.checkpoint.as_ref().map(|file| crate::executor::with_history_io(io, |work| file.copy(work))).transpose()?,
     };
     let resolver = JournalSelectedResolver { journal, inner: verifier };
     let resolver: &dyn ContentResidencyVerifier = if io.is_some() { &resolver } else { verifier };
     let selected = select_model_context(
-        &history, selection.conversation_revision, selection, resolver,
-        limits.context_messages, limits.attachments, limits.render_bytes, limits.attachments, io,
+        &history,
+        selection.conversation_revision,
+        selection,
+        resolver,
+        limits,
+        limits.attachments,
+        io,
     ).await?;
     let input = crate::executor::with_history_io(io, |work| crate::model::clone_content(&selected.messages.last().ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Invalid, "canonical input is missing"))?.content, work).map(|(copy, _)| copy))?;
     let mut selected_delta = selected;
@@ -2744,9 +2747,7 @@ mod tests {
                 selection.conversation_revision,
                 selection,
                 content,
-                limits.context_messages,
-                limits.attachments,
-                limits.render_bytes,
+                limits,
                 limits.attachments,
                 None,
             )
@@ -2778,9 +2779,7 @@ mod tests {
             complete.conversation_revision,
             complete.clone(),
             content.as_ref(),
-            limits.context_messages,
-            limits.attachments,
-            limits.render_bytes,
+            limits,
             limits.attachments,
             None,
         )

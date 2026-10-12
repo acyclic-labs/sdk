@@ -115,7 +115,7 @@ impl ProviderRef {
         Self::validate_fields_with_work(&self.namespace, &self.family, &self.version, work)
     }
 
-    fn validation_reason(&self) -> Option<&'static str> {
+    pub(crate) fn validation_error(&self) -> Option<&'static str> {
         self.parts().into_iter().any(|part| part.is_empty() || part.chars().any(char::is_control))
             .then_some("provider identity is invalid")
     }
@@ -147,10 +147,6 @@ impl ProviderRef {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn validation_error(&self) -> Option<&'static str> {
-        self.validation_reason()
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
@@ -458,7 +454,7 @@ impl GenerationRef {
             io.preflight(inspection)?;
             io.charge(inspection)?;
         }
-        if let Some(reason) = provider.validation_reason() {
+        if let Some(reason) = provider.validation_error() {
             return Err(io.invalid(reason));
         }
         let provider = provider.clone_with_io(io)?;

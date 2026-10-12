@@ -627,7 +627,8 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
     }
     let backing = count.checked_mul(size_of::<LogicalName>()).ok_or(WorkError::Overflow)? as u64;
     let allocation = if let Some(original) = &original {
-        Some(original.claim_allocation(backing, u64::from(backing != 0), WorkCounters::UNCHARGED)?)
+        Some(original.claim_allocation(backing, u64::from(backing != 0), WorkCounters::UNCHARGED)
+            .map_err(crate::native_name::original_name_error)?)
     } else {
         work.allocate(backing)?;
         None
@@ -1308,16 +1309,12 @@ impl NativeWatch {
         };
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let source_result: Option<Result<crate::source_watch::NativeSourceWatch, crate::DemandError>> = None;
-        let mut startup_failure = None;
         let watcher = if let Some(source) = source_result {
             match source {
                 Ok(watcher) => NativeWatchDriver::Source {
                     watcher, root: driver_root, _root_allocation: driver_allocation,
                 },
-                Err(crate::DemandError::SourceWatchStartup(owner)) => {
-                    startup_failure = Some(Arc::clone(&owner));
-                    NativeWatchDriver::StartupFailure(owner)
-                }
+                Err(crate::DemandError::SourceWatchStartup(owner)) => NativeWatchDriver::StartupFailure(owner),
                 Err(error) => return Err(demand_watch_error(error)),
             }
         } else {
@@ -1353,8 +1350,8 @@ impl NativeWatch {
             root_allocation, owner_allocation: None,
             pending_source_watch: None,
         };
-        if let Some(cause) = startup_failure {
-            return Err(NativeWatchError::SourceStartupFailed { cause, watch });
+        if let NativeWatchDriver::StartupFailure(cause) = &watch.watcher {
+            return Err(NativeWatchError::SourceStartupFailed { cause: Arc::clone(cause), watch });
         }
         let checked = if let Some(original) = original {
             original.admit(WorkCounters::UNCHARGED)

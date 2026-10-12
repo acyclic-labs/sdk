@@ -222,8 +222,7 @@ async fn qualify_filesystem_cases(
 
 async fn qualify_native_case(root: &Path, started: Instant, budget: Duration) -> Case {
     let capability = probe_native_mount();
-    if capability.available
-        && capability.writable
+    if capability.available()
         && capability.kind != Some(NativeMountKind::MacOsNfs)
     {
         let mut case = run_case(
@@ -245,9 +244,9 @@ async fn qualify_native_case(root: &Path, started: Instant, budget: Duration) ->
             unsupported_reason: Some(if capability.kind == Some(NativeMountKind::MacOsNfs) {
                 "SQLite WAL declined on the macOS loopback NFS mount; the shared-memory WAL consumer is unsupported".into()
             } else {
-                capability.unavailable_reason.unwrap_or_else(|| {
-                    "native mount is unavailable or read-only on this host".into()
-                })
+                capability.unavailable_reason.unwrap_or(
+                    "native mount is unavailable or read-only on this host",
+                ).to_owned()
             }),
         }
     }

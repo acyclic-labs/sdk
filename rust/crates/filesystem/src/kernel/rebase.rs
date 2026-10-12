@@ -1430,7 +1430,7 @@ pub(crate) async fn classify_rebase_with_accounting<P: AccountingRebaseProbe>(
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(RebaseDecision, super::allocation::KernelOwnedAllocation), ClassifyRebaseFailure<P::Error>> {
-    use super::persistent_point::{Owned, absorb};
+    use super::persistent_point::Owned;
     accounting.check().map_err(ClassifyRebaseFailure::Accounting)?;
     if base == candidate {
         let allocation = accounting.claim_owned(0, 0).map_err(ClassifyRebaseFailure::Accounting)?;
@@ -1454,9 +1454,9 @@ pub(crate) async fn classify_rebase_with_accounting<P: AccountingRebaseProbe>(
             }
             conflicts.ensure_for_push(maximum_conflicts as usize, accounting)
                 .map_err(ClassifyRebaseFailure::Accounting)?;
-            let (region, allocation, bytes) = clone_conflict_region(region, accounting)
+            let (region, mut allocation, bytes) = clone_conflict_region(region, accounting)
                 .map_err(ClassifyRebaseFailure::Accounting)?;
-            if let Err(error) = absorb(&mut conflicts.allocation, allocation) {
+            if let Err(error) = conflicts.allocation.absorb(&mut allocation) {
                 drop(region);
                 return Err(ClassifyRebaseFailure::Accounting(error));
             }

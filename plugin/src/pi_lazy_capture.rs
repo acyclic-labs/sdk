@@ -182,25 +182,23 @@ where P: acyclic_stream::StreamProvider,
     owner.verify_with_native_work(false, work).await?;
     let observed = physical.observe_with_native_work(work, &mut guard).await?;
     guard().await?;
-    let rebound = source.rebind_source_with_native_work(work).await.map_err(native_lazy_error)?;
+    let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, work.cancellation()).map_err(native_lazy_error)?;
+    let rebound = source.rebind_source(&accounting).await.map_err(native_lazy_error)?;
     guard().await?;
-    if rebound.0.source != observed.0.source {
+    if rebound.as_state().source != observed.0.source {
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
             reason: "Root source rebind changed its guarded watcher observation" });
     }
-    let mut frozen = source.snapshot_with_native_work(work).await.map_err(native_lazy_error)?;
+    let frozen = source.snapshot(&accounting).await.map_err(native_lazy_error)?;
     guard().await?;
-    if frozen.0.source != observed.0.source {
+    if frozen.source != observed.0.source {
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
             reason: "Root source freeze changed its guarded watcher observation" });
     }
     owner.verify_with_native_work(false, work).await?;
-    drop(rebound.0);
-    drop(rebound.1);
+    drop(rebound);
     drop(observed.0);
-    let mut observed_custody = observed.1;
-    frozen.1.absorb(&mut observed_custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    Ok(frozen)
+    Ok((frozen, observed.1))
 }
 
 pub(crate) fn native_lazy_error(source: acyclic_fs::LazyWorkspaceError) -> Error {

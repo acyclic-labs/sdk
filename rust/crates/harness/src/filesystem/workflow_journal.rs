@@ -30,7 +30,7 @@ fn external_read_hold<'a>(
     bytes: &OwnedBytes, io: Option<&'a PreparationIo>,
 ) -> Result<Option<super::DecodeReservation<'a>>> {
     let Some(io) = io else { return Ok(None); };
-    if io.uses_native_work() { return Ok(None); }
+    if io.original_native_work().is_some() { return Ok(None); }
     let retained = bytes.retained_capacity().ok_or_else(|| observation_boundary(
         Some(io), crate::wire::ErrorCode::Unsupported,
         "workflow byte backing capacity is unavailable",
@@ -102,7 +102,7 @@ pub struct FilesystemWorkflowJournal<P, A, O> {
     verifier: AuthorityVerifier,
     scope: Scope,
     maximum_payload_bytes: u64,
-    owner: Option<Arc<TaskJournalOwner<P>>>,
+    pub(super) owner: Option<Arc<TaskJournalOwner<P>>>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
@@ -165,10 +165,6 @@ where
         let owner = Arc::new(owner);
         Arc::get_mut(&mut journal).expect("new journal is uniquely owned").owner = Some(owner);
         Ok(journal)
-    }
-
-    pub(crate) fn task_journal_owner(&self) -> Option<Arc<TaskJournalOwner<P>>> {
-        self.owner.clone()
     }
 
     /// Binds a workflow identity and its private-volume grants using original IO.
@@ -484,7 +480,7 @@ where
     async fn read_bound_content(&self, reference: &FileRef, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
         match io {
             Some(io) => {
-                if !io.uses_native_work() {
+                if io.original_native_work().is_none() {
                     reference.validate(&mut Some(&mut io.history_io()))?;
                 }
                 if reference.volume() != &self.volume {

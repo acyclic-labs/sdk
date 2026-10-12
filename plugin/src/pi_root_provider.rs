@@ -524,23 +524,7 @@ pub(crate) async fn observe_pi_input(
 ) -> Result<Option<(FileRef, NativeAllocation)>> {
     let coordinates = pi_input_coordinates_with_native_work(
         owner, operation, label, ROOT_INPUT_DIRECTORY, "input", work)?;
-    let grant = pi_input_write_grant_with_native_work(owner, work)?;
-    let maximum = owner.policy().maximum_payload_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
-    let result = filesystem.content_for_operation_with_native_work(
-        &owner.policy().journal, &grant.0, &coordinates.key.0, &coordinates.path.0, maximum, work).await;
-    let result = match result {
-        Ok(Some((reference, custody))) => {
-            if let Err(error) = validate_pi_input_media(owner, &reference, &coordinates.path.0,
-                &coordinates.display_name.0, "application/json") {
-                drop(reference);
-                drop(custody);
-                Err(error)
-            } else { Ok(Some((reference, custody))) }
-        }
-        result => result,
-    };
-    drop(coordinates);
-    result
+    observe_pi_input_at(owner, filesystem, coordinates, "application/json", work).await
 }
 
 #[allow(clippy::too_many_arguments, reason = "fixed trusted namespace shares the original publisher engine")]
@@ -602,6 +586,15 @@ where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
 {
     let media_type = root_input_media(name)?;
     let coordinates = root_input_coordinates_with_native_work(owner, name, work)?;
+    observe_pi_input_at(owner, filesystem, coordinates, media_type, work).await
+}
+
+async fn observe_pi_input_at<A, O>(
+    owner: &PiOwnerConfig, filesystem: &FilesystemHost<A, O>, coordinates: NativeInputCoordinates,
+    media_type: &str, work: &NativeMaterializationWork,
+) -> Result<Option<(FileRef, NativeAllocation)>>
+where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
+{
     let grant = pi_input_write_grant_with_native_work(owner, work)?;
     let maximum = owner.policy().maximum_payload_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
     let result = filesystem.content_for_operation_with_native_work(
@@ -1400,28 +1393,15 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         attempt: EffectAttemptId, name: &str, work: &NativeMaterializationWork)
         -> Result<Option<(FileRef, NativeAllocation)>> {
         let coordinates = self.artifact_with_native_work(effect, attempt, name, work)?;
-        let grant = pi_input_write_grant_with_native_work(&self.owner, work)?;
-        let result = self.filesystem.content_for_operation_with_native_work(
-            &self.owner.policy().journal, &grant.0, &coordinates.key.0,
-            &coordinates.path.0, self.maximum(), work).await?;
-        match result {
-            Some((value, custody)) => {
-                let reference = (value, custody);
-                validate_pi_input_media(&self.owner, &reference.0, &coordinates.path.0,
-                    &coordinates.display_name.0, "application/json")?;
-                Ok(Some(reference))
-            }
-            None => Ok(None),
-        }
+        observe_pi_input_at(&self.owner, &self.filesystem, coordinates, "application/json", work).await
     }
 
     async fn stage_with_native_work(&self, effect: EffectId, attempt: EffectAttemptId,
         name: &str, value: &impl Serialize, work: &NativeMaterializationWork)
         -> Result<(FileRef, NativeAllocation)> {
         let coordinates = self.artifact_with_native_work(effect, attempt, name, work)?;
-        let (value, custody) = publish_pi_input_with_native_coordinates(&self.owner,
-            &*self.filesystem, value, "application/json", coordinates, work).await?;
-        Ok((value, custody))
+        publish_pi_input_with_native_coordinates(&self.owner,
+            &self.filesystem, value, "application/json", coordinates, work).await
     }
 
     async fn read_with_native_work<T: DeserializeOwned + Serialize>(&self, reference: &FileRef,

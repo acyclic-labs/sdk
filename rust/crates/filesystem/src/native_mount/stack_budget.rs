@@ -271,7 +271,7 @@ fn measure_common(view: &dyn MountFilesystem, measurements: &mut Measurements) -
         measurements.measure("read-pinned", || view.read_range(&read, 0, CONTENT))?;
     }
     measurements.measure("create", || {
-        view.create_file(&path("created.txt"), FileMetadata::default())
+        view.create_file(&path("created.txt"), FileMetadata::default(), None, &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
     })?;
     let created = view.open_file(&path("created.txt"))?;
     measurements.measure("write", || {
@@ -378,7 +378,7 @@ async fn checkout_callbacks_fit_their_stack_budgets() -> TestResult {
                 super::adapter::boundary(authored.cancellation(), |work| authored.create_directory(&directory, FileMetadata::default(), work))?;
             }
         }
-        authored.create_file(&file, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(authored.cancellation(), |work| authored.create_file(&file, FileMetadata::default(), None, work))?;
         authored
             .open_file(&file)?
             .write_range(0, Bytes::from(vec![7_u8; CONTENT as usize]))?;

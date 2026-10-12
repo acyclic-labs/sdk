@@ -413,7 +413,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             if let Some(condition) = owner_condition { crate::distributed::add_condition(&mut request, condition)?; }
             crate::distributed::add_record(&mut request, mailbox.0.path().clone(), bytes.clone())?;
             crate::distributed::add_record(&mut request, intent.0.path().clone(), location_bytes)?;
-            let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(message), None, None, None).await?;
+            let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(message), None).await?;
             let committed = matches!(&outcome, CommitOutcome::Committed(_));
             drop(outcome);
             if let Some(observer) = work.as_deref_mut() { observer.release_owned(retained)?; }

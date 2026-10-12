@@ -1,3 +1,4 @@
+use crate::async_storage::AsyncObjectStore;
 use crate::kernel::decode_file_table_page;
 use super::*;
 use crate::foundation::Digest;
@@ -6,7 +7,7 @@ use crate::kernel::{
     FileKind, FilePayload, FileTablePage, encode_file_table_page, file_table_page_id,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::ObjectStore;
+
 use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
@@ -15,7 +16,7 @@ use crate::kernel::Child;
 async fn original_table_encoding_denial_precedes_native_payload_and_backend_write()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &FileTablePage::Leaf(vec![record(1, 1)]), 8)?;
+    let root = put(&store, &FileTablePage::Leaf(vec![record(1, 1)]), 8).await?;
     let mutations = [FileTableMutation::Replace { expected: record(1, 1), replacement: record(1, 2) }];
     let cancellation = crate::CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(
@@ -46,7 +47,7 @@ fn record(byte: u8, metadata_byte: u8) -> FileRecord {
     }
 }
 
-fn put(
+async fn put(
     store: &MemoryObjectStore,
     page: &FileTablePage,
     maximum_items: u32,
@@ -55,22 +56,21 @@ fn put(
     store.put(
         id,
         OwnedBytes::from(encode_file_table_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(id)
 }
 
-fn three_leaf_table(
+async fn three_leaf_table(
     store: &MemoryObjectStore,
 ) -> Result<(ObjectId, [ObjectId; 3]), Box<dyn std::error::Error>> {
     let leaves = [
-        put(store, &FileTablePage::Leaf(vec![record(1, 1)]), 8)?,
+        put(store, &FileTablePage::Leaf(vec![record(1, 1)]), 8).await?,
         put(
             store,
             &FileTablePage::Leaf(vec![record(3, 3), record(4, 4)]),
             8,
-        )?,
-        put(store, &FileTablePage::Leaf(vec![record(6, 6)]), 8)?,
+        ).await?,
+        put(store, &FileTablePage::Leaf(vec![record(6, 6)]), 8).await?,
     ];
     let root = put(
         store,
@@ -89,7 +89,7 @@ fn three_leaf_table(
             },
         ]),
         8,
-    )?;
+    ).await?;
     Ok((root, leaves))
 }
 
@@ -97,7 +97,7 @@ fn three_leaf_table(
 async fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (root, leaves) = three_leaf_table(&store)?;
+    let (root, leaves) = three_leaf_table(&store).await?;
     let receipt = apply_file_table_mutations(
         &store,
         root,
@@ -119,7 +119,7 @@ async fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
     let bytes = store
-        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
         .value;
     let FileTablePage::Internal(children) =
         decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -136,7 +136,7 @@ async fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
 async fn unordered_file_table_mutations_are_sorted_once_and_persist_canonically()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &FileTablePage::Leaf(Vec::new()), 8)?;
+    let root = put(&store, &FileTablePage::Leaf(Vec::new()), 8).await?;
     let receipt = apply_file_table_mutations(
         &store,
         root,
@@ -152,7 +152,7 @@ async fn unordered_file_table_mutations_are_sorted_once_and_persist_canonically(
         &crate::CancellationToken::new(),
     ).await?;
     let bytes = store
-        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
         .value;
     let FileTablePage::Leaf(records) = decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
@@ -171,7 +171,7 @@ async fn unordered_file_table_mutations_are_sorted_once_and_persist_canonically(
 #[tokio::test]
 async fn record_noop_preserves_root_with_zero_writes() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (root, _) = three_leaf_table(&store)?;
+    let (root, _) = three_leaf_table(&store).await?;
     let receipt = apply_file_table_mutations(
         &store,
         root,
@@ -215,7 +215,7 @@ fn remove_validation_requires_the_exact_file_identity() {
 #[tokio::test]
 async fn stale_record_precondition_writes_nothing() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (root, _) = three_leaf_table(&store)?;
+    let (root, _) = three_leaf_table(&store).await?;
     let failure = apply_file_table_mutations(
         &store,
         root,
@@ -243,7 +243,7 @@ async fn stale_record_precondition_writes_nothing() -> Result<(), Box<dyn std::e
 #[tokio::test]
 async fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &FileTablePage::Leaf(vec![record(1, 1)]), 8)?;
+    let root = put(&store, &FileTablePage::Leaf(vec![record(1, 1)]), 8).await?;
     let limits = DecodeLimits {
         maximum_page_bytes: 120,
         maximum_page_items: 8,
@@ -260,7 +260,7 @@ async fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::e
     ).await?;
     assert_eq!(receipt.work.page_writes, 3);
     let root_bytes = store
-        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
         .value;
     assert!(root_bytes.len() <= 120);
     let FileTablePage::Internal(children) = decode_file_table_page(&root_bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? else {
@@ -269,7 +269,7 @@ async fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::e
     assert_eq!(children.len(), 2);
     for child in children {
         let bytes = store
-            .read(child.page, u64::MAX, WorkBudget::UNBOUNDED)?
+            .read(child.page, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
             .value;
         assert!(bytes.len() <= 120);
         assert!(matches!(
@@ -283,7 +283,7 @@ async fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::e
 #[tokio::test]
 async fn item_larger_than_page_bound_rejects_before_writes() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &FileTablePage::Leaf(Vec::new()), 8)?;
+    let root = put(&store, &FileTablePage::Leaf(Vec::new()), 8).await?;
     let failure = apply_file_table_mutations(
         &store,
         root,

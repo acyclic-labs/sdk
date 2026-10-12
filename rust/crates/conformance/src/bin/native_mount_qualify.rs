@@ -319,11 +319,11 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
     let observed_kind = native.kind.map(kind_name);
     let capability = Capability {
         kind: observed_kind,
-        available: native.available,
-        writable: native.writable,
-        provider_process_io_observable: native.provider_process_io_observable,
-        session_isolation: format!("{:?}", native.session_isolation),
-        unavailable_reason: native.unavailable_reason.clone(),
+        available: native.available(),
+        writable: native.available(),
+        provider_process_io_observable: native.provider_process_io_observable(),
+        session_isolation: if native.kind.is_some() { "SharedProcess" } else { "ProcessIsolated" }.to_owned(),
+        unavailable_reason: native.unavailable_reason.map(str::to_owned),
     };
     let mut report = Report {
         schema: "acyclic-native-mount-qualification-v2",
@@ -338,14 +338,12 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         cases: Vec::new(),
     };
 
-    let unsupported = if !native.available {
+    let unsupported = if !native.available() {
         Some(
             native
                 .unavailable_reason
-                .unwrap_or_else(|| "native mount unavailable".into()),
+                .unwrap_or("native mount unavailable").to_owned(),
         )
-    } else if !native.writable {
-        Some("native mount capability is read-only".into())
     } else if let Some(required) = &required_kind {
         (observed_kind != Some(required.as_str())).then(|| {
             format!(

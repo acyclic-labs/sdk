@@ -1434,32 +1434,9 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
         Ok(bytes)
     }
 
-    fn capability<T: Serialize + ?Sized>(&mut self, prefix: &str, value: &T) -> Result<String> {
-        let digest = crate::contract::canonical_json_digest_with_work(value, crate::store::default_projection_read_limits().maximum_bytes, self.work())?;
-        let length = prefix.len().checked_add(64)
-            .ok_or_else(|| Error::Invalid("fork capability storage overflows".into()))?;
-        if let Some(observer) = self.work().as_deref_mut() {
-            observer.admit_allocation(length as u64)?;
-        }
-        self.retain(length as u64)?;
-        let mut capability = String::new();
-        capability.try_reserve_exact(length).map_err(|error| Error::Invalid(error.to_string()))?;
-        if let Some(observer) = self.work().as_deref_mut() {
-            observer.copy_bytes(length as u64)?;
-        }
-        capability.push_str(prefix);
-        capability.push_str(blake3::Hash::from_bytes(digest).to_hex().as_str());
-        self.retain((capability.capacity() - length) as u64)?;
-        Ok(capability)
-    }
-
     pub(super) fn file_digest(&mut self, file: &FileRef) -> Result<[u8; 32]> {
         file.validate(self.work())?;
         crate::contract::canonical_json_digest_with_work(file, crate::store::default_projection_read_limits().maximum_bytes, self.work())
-    }
-
-    pub(super) fn volume_capability(&mut self, volume: &VolumeRef) -> Result<String> {
-        self.capability("volume:read:", volume)
     }
 
     fn stream_path(&mut self, authority: &Authority) -> Result<String> {
