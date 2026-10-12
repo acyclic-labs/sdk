@@ -1907,7 +1907,7 @@ where
                 .normalized_join_parent_for(&expected)
                 .await
                 .map_err(map_error)?;
-            let parents = result.parents().await.map_err(map_error)?;
+            let parents = result.parents(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?;
             if parents.as_slice() != [expected.id(), normalized_source] {
                 return Err(Error::Invalid(
                     "merge result does not bind the inspected child and target generations".into(),
@@ -4410,12 +4410,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
                 WorkspaceMutation::PutFile { path, bytes } => {
                     transaction
-                        .write(path, Bytes::copy_from_slice(bytes))
-                        .await
+                        .write(path, Bytes::copy_from_slice(bytes), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                         .map_err(map_error)?;
                 }
                 WorkspaceMutation::Remove { path } => {
-                    transaction.remove(path).await.map_err(map_error)?;
+                    transaction.remove(path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?;
                 }
             }
         }
