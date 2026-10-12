@@ -797,15 +797,15 @@ impl IndexedPublication {
 
     pub(crate) fn add_index_with_work(
         &self,
-        request: &mut crate::distributed::PreparedCommitRequest<'_, '_>,
+        request: &mut (acyclic_stream::CommitRequest, crate::wire_codec::CodecQuota<'_, '_>),
     ) -> Result<()> {
         for (path, tail, bytes) in &self.indexes {
-            request.push_condition(if *tail == 0 {
+            crate::distributed::add_condition(request, if *tail == 0 {
                 CommitCondition::Absent { path: path.clone() }
             } else {
                 CommitCondition::Tail { path: path.clone(), expected: *tail }
             })?;
-            request.append(path.clone(), bytes.clone())?;
+            crate::distributed::add_record(request, path.clone(), bytes.clone())?;
         }
         Ok(())
     }
@@ -833,14 +833,14 @@ impl IndexedPublication {
         client: &StreamClient<P>,
         key: IdempotencyKey,
         work: &'a mut Option<&'b mut dyn super::history::HistoryIo>,
-    ) -> Result<crate::distributed::PreparedCommitRequest<'a, 'b>> {
+    ) -> Result<(acyclic_stream::CommitRequest, crate::wire_codec::CodecQuota<'a, 'b>)> {
         let key_owned = if work.as_deref().is_some_and(|observer|
             !original_native_decode_mode(observer)) { 32 } else { 0 };
-        let mut request = crate::distributed::PreparedCommitRequest::new(
+        let mut request = crate::distributed::commit_request(
             key, key_owned, work);
-        let target = self.target_condition_with_work(client, request.work()).await?;
-        request.push_condition(target)?;
-        request.append(self.path.clone(), self.bytes.clone())?;
+        let target = self.target_condition_with_work(client, request.1.work()).await?;
+        crate::distributed::add_condition(&mut request, target)?;
+        crate::distributed::add_record(&mut request, self.path.clone(), self.bytes.clone())?;
         self.add_index_with_work(&mut request)?;
         Ok(request)
     }
