@@ -1260,7 +1260,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     drop(hold);
                     file
                 };
-                let checkpoint = recursive_observe(io, |work| binding.source_checkpoint.clone_with_work(work))?;
+                let checkpoint = recursive_observe(io, |work| binding.source_checkpoint.copy(work))?;
                 let request = fork_preparation_request(binding.source.preparer.as_ref(), &binding.source.request,
                     task_id_for_admission(operation), binding.child, WorkflowCommand {
                         operation_id: context.operation_id(),
@@ -1539,7 +1539,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             crate::wire::ErrorCode::Invalid, "original preparation command missing"))?;
         let command = WorkflowCommand { operation_id: command.operation_id,
             kind: crate::filesystem::fork_preparer_io::clone_text(&command.kind, io)?,
-            payload: recursive_observe(io, |work| command.payload.clone_with_work(work))? };
+            payload: recursive_observe(io, |work| command.payload.copy(work))? };
         let restored = fork_preparation_request(
             binding.source.preparer.as_ref(), &binding.source.request,
             fork.preparation.task_id(), binding.child, command, binding.limits,
@@ -1651,7 +1651,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         };
                         let command = WorkflowCommand { operation_id: command.operation_id,
                             kind: history.clone_text(&command.kind)?,
-                            payload: command.payload.clone_with_work(&mut Some(&mut *history))? };
+                            payload: command.payload.copy(&mut Some(&mut *history))? };
                         let payload = crate::core::native_value_clone_with_custody(&payload, &mut Some(&mut *history))?.0;
                         break 'progress owner.runtime.commands().execute_with_native_work(
                             Arc::clone(context), fence, command, payload, work)?.await?;
@@ -2043,18 +2043,12 @@ where P: StreamProvider {
                     "merge source handle belongs to another caller, operation or selected task"));
             }
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(|io| io.original_native_work()) {
-                source.require_selection_with_native_work(context.operation_id(), source_task,
-                    &binding.source_project, &binding.source_generation,
-                    authorization.native_snapshot.as_ref(), work)?;
-            } else {
-                source.require_selection(context.operation_id(), source_task,
-                    &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref())?;
-            }
+            let work = io.and_then(super::PreparationIo::original_native_work);
             #[cfg(target_arch = "wasm32")]
+            let work = None;
             source.require_selection(context.operation_id(), source_task,
-                &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref())?;
-            source.grant().require_with_io(&binding.source_project, VolumeOperation::Read, io)?;
+                &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref(), work)?;
+            source.grant().require(&binding.source_project, VolumeOperation::Read, io)?;
         }
         None => {
             if !recursive_volume_granted(effective.grants(), &binding.source_project, VolumeOperation::Read, io)? {
@@ -2077,16 +2071,14 @@ fn recursive_volume_granted(grants: &Capabilities, volume: &VolumeRef, operation
         Some(io) => io.contains_capability(grants, volume, match operation {
             VolumeOperation::Read => "volume:read:", VolumeOperation::Write => "volume:write:",
         }),
-        None => Ok(grants.contains(&volume.capability(operation)?)),
+        None => Ok(grants.contains(&volume.capability(operation, &mut None)?)),
     }
 }
 
 fn recursive_verify_volume(verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
     operation: VolumeOperation, io: Option<&super::PreparationIo>) -> Result<()> {
-    match io {
-        Some(io) => ContentGrant::verify_original_volume_with_io(verifier, scope, volume, operation, io),
-        None => ContentGrant::verify(verifier, scope, volume, operation).map(drop),
-    }
+    let maximum = io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded)).transpose()?.unwrap_or(u64::MAX);
+    recursive_observe(io, |work| ContentGrant::authorize_volume(verifier, scope, volume, operation, maximum, work))
 }
 fn check_merge_binding<P: StreamProvider, A, O>(plan: &RecursiveMergeToolPlan,
     binding: &RecursiveMergeToolBinding<P, A, O>, io: Option<&super::PreparationIo>) -> Result<()> {
