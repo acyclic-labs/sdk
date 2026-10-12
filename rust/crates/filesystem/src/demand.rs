@@ -6034,7 +6034,7 @@ pub mod native {
             let root = HostRoot::open(&input.path, work)?;
             #[cfg(windows)]
             let root = HostRoot::open_root_wide(&input.path, work)?;
-            let inline = root.is_local(work)?;
+            let inline = crate::native_host::filesystem_is_local(&root.directory, work)?;
             let requests_ownership = SourcePayloadOwnership::new(work)?;
             let requests_bytes =
                 (std::mem::size_of::<Semaphore>() + 2 * std::mem::size_of::<usize>()) as u64;
@@ -6468,7 +6468,7 @@ pub mod native {
             if source != self.reference() {
                 return Err(DemandError::StaleSource);
             }
-            let held = self.inner.root.held_identity(work)?;
+            let held = crate::native_host::directory_identity(&self.inner.root.directory, work)?;
             #[cfg(unix)]
             let named = crate::native_host::root_path_identity(&self.inner.path, work)?;
             #[cfg(windows)]
@@ -8964,7 +8964,7 @@ pub mod native {
         }
         #[cfg(not(unix))]
         {
-            metadata.number_of_links().map(u64::from)
+            Some(metadata.nlink())
         }
     }
 
@@ -10746,7 +10746,7 @@ mod tests {
     async fn native_lookup_preserves_utf16_windows_names() -> Result<(), Box<dyn Error>> {
         use crate::kernel::{LogicalName, NameEncoding};
 
-        let raw = "snowman-☃"
+        let raw = "snowman-Ã¢ËœÆ’"
             .encode_utf16()
             .flat_map(u16::to_le_bytes)
             .collect();
@@ -10757,7 +10757,7 @@ mod tests {
         )?;
         assert_lossless_name(
             FilesystemProfile::Windows,
-            std::ffi::OsString::from("snowman-☃"),
+            std::ffi::OsString::from("snowman-Ã¢ËœÆ’"),
             name,
         )
         .await

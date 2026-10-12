@@ -5,10 +5,13 @@ use std::path::Path;
 fn a_local_root_is_classified_local() -> std::io::Result<()> {
     let temporary = tempfile::tempdir()?;
     assert!(
-        HostRoot::open(temporary.path(), &mut ordinary_work())
-            .map_err(ordinary_error)?
-            .is_local(&mut ordinary_work())
-            .map_err(ordinary_error)?
+        filesystem_is_local(
+            &HostRoot::open(temporary.path(), &mut ordinary_work())
+                .map_err(ordinary_error)?
+                .directory,
+            &mut ordinary_work()
+        )
+        .map_err(ordinary_error)?
     );
     Ok(())
 }
