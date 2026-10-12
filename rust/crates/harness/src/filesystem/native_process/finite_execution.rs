@@ -3,10 +3,6 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use crate::filesystem::native_execution::{NativeProcessNamespaceScopes, NativeViewPublicationError};
 use std::process::{Command, Stdio};
 
-fn native_io(error: std::io::Error, work: &NativeMaterializationWork) -> Error {
-    Error::from(work.runtime_error(error))
-}
-
 pub(super) struct NativePublicationSlot {
     slot: Box<std::mem::MaybeUninit<NativeViewPublicationError>>,
     failure_custody: Option<NativeAllocation>,
@@ -23,7 +19,6 @@ impl NativePublicationSlot {
     pub(super) fn original_failure(&mut self, cause: Error, work: WorkCounters) -> NativeViewPublicationError {
         NativeViewPublicationError {
             cause, accounting_failure: None, work, destination: None, completed: Vec::new(), published: Vec::new(), diagnostic: None,
-            rendering_failure: None,
             custody: self.failure_custody.take(),
         }
     }
@@ -162,7 +157,7 @@ pub(super) fn execute<'a, P: StreamProvider + 'static>(
                                     Err(cause) => Err(NativeViewPublicationError {
                                         cause, accounting_failure: None, work: receipt.work,
                                         destination: None, completed: receipt.completed, published: receipt.published,
-                                        diagnostic: None, rendering_failure: None, custody: Some(receipt.custody),
+                                        diagnostic: None, custody: Some(receipt.custody),
                                     }),
                                 }
                             }
@@ -384,7 +379,7 @@ async fn capture<P: StreamProvider + 'static>(
         Ok(Ok(_)) => NativeCapturePhase::Drained,
         Ok(Err(failure)) if failure.cleanup_completed => NativeCapturePhase::Drained,
         _ => NativeCapturePhase::Uncertain,
-    }).map_err(|error| native_io(error, &invocation_work))?;
+    }).map_err(|error| Error::from(invocation_work.runtime_error(error)))?;
     if let Some(error) = original_failure {
         drop(output);
         custody.substitute(0)?;
@@ -457,7 +452,7 @@ mod supervisor_tests {
             ..acyclic_fs::WorkBudget::UNCHARGED
         }, &acyclic_fs::CancellationToken::new()).unwrap();
         let before = work.receipt();
-        supervisor.settle_process(&work, None).unwrap();
+        supervisor.settle_process(&work, &work).unwrap();
         assert!(matches!(supervisor.snapshot(attempt).unwrap().1, NativeCapturePhase::Uncertain));
         assert_eq!(work.receipt(), before);
     }
