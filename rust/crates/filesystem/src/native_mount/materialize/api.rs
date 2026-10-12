@@ -171,7 +171,7 @@ where
     let cancellation = receipt
         .custody
         .work()
-        .native_read_meter()
+        .state
         .with_original_leaf(|original| original.cancellation().clone());
     let cancellation = &cancellation;
     let reader = match &source {
