@@ -11,7 +11,7 @@ use crate::kernel::{
 use crate::model::{CheckoutMode, GenerationSelector};
 use crate::path::PortablePath;
 use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, Checkout, CheckoutCommitOutcome,
+    AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, Checkout, LivePublicationObservation,
     ConflictKey, ConflictKind, ConflictSide, ConflictValue, FsError, GenerationDiff, MergeConflict,
     MergeDriverRegistry, MergePlan, MergePlanResolutionError, MergeResolution,
     MergeResolutionCache, UnpublishedMergeCandidate, Volume, resolve_merge_plan,

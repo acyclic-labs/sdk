@@ -40,7 +40,12 @@ async fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, _) = object(b"x");
-    let rejected_result = (async { let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = objects.contains(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) }).await;
+    let rejected_result = (async {
+        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let __object_result = objects.contains(object_id, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    })
+    .await;
     let Err(rejected) = rejected_result else {
         return Err("scheduled contains rejection succeeded".into());
     };
@@ -59,7 +64,12 @@ async fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::
         SimulationFault::PartitionBefore,
     )?;
     assert_eq!(next.occurrence, 2);
-    let second_result = (async { let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = objects.contains(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) }).await;
+    let second_result = (async {
+        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let __object_result = objects.contains(object_id, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    })
+    .await;
     let Err(second) = second_result else {
         return Err("scheduled next partition succeeded".into());
     };
@@ -126,14 +136,22 @@ async fn simulator_bounds_duplicate_schedule_and_trace_exhaustion_are_fail_close
     let cancellation = CancellationToken::new();
     let (object_id, _) = object(b"trace");
     assert!(
-        (async { let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = objects.contains(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
-            .await
-            .is_err()
-    );
-    let exhausted = (async { let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = objects.contains(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
+        (async {
+            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let __object_result = objects.contains(object_id, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        })
         .await
-        .err()
-        .ok_or("trace exhaustion was ignored")?;
+        .is_err()
+    );
+    let exhausted = (async {
+        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let __object_result = objects.contains(object_id, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    })
+    .await
+    .err()
+    .ok_or("trace exhaustion was ignored")?;
     assert!(matches!(exhausted.error, ObjectStoreError::Rejected(_)));
     assert_eq!(simulation.trace()?.len(), 1);
     Ok(())

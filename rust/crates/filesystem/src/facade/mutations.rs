@@ -107,9 +107,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     };
                     (first, second)
                 };
-            for region in exact_mutation_regions(operation, first_record, second_record)
-                .into_iter()
-                .flatten()
+            for region in super::mutation_regions::exact_mutation_regions(
+                operation,
+                first_record,
+                second_record,
+            )
+            .into_iter()
+            .flatten()
             {
                 exact_regions.ensure_for_push(usize::MAX, accounting)?;
                 accounting.charge(WorkCounters {

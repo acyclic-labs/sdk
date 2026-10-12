@@ -109,7 +109,7 @@ use acyclic_fs::model::{
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::workspace_context_wire;
 use acyclic_fs::{
-    ApplyOptions, AuthoredMutation, ByteRange, CancellationToken, ChangeSet, CheckoutCommitOutcome,
+    ApplyOptions, AuthoredMutation, ByteRange, CancellationToken, ChangeSet, LivePublicationObservation,
     ConflictSide, DependencyRegion, DependencyState, DependencyUse, Digest, DirectoryPage,
     FileCloneRequest, FileId, ForkOptions, Generation, GenerationExportManifest, GenerationId,
     GitCommand, GitCommitId, GitCompatRepository, GitFilesystemResult, GitTransitionId, GitTreeRef,
