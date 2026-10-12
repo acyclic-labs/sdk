@@ -5746,7 +5746,7 @@ where
                     .map_err(native_lazy_error)?;
                 let mut page = self.lazy.list_directory_in_state_with_native_work(
                     state.as_state(), &text, cursor.take(), DIRECTORY_PROMOTION_PAGE,
-                    &original, cancellation, Some(&mut observation.observer()),
+                    &original, cancellation, Some(&mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value),
                     Some((&removed, opaque)), None,
                 ).await.map_err(native_lazy_error)?;
                 for entry in &page.entries {
@@ -6107,7 +6107,7 @@ where
                 observation.ensure_publication_resolved()?;
                 self.lazy
                     .list_directory_in_checkout(
-                        &mut observation.observer(),
+                        &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value,
                         &text,
                         cursor,
                         maximum_entries,
@@ -6251,7 +6251,7 @@ where
                 .map_err(directory_lazy_error)?;
             let page = self.lazy.list_directory_in_state_with_native_work(
                 state.as_state(), &text, cursor, maximum_entries, original, &caller,
-                Some(&mut observation.observer()), Some((&removed_children, opaque)), None,
+                Some(&mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value), Some((&removed_children, opaque)), None,
             ).await.map_err(directory_lazy_error)?;
             (page, state)
         };
@@ -10907,7 +10907,7 @@ mod tests {
                 .observe(SourceViewGate::callback_owner()).await?;
             observation.ensure_publication_resolved()?;
             view.lazy.list_directory_in_checkout(
-                &mut observation.observer(), "/dir", None, 1, None,
+                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None,
             ).await.map(|(_, state)| state).map_err(lazy_error)
         })?;
         let caller = crate::CancellationToken::new();
@@ -11069,7 +11069,7 @@ mod tests {
                 .observe(SourceViewGate::callback_owner()).await?;
             observation.ensure_publication_resolved()?;
             view.lazy.list_directory_in_checkout(
-                &mut observation.observer(), "/dir", None, 1, None,
+                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None,
             ).await.map(|(_, state)| state).map_err(lazy_error)
         })?;
         let caller = crate::CancellationToken::new();

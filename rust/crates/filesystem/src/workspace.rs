@@ -2021,7 +2021,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         &self,
         record: crate::kernel::FileRecord,
     ) -> crate::DetachedFile<A, O> {
-        crate::DetachedFile::from_record(self.volume.clone(), record)
+        crate::DetachedFile::from_record(self.volume.clone(), record, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded detached hold preserves a validated record").value
     }
 
     pub(crate) fn detached_record_measured(
@@ -2030,7 +2030,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<crate::DetachedFile<A, O>>, WorkspaceError> {
-        crate::DetachedFile::from_record_measured(self.volume.clone(), record, budget, cancellation)
+        crate::DetachedFile::from_record(self.volume.clone(), record, budget, cancellation)
             .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from))
     }
 
@@ -2452,7 +2452,7 @@ async fn read_generation_symbolic_link<A: AsyncAuthorityStore, O: AsyncObjectSto
     ).map_err(|error| crate::OperationFailure::new(error, work))?;
     let allowance = workspace_remaining(work, budget, allocations.live_bytes())
         .map_err(|error| crate::OperationFailure::new(error, work))?;
-    let read = checkout.read_symbolic_link_owned(&path, allowance, cancellation).await
+    let read = checkout.read_symbolic_link(&path, allowance, cancellation).await
         .map_err(|failure| match work.with_backend(*failure.work, allocations.live_bytes()) {
             Ok(failed) => crate::OperationFailure::new(WorkspaceError::from(failure.error), failed),
             Err(error) => crate::OperationFailure::new(WorkspaceError::Work(error), work),
@@ -3667,17 +3667,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                 if self.requires_rebase {
                     let receipt = self
                         .checkout
-                        .retry_stale_commit_guarded(
-                            self.idempotency_key.operation_id(),
-                            permit,
-                            budget,
-                            cancellation,
-                            &mut before_publication,
-                            None,
-                            context,
-                            operation_evidence,
-                            original_fingerprint_permit,
-                        )
+                        .retry_stale_commit(self.idempotency_key.operation_id(), permit, budget, cancellation, &mut before_publication, None, context, operation_evidence, original_fingerprint_permit)
                         .await
                         ?;
                     let work = receipt.work;
@@ -3705,16 +3695,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                 }
                 let receipt = self
                     .checkout
-                    .commit_with_optional_context_with_permit_guarded(
-                        self.idempotency_key.operation_id(),
-                        context,
-                        operation_evidence,
-                        original_fingerprint_permit,
-                        permit,
-                        budget,
-                        cancellation,
-                        &mut before_publication,
-                    )
+                    .commit(self.idempotency_key.operation_id(), context, operation_evidence, original_fingerprint_permit, permit, budget, cancellation, &mut before_publication)
                     .await
                     ?;
                 self.commit_outcome_measured(receipt.value, receipt.work, budget, cancellation)
@@ -3817,9 +3798,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
-        self.commit_with_optional_context_with_permit_guarded_with_native_work(
-            None, None, None, permit, original, cancellation, before_publication,
-        ).await
+        self.commit_with_optional_context_with_permit_guarded_with_native_work(None, None, None, permit, original, cancellation, before_publication).await
     }
 
     /// Moves the already-funded witness into the original native publication.
@@ -3836,10 +3815,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
-        self.commit_with_optional_context_with_permit_guarded_with_native_work(
-            Some(context), Some(operation_evidence), Some(original_fingerprint_permit),
-            permit, original, cancellation, before_publication,
-        ).await
+        self.commit_with_optional_context_with_permit_guarded_with_native_work(Some(context), Some(operation_evidence), Some(original_fingerprint_permit), permit, original, cancellation, before_publication).await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3856,16 +3832,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         let outcome = if self.requires_rebase {
-            self.checkout.retry_stale_commit_guarded_with_native_work(
-                self.idempotency_key.operation_id(), permit, original, cancellation,
-                before_publication, None, context, operation_evidence, original_fingerprint_permit,
-            ).await?
+            self.checkout.retry_stale_commit_with_native_work(self.idempotency_key.operation_id(), permit, original, cancellation, before_publication, None, context, operation_evidence, original_fingerprint_permit).await?
         } else {
-            Some(self.checkout.commit_with_optional_context_with_permit_guarded_with_native_work(
-                self.idempotency_key.operation_id(), context, operation_evidence,
-                original_fingerprint_permit, permit, original, cancellation,
-                (*before_publication).clone(),
-            ).await?)
+            Some(self.checkout.commit_with_native_work(self.idempotency_key.operation_id(), context, operation_evidence, original_fingerprint_permit, permit, original, cancellation, (*before_publication).clone()).await?)
         };
         if let Some(value) = outcome.and_then(|outcome| self.commit_outcome_value(outcome)) {
             return Ok(value);

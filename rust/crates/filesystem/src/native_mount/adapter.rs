@@ -633,7 +633,7 @@ async fn native_node_if_bound_with_carrier<A: AsyncAuthorityStore, O: AsyncObjec
                 work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
             ))
         })?;
-        let inspected = checkout.inspector_measured(budget, cancellation);
+        let inspected = checkout.inspector(budget, cancellation);
         carrier.accept_with_prior_live(inspected, prior_live, mount_engine_error)?
     };
     let mut inspector = LookupObserverOwned::new_in(inspector, carrier.reborrow())?;
@@ -3214,18 +3214,14 @@ impl<A, O> SharedCheckout<A, O> {
         ).await?;
         let times = ContentTimes::Stamp(content_change_time()?);
         let accepted = if let Some(original) = carrier.original_native_work() {
-            candidate.checkout.change_content_by_id_with_native_work(
-                file_id, change, times, &original, cancellation,
-            ).await.map_err(MountSourceError::Filesystem)
+            candidate.checkout.change_content_with_native_work(file_id, change, times, &original, cancellation).await.map_err(MountSourceError::Filesystem)
         } else {
             let (budget, prior_live) = carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
                     work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
-            let result = candidate.checkout.change_content_by_id(
-                file_id, change, times, budget, cancellation,
-            ).await;
+            let result = candidate.checkout.change_content(file_id, change, times, budget, cancellation).await;
             carrier.accept_with_prior_live(result, prior_live, mount_engine_error)
         };
         let installed = self.finish_native_phase_with_carrier(
@@ -3563,7 +3559,7 @@ impl<A, O> SharedCheckout<A, O> {
                     work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
-            let projected = checkout.checkout.private_candidate_measured(budget, cancellation);
+            let projected = checkout.checkout.private_candidate(budget, cancellation);
             carrier.accept_with_prior_live(projected, prior_live, mount_engine_error)?
         };
         let projection_custody = projection.private_control_custody();
@@ -3627,10 +3623,7 @@ impl<A, O> SharedCheckout<A, O> {
             let future = before_publication(work);
             async move { future.await.map_err(NativeSealError::Guard) }
         };
-        let result = original.checkout.retry_stale_commit_guarded_with_native_work(
-            operation, crate::PublicationPermit::Unrestricted, &native, cancellation,
-            &mut guarded, Some(&producer), operation_context, operation_evidence, original_fingerprint_permit,
-        ).await.map_err(|error| match error {
+        let result = original.checkout.retry_stale_commit_with_native_work(operation, crate::PublicationPermit::Unrestricted, &native, cancellation, &mut guarded, Some(&producer), operation_context, operation_evidence, original_fingerprint_permit).await.map_err(|error| match error {
             NativeSealError::Guard(error) => error,
             NativeSealError::Filesystem(error) => MountSourceError::Filesystem(error),
         });
@@ -4414,7 +4407,7 @@ impl<A, O> SharedCheckout<A, O> {
             observation.observer_with_native_work(&original, cancellation).map_err(MountSourceError::Filesystem)?
         } else {
             let budget = carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-            let receipt = observation.observer_measured(budget, cancellation);
+            let receipt = observation.observer(budget, cancellation);
             carrier.with_work(|work| mount_accept(work, receipt, mount_engine_error))?
         };
         let observer = observer.into_owned();
@@ -4602,8 +4595,8 @@ impl<A, O> SharedCheckoutState<A, O> {
     {
         self.ensure_publication_resolved()?;
         Ok(CheckoutCandidate {
-            base: self.private_candidate(),
-            checkout: self.private_candidate(),
+            base: self.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value,
+            checkout: self.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value,
         })
     }
 
@@ -4628,7 +4621,7 @@ impl<A, O> SharedCheckoutState<A, O> {
             }
             carrier.with_work(|work| {
                 let prior_live = work.live_allocation_bytes();
-                let result = self.private_candidate_measured(
+                let result = self.private_candidate(
                     work.remaining().map_err(mount_demand_error)?, cancellation,
                 );
                 let checkout = match result {
@@ -5167,7 +5160,7 @@ impl InstalledCaptureAccounting<'_> {
         use super::lazy::{mount_accept, mount_demand_error, mount_engine_error};
         match self {
             Self::Ordinary(work) => {
-                let result = checkout.inspector().lookup_no_follow(
+                let result = checkout.inspector(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded inspector preserves a validated checkout").value.lookup_no_follow(
                     path, work.remaining().map_err(mount_demand_error)?, cancellation,
                 ).await;
                 Ok(mount_accept(work, result, mount_engine_error)?.record)
@@ -5922,7 +5915,7 @@ where
             let state = await_measured_lock_with_carrier(
                 self.state.lock(), &mut carrier, &cancellation, Some(&self.cancellation),
             ).await?;
-            let packet = state.file.read_named_attribute_owned_with_native_work(
+            let packet = state.file.read_named_attribute_with_native_work(
                 &name, &original, &cancellation,
             ).await.map_err(MountSourceError::Filesystem)?;
             original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
@@ -6133,7 +6126,7 @@ where
                 .file
                 .read_named_attribute(&name, boundary_budget(), &self.cancellation)
                 .await
-                .map(|receipt| receipt.value)
+                .map(|receipt| receipt.value.map(|chunk| chunk.bytes))
                 .map_err(engine_error)
         })
     }
@@ -6966,7 +6959,7 @@ where
             let name = owned_name.0;
             let (_view, mut observer) = self.measured_observer(NativeDemandCarrier::Native(work)).await?;
             let cancellation = meter.lock().cancellation().clone();
-            let accepted = observer.read_named_attribute_owned_by_id_with_native_work(
+            let accepted = observer.read_named_attribute_by_id_with_native_work(
                 self.file_id, &name,
                 &original, &cancellation,
             ).await.map_err(MountSourceError::Filesystem);
@@ -7168,7 +7161,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             let record = checkout
                 .read_file_record_by_id(self.file_id, boundary_budget(), &self.cancellation)
                 .await
@@ -7190,7 +7183,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .read_file_range_by_id(
                     self.file_id,
@@ -7211,7 +7204,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .read_file_up_to_by_id(
                     self.file_id,
@@ -7230,7 +7223,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .seek_file_extent_by_id(
                     self.file_id,
@@ -7288,7 +7281,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .read_named_attribute_by_id(
                     self.file_id,
@@ -7297,7 +7290,7 @@ where
                     &self.cancellation,
                 )
                 .await
-                .map(|receipt| receipt.value)
+                .map(|receipt| receipt.value.map(|chunk| chunk.bytes))
                 .map_err(engine_error)
         })
     }
@@ -7311,7 +7304,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             let receipt = checkout
                 .list_named_attributes_by_id(
                     self.file_id,
@@ -7921,7 +7914,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 return Ok(Some(pending));
             }
             let observation = self.checkout.observe_as_is(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             let receipt = checkout
                 .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
                 .await
@@ -7964,7 +7957,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 let capacity = read.logical_owned_bytes();
                 crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity)
             }),
-            None => observer.read_symbolic_link_owned_with_native_work(
+            None => observer.read_symbolic_link_with_native_work(
                 &namespace, &original, &cancellation,
             ).await,
         };
@@ -8017,7 +8010,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     },
                     work: receipt.work,
                 }),
-            None => observer.read_symbolic_link_owned(&namespace, budget, &cancellation).await,
+            None => observer.read_symbolic_link(&namespace, budget, &cancellation).await,
         };
         let mut output = {
             let mut work = meter.lock();
@@ -8716,7 +8709,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
-            let inspected = checkout.inspector_measured(budget, cancellation);
+            let inspected = checkout.inspector(budget, cancellation);
             carrier.accept_with_prior_live(inspected, prior_live, mount_engine_error)?
         };
         let mut inspector = LookupObserverOwned::new_in(inspector, carrier.reborrow())?;
@@ -9236,7 +9229,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             ));
         }
         let budget = observer.work.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-        let result = observer.detached_from_record_measured(lookup.record, budget, &cancellation);
+        let result = observer.detached_from_record(lookup.record, budget, &cancellation);
         let (file, receipt) = match result {
             Ok(receipt) => (Some(receipt.value), Ok(crate::OperationReceipt {
                 value: (), work: receipt.work,
@@ -9355,7 +9348,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             checkout.observer_with_native_work(&original, &cancellation).map_err(mount_engine_error)?
         } else {
             let budget = carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-            let observed = checkout.observer_measured(budget, &cancellation);
+            let observed = checkout.observer(budget, &cancellation);
             carrier.with_work(|work| mount_accept(work, observed, mount_engine_error))?
         };
         let mut observer = LookupObserverOwned::new_in(observer, carrier.reborrow())?;
@@ -9388,7 +9381,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             checkout.inspector_with_native_work(&original, &cancellation).map_err(mount_engine_error)?
         } else {
             let budget = carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-            let inspected = checkout.inspector_measured(budget, &cancellation);
+            let inspected = checkout.inspector(budget, &cancellation);
             carrier.with_work(|work| mount_accept(work, inspected, mount_engine_error))?
         };
         let mut observer = LookupObserverOwned::new_in(observer, carrier.reborrow())?;
@@ -9482,7 +9475,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             let observation = self.checkout.observe(owner).await?;
             observation.ensure_publication_resolved()?;
             observation
-                .observer()
+                .observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value
                 .read_file_record_by_id(file_id, boundary_budget(), &self.cancellation)
                 .await
                 .map(|receipt| receipt.value)
@@ -9505,7 +9498,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .checkout
                 .observe(owner)
                 .await?
-                .detached_from_record(record))
+                .detached_from_record(record, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded detached hold preserves a validated record").value)
         })?;
         Ok(Arc::new(CheckoutDetachedFile {
             state: tokio::sync::Mutex::new(DetachedMountState {
@@ -9630,7 +9623,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .map_err(super::lazy::mount_engine_error)
         } else {
             self.detached_identity_create_with_carrier(carrier, cancellation, |budget| {
-                observation.detached_from_record_measured(record, budget, cancellation)
+                observation.detached_from_record(record, budget, cancellation)
             })
         }
     }
@@ -10451,7 +10444,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let result = crate::obs::in_span(&span, async move {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
-            let base = checkout.private_candidate();
+            let base = checkout.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value;
             let decision = checkout
                 .rebase_head(
                     self.limits.maximum_checkout_dependencies,
@@ -10488,7 +10481,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let result = crate::obs::in_span(&span, async move {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
-            let base = checkout.private_candidate();
+            let base = checkout.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value;
             checkout
                 .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
                 .await
@@ -11294,7 +11287,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .map_err(MountSourceError::Filesystem)?
         } else {
             let mut work = meter.lock();
-            let data = checkout.proof_data_snapshot_measured(
+            let data = checkout.proof_data_snapshot(
                 work.remaining().map_err(mount_demand_error)?, cancellation,
             );
             mount_accept(&mut work, data, |error| engine_error(error))?
@@ -11805,11 +11798,11 @@ where
                 ViewGate::callback_owner(), name.carrier, &cancellation, Some(&self.cancellation),
             ).await?;
             let budget = name.carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-            let observed = observation.observer_measured(budget, &cancellation);
+            let observed = observation.observer(budget, &cancellation);
             let observed = name.carrier.with_work(|work| mount_accept(work, observed, mount_engine_error))?;
             let mut observer = LookupObserverOwned::new(observed, meter)?;
             let budget = name.carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-            let result = observer.read_named_attribute_owned(
+            let result = observer.read_named_attribute(
                 namespace.value.as_ref().expect("attribute namespace is live"),
                 name.value.as_ref().expect("attribute name is live"), budget, &cancellation,
             ).await;
@@ -11859,7 +11852,7 @@ where
                 ViewGate::callback_owner(), cursor.carrier, &cancellation, Some(&self.cancellation),
             ).await?;
             let budget = cursor.carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-            let observed = observation.observer_measured(budget, &cancellation);
+            let observed = observation.observer(budget, &cancellation);
             let observed = cursor.carrier.with_work(|work| mount_accept(work, observed, mount_engine_error))?;
             let mut observer = LookupObserverOwned::new(observed, meter)?;
             let budget = cursor.carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
@@ -12528,11 +12521,11 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .read_symbolic_link(&path, boundary_budget(), &self.cancellation)
                 .await
-                .map(|receipt| receipt.value)
+                .map(|receipt| receipt.value.bytes)
                 .map_err(engine_error)
         })
     }
@@ -12571,7 +12564,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .read_file_range(
                     &path,
@@ -12628,7 +12621,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .seek_file_extent(
                     &path,
@@ -12657,7 +12650,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             let receipt = checkout
                 .list_directory_records(
                     &path,
@@ -12913,7 +12906,7 @@ where
             let mut observer = LookupObserverOwned::new_in(observation.observer, carrier.reborrow())?;
             original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-            let result = observer.read_named_attribute_owned_with_native_work(
+            let result = observer.read_named_attribute_with_native_work(
                 &namespace, &name, &original, &cancellation,
             ).await;
             let completed = observer.finish();
@@ -14733,7 +14726,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut zero_candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() });
+            .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
         let zero_result = source.runtime.block_on(|| {
             capture_paths_batched_with_baseline(
                 &mut zero_candidate,
@@ -14752,7 +14745,7 @@ mod tests {
         assert!(!zero_candidate.has_pending_mutations());
         let mut candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() });
+            .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
         let single = source.runtime.block_on(|| {
             capture_paths_batched_with_baseline(
                 &mut candidate,
@@ -14769,7 +14762,7 @@ mod tests {
         budget.source_bytes_read = single.work.source_bytes_read;
         let mut candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() });
+            .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
         let paths = [first, second];
         let result = source.runtime.block_on(|| {
             capture_paths_batched_with_baseline(
@@ -14870,7 +14863,7 @@ mod tests {
         // not newly adopted wholesale by the following native invocation.
         let checkout = borrowed.runtime.block_on(|| async {
             let checkout = borrowed.checkout.lock().await;
-            checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)
+            checkout.private_candidate(WorkBudget::UNBOUNDED, &cancellation)
                 .map(|receipt| receipt.value).map_err(|failure| failure.error)
         })?;
         let original = crate::NativeMaterializationWork::new(boundary_budget(), &cancellation)
@@ -16706,7 +16699,7 @@ mod tests {
                         let finished = done.load(Ordering::Acquire);
                         let [first, second] = source.runtime.wait(|| async {
                             let observation = source.checkout.observe(owner).await?;
-                            let mut checkout = observation.observer();
+                            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
                             let mut values = [0; 2];
                             for (value, path) in values.iter_mut().zip(&pair) {
                                 let range = ByteRange {
@@ -16742,13 +16735,7 @@ mod tests {
                 let mut checkout = source.checkout.lock().await;
                 for path in &pair {
                     checkout
-                        .write_file(
-                            path.clone(),
-                            0,
-                            Bytes::from(vec![round]),
-                            boundary_budget(),
-                            &source.cancellation,
-                        )
+                        .change_content(path.clone(), crate::ContentChange::Write { offset: 0, bytes: (Bytes::from(vec![round])).into() }, crate::ContentTimes::Preserve, boundary_budget(), &source.cancellation)
                         .await
                         .map_err(engine_error)?;
                     tokio::task::yield_now().await;
@@ -16785,15 +16772,9 @@ mod tests {
         let owner = ViewGate::callback_owner();
         let (write, refresh) = source.runtime.block_on(|| async {
             let observation = source.checkout.observe(owner).await?;
-            let mut observer = observation.observer();
+            let mut observer = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             let write = observer
-                .write_file(
-                    path,
-                    0,
-                    Bytes::from_static(b"lost"),
-                    boundary_budget(),
-                    &source.cancellation,
-                )
+                .change_content(path, crate::ContentChange::Write { offset: 0, bytes: (Bytes::from_static(b"lost")).into() }, crate::ContentTimes::Preserve, boundary_budget(), &source.cancellation)
                 .await;
             let refresh = observer
                 .refresh_head(boundary_budget(), &source.cancellation)
