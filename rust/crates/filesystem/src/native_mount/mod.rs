@@ -39,7 +39,7 @@ pub(crate) use view_gate::ViewGateReadAdmissions;
 
 mod view_ledger;
 pub(crate) use view_ledger::ViewObserverAdmissions;
-pub(crate) use view_ledger::{ViewLedger, ViewLedgerAdmission, ViewLedgerAdmissions};
+pub(crate) use view_ledger::{ViewLedgerAdmission, ViewLedgerAdmissions};
 pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 
 mod lazy;
@@ -931,6 +931,7 @@ fn callback_failure_slot<E>(
     Ok((Box::new(std::mem::MaybeUninit::uninit()), allocation))
 }
 
+#[allow(unsafe_code, reason = "transfers fully initialized preallocated callback failure storage")]
 fn callback_failure<E: std::error::Error + Send + Sync + 'static>(
     (mut source, custody): (Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation), error: E,
 ) -> NativeMountError {
