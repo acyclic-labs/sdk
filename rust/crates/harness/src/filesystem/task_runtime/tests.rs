@@ -204,7 +204,7 @@ impl Fixture {
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(agent), None, &mut None).expect("scope proof");
         let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?
-            .with_run_limits(TaskRunLimits { deadline_epoch_ms: Some(20), ..TaskRunLimits::default() })?;
+            .with_run_limits(TaskRunLimits { deadline_epoch_ms: Some(20), ..TaskRunLimits::default() }, &mut None)?;
         let machine = Arc::new(Machine {
             identity: MachineIdentity {
                 name: "test.deadline".into(), version: "1".into(),
@@ -219,7 +219,7 @@ impl Fixture {
             machine.clone(), json!({"type":"object"}), json!({}),
         )?)?;
         let mut machines = MachineRegistry::default();
-        machines.register(machine.clone())?;
+        machines.register(machine.clone(), &mut None)?;
         let clock = Arc::new(Clock(AtomicU64::new(10)));
         let tool = Arc::new(PendingTool {
             clock: clock.clone(), executed: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
-import { Inference, InferenceClient, HttpInferenceTransport, Warm, warmCommitment, contextRevision,
-  RetainWarmRequestSchema, RenewWarmRequestSchema, WarmViewSchema, WarmState,
+import { Inference, InferenceClient, HttpInferenceTransport, warmCommitment, contextRevision,
+  RetainWarmRequestSchema, RenewWarmRequestSchema, ReleaseWarmRequestSchema, WarmViewSchema, WarmState,
 } from "../src/index.js";
 import { validateRuntimeShape, validateContract } from "../src/contract.js";
 
@@ -14,7 +14,7 @@ const view = () => create(WarmViewSchema, {
   idleKv: { policy, retainedAtMs: 100n },
 });
 
-test("idle KV handles encode exact retry identities and renew from the retained baseline", async () => {
+test("idle KV requests encode exact retry identities and renew from the retained baseline", async () => {
   const requests: string[] = [];
   const fetcher: typeof fetch = async (url, init) => {
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fixture");
@@ -35,17 +35,18 @@ test("idle KV handles encode exact retry identities and renew from the retained 
     return new Response(toJsonString(WarmViewSchema, response));
   };
   const inference = new Inference(new InferenceClient(new HttpInferenceTransport("https://fixture.test", () => ({ authorization: "Bearer fixture" }), fetcher)));
-  const context = inference.context(contextRevision(bytes(4)));
-  const warm = await context.retain({ idleKv: policy, identity });
-  await context.retain({ idleKv: policy, identity });
+  const client = inference.client;
+  const retain = create(RetainWarmRequestSchema, { context: contextRevision(bytes(4)), idleKv: policy, identity });
+  const warm = await client.retainWarm(retain);
+  await client.retainWarm(retain);
   expect(requests[0]).toBe(requests[1]);
-  const recovered = new Warm(inference, warmCommitment(warm.id()));
-  expect((await recovered.inspect()).idleKv?.lastUsedAtMs).toBeUndefined();
-  const renewed = await recovered.renewIdle(30n, { identity });
+  const recovered = warmCommitment(warm.commitment);
+  expect((await client.inspectWarm(recovered)).idleKv?.lastUsedAtMs).toBeUndefined();
+  const renewed = await client.renewWarm(create(RenewWarmRequestSchema, { commitment: recovered, idleTimeoutMs: 30n, identity }));
   expect(renewed.expiresAtMs).toBe(130n);
   expect(renewed.idleKv?.retainedAtMs).toBe(100n);
   expect(renewed.idleKv?.lastUsedAtMs).toBeUndefined();
-  expect((await recovered.release({ identity })).state).toBe(WarmState.RELEASED);
+  expect((await client.releaseWarm(create(ReleaseWarmRequestSchema, { commitment: recovered, identity }))).state).toBe(WarmState.RELEASED);
 });
 
 test("Rust validation rejects mixed policies, invented actual-use evidence and overflow", async () => {

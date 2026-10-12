@@ -153,7 +153,7 @@ impl Drop for PreparedMaterializationRecord {
         #[cfg(windows)]
         let _ = cleanup.attempt_recorded(|| {
             use windows::Wdk::Storage::FileSystem::{FILE_DISPOSITION_INFORMATION, FileDispositionInformation};
-            windows_set_information_held(&self.file,
+            windows_set_information(&self.file,
                 &FILE_DISPOSITION_INFORMATION { DeleteFile: true }, FileDispositionInformation)
         });
     }
@@ -1491,18 +1491,24 @@ fn unix_mutation<W: crate::demand::SourceDemandReadWork>(work: &mut W, mut opera
     }
 }
 
-#[cfg(unix)]
-fn fence_cookie_held_with_work<W: NativeHostWork>(
-    parent: &Dir, leaf: &std::ffi::CStr, work: &mut W,
+fn fence_cookie_held<W: NativeHostWork>(
+    parent: &Dir,
+    #[cfg(unix)] leaf: &std::ffi::CStr,
+    #[cfg(windows)] leaf: &[u16],
+    work: &mut W,
 ) -> Result<(), W::Error> {
     let cleanup = work.reserve_cleanup_write()?;
-    let created = match open_unix(parent.as_raw_fd(), leaf,
+    #[cfg(unix)]
+    let created = open_unix(parent.as_raw_fd(), leaf,
         libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         || {
             let delta = WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED };
             work.admit(delta)?;
             work.record(delta)
-        }) {
+        });
+    #[cfg(windows)]
+    let created = create_windows_provisional_file_with_work(parent, leaf, work);
+    let created = match created {
         Ok(file) => file,
         Err(error) => {
             work.cancel_cleanup_write(cleanup);
@@ -1511,37 +1517,20 @@ fn fence_cookie_held_with_work<W: NativeHostWork>(
     };
     let completion = work.check();
     let (removed, recorded) = work.attempt_cleanup_write(cleanup, || {
-        // SAFETY: the same held parent and prepared leaf remain live, even after cancellation; no path/name allocation can gate this cleanup.
-        if unsafe { libc::unlinkat(parent.as_raw_fd(), leaf.as_ptr(), 0) } < 0 {
-            Err(io::Error::last_os_error())
-        } else { Ok(()) }
-    });
-    drop(created);
-    recorded?;
-    removed?;
-    completion?;
-    work.check()
-}
-
-#[cfg(windows)]
-fn fence_cookie_held_with_work<W: NativeHostWork>(
-    parent: &Dir, leaf: &[u16], work: &mut W,
-) -> Result<(), W::Error> {
-    use windows::Wdk::Storage::FileSystem::{FILE_DISPOSITION_INFORMATION, FileDispositionInformation};
-    let cleanup = work.reserve_cleanup_write()?;
-    let created = match create_windows_provisional_file_with_work(parent, leaf, work) {
-        Ok(file) => file,
-        Err(error) => {
-            work.cancel_cleanup_write(cleanup);
-            return Err(error);
+        #[cfg(unix)]
+        {
+            // SAFETY: the held parent and prepared leaf survive cancellation.
+            if unsafe { libc::unlinkat(parent.as_raw_fd(), leaf.as_ptr(), 0) } < 0 {
+                Err(io::Error::last_os_error())
+            } else { Ok(()) }
         }
-    };
-    let completion = work.check();
-    let (removed, recorded) = work.attempt_cleanup_write(cleanup, || {
-        windows_set_information_held(&created,
-            &FILE_DISPOSITION_INFORMATION { DeleteFile: true }, FileDispositionInformation)
+        #[cfg(windows)]
+        {
+            use windows::Wdk::Storage::FileSystem::{FILE_DISPOSITION_INFORMATION, FileDispositionInformation};
+            windows_set_information(&created,
+                &FILE_DISPOSITION_INFORMATION { DeleteFile: true }, FileDispositionInformation)
+        }
     });
-    // The original delete-capable FILE_CREATE handle owns final disposal: neither cleanup nor close reopens a replaced name after cancellation.
     drop(created);
     recorded?;
     removed?;
@@ -1556,7 +1545,7 @@ impl HostRoot {
         #[cfg(unix)]
         {
             with_unix_parent_leaf(&self.directory, relative, work, |parent, leaf, work| {
-                fence_cookie_held_with_work(parent, leaf, work)
+                fence_cookie_held(parent, leaf, work)
             })
         }
         #[cfg(windows)]
@@ -1564,7 +1553,7 @@ impl HostRoot {
             with_wide_path_with_work(relative, work, |relative, work| {
                 let (parent, leaf) = wide_parent_leaf(relative)?;
                 let parent = self.open_dir_held_wide_with_work(parent, work)?;
-                fence_cookie_held_with_work(&parent, leaf, work)
+                fence_cookie_held(&parent, leaf, work)
             })
         }
     }
@@ -1875,18 +1864,7 @@ pub(crate) fn sync_directory_held<W: NativeHostWork>(
     directory: &Dir, work: &mut W,
 ) -> Result<(), W::Error> {
     #[cfg(unix)]
-    {
-        loop {
-            let error = work.attempt_io( WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED }, || {
-                Ok(sync_held_descriptor_once(directory).err())
-            })?;
-            match error {
-                Some(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Some(error) => return Err(error.into()),
-                None => return Ok(()),
-            }
-        }
-    }
+    { sync_file_held_with_work(directory, work) }
     #[cfg(windows)]
     {
         use windows::Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT};
@@ -1894,9 +1872,7 @@ pub(crate) fn sync_directory_held<W: NativeHostWork>(
         // FlushFileBuffers requires write access.
         let file = open_windows_held_with_work(directory, Path::new("."), FILE_GENERIC_READ | FILE_GENERIC_WRITE,
             FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, work)?;
-        work.attempt_io( WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED }, || {
-            sync_held_descriptor_once(&file)
-        })
+        sync_file_held_with_work(&file, work)
     }
 }
 
@@ -1984,13 +1960,13 @@ fn sync_windows_metadata_held_with_work<W: NativeHostWork>(
             FileAttributes: if unlocked == 0 { FILE_ATTRIBUTE_NORMAL.0 } else { unlocked },
             ..Default::default()
         };
-        let reopened = match set_windows_basic_info_held(&file, information) {
+        let reopened = match set_windows_basic_info(&file, information) {
             Ok(()) => reopen_windows_writable_with_work(&file, work),
             Err(error) => Err(error.into()),
         };
         // ReOpenFile acts on this same pinned object, never its current path.
         let (restored, recorded) = work.attempt_cleanup_write(restore, || {
-            set_windows_basic_info_held(&file, FILE_BASIC_INFO {
+            set_windows_basic_info(&file, FILE_BASIC_INFO {
                 FileAttributes: current.FileAttributes, ..Default::default()
             })
         });
@@ -2002,8 +1978,9 @@ fn sync_windows_metadata_held_with_work<W: NativeHostWork>(
         reopened?
     };
     if let Some(attributes) = requested {
-        set_windows_basic_info_with_work(&file,
-            FILE_BASIC_INFO { FileAttributes: attributes, ..Default::default() }, work)?;
+        work.attempt_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED },
+            || set_windows_basic_info(&file,
+                FILE_BASIC_INFO { FileAttributes: attributes, ..Default::default() }))?;
     }
     sync_file_held_with_work(&writable, work)
 }
@@ -2045,7 +2022,7 @@ fn query_windows_basic_info_with_work<W: NativeHostWork>(
 }
 
 #[cfg(windows)]
-fn set_windows_basic_info_held(
+fn set_windows_basic_info(
     file: &impl std::os::windows::io::AsRawHandle,
     information: windows::Win32::Storage::FileSystem::FILE_BASIC_INFO,
 ) -> io::Result<()> {
@@ -2057,34 +2034,20 @@ fn set_windows_basic_info_held(
         .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))
 }
 
-#[cfg(windows)]
-fn set_windows_basic_info_with_work<W: NativeHostWork>(
-    file: &impl std::os::windows::io::AsRawHandle,
-    information: windows::Win32::Storage::FileSystem::FILE_BASIC_INFO, work: &mut W,
+pub(crate) fn sync_file_held_with_work<W: NativeHostWork>(
+    #[cfg(unix)] file: &impl std::os::fd::AsRawFd,
+    #[cfg(windows)] file: &impl std::os::windows::io::AsRawHandle,
+    work: &mut W,
 ) -> Result<(), W::Error> {
-    work.attempt_io( WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED },
-        || set_windows_basic_info_held(file, information))
-}
-
-pub(crate) fn sync_file_held_with_work<W: NativeHostWork>(file: &File, work: &mut W) -> Result<(), W::Error> {
-    #[cfg(unix)]
-    {
-        loop {
-            let error = work.attempt_io( WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED }, || {
-                Ok(sync_held_descriptor_once(file).err())
-            })?;
-            match error {
-                Some(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Some(error) => return Err(error.into()),
-                None => return Ok(()),
-            }
+    loop {
+        let error = work.attempt_io(WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED },
+            || Ok(sync_held_descriptor_once(file).err()))?;
+        match error {
+            #[cfg(unix)]
+            Some(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Some(error) => return Err(error.into()),
+            None => return Ok(()),
         }
-    }
-    #[cfg(windows)]
-    {
-        work.attempt_io( WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED }, || {
-            sync_held_descriptor_once(file)
-        })
     }
 }
 #[cfg(windows)]
@@ -2529,13 +2492,6 @@ fn status_error(status: windows::Win32::Foundation::NTSTATUS) -> io::Error {
         |_| io::Error::other(format!("{status:?}")),
         io::Error::from_raw_os_error,
     )
-}
-
-#[cfg(windows)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FileReads {
-    Cursor,
-    Positional,
 }
 
 /// A held directory capability whose relative operations cannot escape through path traversal or an intermediate symbolic link/reparse point.
@@ -3150,15 +3106,12 @@ impl HostRoot {
         read_dir_held_with_volume_with_work(&directory, volume_serial_number, work)
     }
 
-    fn open_file_wide_for_with_work<W: NativeHostWork>(&self, path: &[u16], reads: FileReads, work: &mut W) -> Result<cap_std::fs::File, W::Error> {
+    fn open_file_wide<W: NativeHostWork>(&self, path: &[u16], synchronization: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS, work: &mut W) -> Result<cap_std::fs::File, W::Error> {
         use windows::Wdk::Storage::FileSystem::{
-            FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, NTCREATEFILE_CREATE_OPTIONS,
+            FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT,
         };
         use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
-        let options = FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | match reads {
-            FileReads::Cursor => FILE_SYNCHRONOUS_IO_NONALERT,
-            FileReads::Positional => NTCREATEFILE_CREATE_OPTIONS(0),
-        };
+        let options = FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | synchronization;
         if let Some(file) = open_windows_wide_at_with_work(&self.directory, path, FILE_GENERIC_READ, options, work, W::invalid_request)? {
             return Ok(file);
         }
@@ -3171,7 +3124,7 @@ impl HostRoot {
     pub(crate) fn open_file_positional_wide_with_work<W: NativeHostWork>(
         &self, path: &[u16], work: &mut W,
     ) -> Result<cap_std::fs::File, W::Error> {
-        self.open_file_wide_for_with_work(path, FileReads::Positional, work)
+        self.open_file_wide(path, windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0), work)
     }
 
     pub(crate) fn open_file_yielding_wide_with_work<W: crate::demand::SourceDemandReadWork>(
@@ -3190,7 +3143,7 @@ impl HostRoot {
         match file {
             Some(file) => YieldingFile::new_with_work(file.into_std(), work),
             None => YieldingFile::plain_with_work(
-                self.open_file_wide_for_with_work(path, FileReads::Positional, work)?.into_std(), work,
+                self.open_file_wide(path, NTCREATEFILE_CREATE_OPTIONS(0), work)?.into_std(), work,
             ),
         }
     }
@@ -3966,7 +3919,7 @@ impl HostRoot {
 
     pub(crate) fn open_file<W: NativeHostWork>(&self, path: &Path, work: &mut W) -> Result<cap_std::fs::File, W::Error> {
         #[cfg(windows)]
-        { with_wide_path_with_work(path, work, |path, work| self.open_file_wide_for_with_work(path, FileReads::Cursor, work)) }
+        { with_wide_path_with_work(path, work, |path, work| self.open_file_wide(path, windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT, work)) }
         #[cfg(unix)]
         {
             work.check()?;
@@ -4971,7 +4924,8 @@ pub(crate) fn apply_windows_metadata<W: crate::demand::SourceDemandReadWork>(
     }
     let current = query_windows_basic_info_with_work(&file, work)?;
     let desired = desired_windows_basic_info(metadata, current)?;
-    set_windows_basic_info_with_work(&file, desired, work)?;
+    work.attempt_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED },
+        || set_windows_basic_info(&file, desired))?;
     verify_windows_basic_info(metadata, desired, query_windows_basic_info_with_work(&file, work)?)
         .map_err(Into::into)
 }
@@ -5130,7 +5084,7 @@ impl Drop for StagedWindowsFile {
             FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
             FILE_DISPOSITION_FLAG_ON_CLOSE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
         };
-        let set = |flags: u32| windows_set_information_held(&self.guard, &flags,
+        let set = |flags: u32| windows_set_information(&self.guard, &flags,
             windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS(64));
         // Retain delete-on-close if immediate POSIX deletion is unavailable.
         if set(FILE_DISPOSITION_FLAG_ON_CLOSE.0).is_ok()
@@ -5198,19 +5152,6 @@ fn clonable_windows_length(length: u64) -> bool {
     length >= 4 * 1024 && i64::try_from(length).is_ok()
 }
 
-
-#[cfg(windows)]
-fn clone_windows_file_into<W: crate::demand::SourceDemandReadWork>(source: &File, target: &File, length: u64, work: &mut W) -> Result<bool, DemandError> {
-    for alignment in [4 * 1024, 64 * 1024] {
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-        match clone_windows_file_measured(source, target, length, alignment, work) {
-            Ok(()) => return Ok(true),
-            Err(DemandError::Io(_)) => truncate_file_with_work(target, 0, work)?,
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(false)
-}
 
 #[cfg(windows)]
 fn windows_leaf_name_with_work<W: NativeHostWork>(path: &[u16], work: &mut W) -> Result<windows::Win32::Foundation::UNICODE_STRING, W::Error> {
@@ -5287,16 +5228,7 @@ pub(crate) fn create_windows_directory_with_work<W: NativeHostWork>(directory: &
 }
 
 #[cfg(windows)]
-fn windows_set_information_measured<T, W: NativeHostWork>(
-    file: &File, information: &T,
-    class: windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS, work: &mut W,
-) -> Result<(), W::Error> {
-    work.attempt_io( WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED },
-        || windows_set_information_held(file, information, class))
-}
-
-#[cfg(windows)]
-fn windows_set_information_held<T>(
+fn windows_set_information<T>(
     file: &File, information: &T,
     class: windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS,
 ) -> io::Result<()> {
@@ -5313,8 +5245,9 @@ fn windows_set_information_held<T>(
 #[cfg(windows)]
 pub(crate) fn keep_windows_created_file_with_work<W: NativeHostWork>(file: &File, work: &mut W) -> Result<(), W::Error> {
     // FILE_DISPOSITION_ON_CLOSE without FILE_DISPOSITION_DELETE clears the create-time FILE_DELETE_ON_CLOSE flag; ordinary DeleteFile=false does not.
-    windows_set_information_measured(file, &8_u32,
-        windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS(64), work)
+    work.attempt_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED },
+        || windows_set_information(file, &8_u32,
+            windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS(64)))
 }
 
 #[cfg(windows)]
@@ -5517,7 +5450,8 @@ fn remove_windows_leaf_with_identity_with_work<W: NativeHostWork>(
             return Err(io::Error::other("held deletion target identity changed").into());
         }
     }
-    windows_set_information_measured(&file, &FILE_DISPOSITION_INFORMATION { DeleteFile: true }, FileDispositionInformation, work)
+    work.attempt_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED },
+        || windows_set_information(&file, &FILE_DISPOSITION_INFORMATION { DeleteFile: true }, FileDispositionInformation))
 }
 
 #[cfg(windows)]
@@ -5622,7 +5556,7 @@ impl HostRoot {
 
 
     pub(crate) fn clone_file_from_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, source_root: &HostRoot, source: &[u16], destination: &[u16], work: &mut W) -> Result<bool, DemandError> {
-        let source = source_root.open_file_wide_for_with_work(source, FileReads::Cursor, work)?.into_std();
+        let source = source_root.open_file_wide(source, windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT, work)?.into_std();
         let stat = source_root.stat_file_with_work(&source, work)?;
         if !stat.file_type().is_file() || stat.file_attributes() & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
             return Err(DemandError::InvalidRequest);
@@ -5630,7 +5564,7 @@ impl HostRoot {
         let length = stat.len();
         if !clonable_windows_length(length) { return Ok(false); }
         let target = self.create_windows_file_wide_measured(destination, false, true, work)?;
-        let cloned = clone_windows_file_into(&source, &target, length, work);
+        let cloned = clone_windows_file(&source, &target, length, work);
         if matches!(cloned, Ok(true)) { keep_windows_created_file_with_work(&target, work)?; }
         // Failed or cancelled work closes the still-delete-on-close target; no budget-exempt path lookup or explicit deletion can escape admission.
         drop(target);
@@ -5728,7 +5662,7 @@ async fn copy_windows_file_worker(
             }
             if stat.identity()? != identity { return Err(io::Error::other("copy source identity changed").into()); }
             let target = clone_target.open_writer(false)?;
-            clone_windows_file_into(&source, &target, length, &mut work)
+            clone_windows_file(&source, &target, length, &mut work)
         }, None).expect("unmetered task construction cannot fail")
         .await?.map_err(ordinary_error)?
         {
@@ -6048,56 +5982,67 @@ pub fn punch_hole(
 }
 
 #[cfg(windows)]
-fn clone_windows_file_measured<W: crate::demand::SourceDemandReadWork>(source: &File, target: &File, length: u64, alignment: u64, work: &mut W) -> Result<(), DemandError> {
+fn clone_windows_file<W: crate::demand::SourceDemandReadWork>(source: &File, target: &File, length: u64, work: &mut W) -> Result<bool, DemandError> {
     use std::os::windows::io::AsRawHandle as _;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::IO::DeviceIoControl;
     use windows::Win32::System::Ioctl::{DUPLICATE_EXTENTS_DATA, FSCTL_DUPLICATE_EXTENTS_TO_FILE, FSCTL_SET_SPARSE};
     const CLONE_CHUNK: u64 = 1024 * 1024 * 1024;
-    let clone_length = length / alignment * alignment;
-    if clone_length == 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "file is smaller than clone alignment").into());
-    }
-    native_write(work)?;
-    // SAFETY: live synchronous target handle; this control has no buffers.
-    unsafe { DeviceIoControl(HANDLE(target.as_raw_handle()), FSCTL_SET_SPARSE,
-        None, 0, None, 0, None, None).map_err(io::Error::from)?; }
-    truncate_file_with_work(target, length, work)?;
-    let mut offset = 0;
-    while offset < clone_length {
+    for alignment in [4 * 1024, 64 * 1024] {
         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-        let count = (clone_length - offset).min(CLONE_CHUNK);
-        let duplicate = DUPLICATE_EXTENTS_DATA {
-            FileHandle: HANDLE(source.as_raw_handle()),
-            SourceFileOffset: i64::try_from(offset).map_err(|_| crate::WorkError::Overflow)?,
-            TargetFileOffset: i64::try_from(offset).map_err(|_| crate::WorkError::Overflow)?,
-            ByteCount: i64::try_from(count).map_err(|_| crate::WorkError::Overflow)?,
-        };
-        native_write(work)?;
-        // SAFETY: both held handles and complete fixed-size input remain live.
-        unsafe { DeviceIoControl(HANDLE(target.as_raw_handle()), FSCTL_DUPLICATE_EXTENTS_TO_FILE,
-            Some((&raw const duplicate).cast()), std::mem::size_of::<DUPLICATE_EXTENTS_DATA>() as u32,
-            None, 0, None, None).map_err(io::Error::from)?; }
-        offset += count;
-    }
-    if clone_length < length {
-        let ranges = allocated_data_ranges(source, clone_length, length - clone_length, 64, work, |work| work.remaining(), native_device_control::<W>)?;
-        let ranges_bytes = (ranges.capacity() * std::mem::size_of::<HostDataRange>()) as u64;
-        let result: Result<(), DemandError> = (|| {
-            let mut buffer = [0_u8; 64 * 1024];
-            for range in &ranges {
+        let cloned: Result<(), DemandError> = (|| {
+            let clone_length = length / alignment * alignment;
+            if clone_length == 0 {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "file is smaller than clone alignment").into());
+            }
+            native_write(work)?;
+            // SAFETY: live synchronous target handle; this control has no buffers.
+            unsafe { DeviceIoControl(HANDLE(target.as_raw_handle()), FSCTL_SET_SPARSE,
+                None, 0, None, 0, None, None).map_err(io::Error::from)?; }
+            truncate_file_with_work(target, length, work)?;
+            let mut offset = 0;
+            while offset < clone_length {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                let size = usize::try_from(range.length).map_err(|_| crate::WorkError::Overflow)?;
-                let buffer = buffer.get_mut(..size).ok_or(DemandError::InvalidRequest)?;
-                windows_copy_tail_measured(source, target, range.offset, buffer, work)?;
+                let count = (clone_length - offset).min(CLONE_CHUNK);
+                let duplicate = DUPLICATE_EXTENTS_DATA {
+                    FileHandle: HANDLE(source.as_raw_handle()),
+                    SourceFileOffset: i64::try_from(offset).map_err(|_| crate::WorkError::Overflow)?,
+                    TargetFileOffset: i64::try_from(offset).map_err(|_| crate::WorkError::Overflow)?,
+                    ByteCount: i64::try_from(count).map_err(|_| crate::WorkError::Overflow)?,
+                };
+                native_write(work)?;
+                // SAFETY: both held handles and complete fixed-size input remain live.
+                unsafe { DeviceIoControl(HANDLE(target.as_raw_handle()), FSCTL_DUPLICATE_EXTENTS_TO_FILE,
+                    Some((&raw const duplicate).cast()), std::mem::size_of::<DUPLICATE_EXTENTS_DATA>() as u32,
+                    None, 0, None, None).map_err(io::Error::from)?; }
+                offset += count;
+            }
+            if clone_length < length {
+                let ranges = allocated_data_ranges(source, clone_length, length - clone_length, 64, work, |work| work.remaining(), native_device_control::<W>)?;
+                let ranges_bytes = (ranges.capacity() * std::mem::size_of::<HostDataRange>()) as u64;
+                let result: Result<(), DemandError> = (|| {
+                    let mut buffer = [0_u8; 64 * 1024];
+                    for range in &ranges {
+                        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                        let size = usize::try_from(range.length).map_err(|_| crate::WorkError::Overflow)?;
+                        let buffer = buffer.get_mut(..size).ok_or(DemandError::InvalidRequest)?;
+                        windows_copy_tail_measured(source, target, range.offset, buffer, work)?;
+                    }
+                    Ok(())
+                })();
+                drop(ranges);
+                work.release(ranges_bytes)?;
+                result?;
             }
             Ok(())
         })();
-        drop(ranges);
-        work.release(ranges_bytes)?;
-        result?;
+        match cloned {
+            Ok(()) => return Ok(true),
+            Err(DemandError::Io(_)) => truncate_file_with_work(target, 0, work)?,
+            Err(error) => return Err(error),
+        }
     }
-    Ok(())
+    Ok(false)
 }
 
 pub(crate) fn truncate_file_with_work<W: NativeHostWork>(
@@ -6121,7 +6066,8 @@ pub(crate) fn truncate_file_with_work<W: NativeHostWork>(
         use windows::Wdk::Storage::FileSystem::FileEndOfFileInformation;
         use windows::Win32::Storage::FileSystem::FILE_END_OF_FILE_INFO;
         let information = FILE_END_OF_FILE_INFO { EndOfFile: i64::try_from(length).map_err(|_| crate::WorkError::Overflow)? };
-        windows_set_information_measured(file, &information, FileEndOfFileInformation, work)
+        work.attempt_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED },
+            || windows_set_information(file, &information, FileEndOfFileInformation))
     }
 }
 
@@ -8321,7 +8267,7 @@ mod bounded_record_tests {
         let name = c"cookie";
         #[cfg(windows)]
         let name = &[99_u16, 111, 111, 107, 105, 101][..];
-        assert!(matches!(fence_cookie_held_with_work(&parent, name, &mut boundary),
+        assert!(matches!(fence_cookie_held(&parent, name, &mut boundary),
             Err(crate::materializer::NativeTreeMaterializationError::Cancelled)));
         assert!(!temporary.path().join("cookie").exists());
         Ok(())

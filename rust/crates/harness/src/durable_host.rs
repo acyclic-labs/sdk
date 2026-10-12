@@ -2651,8 +2651,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(Error::Unauthorized("parcel differs from its retained mailbox item".into()));
         }
         let sender_admission = self.admission_with_work(OperationId::from_bytes(event.sender.into_bytes()), &mut None).await?;
-        let direct = Self::authorize_mail_route(
-            event.sender, &sender_admission, receiver, &receiver_admission,
+        let direct = mail::authorize_route(
+            event.sender, &sender_admission, receiver, &receiver_admission, None,
         )?;
         receiver_admission.limits.validate_file(&event.payload, &mut None)?;
         if !direct && !read_granted(&receiver_admission.grants, &event.payload)? {
@@ -4137,7 +4137,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(admission_boundary(work, crate::wire::ErrorCode::Conflict,
                 "task extensions differ from owner bindings"));
         }
-        self.validate_local_admission_policy_with_work(&admission, work)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+            self.policy_identity_with_native_work(native)?;
+        }
+        let matches = if work.is_some() {
+            admission.policy.as_ref() == self.policy_binding.as_ref()
+        } else { admission.policy == self.policy.as_ref().map(|policy| policy.identity()) };
+        if !matches {
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Conflict,
+                "task admission policy differs from owner"));
+        }
+        if admission.execution.is_some() {
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Unsupported,
+                "local durable host cannot admit a remote execution route"));
+        }
         if admission.machine.name != admission.task.name
             || admission.machine.version != admission.task.version
             || admission.machine.digest == [0; 32]
@@ -4547,8 +4561,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 || receipt.origin.parent_task != preparation_parent
                 || receipt.origin.preparation_task != proof.preparation
                 || receipt.origin.intended_child != request.child.operation_id
-                || receipt.origin.admission_digest != Self::proof_digest(&preparation, proof_custody.work())?
-                || receipt.origin.request_digest != Self::proof_digest(&request, proof_custody.work())?
+                || receipt.origin.admission_digest != crate::contract::canonical_json_digest_with_work(&preparation, acyclic_stream::MAX_RECORD_BYTES as u64, proof_custody.work())?
+                || receipt.origin.request_digest != crate::contract::canonical_json_digest_with_work(&request, acyclic_stream::MAX_RECORD_BYTES as u64, proof_custody.work())?
             {
                 return Err(admission_boundary(proof_custody.work(), ErrorCode::Unauthorized,
                     "resource allocation provenance changed"));
@@ -4570,18 +4584,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             admission, &mut receipts, current_default.map(|(_, origin)| origin), custody.work(),
         )?;
         Ok(Some(access))
-    }
-
-    fn proof_digest<T: serde::Serialize + ?Sized>(
-        value: &T, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<[u8; 32]> {
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let bytes = crate::store::history::canonical_bytes_with_work(
-            value, acyclic_stream::MAX_RECORD_BYTES as u64, custody.work(),
-        )?;
-        custody.adopt(bytes.capacity() as u64)?;
-        if let Some(io) = custody.work().as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
-        Ok(*blake3::hash(&bytes).as_bytes())
     }
 
     async fn read_json_with_work(
@@ -4703,18 +4705,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
     }
 
-    async fn read_admission_json_with_work(
-        &self, reference: &FileRef,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Value, u64)> {
-        match self.read_json_with_work(reference, work).await {
-            Err(Error::NotFound(_)) => Err(admission_boundary(
-                work, crate::wire::ErrorCode::Storage, "committed task admission content is missing",
-            )),
-            other => other,
-        }
-    }
-
     async fn read_retained_admission_counted(
         &self, operation_id: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -4758,7 +4748,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 ));
             }
         }
-        let (value, held) = self.read_admission_json_with_work(&spec.state, work).await?;
+        let (value, held) = self.read_json_with_work(&spec.state, work).await.map_err(|error| match error {
+            Error::NotFound(_) => admission_boundary(work, crate::wire::ErrorCode::Storage,
+                "committed task admission content is missing"),
+            other => other,
+        })?;
         let (admission, added) = TaskAdmissionRecord::from_canonical_value_counted_with_work(value, work)?;
         let held = held.checked_add(added).ok_or_else(|| admission_boundary(
             work, crate::wire::ErrorCode::Invalid, "task admission custody overflows",
@@ -4859,8 +4853,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             custody.relinquish(scope_held)?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(native) = custody.work().as_deref().and_then(|io| io.original_native_work()) {
-                RuntimeScope::validate_limits_with_native_work(&scope.limits(), native)?;
-                RuntimeScope::validate_run_limits_with_native_work(&scope.run_limits(), native)?;
+                (&scope.limits()).validate(&mut Some(&mut crate::store::native_work_io(native).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
+                (&scope.run_limits()).validate(&mut Some(&mut crate::store::native_work_io(native).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
                 let parent_limits = admitted.limits;
                 let child_limits = scope.limits();
                 let mut grants_match = true;
@@ -4901,35 +4895,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 scope.created_grants().into_iter().flat_map(Capabilities::iter),
             ));
             RuntimeScope::new(allowed, admitted.limits)?
-                .with_run_limits(admitted.run_limits)?
+                .with_run_limits(admitted.run_limits, &mut None)?
                 .narrow(scope.grants().clone(), scope.limits())?
-                .with_run_limits(scope.run_limits())?;
+                .with_run_limits(scope.run_limits(), &mut None)?;
         }
         Ok(())
     }
 
-    fn validate_local_admission_policy_with_work(
-        &self,
-        admission: &TaskAdmissionRecord,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-            self.policy_identity_with_native_work(native)?;
-        }
-        let matches = if work.is_some() {
-            admission.policy.as_ref() == self.policy_binding.as_ref()
-        } else { admission.policy == self.policy.as_ref().map(|policy| policy.identity()) };
-        if !matches {
-            return Err(admission_boundary(work, crate::wire::ErrorCode::Conflict,
-                "task admission policy differs from owner"));
-        }
-        if admission.execution.is_some() {
-            return Err(admission_boundary(work, crate::wire::ErrorCode::Unsupported,
-                "local durable host cannot admit a remote execution route"));
-        }
-        Ok(())
-    }
+
 
     fn mailbox(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
         acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), format!("harness/v3/mail/by-recipient/{task_id}"))
@@ -5085,7 +5058,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         )?;
         if request.scope.resource_proofs().is_empty() {
             self.root_scope.narrow(request.scope.grants().clone(), request.scope.limits())?
-                .with_run_limits(request.scope.run_limits())?;
+                .with_run_limits(request.scope.run_limits(), &mut None)?;
         } else if request.inputs.is_empty() {
             let parent = request.parent.ok_or_else(|| Error::Unauthorized("created batch has no parent".into()))?;
             let admitted = self.read_retained_admission_counted(OperationId::from_bytes(parent.into_bytes()), &mut None).await.map(|(record, _)| record)?;
@@ -5094,7 +5067,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             self.authenticated_scope_with_work(&admitted, &mut None).await.map(|(scope, _)| scope)?
                 .narrow(request.scope.grants().clone(), request.scope.limits())?
-                .with_run_limits(request.scope.run_limits())?;
+                .with_run_limits(request.scope.run_limits(), &mut None)?;
         } else {
             let first = request.member_admission(0)?;
             self.authenticated_scope_with_work(&first, &mut None).await.map(|(scope, _)| scope)?;
@@ -5125,24 +5098,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         .map_err(|error| Error::Invalid(error.to_string()))
     }
 
-    fn authorize_mail_route(
-        sender: TaskId,
-        sender_admission: &TaskAdmissionRecord,
-        recipient: TaskId,
-        recipient_admission: &TaskAdmissionRecord,
-    ) -> Result<bool> {
-        let direct = sender_admission.parent == Some(recipient)
-            || recipient_admission.parent == Some(sender);
-        if !direct
-            && (!sender_admission.grants.contains(capability::MAIL_SEND)
-                || !recipient_admission.grants.contains(capability::MAIL_READ))
-        {
-            return Err(Error::Unauthorized(
-                "custom mail route requires sender mail:send and recipient mail:read".into(),
-            ));
-        }
-        Ok(direct)
-    }
+
 
     /// Resolves only the authenticated donor's exact immutable parcel bytes.
     async fn read_mail_source(
@@ -6008,7 +5964,7 @@ pub(crate) mod tests {
         let mut tasks = TaskRegistry::default();
         tasks.register(definition)?;
         let mut machines = MachineRegistry::default();
-        machines.register(implementation)?;
+        machines.register(implementation, &mut None)?;
         Ok((task, machine, tasks, machines))
     }
 
@@ -7604,7 +7560,7 @@ pub(crate) mod tests {
         let mut tasks = TaskRegistry::default();
         tasks.register(definition)?;
         let mut machines = MachineRegistry::default();
-        machines.register(implementation)?;
+        machines.register(implementation, &mut None)?;
         let host = Arc::new(CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, payloads.clone()).await?,
             stream.clone(),
@@ -8684,7 +8640,7 @@ pub(crate) mod tests {
                 identity: machine.clone(),
                 schema: serde_json::json!({"type": "integer"}),
             });
-            machines.register(implementation.clone())?;
+            machines.register(implementation.clone(), &mut None)?;
             let definition = TaskDefinition::<Value, i64>::resumable(
                 implementation,
                 serde_json::json!({"type": "integer"}),
@@ -8903,7 +8859,7 @@ pub(crate) mod tests {
             identity: machine.clone(),
             schema: serde_json::json!({"type": "integer"}),
         });
-        machines.register(implementation.clone())?;
+        machines.register(implementation.clone(), &mut None)?;
         let definition = TaskDefinition::<Value, i64>::resumable(
             implementation,
             serde_json::json!({"type": "integer"}),
