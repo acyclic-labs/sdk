@@ -666,6 +666,40 @@ if (scenarioDirectory) {
     assert.ok(statSync(negativeLedgerPath).size <= 1_048_576);
     assert.deepEqual(readFileSync(negativeLedgerPath), negativeLedgerBytes,
       "existing negative controls admit no extra model/fault task and cannot contaminate positive invocation proof");
+    const cancellationDirectory = join(scenarioDirectory, "cancel-preparation");
+    run(["--prepare-scenario", cancellationDirectory], "", true, 120_000);
+    const cancellation = load(join(cancellationDirectory, "native-scenario.json"));
+    assert.deepEqual(cancellation.missing_prerequisites, []);
+    const cancellationLedger = invocationLedgerPath(cancellation, load(cancellation.config), "cancel-preparation");
+    const originalCalls = readFileSync(cancellationLedger);
+    const cancelledPreparation = cancellation.preparations.find(value => value.label === "cross_source");
+    const cancelledRequest = load(cancelledPreparation.request);
+    const caller = cancelledRequest.parent, lease = cancelledRequest.caller_lease;
+    const sourcePath = input("cancel-preparation-source", {
+      caller, lease, volume: cancellation.files.left_scratch.volume, path: cancellation.files.left_scratch.path,
+    });
+    active = new InstalledSession(cancellation.config);
+    await active.expect(/actual local Harness runtime/);
+    const originalSource = await active.commandJson(`/read-path ${sourcePath}`, "file");
+    await active.command(`/prepare ${cancelledPreparation.request}`, /queued preparation-task=/);
+    await active.command(`/cancel-task ${cancelledPreparation.task}`, /cancellation requested task=/);
+    await active.commandJson(`/outcome ${cancelledPreparation.task}`, "task");
+    await active.stop();
+    if (active.failure) throw active.failure;
+    assert.ok(active.requestedKill);
+    active = new InstalledSession(cancellation.config);
+    await active.expect(/actual local Harness runtime/);
+    assert.equal((await active.commandJson(`/outcome ${cancelledPreparation.task}`, "task")).outcome, "Cancelled");
+    await active.command(`/run ${cancelledPreparation.task}`, /worker idle task=/);
+    await active.command(`/reconcile ${cancelledRequest.request.child.operation_id}`, /retained=None/);
+    assert.deepEqual(await active.commandJson(`/read-path ${sourcePath}`, "file"), originalSource);
+    await active.quit();
+    const refusedPublication = input("cancelled-preparation-publish", {
+      caller, lease, preparation: cancelledPreparation.task,
+    });
+    run(["--session", cancellation.config, "--headless"], `/publish-fork ${refusedPublication}\n`, false, 15_000);
+    assert.deepEqual(readFileSync(cancellationLedger), originalCalls,
+      "cancelled preparation must not dispatch a model or restart its original child");
   } finally {
     if (active) await active.stop();
     if (negativeActive) await negativeActive.stop();
