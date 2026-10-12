@@ -228,7 +228,7 @@ impl WasmTaskRuntime {
         let lease = from_js(lease)?;
         self.validate_recursive_lease(source, &lease).await?;
         let commands = self.commands().with_fork_preparer(source.binding.preparer.clone());
-        work_to_js(&work_value(self.runtime.reconcile_task(lease, &commands, maximum_commands, maximum_wait_millis).await))
+        work_to_js(&work_value(self.runtime.reconcile_task(lease, &commands, maximum_commands, maximum_wait_millis, None).await))
     }
 }
 

@@ -386,7 +386,7 @@ async fn expired_reopened_task_rejects_before_machine_or_tool_dispatch() -> Resu
     assert_eq!(state.reservation, Some(lease.reservation.clone()));
     assert!(state.outcome.is_none());
     assert!(matches!(
-        reopened.reconcile_task(lease, &reopened.commands(), 1, 1_000).await,
+        reopened.reconcile_task(lease, &reopened.commands(), 1, 1_000, None).await,
         TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task:completed }) if completed == task
     ));
     assert!(matches!(reopened.task_host().outcome(task).await?, Some(crate::Outcome::Cancelled)));
@@ -410,14 +410,14 @@ async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() ->
     drop(runtime);
     let reopened = fixture.runtime().await?;
     assert!(matches!(
-        reopened.reconcile_task(lease.clone(), &reopened.commands(), 1, 5).await,
+        reopened.reconcile_task(lease.clone(), &reopened.commands(), 1, 5, None).await,
         TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling { .. })
     ));
     let unresolved = reopened.task_host().observe_task(task).await?;
     assert!(unresolved.outcome.is_none());
     assert_eq!(unresolved.reservation, Some(lease.reservation.clone()));
     fixture.tool.receipt_ready.store(true, Ordering::SeqCst);
-    let attempt = reopened.reconcile_task(lease.clone(), &reopened.commands(), 1, 1_000).await;
+    let attempt = reopened.reconcile_task(lease.clone(), &reopened.commands(), 1, 1_000, None).await;
     assert!(matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task: completed }) if completed == task));
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 2);
@@ -574,7 +574,7 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
     ));
     assert_eq!(reopened.task_host().observe_task(task).await?.reservation, Some(lease.reservation.clone()));
     assert!(matches!(
-        reopened.reconcile_task(lease, &reopened.commands(), 1, 1_000).await,
+        reopened.reconcile_task(lease, &reopened.commands(), 1, 1_000, None).await,
         TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task:completed }) if completed == task
     ));
     assert_eq!(reopened.task_host().inbox(task, 0, 8).await?.len(), 1);

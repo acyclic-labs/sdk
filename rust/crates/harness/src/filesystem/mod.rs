@@ -144,48 +144,15 @@ pub use task_runtime::{
 };
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn native_volume_storage_name(
-    volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(String, acyclic_fs::NativeAllocation)> {
-    let io = PreparationIo::from_native_work(work)?;
-    let name = fork_preparer_io::volume_storage_name(volume, Some(&io))?;
-    let retained = name.capacity() as u64;
-    Ok((name, io.into_native_custody(retained)?))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-struct SourcePublicationCause {
-    source: Option<Error>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl std::fmt::Display for SourcePublicationCause {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.source {
-            Some(source) => std::fmt::Display::fmt(source, formatter),
-            None => formatter.write_str("reserved source publication failure"),
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl std::error::Error for SourcePublicationCause {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_ref().map(|source| source as &dyn std::error::Error)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 struct SourcePublicationFailureSlot {
-    source: Box<SourcePublicationCause>,
+    source: Box<Error>,
     custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl SourcePublicationFailureSlot {
     fn prepare(io: Option<&PreparationIo>) -> Result<Self> {
-        let bytes = std::mem::size_of::<SourcePublicationCause>() as u64;
+        let bytes = std::mem::size_of::<Error>() as u64;
         let custody = if let Some(io) = io {
             io.retain_owned(bytes)?;
             io.allocation_attempt(bytes)?;
@@ -197,7 +164,7 @@ impl SourcePublicationFailureSlot {
         } else {
             None
         };
-        Ok(Self { source: Box::new(SourcePublicationCause { source: None }), custody })
+        Ok(Self { source: Box::new(Error::NativeBoundary { code: crate::wire::ErrorCode::Indeterminate, reason: "reserved source publication failure" }), custody })
     }
 
     fn finish(
@@ -205,7 +172,7 @@ impl SourcePublicationFailureSlot {
         retention_failure: Option<acyclic_fs::LazyWorkspaceError>,
     ) -> Error {
         let Self { source: mut slot, custody } = self;
-        slot.source = Some(source);
+        *slot = source;
         Error::NativeSourcePublicationUncertain {
             generation, source: slot, retention_failure, custody,
         }
@@ -215,7 +182,7 @@ impl SourcePublicationFailureSlot {
         drop(self);
         if let Some(io) = io
             && io.original_native_work().is_none() {
-            io.release(std::mem::size_of::<SourcePublicationCause>() as u64)?;
+            io.release(std::mem::size_of::<Error>() as u64)?;
         }
         Ok(())
     }
