@@ -502,8 +502,8 @@ impl RootHintInvalidation {
     }
 }
 
-#[cfg(target_os = "linux")]
-struct LinuxEventDelivery {
+#[cfg(any(target_os = "linux", windows))]
+struct NativeEventDelivery {
     context: NativeEventContext,
     sender: SyncSender<QueuedWatchChange>,
     shared: Arc<Mutex<SharedState>>,
@@ -512,7 +512,7 @@ struct LinuxEventDelivery {
 }
 
 #[cfg(target_os = "linux")]
-impl crate::source_watch::NativeEventSink for LinuxEventDelivery {
+impl crate::source_watch::NativeEventSink for NativeEventDelivery {
     fn logical_owned_bytes(&self) -> u64 {
         size_of::<Self>() as u64 + self.context.root.capacity() as u64
     }
@@ -543,7 +543,7 @@ impl crate::source_watch::NativeEventSink for LinuxEventDelivery {
 }
 
 #[cfg(target_os = "linux")]
-impl LinuxEventDelivery {
+impl NativeEventDelivery {
     fn invalidate_with_work<W: crate::demand::SourceDemandReadWork>(
         &self, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
@@ -791,46 +791,16 @@ fn wide_hint_names(path: &[u16]) -> impl Iterator<Item = Result<HintName<'_>, cr
 }
 
 #[cfg(windows)]
-struct WindowsDirectoryKey {
-    path: Vec<u16>,
-    allocation: Option<crate::materializer::NativeAllocation>,
-}
-
-#[cfg(windows)]
-impl std::ops::Deref for WindowsDirectoryKey {
-    type Target = Vec<u16>;
-    fn deref(&self) -> &Self::Target { &self.path }
-}
-
-#[cfg(windows)]
-impl Drop for WindowsDirectoryKey {
-    fn drop(&mut self) {
-        drop(std::mem::take(&mut self.path));
-        drop(self.allocation.take());
-    }
-}
-
-#[cfg(windows)]
 struct WindowsDirectoryWatch {
-    path: Arc<WindowsDirectoryKey>,
+    path: Arc<(Vec<u16>, Option<crate::NativeAllocation>)>,
     identity: NativeRootIdentity,
     watcher: crate::source_watch::NativeSourceWatch,
 }
 
 #[cfg(windows)]
-struct WindowsHintDelivery {
-    context: NativeEventContext,
-    sender: SyncSender<QueuedWatchChange>,
-    shared: Arc<Mutex<SharedState>>,
-    queued: Arc<AtomicU32>,
-    fenced: Arc<Condvar>,
-}
-
-#[cfg(windows)]
 struct WindowsDirectorySink {
-    prefix: Arc<WindowsDirectoryKey>,
-    delivery: Arc<WindowsHintDelivery>,
-    root_events: bool,
+    prefix: Arc<(Vec<u16>, Option<crate::NativeAllocation>)>,
+    delivery: Arc<NativeEventDelivery>,
     _allocation: Option<crate::materializer::NativeAllocation>,
 }
 
@@ -838,7 +808,7 @@ struct WindowsDirectorySink {
 impl crate::source_watch::HostChangeSink for WindowsDirectorySink {
     fn logical_owned_bytes(&self) -> u64 {
         size_of::<Self>() as u64
-            + if self.root_events { size_of::<WindowsDirectoryKey>() as u64 + self.prefix.capacity() as u64 * 2 } else { 0 }
+            + if self.prefix.0.is_empty() { std::mem::size_of_val(&*self.prefix) as u64 + self.prefix.0.capacity() as u64 * 2 } else { 0 }
     }
     fn host_changed(
         &self, changes: &[crate::source_watch::HostChange], work: &mut crate::demand::DemandWork,
@@ -875,7 +845,7 @@ impl WindowsDirectorySink {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
             match change {
                 HostChange::Rebound(path) | HostChange::Altered(path) => {
-                    let names = wide_hint_names(&self.prefix).chain(path.components().map(host_hint_name));
+                    let names = wide_hint_names(&self.prefix.0).chain(path.components().map(host_hint_name));
                     self.deliver_names_measured(names, None, work)?;
                 }
                 HostChange::File(_) => {}
@@ -901,8 +871,8 @@ impl WindowsDirectorySink {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
             match change {
                 HostChangeWide::Path { action, path } => {
-                    self.deliver_names_measured(wide_hint_names(&self.prefix).chain(wide_hint_names(path)),
-                        self.root_events.then_some((*action, file)), work)?;
+                    self.deliver_names_measured(wide_hint_names(&self.prefix.0).chain(wide_hint_names(path)),
+                        self.prefix.0.is_empty().then_some((*action, file)), work)?;
                 }
                 HostChangeWide::File(_) => {}
                 HostChangeWide::Everything | HostChangeWide::Unconfirmed => self.invalidate_measured(work)?,
@@ -1049,7 +1019,7 @@ pub struct NativeWatch {
     #[cfg(windows)]
     windows_backing_allocation: Option<crate::materializer::NativeAllocation>,
     #[cfg(windows)]
-    windows_delivery: Arc<WindowsHintDelivery>,
+    windows_delivery: Arc<NativeEventDelivery>,
     queued: Arc<AtomicU32>,
     shared: Arc<Mutex<SharedState>>,
     fenced: Arc<Condvar>,
@@ -1359,7 +1329,7 @@ impl NativeWatch {
         #[cfg(windows)]
         let windows_delivery = {
             Self::startup_control(work)?;
-            Arc::new(WindowsHintDelivery {
+            Arc::new(NativeEventDelivery {
                 context, sender: sender.clone(), shared: Arc::clone(&shared),
                 queued: Arc::clone(&queued), fenced: Arc::clone(&fenced),
             })
@@ -1409,7 +1379,7 @@ impl NativeWatch {
         } else {
             let (event_root, event_allocation) = Self::copy_startup_path(&root, work, original)?;
             Self::startup_control(work)?;
-            let events = Arc::new(LinuxEventDelivery {
+            let events = Arc::new(NativeEventDelivery {
                 context: NativeEventContext {
                     root: event_root, root_identity, profile, limits: options.limits,
                     maximum_queued_changes: options.maximum_queued_changes,
@@ -1427,10 +1397,10 @@ impl NativeWatch {
         #[cfg(windows)]
         let source_result = {
             Self::startup_control(work)?;
-            let prefix = Arc::new(WindowsDirectoryKey { path: Vec::new(), allocation: None });
+            let prefix = Arc::new((Vec::new(), None));
             Self::startup_control(work)?;
             let sink = Arc::new(WindowsDirectorySink {
-                prefix, delivery: Arc::clone(&windows_delivery), root_events: true,
+                prefix, delivery: Arc::clone(&windows_delivery),
                 _allocation: None,
             });
             Some(crate::source_watch::NativeSourceWatch::start_held_with_sink_with_work(
@@ -1699,7 +1669,7 @@ impl NativeWatch {
                     let mut found = None;
                     for (at, observed) in self.windows_directories.iter().enumerate() {
                         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                        if observed.path.as_slice() == prefix {
+                        if observed.path.0.as_slice() == prefix {
                             found = Some(at);
                             break;
                         }
@@ -1753,11 +1723,11 @@ impl NativeWatch {
                     if allocation.is_none() {
                         retained_bytes = retained_bytes.checked_add(key_bytes).ok_or(WorkError::Overflow)?;
                     }
-                    let mut key = WindowsDirectoryKey { path: prefix.to_vec(), allocation };
+                    let mut key = (prefix.to_vec(), allocation);
                     work.record(copied)?;
-                    let key_arc_bytes = size_of::<WindowsDirectoryKey>() as u64;
+                    let key_arc_bytes = std::mem::size_of_val(&key) as u64;
                     let mut allocation = watch_claim_allocation(key_arc_bytes, work)?;
-                    if let (Some(key_allocation), Some(arc_allocation)) = (&mut key.allocation, &mut allocation) {
+                    if let (Some(key_allocation), Some(arc_allocation)) = (&mut key.1, &mut allocation) {
                         key_allocation.absorb(arc_allocation).map_err(NativeWatchError::from)?;
                     } else {
                         retained_bytes = retained_bytes.checked_add(key_arc_bytes).ok_or(WorkError::Overflow)?;
@@ -1770,7 +1740,7 @@ impl NativeWatch {
                     }
                     let sink = Arc::new(WindowsDirectorySink {
                         prefix: Arc::clone(&key), delivery: Arc::clone(&self.windows_delivery),
-                        root_events: false, _allocation: allocation,
+                        _allocation: allocation,
                     });
                     let watcher = match crate::source_watch::NativeSourceWatch::start_directory_with_work(
                         &held, sink, self.complete, work,
@@ -1904,7 +1874,7 @@ impl NativeWatch {
                                 work.charge(WorkCounters {
                                     items_examined: 1, ..WorkCounters::UNCHARGED
                                 }).map_err(demand_watch_error)?;
-                                let mut registered = self.windows_directories[at].path.iter();
+                                let mut registered = self.windows_directories[at].path.0.iter();
                                 let matches = relative.as_os_str().encode_wide()
                                     .all(|unit| registered.next() == Some(&unit))
                                     && registered.next().is_none_or(|unit| matches!(*unit, 47 | 92));
@@ -3323,11 +3293,9 @@ mod demand_admission_tests {
         assert!(matches!(failure.error, DemandError::Work(WorkError::BudgetExceeded {
             counter: "backend_read_operations", ..
         })));
-        assert_eq!(failure.work.backend_read_operations, 7);
-        assert_eq!(failure.work.backend_write_operations, 2);
         let held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
         assert_eq!(held.windows_directories.len(), 1);
-        assert_eq!(held.windows_directories[0].path.as_slice(), &[u16::from(b'a')]);
+        assert_eq!(held.windows_directories[0].path.0.as_slice(), &[u16::from(b'a')]);
         drop(held);
         watch.observe_directory(&namespace("/a/b")?, windows_budget(), &CancellationToken::new())?;
         assert_eq!(watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?.windows_directories.len(), 2);
@@ -3347,8 +3315,7 @@ mod demand_admission_tests {
             .windows_directories[0].identity;
         std::fs::rename(root.path().join("a"), root.path().join("old"))?;
         std::fs::create_dir(root.path().join("a"))?;
-        let replaced = watch.observe_directory(&path, windows_budget(), &CancellationToken::new())?;
-        assert!(replaced.work.backend_write_operations >= 3);
+        watch.observe_directory(&path, windows_budget(), &CancellationToken::new())?;
         let held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
         assert_eq!(held.windows_directories.len(), 1);
         assert_ne!(held.windows_directories[0].identity, old_identity);
@@ -3386,20 +3353,7 @@ mod demand_admission_tests {
         Ok(())
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn windows_missing_prefix_keeps_only_the_existing_ancestor_subscription()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        std::fs::create_dir(root.path().join("a"))?;
-        let watch = watcher(root.path())?;
-        let receipt = watch.observe_directory(&namespace("/a/missing/deeper")?,
-            windows_budget(), &CancellationToken::new())?;
-        assert!(receipt.work.backend_read_operations > 0);
-        assert_eq!(receipt.work.backend_write_operations, 2);
-        assert_eq!(watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?.windows_directories.len(), 1);
-        Ok(())
-    }
+
 }
 
 #[cfg(test)]

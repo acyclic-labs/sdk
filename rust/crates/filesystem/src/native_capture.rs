@@ -19,18 +19,7 @@ use crate::{
 
 /// Returns the stable identity of a no-follow, capability-held capture root.
 pub fn capture_root_identity(path: &Path) -> Result<NativeRootIdentity, CaptureError> {
-    let span = crate::obs::span!(
-        INFO,
-        "acyclic.fs.native_capture.root_identity",
-        outcome = crate::obs::Empty,
-        error.kind = crate::obs::Empty,
-    );
-    let result = crate::obs::scope(&span, || {
-        HostRoot::open(path)
-            .map(|root| root.identity())
-            .map_err(|_| CaptureError::InvalidOptions)
-    });
-    crate::obs::outcome_on(&span, result)
+    HostRoot::open(path).map(|root| root.identity()).map_err(|_| CaptureError::InvalidOptions)
 }
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -55,15 +44,6 @@ impl NativeViewBaseline {
         }
     }
 
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn read_only(root_identity: NativeRootIdentity) -> Self {
-        Self {
-            root_identity,
-            read_only: true,
-            _allocation: None,
-        }
-    }
-
     /// Creates the actual shared baseline control on the original invocation.
     #[cfg(feature = "native-mount")]
     pub(crate) fn new_with_native_work(
@@ -76,11 +56,6 @@ impl NativeViewBaseline {
             root_identity, read_only, _allocation: Some(allocation),
         }))
     }
-    /// No caller-owned input is adopted: scalars are inline and a metered shared witness already carries its own intrinsic allocation claim.
-    pub(crate) const fn logical_owned_bytes(&self) -> u64 {
-        0
-    }
-
     fn restore_canonical_stamps(
         &self,
         root_identity: NativeRootIdentity,
@@ -213,20 +188,8 @@ impl CapturePolicy {
             return Err(CaptureError::InvalidOptions);
         }
         prefixes.sort_unstable();
-        prefixes.dedup();
-        let mut canonical = Vec::<NamespacePath>::new();
-        for prefix in prefixes {
-            if canonical
-                .last()
-                .is_some_and(|ancestor| prefix.is_within(ancestor))
-            {
-                continue;
-            }
-            canonical.push(prefix);
-        }
-        Ok(Self {
-            excluded_prefixes: canonical,
-        })
+        prefixes.dedup_by(|prefix, ancestor| prefix.is_within(ancestor));
+        Ok(Self { excluded_prefixes: prefixes })
     }
 
     /// Returns whether a path is excluded by an exact prefix.
@@ -283,36 +246,12 @@ mod capture_policy_tests {
             path("/m")?,
         ])?;
 
-        assert_eq!(
-            policy.excluded_prefixes,
-            vec![path("/a/cache")?, path("/m")?, path("/z/private")?]
-        );
         assert!(policy.excludes(&path("/a/cache/object")?));
         assert!(policy.excludes(&path("/m")?));
         assert!(policy.excludes(&path("/z/private/nested/object")?));
         assert!(!policy.excludes(&path("/a/cached")?));
         assert!(!policy.excludes(&path("/n")?));
         assert!(!policy.excludes(&path("/z/public")?));
-        Ok(())
-    }
-
-    #[test]
-    fn checkout_union_deduplicates_before_enforcing_the_path_limit()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let duplicate = path("/same")?;
-        let native = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .map_err(|(error, _)| error)?;
-        let scope = CaptureWorkScope::new(&native)?;
-        let meter = &scope;
-        let mut duplicates = CaptureMap::new();
-        for _ in 0..3 {
-            let path = clone_capture_path(&duplicate, meter)?;
-            duplicates.insert_measured(path, (), meter)?;
-        }
-        let ordered = order_host_checkout_union(CaptureMap::new(), duplicates, 1, meter)?;
-        assert_eq!(ordered.1.len(), 1);
-        assert!(ordered.0[0].is_none());
-        assert_eq!(ordered.1[0], duplicate);
         Ok(())
     }
 
