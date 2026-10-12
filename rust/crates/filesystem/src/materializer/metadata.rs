@@ -5,14 +5,8 @@ pub(super) fn native_entry_fingerprint(
     entry: &(&HostRoot, &Path),
     work: &NativeMaterializationWork,
 ) -> Result<Option<[u8; 32]>, NativeTreeMaterializationError> {
-    let metadata = match entry.0.stat(entry.1, &mut &*work) {
-        Ok(metadata) => metadata,
-        Err(NativeTreeMaterializationError::Io(error))
-            if error.kind() == std::io::ErrorKind::NotFound =>
-        {
-            return Ok(None);
-        }
-        Err(error) => return Err(error),
+    let Some(metadata) = host_stat(entry.0, entry.1, work)? else {
+        return Ok(None);
     };
     let mut hasher = blake3::Hasher::new();
     hash_native_entry(entry, &metadata, &mut hasher, work)?;
@@ -34,14 +28,8 @@ pub(super) fn native_metadata_fingerprint(
     desired: Option<&NativeMetadataImage>,
     work: &NativeMaterializationWork,
 ) -> Result<Option<[u8; 32]>, NativeTreeMaterializationError> {
-    let metadata = match entry.0.stat(entry.1, &mut &*work) {
-        Ok(metadata) => metadata,
-        Err(NativeTreeMaterializationError::Io(error))
-            if error.kind() == std::io::ErrorKind::NotFound =>
-        {
-            return Ok(None);
-        }
-        Err(error) => return Err(error),
+    let Some(metadata) = host_stat(entry.0, entry.1, work)? else {
+        return Ok(None);
     };
     let mut hasher = blake3::Hasher::new();
     hash_native_metadata_edit(&metadata, desired, &mut hasher, work)?;
@@ -167,21 +155,8 @@ fn hash_native_entry(
         let (mut reader, _buffer) = root.read_dir_stats(Path::new(""), &mut &*work)?;
         let mut names = Vec::new();
         let mut capacity = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-        #[cfg(unix)]
-        while let Some((entry, allocation)) = reader.next(&mut &*work)? {
-            native_vec_push(&mut names, (entry.name, allocation), &mut capacity)?;
-        }
-        #[cfg(windows)]
-        while let Some((entry, _wide)) = reader.next_wide(&mut &*work)? {
-            use std::os::windows::ffi::OsStringExt as _;
-            let mut allocation = work.claim(
-                owned_size(entry.name.len(), 3)?,
-                1,
-                crate::WorkCounters::UNCHARGED,
-            )?;
-            let name = std::ffi::OsString::from_wide(&entry.name);
-            allocation.reconcile_capacity(name.capacity() as u64)?;
-            native_vec_push(&mut names, (name, allocation), &mut capacity)?;
+        while let Some(name) = next_name(&mut reader, work)? {
+            native_vec_push(&mut names, name, &mut capacity)?;
         }
         work.charge(NativeResourceCredit::Items.delta(names.len() as u64))?;
         names.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -362,17 +337,8 @@ pub(super) fn encode_native_metadata(
         posix_mode: metadata.posix_mode,
         windows_attributes: metadata.windows_attributes,
     };
-    let mut writer = ImageWriter {
-        bytes: Vec::new(),
-        allocation: work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
-        failure: None,
-    };
-    if serde_json::to_writer(&mut writer, &metadata).is_err() {
-        return Err(writer
-            .failure
-            .take()
-            .unwrap_or(NativeTreeMaterializationError::InvalidLayout));
-    }
+    let mut writer = ImageWriter::new(work)?;
+    writer.json(&metadata)?;
     Ok((writer.bytes, writer.allocation))
 }
 #[cfg(unix)]

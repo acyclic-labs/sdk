@@ -68,7 +68,7 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
         if excluded {
             continue;
         }
-        let physical = host_stat(&root, &path, work)?;
+        let physical = host_stat(&root, Path::new(&path), work)?;
         let promoted =
             fresh && after_directory && physical.as_ref().is_some_and(|stat| stat.is_dir());
         if before_directory
@@ -173,31 +173,4 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
     };
     check_native_plan(&plan, work)?;
     Ok((plan, allocation))
-}
-
-fn host_stat(
-    root: &crate::native_host::HostRoot,
-    path: &str,
-    work: &NativeMaterializationWork,
-) -> Result<Option<crate::native_host::HostStat>, NativeTreeMaterializationError> {
-    let path = Path::new(path);
-    let parent =
-        match root.open_dir_held(path.parent().unwrap_or_else(|| Path::new("")), &mut &*work) {
-            Ok(parent) => parent,
-            Err(NativeTreeMaterializationError::Io(error))
-                if error.kind() == std::io::ErrorKind::NotFound =>
-            {
-                return Ok(None);
-            }
-            Err(error) => return Err(error),
-        };
-    match root.stat(path, &mut &*work) {
-        Ok(stat) => Ok(Some(stat)),
-        Err(NativeTreeMaterializationError::Io(error))
-            if error.kind() == std::io::ErrorKind::NotFound =>
-        {
-            Ok(None)
-        }
-        Err(error) => Err(error),
-    }
 }

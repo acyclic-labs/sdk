@@ -217,37 +217,28 @@ impl NativeMaterializationWork {
                 actual: before.len(),
             }));
         }
-        let mut allocation = self
-            .claim(
-                before.len(),
-                u64::from(before.len() != 0),
-                crate::WorkCounters::UNCHARGED,
-            )
+        let buffer = crate::native_host::native_buffer::<u8>(before.len() as usize, self)
             .map_err(E::from)?;
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(before.len() as usize)
-            .map_err(NativeTreeMaterializationError::AllocationFailed)
-            .map_err(E::from)?;
-        allocation
-            .reconcile_capacity(bytes.capacity() as u64)
-            .map_err(E::from)?;
+        let mut bytes = buffer.data;
         let initialized = NativeResourceCredit::Copy.delta(bytes.capacity() as u64);
         self.admit(initialized).map_err(E::from)?;
         bytes.resize(bytes.capacity(), 0);
         self.spent(initialized).map_err(E::from)?;
-        let mut bytes =
-            acyclic_stream::PreparedOwnedBytes::new(bytes, allocation, self.runtime_meter())
-                .map_err(|failure| {
-                    E::from(match failure.into_error() {
-                        acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-                            self.runtime_error(error)
-                        }
-                        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
-                            NativeTreeMaterializationError::InvalidLayout
-                        }
-                    })
-                })?;
+        let mut bytes = acyclic_stream::PreparedOwnedBytes::new(
+            bytes,
+            buffer._allocation,
+            self.runtime_meter(),
+        )
+        .map_err(|failure| {
+            E::from(match failure.into_error() {
+                acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                    self.runtime_error(error)
+                }
+                acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                    NativeTreeMaterializationError::InvalidLayout
+                }
+            })
+        })?;
         let mut filled = 0;
         while filled < before.len() as usize {
             guard().await?;

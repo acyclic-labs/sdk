@@ -64,7 +64,7 @@ pub(super) fn next_name(
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStringExt as _;
-        let Some((entry, mut allocation)) = reader.next_wide(&mut &*work)? else {
+        let Some((entry, allocation)) = reader.next_wide(&mut &*work)? else {
             return Ok(None);
         };
         let mut owned = work.claim(
@@ -74,8 +74,9 @@ pub(super) fn next_name(
         )?;
         let name = std::ffi::OsString::from_wide(&entry.name);
         owned.reconcile_capacity(name.capacity() as u64)?;
-        allocation.absorb(&mut owned)?;
-        Ok(Some((name, allocation)))
+        drop(entry);
+        drop(allocation);
+        Ok(Some((name, owned)))
     }
 }
 
@@ -220,7 +221,7 @@ impl NativeTreeMaterializationBackend {
                         )
                     })
                     .map_err(native_materialization_work_error)?;
-                if native_entry_exists(&(&backend.held_target, path), &backend.work)? {
+                if host_stat(&backend.held_target, path, &backend.work)?.is_some() {
                     remove_native_entry_durable(&(&backend.held_target, path), &backend.work)?;
                 }
                 let leaf = Path::new(

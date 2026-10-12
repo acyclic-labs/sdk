@@ -83,7 +83,7 @@ impl<S: MaterializationJournalStore>
         let work = self.backend.work();
         let slot = NativeStageUncertainty::<E>::reserve(&work)
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
-        let state = std::sync::Mutex::new((
+        let state = parking_lot::Mutex::new((
             Some(journal),
             None::<S::ActionCompletion<'_>>,
             None::<crate::WorkCounters>,
@@ -104,16 +104,11 @@ impl<S: MaterializationJournalStore>
             async move {
                 match phase {
                     Before => {
-                        let journal = state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .0
-                            .take()
-                            .ok_or_else(|| {
-                                E::from(MaterializationError::Backend(
-                                    NativeTreeMaterializationError::InvalidLayout,
-                                ))
-                            })?;
+                        let journal = state.lock().0.take().ok_or_else(|| {
+                            E::from(MaterializationError::Backend(
+                                NativeTreeMaterializationError::InvalidLayout,
+                            ))
+                        })?;
                         owner.expect("before action owns guard").await?;
                         self.verify_allocation(&journal).await.map_err(E::from)?;
                         let last = journal.work;
@@ -122,29 +117,18 @@ impl<S: MaterializationJournalStore>
                             .prepare_action(journal)
                             .await
                             .map_err(|error| E::from(MaterializationError::Store(error)))?;
-                        *state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                            (None, Some(completion), Some(last));
+                        *state.lock() = (None, Some(completion), Some(last));
                     }
                     Completed => {
-                        let completion = state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .1
-                            .take()
-                            .ok_or_else(|| {
-                                E::from(MaterializationError::Backend(
-                                    NativeTreeMaterializationError::InvalidLayout,
-                                ))
-                            })?;
+                        let completion = state.lock().1.take().ok_or_else(|| {
+                            E::from(MaterializationError::Backend(
+                                NativeTreeMaterializationError::InvalidLayout,
+                            ))
+                        })?;
                         let journal = completion
                             .await
                             .map_err(|error| E::from(MaterializationError::Store(error)))?;
-                        *state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                            (Some(journal), None, None);
+                        *state.lock() = (Some(journal), None, None);
                     }
                 }
                 Ok(())
@@ -159,9 +143,7 @@ impl<S: MaterializationJournalStore>
         )
         .await;
         drop(control);
-        let (journal, completion, last) = state
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (journal, completion, last) = state.into_inner();
         drop(completion);
         match (result, journal, last) {
             (Ok(_), Some(journal), None) => Ok(journal),

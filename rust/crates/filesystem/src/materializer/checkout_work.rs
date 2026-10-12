@@ -48,42 +48,39 @@ impl NativeMaterializationWork {
             &crate::CancellationToken,
         ) -> Result<T, E>,
     ) -> Result<(T, NativeAllocation), E> {
-        let (result, bytes, cleanup) = self
-            .state(|state| {
-                state
-                    .reconcile_native_controls()
-                    .map_err(NativeTreeMaterializationError::Work)?;
-                let (allocations, counters, budget, cancellation) = state.allocation_parts();
-                let before = allocations.live_bytes();
-                let result = operation(allocations, counters, budget, cancellation);
-                let bytes = allocations.live_bytes().checked_sub(before);
-                let cleanup = bytes
-                    .filter(|_| result.is_err())
-                    .map(|bytes| allocations.release(bytes));
-                Ok::<_, NativeTreeMaterializationError>((result, bytes, cleanup))
+        let meter = self.allocation_work();
+        self.state(|state| {
+            state
+                .reconcile_native_controls()
+                .map_err(|error| E::from(NativeTreeMaterializationError::Work(error)))?;
+            let (allocations, counters, budget, cancellation) = state.allocation_parts();
+            let before = allocations.live_bytes();
+            let result = operation(allocations, counters, budget, cancellation);
+            let bytes = allocations
+                .live_bytes()
+                .checked_sub(before)
+                .ok_or_else(|| {
+                    E::from(NativeTreeMaterializationError::Work(
+                        crate::WorkError::Overflow,
+                    ))
+                })?;
+            if result.is_err() {
+                allocations.release(bytes).map_err(|error| {
+                    E::from(error.into_work_or(NativeTreeMaterializationError::Work(
+                        crate::WorkError::Overflow,
+                    )))
+                })?;
+            }
+            result.map(|value| {
+                (
+                    value,
+                    NativeAllocation {
+                        meter,
+                        bytes,
+                        capture: None,
+                    },
+                )
             })
-            .map_err(E::from)?;
-        let bytes = bytes.ok_or_else(|| {
-            E::from(NativeTreeMaterializationError::Work(
-                crate::WorkError::Overflow,
-            ))
-        })?;
-        if let Some(cleanup) = cleanup {
-            cleanup.map_err(|error| {
-                E::from(error.into_work_or(NativeTreeMaterializationError::Work(
-                    crate::WorkError::Overflow,
-                )))
-            })?;
-        }
-        result.map(|value| {
-            (
-                value,
-                NativeAllocation {
-                    meter: self.allocation_work(),
-                    bytes,
-                    capture: None,
-                },
-            )
         })
     }
 }
