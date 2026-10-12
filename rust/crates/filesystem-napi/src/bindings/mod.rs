@@ -30,7 +30,6 @@ pub use merge::*;
 mod metadata;
 pub use metadata::*;
 mod namespace;
-pub use namespace::*;
 mod native_view;
 pub use native_view::*;
 mod operation_windows;
@@ -64,7 +63,6 @@ pub use workspace::*;
 mod workspace_mount;
 pub use workspace_mount::*;
 mod write;
-pub use write::*;
 
 use acyclic_fs::compat_wire;
 use acyclic_fs::kernel::{
@@ -94,7 +92,7 @@ use acyclic_fs::{
     ResidencyAdmission, ResidencyHint, ResidencyReason, ResidencySpeculatorOptions, ResolvedFile,
     SpeculationController, SpeculationOptions, StorageLocationId, StorageTier, Transaction,
     TransactionCommit, TransactionRebase, VolumeId, WatchBatch, WatchChange,
-    WatchInvalidationReason, WorkBudget, Workspace, WorkspaceContextId, WorkspaceContextRegistry,
+    WatchInvalidationReason, Workspace, WorkspaceContextId, WorkspaceContextRegistry,
     WorkspaceDelete, WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId,
     WorkspaceLineageRecord, WorkspaceMetadata, WorkspaceOperationFinish, WorkspaceRebase,
     WorkspaceRootId, WorkspaceStat, canonicalize_git_output_json,
