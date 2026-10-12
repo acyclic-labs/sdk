@@ -156,8 +156,10 @@ impl TaskStateProvider for AdmittedTask {
 }
 struct Projection;
 impl ToolProjection for Projection {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(json!({"kind":"json","value":result.value}))
+    fn project(&self, _: &ToolInvocation, result: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+        self.supports_native_projection(work)?;
+        Ok((json!({"kind":"json","value":result.value}), None))
     }
 }
 
@@ -177,35 +179,26 @@ fn verify_transport_context(context: &ToolContext) -> Result<()> {
 }
 
 impl McpToolTransport for ScopedHttp {
-    fn call<'a>(
-        &'a self,
-        _: OperationId,
-        _: &'a str,
-        _: Value,
-    ) -> BoxFuture<'a, Result<McpToolResult>> {
-        Box::pin(async { Err(Error::Unsupported("durable task context required".into())) })
-    }
-    fn reconcile<'a>(&'a self, _: OperationId) -> BoxFuture<'a, Result<Option<McpToolResult>>> {
-        Box::pin(async { Err(Error::Unsupported("durable task context required".into())) })
-    }
-    fn call_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        name: &'a str,
-        arguments: Value,
-    ) -> BoxFuture<'a, Result<McpToolResult>> {
+    fn call<'a>(&'a self, operation: OperationId, name: &'a str, arguments: Value,
+        context: Option<ToolContext>) -> BoxFuture<'a, Result<McpToolResult>> {
         Box::pin(async move {
+            let context = context.ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
+            if context.operation_id() != operation {
+                return Err(Error::Unauthorized("durable MCP operation changed".into()));
+            }
             verify_transport_context(&context)?;
-            self.0.call(context.operation_id(), name, arguments).await
+            self.0.call(operation, name, arguments, Some(context)).await
         })
     }
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-    ) -> BoxFuture<'a, Result<Option<McpToolResult>>> {
+    fn reconcile<'a>(&'a self, operation: OperationId, context: Option<ToolContext>)
+        -> BoxFuture<'a, Result<Option<McpToolResult>>> {
         Box::pin(async move {
+            let context = context.ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
+            if context.operation_id() != operation {
+                return Err(Error::Unauthorized("durable MCP operation changed".into()));
+            }
             verify_transport_context(&context)?;
-            self.0.reconcile(context.operation_id()).await
+            self.0.reconcile(operation, Some(context)).await
         })
     }
 }
@@ -480,7 +473,7 @@ async fn phase(
     let context = runtime
         .durable_context(task, OperationId::from_bytes([44; 16]))
         .await?;
-    let runner = DurableToolRunner::new(tools, journal);
+    let runner = DurableToolRunner::new(&tools, journal, None)?;
     runner
         .run_with_context(
             task,

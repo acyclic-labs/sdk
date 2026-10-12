@@ -2468,18 +2468,10 @@ async fn first_fork_record(
 ) -> Result<Option<crate::foundation::DurableCommit>, Box<dyn Error>> {
     use crate::AsyncAuthorityStore as _;
     let store = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream));
-    match store
-        .replay(
-            authority,
-            crate::foundation::Sequence::GENESIS,
-            crate::storage::ReplayLimit {
+    match ({ let __authority_args = (authority, crate::foundation::Sequence::GENESIS, crate::storage::ReplayLimit {
                 records: 1,
                 payload_bytes: 4 * 1024,
-            },
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
+            }, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = store.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
     {
         Ok(records) => Ok(records.value.into_iter().next()),
         Err(failure) if matches!(failure.error, crate::storage::AuthorityStoreError::Missing) => {
@@ -2535,14 +2527,7 @@ async fn creation_operation(
     key: IdempotencyKey,
 ) -> Result<bool, Box<dyn Error>> {
     use crate::AsyncAuthorityStore as _;
-    let found = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream))
-        .find_operation(
-            crate::kernel::volume_authority_id(destination.volume_id()),
-            key.operation_id(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
+    let found = ({ let __authority_args = (crate::kernel::volume_authority_id(destination.volume_id()), key.operation_id(), WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream)).find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .map_err(|failure| failure.error)?;
     Ok(found
         .value

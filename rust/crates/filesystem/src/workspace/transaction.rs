@@ -147,7 +147,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             .map_err(|error| WorkspaceError::from(crate::kernel::NamespacePathError::Path(error)))? == 0 { return Ok(()); }
         for end in path.match_indices('/').skip(1).map(|(index, _)| index).chain(std::iter::once(path.len())) {
             let path = self.mutation_path(&path[..end], accounting, cancellation)?;
-            match self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation).await?.0.record {
+            match self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true).await?.0.record {
                 Some(record) if record.kind == FileKind::Directory => path.retire(accounting)?,
                 Some(_) => { path.retire(accounting)?; return Err(WorkspaceError::NotDirectory); }
                 None => {

@@ -111,28 +111,18 @@ impl Journal {
                 )?;
                 for (name, _) in &state.buckets.clone() {
                     let bucket = state.buckets.get_mut(name).ok_or(Error::from(Unavailable))?;
-                    let mut relocation = Publication::new(publication.native.as_ref().map(|(meter, _)| Arc::clone(meter)));
-                    let mut relocated = Vec::new();
-                    for (key, object) in bucket.objects.iter() {
-                        if let Some(body) =
-                            relocated_publication(&object.body, &moves, &publication)?
-                        {
-                            relocation.push(&mut relocated, (key.clone(), body))?;
+                    for (key, _) in &bucket.objects.clone() {
+                        let object = bucket.objects.get_mut(key).ok_or(Error::from(Unavailable))?;
+                        if let Some(body) = publication.relocated(&object.body, &moves)? {
+                            object.body = body;
                         }
-                    }
-                    for (key, body) in relocated {
-                        bucket
-                            .objects
-                            .get_mut(&key)
-                            .ok_or(Error::from(Unavailable))?
-                            .body = body;
                     }
                 }
                 for (id, _) in &state.uploads.clone() {
                     let upload = state.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
                     for (number, _) in &upload.parts.clone() {
                         let (_, body) = upload.parts.get_mut(number).ok_or(Error::from(Unavailable))?;
-                        if let Some(moved) = relocated_publication(body, &moves, &publication)? {
+                        if let Some(moved) = publication.relocated(body, &moves)? {
                             *body = moved;
                         }
                     }
@@ -281,7 +271,7 @@ pub(super) fn place(delta: &mut Delta, state: &mut State, frame: u64, publicatio
             .get_mut(change.bucket.as_str())
             .and_then(|bucket| bucket.objects.get_mut(change.key.as_str()))
             .ok_or(Error::from(Unavailable))?;
-        if let Some(body) = relocated_publication(&object.body, &moves, publication)? {
+        if let Some(body) = publication.relocated(&object.body, &moves)? {
             object.body = body;
         }
     }
@@ -289,7 +279,7 @@ pub(super) fn place(delta: &mut Delta, state: &mut State, frame: u64, publicatio
                     let upload = state.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
         for (number, _) in &upload.parts.clone() {
                         let (_, body) = upload.parts.get_mut(number).ok_or(Error::from(Unavailable))?;
-            if let Some(moved) = relocated_publication(body, &moves, publication)? {
+            if let Some(moved) = publication.relocated(body, &moves)? {
                 *body = moved;
             }
         }

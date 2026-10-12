@@ -4,6 +4,7 @@
     clippy::too_many_lines,
     reason = "durable recovery scenarios retain setup, fault injection and reopen assertions together"
 )]
+use acyclic_harness::runtime::TaskSpawner as _;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions};
 use acyclic_harness::runtime::TaskStateProvider;
@@ -33,7 +34,7 @@ use acyclic_harness::model::{
 use acyclic_harness::registry::ComponentIdentity;
 use acyclic_harness::resources::ProviderRef;
 use acyclic_harness::runtime::{
-    DurableTaskHost, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits,
+    RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits,
     ToolContext, ToolPolicy, ToolPolicyDecision,
 };
 use acyclic_harness::scheduler::{LeaseFence, ResourceSnapshot, SchedulerEvent, SessionLimits};
@@ -174,8 +175,10 @@ impl ToolExecutor for InterruptedTool {
 }
 
 impl ToolProjection for InterruptedTool {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(serde_json::json!({"kind":"json","value":result.value}))
+    fn project(&self, _: &ToolInvocation, result: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+        self.supports_native_projection(work)?;
+        Ok((serde_json::json!({"kind":"json","value":result.value}), None))
     }
 }
 
@@ -1484,13 +1487,7 @@ async fn worker_restart_with_options(
                     }
                     let probe = OperationId::from_bytes([99; 16]);
                     let (stock, legacy) = tokio::join!(
-                        runtime.task_host().send_owned(
-                            task,
-                            fence.clone(),
-                            task,
-                            probe,
-                            input.payload.clone()
-                        ),
+                        runtime.task_host().send_mail(task, &fence, task, probe, input.payload.clone(), None),
                         runtime
                             .task_host()
                             .send(task, task, probe, input.payload.clone())
@@ -1878,13 +1875,7 @@ async fn worker_restart_with_options(
                 assert!(
                     runtime
                         .task_host()
-                        .send_owned(
-                            task,
-                            LeaseFence::from(&lease.reservation),
-                            task,
-                            OperationId::from_bytes([99; 16]),
-                            first.payload.clone()
-                        )
+                        .send_mail(task, &LeaseFence::from(&lease.reservation), task, OperationId::from_bytes([99; 16]), first.payload.clone(), None)
                         .await
                         .is_err()
                 );
@@ -2006,8 +1997,8 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         target_head = host.apply(&target, None, &[WorkspaceMutation::PutFile {
             path: "/shared.txt".into(), bytes: b"target".as_slice().into(),
         }], &IdempotencyKey::new("target-edit")?).await?.generation;
-        let plan = controller.prepare_project_import(&source, &source_head).await?;
-        let JoinOutcome::Conflicted { conflicts, truncated } = controller.apply_project_merge(&plan, operation).await? else {
+        let plan = controller.prepare_project_import(&source, &source_head, None).await?;
+        let JoinOutcome::Conflicted { conflicts, truncated } = controller.apply_project_merge(&plan, operation, BTreeMap::new()).await?.0 else {
             return Err(Error::Invalid("custom merge must have a real conflict".into()));
         };
         let described = controller.describe_project_merge_conflicts(&plan, &conflicts, truncated).await?;
@@ -2047,7 +2038,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let candidate = acyclic_fs::decode_merge_candidate(record.next.state["candidate"].as_str()
             .ok_or_else(|| Error::Invalid("candidate missing".into()))?).map_err(|e| Error::Invalid(e.to_string()))?;
         let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
-        let plan = controller.prepare_project_import_at(&source, &source_head, &target_head).await?;
+        let plan = controller.prepare_project_import(&source, &source_head, Some(&target_head)).await?;
         let denied = issuer.issue("no-write", &Capabilities::new([source.capability(VolumeOperation::Read, &mut None)?]), Some(agent), None, &mut None).expect("scope proof");
         let unauthorized = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &denied, &project, None)?;
         assert!(unauthorized.apply_project_merge_candidate(&plan, operation, &candidate).await.is_err());
@@ -2735,7 +2726,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             let fence = LeaseFence::from(&lease.reservation);
             for (path, bytes) in [("first", b"first steering".as_slice()), ("second", b"later steering".as_slice())].into_iter().filter(|_| queued) {
                 let payload = payloads.stage(OperationId::new(), path, bytes, None)?.await?;
-                runtime.task_host().send_owned(task, fence.clone(), task, OperationId::new(), payload).await?;
+                runtime.task_host().send_mail(task, &fence, task, OperationId::new(), payload, None).await?;
             }
             let items = runtime.task_host().inbox(task, 0, 2).await?;
             assert_eq!(items.len(), if queued { 2 } else { 0 });

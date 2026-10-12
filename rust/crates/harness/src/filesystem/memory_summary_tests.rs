@@ -1,4 +1,6 @@
 //! Real admitted compaction captured into a child-owned fork environment.
+use crate::model::{Model, ModelProvider};
+use crate::runtime::TaskSpawner as _;
 use super::*;
 use crate::runtime::TaskStateProvider;
 use crate::filesystem::{PreparationIo, workspace_ref};
@@ -16,7 +18,7 @@ use std::sync::Mutex;
 use acyclic_stream::StreamProvider as _;
 use crate::distributed::{DistributedCoordinator, SchedulerPayloadStore as _};
 use crate::durable_host::CoordinatorTaskHost;
-use crate::runtime::{DurableTaskHost as _, TaskAdmissionRecord, TaskDefinition, TaskRegistry};
+use crate::runtime::{TaskAdmissionRecord, TaskDefinition, TaskRegistry};
 use crate::workflow::{MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine};
 
 #[derive(Default)]
@@ -113,25 +115,25 @@ async fn sealed_summary_preparation(
     let agent = storage.scope.agent().ok_or_else(|| Error::Invalid("Summary parent agent missing".into()))?;
     let payload_volume = VolumeRef::new(storage.volume.provider().clone(),
         format!("summary-preparation-payloads-{owner_id}"), VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent))?;
+        VolumeOwner::Agent(agent), &mut None)?;
     storage.host.create_volume(&payload_volume).await?;
     let mut grants = storage.scope.capabilities().iter().map(str::to_owned).collect::<Vec<_>>();
     grants.extend([
         "operation:declare".into(), "operation:observe".into(), "operation:cancel".into(),
         "task:spawn:test.summary-preparation@1".into(), "fork:publish".into(),
-        payload_volume.capability(VolumeOperation::Read)?,
-        payload_volume.capability(VolumeOperation::Write)?,
+        payload_volume.capability(VolumeOperation::Read, &mut None)?,
+        payload_volume.capability(VolumeOperation::Write, &mut None)?,
     ]);
     for selection in &fork.selections {
         if let ResourceRevision::Project { volume, .. } | ResourceRevision::PrivateVolume { volume, .. } = &selection.revision {
-            grants.push(volume.capability(VolumeOperation::Read)?);
+            grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
         }
     }
     let grants = Capabilities::new(grants);
     let signed = issuer.issue("summary-preparation", &grants, Some(agent), None, &mut None).expect("scope proof");
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?
         .with_run_limits(crate::runtime::TaskRunLimits {
-            concurrency: Some(4), max_steps: Some(4), deadline_unix_millis: None,
+            concurrency: Some(4), max_steps: Some(4), deadline_epoch_ms: None,
         }, &mut None)?;
     let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(storage.host.clone(), &(payload_volume), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?);
     let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?);
@@ -196,7 +198,7 @@ async fn sealed_summary_preparation(
     let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
     let owner = Arc::new(host.journal_owner(prep_task, (&lease.reservation).into()).await?
         .with_invocation_cancellation(&invocation.0));
-    Ok((owner.resource_preparation(request).await?, invocation))
+    Ok((owner.resource_preparation(request, &mut None).await?, invocation))
 }
 
 #[tokio::test]
@@ -271,7 +273,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     let mut aggregate = StreamAggregate::open(
         &storage.stream,
         storage.conversation.clone(),
-        storage.verifier(&mut None).expect("verifier copy"),
+        storage.verifier(),
         SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(storage.content_verifier.clone());
@@ -307,7 +309,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     assert_eq!(retired.resident_after_sequence(), 4);
     assert!(retired.messages().is_empty());
 
-    let history = HistoryReader::new(&storage.stream, &storage.conversation, &(storage.verifier(&mut None).expect("verifier copy")), &mut None)?;
+    let history = HistoryReader::new(&storage.stream, &storage.conversation, &(storage.verifier()), &mut None)?;
     let cursor = history.pin(0, None).await?;
     let original_scope = RuntimeScope::new(storage.scope.capabilities().clone(), limits)?;
     let prepared = prepare_summary_fork_context(
@@ -341,10 +343,10 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     let provider = storage.volume.provider().clone();
     let project = VolumeRef::new(
         provider.clone(),
-        "summary-parent-project",
+        "summary-parent-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("summary-project".into()),
-    )?;
+     &mut None)?;
     let project_head = storage.host.create_volume(&project).await?;
     let grants = Capabilities::new(
         storage
@@ -354,7 +356,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             .map(str::to_owned)
             .chain([
                 "fork:publish".to_owned(),
-                project.capability(VolumeOperation::Read)?,
+                project.capability(VolumeOperation::Read, &mut None)?,
             ]),
     );
     let scope = storage
@@ -366,8 +368,8 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
      &mut None).await?;
     let preparer = FilesystemForkPreparer::new(
         storage.host.clone(),
-        aggregate.reducer().clone(),
-        storage.verifier(&mut None).expect("verifier copy"),
+        aggregate.reducer().copy(&mut None)?,
+        storage.verifier(),
         scope.clone(),
         project.clone(),
         stream_provider.clone(),
@@ -378,10 +380,10 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
         provider.clone(),
-        "summary-child-private",
+        "summary-child-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(child_agent),
-    )?;
+     &mut None)?;
     let request = ForkRequest {
         authorized_source: None,
         operation_id: OperationId::new(),
@@ -398,10 +400,10 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             summary: None,
             child_project_volume: VolumeRef::new(
                 provider,
-                "summary-child-project",
+                "summary-child-project".into(),
                 VolumeClass::Project,
                 VolumeOwner::Project("summary-project".into()),
-            )?,
+             &mut None)?,
             child_private_volume: child_private.clone(),
             inherited_through_sequence: 0,
             maximum_inherited_messages: 16,
@@ -417,7 +419,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
                         .host
                         .resolve(&crate::filesystem::workspace_ref(
                             storage.volume.provider().clone(),
-                            &storage.volume.storage_name()?,
+                            &storage.volume.storage_name(&mut None)?,
                         )?)
                         .await?
                         .generation,
@@ -470,7 +472,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     let (quota_preparation, _quota_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1, 134_217_728).await?;
     assert!(preparer.prepare_for_task(request.clone(), &quota_preparation).await.is_err());
-    let child_private_workspace = workspace_ref(provider.clone(), &child_private.storage_name()?)?;
+    let child_private_workspace = workspace_ref(provider.clone(), &child_private.storage_name(&mut None)?)?;
     assert!(matches!(storage.host.resolve(&child_private_workspace).await, Err(Error::NotFound(_))));
     let (cancelled_preparation, cancelled_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728).await?;
@@ -540,7 +542,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             2 => { changed.attached_agents.push(AgentId::new()); }
             _ => { changed.inherited_through_sequence -= 1; }
         }
-        let mut reducer = aggregate.reducer().clone();
+        let mut reducer = aggregate.reducer().copy(&mut None)?;
         assert!(reducer.apply(Command {
             operation_id: changed.operation_id,
             idempotency_key: IdempotencyKey::new(format!("summary-witness-mutation-{mutation}"))?,
@@ -551,11 +553,11 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         }).is_err());
     }
     let fs_verifier = Arc::new(FilesystemForkVerifier::new(storage.host.clone(), 262_144)?);
-    fs_verifier.verify(&seed).await?;
+    fs_verifier.verify(&seed, &mut None)?.await?;
     assert!(matches!(
         storage
             .host
-            .claim_fork_seed(&seed, aggregate.reducer(), &storage.verifier(&mut None).expect("verifier copy"), &scope)
+            .claim_fork_seed(&seed, aggregate.reducer(), &storage.verifier(), &scope)
             .await,
         Err(Error::Unsupported(_))
     ));
@@ -568,7 +570,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .history_limits
         .maximum_events += 1;
     assert!(matches!(
-        fs_verifier.verify(&changed).await,
+        fs_verifier.verify(&changed, &mut None)?.await,
         Err(Error::Conflict(_))
     ));
     aggregate = aggregate.with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
@@ -612,9 +614,9 @@ async fn assert_summary_child_import(
             "conversation:bind".to_owned(),
             "model:generate".to_owned(),
             seed.child_private_volume
-                .capability(VolumeOperation::Write)?,
+                .capability(VolumeOperation::Write, &mut None)?,
             seed.child_private_volume
-                .capability(VolumeOperation::Read)?,
+                .capability(VolumeOperation::Read, &mut None)?,
         ]),
     );
     let scope = issuer.issue("child", &grants, Some(seed.child_agent), None, &mut None).expect("scope proof");
@@ -654,7 +656,7 @@ async fn assert_summary_child_import(
     let denied = issuer.issue("denied", &scope.capabilities().without(&Capabilities::new([
             capture.context.read_capability()?,
             seed.child_private_volume
-                .capability(VolumeOperation::Read)?,
+                .capability(VolumeOperation::Read, &mut None)?,
         ])), Some(seed.child_agent), None, &mut None).expect("scope proof");
     assert!(matches!(
         child_history
@@ -889,7 +891,7 @@ async fn append_later_summary_parent_messages(
     let mut writer = StreamAggregate::open(
         &storage.stream,
         storage.conversation.clone(),
-        storage.verifier(&mut None).expect("verifier copy"),
+        storage.verifier(),
         SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(storage.content_verifier.clone());
@@ -1036,7 +1038,7 @@ async fn assert_cold_summary_reads(
             observed.reads.store(0, Ordering::SeqCst);
             observed.fail_read.store(0, Ordering::SeqCst);
         }
-        let cold_parent = HistoryReader::new(&client, &seed.parent, &(storage.verifier(&mut None).expect("verifier copy")), &mut None)?;
+        let cold_parent = HistoryReader::new(&client, &seed.parent, &(storage.verifier()), &mut None)?;
         let cold_child = HistoryReader::new(&client, &seed.child, &(issuer.verifier(&mut None).expect("verifier copy")), &mut None)?;
         stage = Some(
             cold_child
@@ -1196,20 +1198,20 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         .ok_or_else(|| Error::Invalid("missing full-fork parent".into()))?;
     assert!(conversation.resident_after_sequence() > 0);
     assert_eq!(conversation.logical_revision(), 12);
-    let history = HistoryReader::new(&storage.stream, &storage.conversation, &(storage.verifier(&mut None).expect("verifier copy")), &mut None)?;
+    let history = HistoryReader::new(&storage.stream, &storage.conversation, &(storage.verifier()), &mut None)?;
     assert!(history.fork_history(parent.reducer(), 12,
         HistoryReadLimits { maximum_events: 11, maximum_bytes: 2_097_152 }, &mut None).await.is_err());
     let archived = history.fork_history(parent.reducer(), 12,
         HistoryReadLimits { maximum_events: 12, maximum_bytes: 2_097_152 }, &mut None).await?;
     let provider = storage.volume.provider().clone();
-    let project = VolumeRef::new(provider.clone(), "full-parent-project",
-        VolumeClass::Project, VolumeOwner::Project("full-project".into()))?;
+    let project = VolumeRef::new(provider.clone(), "full-parent-project".into(),
+        VolumeClass::Project, VolumeOwner::Project("full-project".into()), &mut None)?;
     let project_head = storage.host.create_volume(&project).await?;
     let scope = storage.issuer.issue("full-parent", &Capabilities::new(storage.scope.capabilities().iter().map(str::to_owned)
-            .chain(["fork:publish".to_owned(), project.capability(VolumeOperation::Read)?])), Some(agent), None, &mut None).expect("scope proof");
+            .chain(["fork:publish".to_owned(), project.capability(VolumeOperation::Read, &mut None)?])), Some(agent), None, &mut None).expect("scope proof");
     let stream_provider = ProviderRef::new("local".into(), "stream".into(), "2".into(), &mut None)?;
-    let preparer = FilesystemForkPreparer::new(storage.host.clone(), parent.reducer().clone(),
-        storage.verifier(&mut None).expect("verifier copy"), scope.clone(), project.clone(), stream_provider.clone(),
+    let preparer = FilesystemForkPreparer::new(storage.host.clone(), parent.reducer().copy(&mut None)?,
+        storage.verifier(), scope.clone(), project.clone(), stream_provider.clone(),
         storage.content_verifier.clone(),
         Some(archived), None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;
@@ -1225,10 +1227,10 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         preparation: ForkPreparation {
             child_result_volume: None,
             summary: None,
-            child_project_volume: VolumeRef::new(provider.clone(), "full-child-project",
-                VolumeClass::Project, VolumeOwner::Project("full-project".into()))?,
-            child_private_volume: VolumeRef::new(provider, "full-child-private",
-                VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent))?,
+            child_project_volume: VolumeRef::new(provider.clone(), "full-child-project".into(),
+                VolumeClass::Project, VolumeOwner::Project("full-project".into()), &mut None)?,
+            child_private_volume: VolumeRef::new(provider, "full-child-private".into(),
+                VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent), &mut None)?,
             inherited_through_sequence: 0,
             maximum_inherited_messages: 12,
             maximum_inherited_bytes: 262_144,
@@ -1238,7 +1240,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
             ForkSelection { required: true, revision: ResourceRevision::PrivateVolume {
                 volume: storage.volume.clone(),
                 generation: storage.host.resolve(&crate::filesystem::workspace_ref(
-                    storage.volume.provider().clone(), &storage.volume.storage_name()?)?).await?.generation,
+                    storage.volume.provider().clone(), &storage.volume.storage_name(&mut None)?)?).await?.generation,
                 paths: Vec::new(),
             }},
             ForkSelection { required: true, revision: ResourceRevision::History(StreamRef::new(
@@ -1278,7 +1280,11 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         Arc::new(FilesystemForkVerifier::new(storage.host.clone(), 262_144)?),
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
     ], &mut None)?);
-    parent = parent.with_fork_verifier(fork_verifier.clone());
+    *parent = crate::store::StreamAggregate::open(
+        &storage.stream, storage.conversation.clone(), storage.verifier(), crate::core::SchemaRegistry::new(),
+        None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None,
+    ).await?.with_content_verifier(storage.content_verifier.clone()).with_fork_verifier(fork_verifier.clone());
+    parent.set_limits(limits)?;
     let command = Command {
         operation_id: seed.operation_id,
         idempotency_key: IdempotencyKey::new("publish-retired-full-fork")?,
@@ -1287,9 +1293,13 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         causal_parent: None,
         action: Action::PublishFork { seed: Box::new(seed.clone()) },
     };
-    parent.execute(command.clone()).await?;
-    let mut reopened = storage.journal.conversation_projection(limits).await?
-        .with_fork_verifier(fork_verifier);
+    parent.execute(command.clone(), None, &mut None).await?;
+    drop(parent);
+    let mut reopened = crate::store::StreamAggregate::open(
+        &storage.stream, storage.conversation.clone(), storage.verifier(), crate::core::SchemaRegistry::new(),
+        None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None,
+    ).await?.with_content_verifier(storage.content_verifier.clone()).with_fork_verifier(fork_verifier);
+    reopened.set_limits(limits)?;
     assert!(matches!(reopened.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await?, crate::core::ApplyResult::Replayed { .. }));
     let mut count = 0;
     while count < 12 {

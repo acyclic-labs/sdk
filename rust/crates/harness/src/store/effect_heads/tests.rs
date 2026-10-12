@@ -61,10 +61,11 @@ async fn publish_lifecycle(
         &mut None,
     )
     .await?;
-    let request = indexed
+    let mut request_work = None;
+    let (request, _request_hold) = indexed
         .request(
             client,
-            acyclic_stream::IdempotencyKey::new(format!("root-{number}"))?,
+            acyclic_stream::IdempotencyKey::new(format!("root-{number}"))?, &mut request_work,
         )
         .await?;
     let CommitOutcome::Committed(envelope) = client.commit(request).await? else {
@@ -171,7 +172,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
     assert_eq!(
         root_at(&valid, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), 1, exact, &mut None)
             .await?
-            .hash,
+            .0,
         None
     );
     let non_atomic = copy_cut(&canonical[0].value, certificates[0].value.clone(), false).await?;
@@ -180,7 +181,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         Err(Error::Storage(_))
     ));
     for mutation in 0..4 {
-        let mut changed: Certificate = crate::executor::decode_json(&certificates[0].value)?;
+        let mut changed: Certificate = crate::contract::json_from_slice(&certificates[0].value).map_err(|error| Error::Invalid(error.to_string()))?;
         match mutation {
             0 => changed.root = Some([93; 32]),
             1 => changed.revision = 2,

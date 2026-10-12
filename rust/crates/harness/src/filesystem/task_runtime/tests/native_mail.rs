@@ -59,8 +59,8 @@ impl MailFixture {
     }
 
     async fn send(&self, recipient: usize, operation: OperationId, io: &PreparationIo) -> Result<crate::conversation::FileRef> {
-        let payload = self.payload.clone_with_io(io)?;
-        self.runtime.task_host().send_owned_with_io(self.tasks[0].0, &self.tasks[0].1,
+        let payload = crate::executor::with_history_io(Some(io), |work| self.payload.copy(work))?;
+        self.runtime.task_host().send_mail(self.tasks[0].0, &self.tasks[0].1,
             self.tasks[recipient].0, operation, payload, Some(io)).await
     }
 }
@@ -92,7 +92,7 @@ async fn native_mail_sdk_cursor_atomic_lost_ack_and_multi_recipient_are_original
     assert_eq!(retry, ack);
     assert_eq!(fixture.sdk.io_snapshot().records, committed);
     assert!(fixture.runtime.task_host().reconcile_sent_mail(fixture.tasks[0].0, &fixture.tasks[0].1,
-        fixture.tasks[1].0, operation, fixture.payload.clone_with_io(&io)?, Some(&io)).await?);
+        fixture.tasks[1].0, operation, crate::executor::with_history_io(Some(&io), |work| fixture.payload.copy(work))?, Some(&io)).await?);
     assert_eq!(fixture.sdk.io_snapshot().records, committed);
     let rejected = fixture.send(2, operation, &io).await;
     assert!(matches!(rejected, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, .. })));
@@ -117,11 +117,11 @@ async fn native_mail_cancellation_and_page_quota_deny_before_more_sdk_io() -> Re
     let original = work(BUDGET, &cancellation)?;
     fixture.sdk.native_only.store(true, Ordering::SeqCst);
     let io = PreparationIo::from_native_work(&original)?;
-    let payload = fixture.payload.clone_with_io(&io)?;
+    let payload = crate::executor::with_history_io(Some(&io), |work| fixture.payload.copy(work))?;
     cancellation.cancel();
     fixture.sdk.reset_io();
     let before = original.receipt();
-    assert!(matches!(fixture.runtime.task_host().send_owned_with_io(fixture.tasks[0].0, &fixture.tasks[0].1,
+    assert!(matches!(fixture.runtime.task_host().send_mail(fixture.tasks[0].0, &fixture.tasks[0].1,
         fixture.tasks[1].0, OperationId::from_bytes([196; 16]), payload, Some(&io)).await,
         Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     assert!(matches!(fixture.runtime.task_host().inbox_with_native_work(fixture.tasks[1].0, 0, 1, &original).await,

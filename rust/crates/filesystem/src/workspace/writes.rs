@@ -13,7 +13,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let bytes = bytes.into();
         let result = async {
             let path = self.mutation_path(path, &mut accounting, cancellation)?;
-            let record = self.checkout.lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation).await?.0.record;
+            let record = self.checkout.lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, true).await?.0.record;
             let operations = match record {
                 None => {
                     let mut operations = crate::kernel::Owned::allocate(1, &mut accounting)?;
@@ -44,7 +44,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
 
     pub(super) async fn remove_record(&mut self, path: &str, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken) -> Result<(), WorkspaceError> {
         let path = self.mutation_path(path, accounting, cancellation)?;
-        let record = self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation).await?.0.record.ok_or(WorkspaceError::NotFound)?;
+        let record = self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true).await?.0.record.ok_or(WorkspaceError::NotFound)?;
         let mut operations = crate::kernel::Owned::allocate(1, accounting)?;
         Self::push_mutation(&mut operations, crate::kernel::Owned::new(AuthoredMutation::Remove { path: path.value, expected_file_id: Some(record.file_id) }, path.allocation, path.bytes), accounting)?;
         self.apply_authored(operations, accounting, cancellation).await

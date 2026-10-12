@@ -353,7 +353,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             None => io.receive(self.host.filesystem.open_workspace(name, io.remaining()?, context.cancellation).await)?,
         }; }
         #[cfg(target_arch = "wasm32")]
-        { opened = io.receive(self.host.filesystem.open_workspace_measured(name, io.remaining()?, context.cancellation).await)?; }
+        { opened = io.receive(self.host.filesystem.open_workspace(name, io.remaining()?, context.cancellation).await)?; }
         #[cfg(not(target_arch = "wasm32"))]
         if io.original_native_work().is_none() { io.retain_owned(opened.name().as_str().len() as u64)?; }
         #[cfg(target_arch = "wasm32")]
@@ -493,8 +493,8 @@ mod tests {
     async fn real_filesystem_birth_without_protected_root_association_is_not_source_authority() -> Result<()> {
         let provider = crate::resources::ProviderRef::new("root-birth".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider.clone())?);
-        let project = VolumeRef::new(provider, "root-project", VolumeClass::Project,
-            VolumeOwner::Project("root-project".into()))?;
+        let project = VolumeRef::new(provider, "root-project".into(), VolumeClass::Project,
+            VolumeOwner::Project("root-project".into()), &mut None)?;
         let owner = Authority { kind: AggregateKind::Task, id: "root-owner".into() };
         let operation = acyclic_fs::OperationId::from_bytes([43; 16]);
         let root_operation = crate::OperationId::from_bytes([44; 16]);

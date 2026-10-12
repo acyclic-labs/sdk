@@ -734,7 +734,7 @@ pub(super) fn stock_tool_support(tool: &crate::tool::Tool, io: Option<&Preparati
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(PreparationIo::original_native_work) {
         tool.executor.supports_native_execution(work)?;
-        tool.projection.supports_native_projection(work)?;
+        tool.projection.supports_native_projection(Some(work))?;
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = (tool, io);
@@ -793,13 +793,17 @@ pub(super) fn stock_project_tool(tool: &crate::tool::Tool, invocation: &ToolInvo
     limits: Limits, io: Option<&PreparationIo>) -> Result<(Value, crate::model::ToolResultContent)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io && let Some(work) = io.original_native_work() {
-        let (value, custody) = tool.projection.project_with_native_work(invocation, result, work)?;
+        let (value, custody) = tool.projection.project(invocation, result, Some(work))?;
+        let custody = custody.ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "tool projection has no native producer",
+        })?;
         io.absorb_native_custody(custody)?;
         let content = tool.definition.validate_projection(&value, limits, Some(io))?;
         io.check_json_byte_bound(&value, limits.render_bytes)?;
         return Ok((value, content));
     }
-    let value = tool.projection.project(invocation, result)?;
+    let value = tool.projection.project(invocation, result, None)?.0;
     let content = tool.definition.validate_projection(&value, limits, io)?;
     if crate::contract::canonical_json_bytes(&value)?.len() as u64 > limits.render_bytes {
         return Err(Error::Invalid("tool projection exceeds render limit".into()));

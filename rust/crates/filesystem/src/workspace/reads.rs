@@ -9,7 +9,7 @@ async fn read_selected<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::fa
         let (path, allocation) = customer_path_with_accounting(path, checkout.value.volume_config(), &mut accounting, cancellation)?;
         let bytes = path.retained_bytes();
         let path = crate::kernel::Owned::new(path, allocation, bytes);
-        let (lookup, allocation) = checkout.value.lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation).await?;
+        let (lookup, allocation) = checkout.value.lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, true).await?;
         drop(allocation);
         let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
         if record.kind != FileKind::Regular { return Err(WorkspaceError::NotRegularFile); }

@@ -129,7 +129,7 @@ where
             source.stream_path(&mut None)?;
             let plan = self
                 .controller()
-                .prepare_project_import(source_project, source_generation)
+                .prepare_project_import(source_project, source_generation, None)
                 .await?;
             let source_generation = self.host.generation_ref_id(plan.source_head())?;
             let target = self.host.generation_ref_id(plan.target_head())?;
@@ -191,42 +191,34 @@ where
                 return Err(Error::Invalid("project join notice is not a merge".into()));
             }
             let controller = self.binding.controller();
-            let outcome = if selections.is_empty() {
-                controller
-                    .apply_project_merge(&self.plan, operation_id)
-                    .await?
-            } else {
-                let mut sides = BTreeMap::new();
-                for selection in selections {
-                    selection.conflict.validate()?;
-                    if selection.conflict.provider != *self.binding.provider() {
-                        return Err(Error::Unauthorized(
-                            "conflict belongs to another provider".into(),
-                        ));
-                    }
-                    let conflict = decode_conflict(&selection.conflict.key, None)?;
-                    let side = match selection.side {
-                        ProjectConflictSide::Base => ConflictSide::Base,
-                        ProjectConflictSide::Target => ConflictSide::Ours,
-                        ProjectConflictSide::Source => ConflictSide::Theirs,
-                    };
-                    if sides.insert(conflict, side).is_some() {
-                        return Err(Error::Invalid("conflict side was selected twice".into()));
-                    }
+            let mut sides = BTreeMap::new();
+            for selection in selections {
+                selection.conflict.validate()?;
+                if selection.conflict.provider != *self.binding.provider() {
+                    return Err(Error::Unauthorized(
+                        "conflict belongs to another provider".into(),
+                    ));
                 }
-                controller
-                    .apply_project_merge_sides(&self.plan, operation_id, sides)
-                    .await?
-            };
+                let conflict = decode_conflict(&selection.conflict.key, None)?;
+                let side = match selection.side {
+                    ProjectConflictSide::Base => ConflictSide::Base,
+                    ProjectConflictSide::Target => ConflictSide::Ours,
+                    ProjectConflictSide::Source => ConflictSide::Theirs,
+                };
+                if sides.insert(conflict, side).is_some() {
+                    return Err(Error::Invalid("conflict side was selected twice".into()));
+                }
+            }
+            let outcome = controller.apply_project_merge(&self.plan, operation_id, sides).await?.0;
             match &outcome {
                 JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) => {
                     let receipt = controller.merge_receipt(
                         &self.plan,
                         &outcome,
-                        child.clone(),
+                        child,
                         operation_id,
-                        notice.clone(),
-                    )?;
+                        &notice,
+                    )?.0;
                     Ok(if matches!(&outcome, JoinOutcome::AlreadyApplied(_)) {
                         ProjectJoinOutcome::AlreadyApplied(receipt)
                     } else {

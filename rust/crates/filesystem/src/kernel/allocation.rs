@@ -573,19 +573,6 @@ impl VisitedObjectSet {
     const LOAD_NUMERATOR: usize = 2;
     const INITIAL_ENTRIES: usize = 8;
 
-    pub(crate) fn new(
-        maximum_entries: usize, ledger: &mut AllocationLedger,
-        work: &mut WorkCounters, budget: WorkBudget,
-    ) -> Result<Self, AllocationError> {
-        if maximum_entries == 0 { return Err(AllocationError::InvalidCapacity); }
-        static CANCELLATION: std::sync::LazyLock<crate::CancellationToken> =
-            std::sync::LazyLock::new(crate::CancellationToken::new);
-        let mut accounting = KernelAccounting::borrowed_standalone(ledger, work, budget, &CANCELLATION);
-        Self::new_with_accounting(maximum_entries, &mut accounting)
-            .map(|owned| owned.value)
-            .map_err(|error| Self::standalone_error(error, false))
-    }
-
     pub(crate) fn new_with_accounting(
         maximum_entries: usize, accounting: &mut KernelAccounting<'_>,
     ) -> Result<super::persistent_point::Owned<Self>, crate::FsError> {
@@ -597,17 +584,6 @@ impl VisitedObjectSet {
         slots.value.resize(slot_count, None);
         let Owned { value, allocation, bytes } = slots;
         Ok(Owned::new(Self { slots: value, maximum_entries, length: 0, logical_bytes: bytes }, allocation, bytes))
-    }
-
-    pub(crate) fn insert(
-        &mut self, object: ObjectId, ledger: &mut AllocationLedger,
-        work: &mut WorkCounters, budget: &WorkBudget,
-    ) -> Result<VisitedInsert, AllocationError> {
-        static CANCELLATION: std::sync::LazyLock<crate::CancellationToken> =
-            std::sync::LazyLock::new(crate::CancellationToken::new);
-        let mut accounting = KernelAccounting::borrowed_standalone(ledger, work, *budget, &CANCELLATION);
-        self.insert_accounted(object, &mut KernelOwnedAllocation::Standalone, &mut accounting)
-            .map_err(|error| Self::standalone_error(error, self.length == self.maximum_entries))
     }
 
     pub(crate) fn insert_with_accounting(
@@ -690,14 +666,6 @@ impl VisitedObjectSet {
         Ok(probes)
     }
 
-    fn standalone_error(error: crate::FsError, full: bool) -> AllocationError {
-        match error {
-            crate::FsError::Work(error) => AllocationError::Work(error),
-            crate::FsError::PendingMutationAllocationFailed if full => AllocationError::CapacityExceeded,
-            _ => AllocationError::AllocationFailed,
-        }
-    }
-
     fn entry_capacity(&self) -> usize {
         (self.slots.len() / Self::LOAD_NUMERATOR).min(self.maximum_entries)
     }
@@ -709,11 +677,6 @@ impl VisitedObjectSet {
             .ok_or(AllocationError::Overflow)
     }
 
-    pub(crate) fn release(self, ledger: &mut AllocationLedger) -> Result<(), AllocationError> {
-        let bytes = self.logical_bytes;
-        drop(self);
-        ledger.release(bytes)
-    }
 
 }
 

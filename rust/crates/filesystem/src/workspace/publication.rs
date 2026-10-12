@@ -11,14 +11,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             let reservation = async {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(original) = accounting.native_work() {
-                    let head = authority.head_with_native_work(authority_id, original, cancellation).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
-                    return authority.reserve_publication_with_native_work(authority_id, head, operation_id, original, cancellation).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)));
+                    let mut authority_work = crate::AuthorityWork::native(original, cancellation);
+                    let head = authority.head(authority_id, &mut authority_work).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
+                    return authority.reserve_publication(authority_id, head, operation_id, &mut authority_work).await.and_then(|value| match value {
+                        crate::ReservationOutcome::Reserved(proof) | crate::ReservationOutcome::AlreadyReserved(proof) => Ok(proof),
+                        crate::ReservationOutcome::Conflict { .. } => Err(crate::AuthorityStoreError::RejectedStatic("publication reservation head or gate changed")),
+                    }).map_err(|error| WorkspaceError::from(FsError::Authority(error)));
                 }
-                let head = authority.head(authority_id, accounting.remaining()?, cancellation).await
+                let mut authority_work = crate::AuthorityWork::new(accounting.remaining()?, cancellation);
+                let head = authority.head(authority_id, &mut authority_work).await;
+                let head = authority_work.receipt(head)
                     .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::UNCHARGED, |error| WorkspaceError::from(FsError::Authority(error))));
                 let (_, spent, _, _) = accounting.standalone_parts().ok_or(crate::WorkError::Overflow)?;
                 let head = merge_workspace_backend(head, spent, 0)?.value;
-                let reserved = authority.reserve_publication(authority_id, head, operation_id, accounting.remaining()?, cancellation).await
+                let mut authority_work = crate::AuthorityWork::new(accounting.remaining()?, cancellation);
+                let reserved = authority.reserve_publication(authority_id, head, operation_id, &mut authority_work).await;
+                let reserved = authority_work.receipt(reserved)
                     .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::UNCHARGED, |error| WorkspaceError::from(FsError::Authority(error))));
                 let (_, spent, _, _) = accounting.standalone_parts().ok_or(crate::WorkError::Overflow)?;
                 match merge_workspace_backend(reserved, spent, 0)?.value {
@@ -40,9 +48,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             accounting.check()?;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                return self.volume.fs.authority().release_publication_with_native_work(reservation, original, cancellation).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)));
+                let mut authority_work = crate::AuthorityWork::native(original, cancellation);
+                return self.volume.fs.authority().release_publication(reservation, &mut authority_work).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)));
             }
-            let released = self.volume.fs.authority().release_publication(reservation, accounting.remaining()?, cancellation).await
+            let mut authority_work = crate::AuthorityWork::new(accounting.remaining()?, cancellation);
+            let released = self.volume.fs.authority().release_publication(reservation, &mut authority_work).await;
+            let released = authority_work.receipt(released)
                 .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::UNCHARGED, |error| WorkspaceError::from(FsError::Authority(error))));
             let (_, spent, _, _) = accounting.standalone_parts().ok_or(crate::WorkError::Overflow)?;
             merge_workspace_backend(released, spent, 0).map(|receipt| receipt.value)
@@ -56,7 +67,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let result = async {
             original.admit(crate::WorkCounters::UNCHARGED).map_err(WorkspaceError::from)?;
             cancellation.check()?;
-            let reservation = self.volume.fs.authority().publication_reservation_with_native_work(self.authority_id(), operation_id, original, cancellation).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
+            let mut authority_work = crate::AuthorityWork::native(original, cancellation);
+            let reservation = self.volume.fs.authority().publication_reservation(self.authority_id(), operation_id, &mut authority_work).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
             if let Some(proof) = reservation && (proof.authority_id != self.authority_id() || proof.operation_id != operation_id) { return Err(WorkspaceError::IncompatibleWorkspace); }
             Ok(reservation)
         }.await;

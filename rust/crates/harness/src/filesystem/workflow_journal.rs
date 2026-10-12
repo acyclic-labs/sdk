@@ -529,9 +529,8 @@ where
                 let checkpoint = previous.as_ref().map_or(&admission.initial, |prior| &prior.next);
                 let terminal = previous.as_ref().is_some_and(|prior| !matches!(prior.transition.status, MachineStatus::Suspended));
                 validate_workflow_next(checkpoint, terminal, &identities.reserved, &identities.keys, &record, io)
-                    .map_err(|error| match error {
-                        Error::NativeWork { .. } => error,
-                        _ => Error::Storage("workflow history diverges from admission or reuses an identity".into()),
+                    .map_err(|error| if error.is_native_failure() { error } else {
+                        Error::Storage("workflow history diverges from admission or reuses an identity".into())
                     })?;
                 identities.advance(&record)?;
                 if let Some(prior) = previous.take() {
