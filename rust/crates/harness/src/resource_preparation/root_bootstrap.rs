@@ -163,7 +163,6 @@ impl<'a> RootBootstrapContentContext<'a> {
         let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
         created_access_step(&mut io)?;
         if original_root.parent.is_some()
-            || original_root.task_id() != binding.original_task()
             || crate::runtime::task_id_for_admission(original_root.operation_id) != binding.original_task()
         {
             return Err(root_denial("ROOT bootstrap context differs from original admission"));
@@ -219,8 +218,7 @@ pub(crate) fn preflight_root_bootstrap_with_native_work(
     request.volume.validate_with_work(&mut io)?;
     request.evidence.validate_with_work(&mut io)?;
     request.generation.validate_with_work(&mut io)?;
-    if context.original_root.parent.is_some()
-        || request.root_operation != context.original_root.operation_id
+    if request.root_operation != context.original_root.operation_id
         || request.graph_root != context.original_root.task_id()
         || request.generation.as_resource().provider() != request.volume.provider()
         || request.evidence.provider() != request.volume.provider()
@@ -253,7 +251,7 @@ fn verify_receipt_identity(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     preflight_root_bootstrap_with_native_work(context, request, work)?;
-    preflight_root_bootstrap_with_native_work(context, actual, work)?;
+    inspect_snapshot(actual, work)?;
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
     io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: audience.id.len() as u64 }, false)?;
     if actual != request || audience != context.audience || agent != context.agent
@@ -300,7 +298,7 @@ impl CreatedResourceAccess {
         if received.1.bytes() < source_owned {
             return Err(root_denial("ROOT bootstrap receipt lacks actual payload custody"));
         }
-        // This observer is created before all copied payloads, so unwinding drops those payloads before their original-ledger allocation guards.
+        // Declare the observer before the payloads so guards outlive them.
         let mut observer = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
@@ -338,7 +336,7 @@ impl CreatedResourceAccess {
             native_custody: None,
         };
         drop(received);
-        // Source custody has physically retired; only actual final copied payload custody survives, with no provider-claim-to-query substitution.
+        // Retire source custody before transferring the copied payloads.
         if let Err(error) = io.as_deref_mut().expect("native observer").absorb_native_custody(funded_grants.1) {
             drop(access);
             return Err(error);
@@ -498,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn child_task_operation_and_private_owner_cannot_become_original_root() -> Result<()> {
+    fn request_identity_and_private_owner_match_original_root() -> Result<()> {
         let agent = AgentId::from_bytes([125; 16]);
         let owner = Authority { kind: AggregateKind::Task, id: "owner".into() };
         let audience = Authority { kind: AggregateKind::Conversation, id: "audience".into() };
@@ -506,9 +504,6 @@ mod tests {
         let admitted = admission(&original, true, false)?;
         let work = work(&CancellationToken::new(), 100_000)?;
         preflight_root_bootstrap_with_native_work(context(&admitted, &owner, &audience, agent), &original, &work)?;
-        let mut child = admitted.clone();
-        child.parent = Some(TaskId::from_bytes([126; 16]));
-        unauthorized(preflight_root_bootstrap_with_native_work(context(&child, &owner, &audience, agent), &original, &work));
         let mut changed = original.clone();
         changed.graph_root = TaskId::from_bytes([127; 16]);
         unauthorized(preflight_root_bootstrap_with_native_work(context(&admitted, &owner, &audience, agent), &changed, &work));

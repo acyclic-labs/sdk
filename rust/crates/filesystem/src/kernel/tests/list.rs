@@ -27,7 +27,7 @@ fn put(store: &MemoryObjectStore, page: &TreePage) -> Result<ObjectId, Box<dyn s
     ObjectStore::put(
         store,
         id,
-        OwnedBytes::from(encode_tree_page(page, 8)?),
+        OwnedBytes::from(encode_tree_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)

@@ -720,7 +720,7 @@ impl DiscoveredContext {
         limits: crate::conversation::Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ModelMessage>> {
-        super::validate_context_limits_with_io(limits, io)?;
+        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
         let count = self.instructions.len().checked_add(usize::from(!self.skills.is_empty()))
             .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
                 "discovered context count overflows"))?;
@@ -756,12 +756,12 @@ impl DiscoveredContext {
         let messages = self.messages_with_io(io, skill_bytes)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-            super::validate_source_messages_native(&messages, limits, native)?;
+            super::validate_source_messages(&messages, limits, Some(&crate::executor::PreparationIo::from_native_work(native)?))?;
         } else {
-            super::validate_source_messages(&messages, limits)?;
+            super::validate_source_messages(&messages, limits, None)?;
         }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        super::validate_source_messages(&messages, limits)?;
+        super::validate_source_messages(&messages, limits, None)?;
         Ok(messages)
     }
 

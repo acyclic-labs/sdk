@@ -88,9 +88,7 @@ struct PlanInput {
     maximum_spans: u32,
 }
 
-
-/// Complete admitted request shared by synchronous and asynchronous range
-/// planners.
+/// Complete admitted request shared by synchronous and asynchronous range planners.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExtentRangeRequest {
     /// Authenticated extent-tree root.
@@ -108,11 +106,6 @@ pub struct ExtentRangeRequest {
 }
 
 /// Plans one exact file range without reading unrelated extent pages or blobs.
-///
-/// # Errors
-///
-/// Rejects invalid ranges, malformed page bounds, cycles, excessive height,
-/// backend failures, or work beyond the admitted budget.
 pub fn plan_extent_range<S: ObjectStore>(
     store: &S, request: ExtentRangeRequest,
 ) -> Result<ExtentPlan, ExtentReadFailure> {
@@ -126,12 +119,7 @@ pub fn plan_extent_range<S: ObjectStore>(
     }
 }
 
-/// Plans a range through the same bounded transitions as the synchronous and
-/// original-ledger readers.
-///
-/// # Errors
-///
-/// Rejects malformed extent graphs, invalid limits, cancellation, and exhausted work.
+/// Plans a range through the same bounded transitions as the synchronous and original-ledger readers.
 pub async fn plan_extent_range_async<S: AsyncObjectStore>(
     store: &S, request: ExtentRangeRequest, cancellation: &CancellationToken,
 ) -> Result<ExtentPlan, ExtentReadFailure> {
@@ -153,10 +141,6 @@ pub(crate) async fn plan_extent_range_with_accounting<S: AsyncObjectStore>(
 }
 
 /// Finds a data or hole boundary without reading content objects.
-///
-/// # Errors
-///
-/// Rejects invalid offsets, malformed extent graphs, and exhausted work.
 pub fn seek_extent<S: ObjectStore>(
     store: &S, request: ExtentSeekRequest,
 ) -> Result<OperationReceipt<Option<u64>>, ExtentReadFailure> {
@@ -172,10 +156,6 @@ pub fn seek_extent<S: ObjectStore>(
 }
 
 /// Asynchronously seeks through the same monotonic extent transitions.
-///
-/// # Errors
-///
-/// Returns the same typed failures as [`seek_extent`], including cancellation.
 pub async fn seek_extent_async<S: AsyncObjectStore>(
     store: &S, request: ExtentSeekRequest, cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<Option<u64>>, ExtentReadFailure> {

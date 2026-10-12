@@ -8,15 +8,9 @@
 use super::{Delivery, HostChangeWide};
 #[cfg(test)]
 use super::HostChange;
-#[cfg(test)]
-use std::ffi::OsString;
 use std::io;
 use std::mem::size_of;
-#[cfg(test)]
-use std::os::windows::ffi::OsStringExt as _;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, IntoRawHandle as _, OwnedHandle};
-#[cfg(test)]
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -34,8 +28,6 @@ use windows::Win32::Storage::FileSystem::{
     ReadDirectoryChangesExW, ReadDirectoryNotifyExtendedInformation,
     ReadDirectoryNotifyInformation,
 };
-#[cfg(test)]
-use windows::Win32::Storage::FileSystem::FILE_ACTION_MODIFIED;
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::{
     CreateEventW, CreateThread, INFINITE, SetEvent, WaitForSingleObject,
@@ -80,7 +72,6 @@ struct Shared {
     native_failure: Mutex<Option<DemandError>>,
     #[cfg(test)]
     native_wait_cancellation: Mutex<Option<crate::CancellationToken>>,
-    original_cleanup: bool,
     delivery: Arc<Delivery>,
 }
 
@@ -154,7 +145,7 @@ fn reserve_cleanup<W: SourceDemandReadWork>(work: &mut W, reads: u64, writes: u6
     }))
 }
 
-fn close_owned_measured<W: SourceDemandReadWork>(
+fn close_owned<W: SourceDemandReadWork>(
     handle: &mut Option<OwnedHandle>, shared: &Shared, work: &mut W,
 ) -> Result<(), DemandError> {
     let Some(owned) = handle.as_ref() else { return Ok(()); };
@@ -267,7 +258,7 @@ impl PlatformWatch {
                 native_drop_requested: AtomicBool::new(false), native_failure: Mutex::new(None),
                 #[cfg(test)]
                 native_wait_cancellation: Mutex::new(None),
-                original_cleanup: native_original, ownership,
+                ownership,
             }));
             let state = shared.as_ref().expect("prepared read state");
             if native_original {
@@ -334,7 +325,6 @@ impl PlatformWatch {
 
     /// Completes an already-owned native cleanup suffix without introducing a caller token, root, resource allowance or namespace authority.
     pub(super) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
-        if !self.shared.original_cleanup { return Err(DemandError::NativeWorkUnavailable); }
         let birth = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
         let mut work = crate::demand::NativeSourceWork::from_original_work(birth);
         self.stop_engine(&mut work, true, None)
@@ -356,31 +346,14 @@ impl PlatformWatch {
     ) -> Result<(), DemandError> {
         if !retiring { work.check()?; }
         self.shared.delivery.ensure_stop_available()?;
-        if self.shared.original_cleanup { return self.stop_native_engine(work, wait); }
-        let mut thread = if wait.is_some() {
-            match self.thread.try_lock() {
-                Ok(thread) => thread,
-                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => return Err(DemandError::WorkerUnavailable),
-            }
-        } else {
-            self.thread.lock().unwrap_or_else(PoisonError::into_inner)
-        };
-        let mut reads = if wait.is_some() {
-            match self.shared.reads.try_lock() {
-                Ok(reads) => reads,
-                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => return Err(DemandError::WorkerUnavailable),
-            }
-        } else {
-            self.shared.lock_reads()
-        };
+        if self.shared.delivery.original.is_some() { return self.stop_native_engine(work, wait); }
+        let mut thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut reads = self.shared.lock_reads();
         let running = thread.is_some();
         let pending = reads.pending;
         let required_reads = u64::from(pending) + u64::from(running);
         let required_writes = u64::from(pending) + u64::from(running) * 2
             + u64::from(self.shared.directory.is_open()) + u64::from(self.shared.completed.is_open());
-        if wait.is_some() { return Err(DemandError::NativeWorkUnavailable); }
         if !retiring {
             work.admit(WorkCounters {
                 backend_write_operations: required_writes, backend_read_operations: required_reads,
@@ -436,7 +409,7 @@ impl PlatformWatch {
             if let Some(error) = join_error {
                 return result.and(Err(error));
             }
-            result = result.and(close_owned_measured(&mut thread, &self.shared, work));
+            result = result.and(close_owned(&mut thread, &self.shared, work));
         }
         let mut reads = self.shared.lock_reads();
         if reads.pending {
@@ -454,9 +427,6 @@ impl PlatformWatch {
         if thread.is_none() && !self.shared.directory.is_open() && !self.shared.completed.is_open() {
             self.shared.stop_completed.store(true, Ordering::Release);
         }
-        if let Some(wait) = wait {
-            result = result.and(wait.check().map_err(|_| DemandError::Cancelled));
-        }
         result
     }
 
@@ -465,7 +435,7 @@ impl PlatformWatch {
         &self, work: &mut W, wait: Option<&crate::CancellationToken>,
     ) -> Result<(), DemandError> {
         if let Some(wait) = wait { wait.check().map_err(|_| DemandError::Cancelled)?; }
-        if !self.shared.birth_work(work) { return Err(DemandError::NativeWorkUnavailable); }
+        if !self.shared.delivery.birth_matches(work) { return Err(DemandError::NativeWorkUnavailable); }
         if self.is_stopped() { return Ok(()); }
         let mut reads = if wait.is_some() {
             match self.shared.reads.try_lock() {
@@ -592,9 +562,9 @@ impl PlatformWatch {
                 // SAFETY: completes only the original queue's pending read.
                 let _ = unsafe { CancelIoEx(HANDLE(self.shared.directory.as_raw_handle()),
                     Some(&raw const *reads.overlapped)) };
-                self.shared.finish_read_measured(&mut reads, true, true, work)?;
+                self.shared.finish_read(&mut reads, true, true, work)?;
             }
-            self.shared.drain_measured(&mut reads, Some((started, timeout)), work)
+            self.shared.drain(&mut reads, Some((started, timeout)), work)
         })();
         work.with_original_leaf(|work| work.budget = original_budget);
         reads.blocked = !matches!(result, Ok(true));
@@ -628,7 +598,7 @@ impl PlatformWatch {
 impl Drop for PlatformWatch {
     fn drop(&mut self) {
         if self.is_stopped() { return; }
-        if self.shared.original_cleanup {
+        if self.shared.delivery.original.is_some() {
             self.shared.native_drop_requested.store(true, Ordering::Release);
             let terminal_wake = self.shared.native_retiring.swap(true, Ordering::AcqRel);
             self.shared.stopping.store(true, Ordering::Release);
@@ -838,12 +808,8 @@ impl Shared {
         drop(cleanup);
     }
 
-    fn birth_work<W: SourceDemandReadWork>(&self, work: &W) -> bool {
-        self.original_cleanup && self.delivery.birth_matches(work)
-    }
-
     fn record_cleanup<W: SourceDemandReadWork>(&self, work: &mut W, reads: u64, writes: u64) -> Result<(), DemandError> {
-        assert!(!self.original_cleanup, "native disposal uses its birth-paid START token");
+        assert!(self.delivery.original.is_none(), "native disposal uses its birth-paid START token");
         work.record(WorkCounters {
             backend_read_operations: reads, backend_write_operations: writes, ..WorkCounters::default()
         })
@@ -854,7 +820,7 @@ impl Shared {
     }
 
     fn run(&self) {
-        if self.original_cleanup {
+        if self.delivery.original.is_some() {
             let mut reads = self.lock_reads();
             while !self.native_ready.load(Ordering::Acquire) && !self.stopping.load(Ordering::Acquire) {
                 reads = self.reading_changed.wait(reads).unwrap_or_else(PoisonError::into_inner);
@@ -883,7 +849,7 @@ impl Shared {
                 return;
             }
             let mut work = self.delivery.callback_work();
-            match self.drain_measured(&mut reads, None, &mut work) {
+            match self.drain(&mut reads, None, &mut work) {
                 Ok(_) => {}
                 Err(error) => {
                     reads.blocked = true;
@@ -929,7 +895,7 @@ impl Shared {
     }
 
     /// Completes the same OVERLAPPED and preserves its original page cursor.
-    fn finish_read_measured<W: SourceDemandReadWork>(
+    fn finish_read<W: SourceDemandReadWork>(
         &self, reads: &mut Reads, wait: bool, mandatory: bool, work: &mut W,
     ) -> Result<bool, DemandError> {
         if !reads.pending { return Ok(true); }
@@ -971,7 +937,7 @@ impl Shared {
         Ok(true)
     }
 
-    fn drain_measured<W: SourceDemandReadWork>(
+    fn drain<W: SourceDemandReadWork>(
         &self, reads: &mut Reads, deadline: Option<(std::time::Instant, Duration)>, work: &mut W,
     ) -> Result<bool, DemandError> {
         loop {
@@ -982,25 +948,25 @@ impl Shared {
                 self.delivery.deliver_wide_with_work(&[HostChangeWide::Everything], work)?;
                 reads.loss = false;
             }
-            if !self.deliver_page_measured(reads, deadline, work)? { return Ok(false); }
+            if !self.deliver_page(reads, deadline, work)? { return Ok(false); }
             if self.stopping.load(Ordering::Acquire) { return Ok(false); }
             if reads.pending {
-                if !self.finish_read_measured(reads, false, false, work)? {
+                if !self.finish_read(reads, false, false, work)? {
                     return Ok(self.delivery.is_exact());
                 }
                 continue;
             }
             let budget = work.with_original_leaf(|work| work.budget);
-            if !self.original_cleanup { reserve_cleanup(work, 1, 1)?; }
+            if self.delivery.original.is_none() { reserve_cleanup(work, 1, 1)?; }
             let issued = (|| {
                 work.admit(WorkCounters {
                     source_bytes_read: size_of::<[u64; BUFFER_WORDS]>() as u64,
                     ..WorkCounters::default()
                 })?;
                 self.issue_read(reads, Some(&mut *work))?;
-                self.finish_read_measured(reads, false, false, work)
+                self.finish_read(reads, false, false, work)
             })();
-            if !self.original_cleanup { work.with_original_leaf(|work| work.budget = budget); }
+            if self.delivery.original.is_none() { work.with_original_leaf(|work| work.budget = budget); }
             match issued {
                 Ok(false) => return Ok(self.delivery.is_exact()),
                 Ok(true) => {}
@@ -1012,17 +978,10 @@ impl Shared {
     }
 
     /// Uses the existing flexible fields, borrowing aligned UTF-16 directly from the original native u64 page instead of constructing an OsString.
-    fn deliver_page_measured<W: SourceDemandReadWork>(
+    fn deliver_page<W: SourceDemandReadWork>(
         &self, reads: &mut Reads, deadline: Option<(std::time::Instant, Duration)>, work: &mut W,
     ) -> Result<bool, DemandError> {
         let extended = self.extended.load(Ordering::Acquire);
-        let (name_offset, length_offset) = if extended {
-            (std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileName),
-                std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileNameLength))
-        } else {
-            (std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileName),
-                std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileNameLength))
-        };
         while reads.cursor < reads.filled {
             if self.stopping.load(Ordering::Acquire) { return Ok(false); }
             if deadline.is_some_and(|(started, timeout)| started.elapsed() >= timeout) { return Ok(false); }
@@ -1031,26 +990,7 @@ impl Shared {
             let buffer = reads.buffer.as_ref().ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))?;
             let bytes = unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), reads.filled) };
             let record = &bytes[reads.cursor..];
-            let field = |at: usize| record.get(at..at + 4)
-                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok()).map(u32::from_le_bytes);
-            let parsed = (|| {
-                let next = field(0)? as usize;
-                let action = field(4)?;
-                let length = field(length_offset)? as usize;
-                let name = record.get(name_offset..name_offset.checked_add(length)?)?;
-                if length % 2 != 0 || name.as_ptr().align_offset(std::mem::align_of::<u16>()) != 0 {
-                    return None;
-                }
-                let file = if extended {
-                    let at = std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileId);
-                    Some(u64::from_le_bytes(record.get(at..at + 8)?.try_into().ok()?))
-                } else { None };
-                if next != 0 && (next < name_offset + length || next > record.len()) { return None; }
-                // SAFETY: native page/name offsets are aligned for UTF-16, and
-                // the checked byte span contains exactly length / 2 units.
-                let path = unsafe { std::slice::from_raw_parts(name.as_ptr().cast::<u16>(), length / 2) };
-                Some((next, action, path, file))
-            })();
+            let parsed = notification(record, extended);
             let Some((next, action, path, file)) = parsed else {
                 self.delivery.deliver_wide_with_work(&[HostChangeWide::Everything], work)?;
                 reads.cursor = reads.filled;
@@ -1124,84 +1064,37 @@ fn ordinary_error(error: DemandError) -> io::Error {
     }
 }
 
-#[cfg(test)]
-/// Turns one read's reports into changes: each names the entry, relative to the root, and, in `extended` reports, the file.
-fn translate(mut bytes: &[u8], extended: bool, changes: &mut Vec<HostChange>) {
+fn notification(record: &[u8], extended: bool) -> Option<(usize, u32, &[u16], Option<u64>)> {
     let (name_offset, length_offset) = if extended {
-        (
-            std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileName),
-            std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileNameLength),
-        )
+        (std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileName),
+        std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileNameLength))
     } else {
-        (
-            std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileName),
-            std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileNameLength),
-        )
+        (std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileName),
+        std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileNameLength))
     };
-    let file = |record: &[u8]| -> Option<u64> {
-        let offset = std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileId);
-        record
-            .get(offset..offset + 8)
-            .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
-            .map(u64::from_le_bytes)
-    };
-    loop {
-        let (Some(next), Some(length)) = (
-            bytes
-                .get(..4)
-                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok()),
-            bytes
-                .get(length_offset..)
-                .and_then(|bytes| bytes.get(..4))
-                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok()),
-        ) else {
-            changes.push(HostChange::Everything);
-            return;
-        };
-        let length = usize::try_from(u32::from_le_bytes(length)).unwrap_or(usize::MAX);
-        let Some(name) = bytes.get(name_offset..name_offset.saturating_add(length)) else {
-            changes.push(HostChange::Everything);
-            return;
-        };
-        let Some(units) = crate::kernel::types::utf16le_units(name) else {
-            changes.push(HostChange::Everything);
-            return;
-        };
-        let units = units.collect::<Vec<_>>();
-        let path = PathBuf::from(OsString::from_wide(&units));
-        let action = bytes
-            .get(4..8)
-            .and_then(|action| <[u8; 4]>::try_from(action).ok())
-            .map_or(0, u32::from_le_bytes);
-        changes.push(if action == FILE_ACTION_MODIFIED.0 {
-            HostChange::Altered(path)
-        } else {
-            HostChange::Rebound(path)
-        });
-        if extended {
-            let Some(file) = file(bytes) else {
-                changes.push(HostChange::Everything);
-                return;
-            };
-            changes.push(HostChange::File(file));
-        }
-        let next = usize::try_from(u32::from_le_bytes(next)).unwrap_or(0);
-        if next == 0 {
-            return;
-        }
-        let Some(rest) = bytes.get(next..) else {
-            changes.push(HostChange::Everything);
-            return;
-        };
-        bytes = rest;
+    let field = |at: usize| record.get(at..at + 4)
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok()).map(u32::from_le_bytes);
+    let next = field(0)? as usize;
+    let action = field(4)?;
+    let length = field(length_offset)? as usize;
+    let name = record.get(name_offset..name_offset.checked_add(length)?)?;
+    if length % 2 != 0 || name.as_ptr().align_offset(std::mem::align_of::<u16>()) != 0 {
+        return None;
     }
+    let file = if extended {
+        let at = std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileId);
+        Some(u64::from_le_bytes(record.get(at..at + 8)?.try_into().ok()?))
+    } else { None };
+    if next != 0 && (next < name_offset + length || next > record.len()) { return None; }
+    // SAFETY: the checked aligned span contains exactly length / 2 units.
+    let path = unsafe { std::slice::from_raw_parts(name.as_ptr().cast::<u16>(), length / 2) };
+    Some((next, action, path, file))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Delivery, DemandError, DemandWork, HostChange, HostChangeWide, OVERLAPPED, Shared, translate};
+    use super::{Delivery, DemandError, DemandWork, HostChange, HostChangeWide, OVERLAPPED, Shared, notification};
     use std::mem::size_of;
-    use std::path::PathBuf;
 
     struct Quiet;
     impl super::super::HostChangeSink for Quiet {
@@ -1234,41 +1127,34 @@ mod tests {
         bytes
     }
 
-    /// Both report layouts name each entry; only the extended one names its file, and only a modification alters an entry in place.
     #[test]
-    fn reports_translate_in_either_layout() {
+    fn reports_borrow_native_names_and_identity_in_either_layout() {
         for extended in [true, false] {
             let mut bytes = record(extended, 1, 7, r"d\created", false);
             bytes.extend(record(extended, 3, 9, "written", true));
-            let mut changes = Vec::new();
-            translate(&bytes, extended, &mut changes);
-            let mut expected = vec![HostChange::Rebound(PathBuf::from("d").join("created"))];
-            if extended {
-                expected.push(HostChange::File(7));
-            }
-            expected.push(HostChange::Altered(PathBuf::from("written")));
-            if extended {
-                expected.push(HostChange::File(9));
-            }
-            assert_eq!(changes, expected, "extended: {extended}");
+            let (next, action, name, file) = notification(&bytes, extended).expect("created report");
+            assert_eq!(action, 1);
+            assert_eq!(name, r"d\created".encode_utf16().collect::<Vec<_>>());
+            assert_eq!(file, extended.then_some(7));
+            let (next, action, name, file) = notification(&bytes[next..], extended).expect("modified report");
+            assert_eq!(next, 0);
+            assert_eq!(action, 3);
+            assert_eq!(name, "written".encode_utf16().collect::<Vec<_>>());
+            assert_eq!(file, extended.then_some(9));
         }
     }
 
     #[test]
     fn flexible_utf16_notification_names_are_not_scalar_decoded() {
-        use std::os::windows::ffi::OsStrExt as _;
         for extended in [false, true] {
             let mut bytes = vec![0_u8; if extended { 84 } else { 12 }];
             bytes[4..8].copy_from_slice(&3_u32.to_le_bytes());
             let offset = if extended { 80 } else { 8 };
             bytes[offset..offset + 4].copy_from_slice(&2_u32.to_le_bytes());
             bytes.extend_from_slice(&0xD800_u16.to_le_bytes());
-            let mut changes = Vec::new();
-            translate(&bytes, extended, &mut changes);
-            let Some(HostChange::Altered(path)) = changes.first() else {
-                panic!("the ordinary driver must preserve the opaque name");
-            };
-            assert_eq!(path.as_os_str().encode_wide().collect::<Vec<_>>(), vec![0xD800]);
+            let (_, action, name, _) = notification(&bytes, extended).expect("opaque report");
+            assert_eq!(action, 3);
+            assert_eq!(name, &[0xD800]);
         }
     }
 

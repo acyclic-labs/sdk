@@ -245,7 +245,7 @@ impl SourceCursor {
         accounting.record_completed(identity_work).map_err(Self::cursor_accounting_error)?;
         let item = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
         accounting.charge(item).map_err(Self::cursor_accounting_error)?;
-        let epoch = decoder.u64().map_err(|_| DemandError::InvalidRequest)?;
+        let epoch = decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map_err(|_| DemandError::InvalidRequest)?;
         let source = SourceReference { identity, epoch };
         if source != expected_source {
             return Err(DemandError::StaleCursor);
@@ -282,7 +282,7 @@ impl SourceCursor {
                 .map_err(|_| DemandError::InvalidRequest)?);
             accounting.record_completed(version_work).map_err(Self::cursor_accounting_error)?;
             accounting.charge(item).map_err(Self::cursor_accounting_error)?;
-            let token = decoder.u64().map_err(|_| DemandError::InvalidRequest)?;
+            let token = decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map_err(|_| DemandError::InvalidRequest)?;
             cancellation.check().map_err(|_| DemandError::Cancelled)?;
             accounting.record_completed(WorkCounters::UNCHARGED).map_err(Self::cursor_accounting_error)?;
             Ok(Self {
@@ -360,11 +360,11 @@ mod source_cursor_codec_tests {
             let mut accounting = KernelAccounting::borrowed_standalone(
                 &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
             );
-            let mut encoder = Encoder::with_exact_capacity(DOMAIN, 1, DOMAIN.len() + 2 + cursor.cursor_encoded_len()?)?;
+            let mut encoder = Encoder::with_exact_capacity(DOMAIN, 1, DOMAIN.len() + 2 + cursor.cursor_encoded_len()?, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
             cursor.encode_cursor_into(&mut encoder, &mut accounting, &cancellation)?;
             let bytes = encoder.finish();
             for epoch in [cursor.source.epoch, cursor.source.epoch + 1] {
-                let mut decoder = Decoder::new(&bytes, DOMAIN, 1, u64::MAX)?;
+                let mut decoder = Decoder::new(&bytes, DOMAIN, 1, u64::MAX, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                 let result = SourceCursor::decode_cursor(
                     &mut decoder, SourceReference { epoch, ..cursor.source }, &cursor.directory,
                     crate::FilesystemProfile::Windows, limits, &mut accounting, &cancellation,
@@ -2869,9 +2869,7 @@ impl Drop for DemandWork {
 pub(crate) fn lowercase_unicode_with_work(text: &str, work: &mut DemandWork) -> Result<Vec<u8>, DemandError> {
     work.reconcile_cancellation_registry()?;
     work.check()?;
-    let bytes = crate::kernel::types::lowercase_unicode_with_ledger(
-        text, &mut work.allocations, &mut work.work, work.budget, &work.cancellation,
-    )?;
+    let bytes = crate::kernel::types::lowercase_unicode(text, &mut work.allocations, &mut work.work, work.budget, Some(&work.cancellation))?;
     if let Err(error) = work.check() {
         let retained = bytes.capacity() as u64;
         drop(bytes);
@@ -4623,13 +4621,13 @@ pub mod native {
             };
             let worker = shared.clone();
             let task_meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = shared.clone();
-            let task = acyclic_native_runtime::run_blocking_io_measured(
+            let task = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(crate::obs::caller_context(), move || {
                     let mut work = NativeSourceWork::ordinary(&worker);
                     let input = SourceRootInput::from_admitted(path, &mut work)?;
                     Self::open_blocking(input, profile, limits, reference, observer, &mut work)
                 }),
-                task_meter,
+                Some((task_meter, false)),
             );
             let (result, _) = await_source_job(task, &mut prepared, || {}).await;
             prepared.retire_waker();
@@ -4666,11 +4664,11 @@ pub mod native {
                 .map_err(cancellation_error)?;
             let worker = original.clone();
             let task_meter = work.materialization_work()?.runtime_meter_owner();
-            let spawned = acyclic_native_runtime::run_blocking_io_measured(
+            let spawned = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(crate::obs::caller_context(), move || {
                     let mut work = NativeSourceWork::from_original_work(&worker);
                     Self::open_blocking(input, profile, limits, reference, observer, &mut work)
-                }), task_meter,
+                }), Some((task_meter, false)),
             );
             let (result, selected_cancellation) = await_source_job(spawned, &mut cancelled, || {}).await;
             cancelled.retire_waker();
@@ -4716,7 +4714,7 @@ pub mod native {
             work.check()?;
             let input = input.normalize(work)?;
             #[cfg(unix)]
-            let root = HostRoot::open_with_work(&input.path, work)?;
+            let root = HostRoot::open(&input.path, work)?;
             #[cfg(windows)]
             let root = HostRoot::open_root_wide_measured(&input.path, work)?;
             let inline = root.is_local_with_work(work)?;
@@ -4898,13 +4896,13 @@ pub mod native {
             let task_meter = work.materialization_work()?.runtime_meter_owner();
             let source = self.clone();
             let context = crate::obs::caller_context();
-            let spawned = acyclic_native_runtime::run_blocking_io_measured(
+            let spawned = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(context, move || {
                     let _permit = permit;
                     let mut worker = NativeSourceWork::from_original_work(&worker_work);
                     worker.operation_stop = Some(&stop.stopped);
                     job(source, &path.0, &mut worker)
-                }), task_meter,
+                }), Some((task_meter, false)),
             );
             let (result, selected_cancellation) = await_source_job(spawned, &mut cancelled, || {
                 stop_on_drop.0.stopped.store(true, Ordering::Release);
@@ -4974,12 +4972,12 @@ pub mod native {
             let task_meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = shared.clone();
             let source = self.clone();
             let context = crate::obs::caller_context();
-            let spawned = acyclic_native_runtime::run_blocking_io_measured(
+            let spawned = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(context, move || {
                     let _permit = permit;
                     let mut held = NativeSourceWork::ordinary(&worker_work);
                     job(source, &path, &mut held)
-                }), task_meter,
+                }), Some((task_meter, false)),
             );
             let (result, _) = await_source_job(spawned, &mut prepared, || cancel_on_drop.0.cancel()).await;
             prepared.retire_waker();
@@ -5168,7 +5166,7 @@ pub mod native {
 
         fn stat_relative<W: SourceDemandReadWork>(&self, relative: &DemandPath, work: &mut W) -> Result<HostStat, DemandError> {
             #[cfg(unix)]
-            { self.inner.root.stat_with_work(relative, work) }
+            { self.inner.root.stat(relative, work) }
             #[cfg(windows)]
             { self.inner.root.stat_wide_with_work(relative, work) }
         }
@@ -5333,7 +5331,7 @@ pub mod native {
             let ownership = SourcePayloadOwnership::new(work)?;
             let relative = self.relative(&state.directory, work)?;
             #[cfg(unix)]
-            let result = self.inner.root.read_dir_stats_with_work(&relative, work);
+            let result = self.inner.root.read_dir_stats(&relative, work);
             #[cfg(windows)]
             let result = self.inner.root.read_dir_stats_wide_with_work(&relative, work);
             match result {
@@ -5387,7 +5385,7 @@ pub mod native {
                 Some(stat) => Self::node(stat, work)?,
                 None => {
                     #[cfg(unix)]
-                    let result = self.inner.root.open_dir_held_with_work(directory, work)
+                    let result = self.inner.root.open_dir_held(directory, work)
                         .and_then(|parent| crate::native_host::stat_leaf_with_work(&parent, file_name, work));
                     #[cfg(windows)]
                     let result = self.inner.root.open_dir_held_wide_with_work(directory, work)
@@ -5609,7 +5607,7 @@ pub mod native {
                 #[cfg(windows)]
                 let target_ownership = SourcePayloadOwnership::new(work)?;
                 #[cfg(unix)]
-                let (target, target_bytes) = self.inner.root.read_link_with_work(&relative, maximum, work)?;
+                let (target, target_bytes) = self.inner.root.read_link(&relative, maximum, work)?;
                 #[cfg(windows)]
                 let (target, target_bytes) = self.inner.root.read_link_wide_with_work(&relative, maximum, work)?;
                 #[cfg(unix)]
@@ -5775,7 +5773,7 @@ pub mod native {
             let file = provider
                 .inner
                 .root
-                .open_file_with_work(&relative, work)
+                .open_file(&relative, work)
                 .map(cap_std::fs::File::into_std);
             let file = match file {
                 Ok(file) => file,
@@ -5941,7 +5939,7 @@ pub mod native {
                         )
                     }).map_err(native_demand_error);
                     #[cfg(windows)]
-                    let read = file.read_at_with_work(offset + filled as u64, unfilled, work);
+                    let read = file.read_at(offset + filled as u64, unfilled, work);
                     match read {
                         Ok(0) => break,
                         Ok(count) => filled += count,
@@ -6119,7 +6117,7 @@ pub mod native {
             };
             let worker_work = Arc::clone(&shared);
             let task_meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = shared.clone();
-            let task = acyclic_native_runtime::run_blocking_io_measured(
+            let task = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(crate::obs::caller_context(), move || {
                     let mut work = NativeSourceWork::ordinary(&worker_work);
                     let path_bytes = path_owned_bytes(&file.relative);
@@ -6128,11 +6126,11 @@ pub mod native {
                     let released = work.release(path_bytes);
                     released.and(result)
                 }),
-                task_meter,
+                Some((task_meter, false)),
             );
             let mut expired = false;
             let result = match task {
-                Ok(task) => task.wait_measured(std::time::Instant::now().checked_add(deadline), &mut prepared, || {
+                Ok(task) => task.wait(std::time::Instant::now().checked_add(deadline), &mut prepared, || {
                     expired = true;
                     stop.store(true, Ordering::Release);
                 }).map_err(native_demand_error).and_then(std::convert::identity),
@@ -6732,7 +6730,7 @@ pub mod native {
                         }
                         NativeChangedItem::Path { relative, altered } => {
                             let (name, exact, guard) = inner.name_with_work(relative, work)?;
-                            let metadata = inner.root.stat_with_work(relative, work);
+                            let metadata = inner.root.stat(relative, work);
                             Self::append_path_change(&mut reported, name, exact, guard, &mut native_names, &ownership, altered, metadata, work)?;
                         }
                         #[cfg(windows)]

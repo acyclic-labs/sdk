@@ -57,6 +57,9 @@ pub struct RecursiveToolOwner<P, A, O> {
     pub workflow: Arc<dyn WorkflowJournal>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+const NATIVE_SOURCE_REQUIRED: Error = Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "recursive source has no original native producer" };
+
 /// Real provider configuration for one exact caller and retained source cut.
 pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform {
     /// Binds the actual caller/effect to its owner-controlled workflow journal.
@@ -89,8 +92,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         _tool: &'a ResumableTool, _invocation: &'a ToolInvocation,
         _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RecursiveToolOwner<P, A, O>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "recursive source has no original native owner producer" })
+        Err(NATIVE_SOURCE_REQUIRED)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -98,8 +100,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         _arguments: &'a ForkToolArguments, _cancellation: &'a CancellationToken,
         _work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RecursiveForkSourceIntent, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "recursive source has no original native selection producer" })
+        Err(NATIVE_SOURCE_REQUIRED)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -108,8 +109,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         _original: Option<&'a RecursiveForkToolPlan>, _cancellation: &'a CancellationToken,
         _work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RecursiveForkToolBinding<P, A, O>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "recursive source has no original native fork producer" })
+        Err(NATIVE_SOURCE_REQUIRED)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -117,8 +117,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         _arguments: &'a MergeToolArguments, _original: Option<&'a RecursiveMergeToolPlan>,
         _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RecursiveMergeToolBinding<P, A, O>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "recursive source has no original native merge producer" })
+        Err(NATIVE_SOURCE_REQUIRED)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -126,8 +125,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         _preparation: &'a crate::resource_preparation::TaskResourcePreparation,
         _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "recursive source has no original native preparation producer" })
+        Err(NATIVE_SOURCE_REQUIRED)
     }
 
     /// Restores only the retained source for passive reconciliation.
@@ -137,8 +135,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         _preparation: &'a crate::resource_preparation::TaskResourcePreparation,
         _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "recursive source has no original native preparation reconciliation producer" })
+        Err(NATIVE_SOURCE_REQUIRED)
     }
 }
 
@@ -429,7 +426,7 @@ impl ResumableMachine for RecursiveToolMachine {
         -> Result<(Value, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
         let state = self.initialize_engine(input, Some(&io))?;
-        let custody = io.take_native_custody(recursive_value_owned_bytes(&state, Some(&io))?)?;
+        let custody = io.take_native_custody(recursive_value_owned_bytes(&state)?)?;
         Ok((state, custody))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -622,7 +619,7 @@ fn recursive_complete_state(value: &Value, io: Option<&super::PreparationIo>) ->
     encode(&Complete { phase: "complete", value }, io)
 }
 fn check_command(command: &WorkflowCommand, stage: &str, plan: &Plan, io: Option<&super::PreparationIo>) -> Result<()> {
-    recursive_observe(io, |work| command.validate_with_work(work))?;
+    recursive_observe(io, |work| command.validate(work))?;
     let effect = match plan {
         Plan::Fork(plan) => recursive_decoded::<ForkRequest, _>(&plan.request.payload, io, |request| Ok(request.operation_id))?,
         Plan::Merge(plan) => plan.operation_id,
@@ -651,7 +648,7 @@ fn validate_source_intent(intent: &RecursiveForkSourceIntent, arguments: &Value,
     Ok(())
 }
 fn check_source_command(command: &WorkflowCommand, intent: &RecursiveForkSourceIntent, io: Option<&super::PreparationIo>) -> Result<()> {
-    recursive_observe(io, |work| command.validate_with_work(work))?;
+    recursive_observe(io, |work| command.validate(work))?;
     if command.kind != FORK_SOURCE_STAGE
         || command.operation_id != derived(intent.request.operation_id, "source-stage", io)?
     {
@@ -924,34 +921,34 @@ impl Serialize for RecursiveConflictKeys<'_> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn recursive_owned_add(left: u64, right: u64, io: Option<&super::PreparationIo>) -> Result<u64> {
-    left.checked_add(right).ok_or_else(|| recursive_reject(
-        io, crate::wire::ErrorCode::Invalid, "recursive payload ownership overflow"))
+fn recursive_owned_add(left: u64, right: u64) -> Result<u64> {
+    left.checked_add(right).ok_or(Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Invalid, reason: "recursive payload ownership overflow" })
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn recursive_value_owned_bytes(value: &Value, io: Option<&super::PreparationIo>) -> Result<u64> {
+pub(super) fn recursive_value_owned_bytes(value: &Value) -> Result<u64> {
     recursive_owned_add(std::mem::size_of::<Value>() as u64,
-        crate::contract::json_value_logical_owned_bytes(value)?, io)
+        crate::contract::json_value_logical_owned_bytes(value)?)
 }
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn recursive_transition_owned_bytes(transition: &MachineTransition, io: &super::PreparationIo) -> Result<u64> {
     let mut bytes = recursive_owned_add(std::mem::size_of::<MachineTransition>() as u64,
-        crate::contract::json_value_logical_owned_bytes(&transition.state)?, Some(io))?;
+        crate::contract::json_value_logical_owned_bytes(&transition.state)?)?;
     let slots = (transition.commands.capacity() as u64)
         .checked_mul(std::mem::size_of::<WorkflowCommand>() as u64)
         .ok_or_else(|| recursive_reject(Some(io), crate::wire::ErrorCode::Invalid, "recursive outbox ownership overflow"))?;
-    bytes = recursive_owned_add(bytes, slots, Some(io))?;
+    bytes = recursive_owned_add(bytes, slots)?;
     for command in &transition.commands {
         recursive_inspect(Some(io), 1)?;
-        bytes = recursive_owned_add(bytes, command.kind.capacity() as u64, Some(io))?;
-        bytes = recursive_owned_add(bytes, command.payload.logical_owned_bytes()?, Some(io))?;
+        bytes = recursive_owned_add(bytes, command.kind.capacity() as u64)?;
+        bytes = recursive_owned_add(bytes, command.payload.logical_owned_bytes()?)?;
     }
     let status = match &transition.status {
         MachineStatus::Suspended => 0,
         MachineStatus::Completed { value } => crate::contract::json_value_logical_owned_bytes(value)?,
         MachineStatus::Failed { message } => message.capacity() as u64,
     };
-    recursive_owned_add(bytes, status, Some(io))
+    recursive_owned_add(bytes, status)
 }
 
 struct RecursiveExecutor<P, A, O> {
@@ -1073,13 +1070,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     State::SourcePinned { arguments, intent, command } => {
                         validate_source_intent(&intent, &arguments, Some(&super::PreparationIo::from_native_work(work)?))?;
                         check_source_command(&command, &intent, Some(&super::PreparationIo::from_native_work(work)?))?;
-                        let retained = retained_payload_with_native_work(
-                            context, &command.payload, self.maximum_request_bytes, work).await?;
-                        if retained.0 != arguments {
+                        let retained_io = super::PreparationIo::from_native_work(work)?;
+                        if retained_payload(context, &command.payload, self.maximum_request_bytes,
+                            cancellation, Some(&retained_io)).await? != arguments {
                             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                                 reason: "source-stage outbox changed original native arguments" });
                         }
-                        drop(retained);
+                        drop(retained_io);
                         let plan = self.plan_with_native_work(context, &owner.0, caller,
                             &arguments, Some(&intent), cancellation, work).await?;
                         let command_io = super::PreparationIo::from_native_work(work)?;
@@ -1099,13 +1096,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         }
                         let expected = command_payload(
                             stage, &plan, report.as_deref(), receipt.as_deref(), Some(&io))?;
-                        let retained = retained_payload_with_native_work(
-                            context, &command.payload, self.maximum_request_bytes, work).await?;
-                        if retained.0 != expected {
+                        let retained_io = super::PreparationIo::from_native_work(work)?;
+                        if retained_payload(context, &command.payload, self.maximum_request_bytes,
+                            cancellation, Some(&retained_io)).await? != expected {
                             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                                 reason: "native outbox payload changed original retained plan" });
                         }
-                        drop(retained);
+                        drop(retained_io);
                         let value = self.dispatch_with_native_work(context, &owner.0, &plan, stage,
                             &command, &expected, report.as_deref(), receipt.as_deref(),
                             cancellation, work).await?;
@@ -1195,9 +1192,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 State::SourcePinned { arguments, intent, command } => {
                     validate_source_intent(&intent, &arguments, None)?;
                     check_source_command(&command, &intent, None)?;
-                    let bytes = read(context.task(), &command.payload, self.maximum_request_bytes, cancellation).await?;
-                    if crate::contract::json_from_slice::<Value>(&bytes)
-                        .map_err(|error| Error::Storage(error.to_string()))? != arguments {
+                    if retained_payload(&context, &command.payload, self.maximum_request_bytes, cancellation, None).await? != arguments {
                         return Err(Error::Unauthorized("source-stage outbox changed original tool arguments".into()));
                     }
                     let plan = self.plan(&context, &owner, caller, &arguments, Some(&intent), cancellation).await?;
@@ -1211,8 +1206,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         return Err(Error::Unauthorized("recursive outbox operation differs from original effect".into()));
                     }
                     let expected_payload = command_payload(stage, &plan, report.as_deref(), receipt.as_deref(), None)?;
-                    let bytes = read(context.task(), &command.payload, self.maximum_request_bytes, cancellation).await?;
-                    if crate::contract::json_from_slice::<Value>(&bytes).map_err(|error| Error::Storage(error.to_string()))? != expected_payload {
+                    if retained_payload(&context, &command.payload, self.maximum_request_bytes, cancellation, None).await? != expected_payload {
                         return Err(Error::Unauthorized("recursive outbox payload changed its original plan".into()));
                     }
                     let Some(value) = self.dispatch(&context, &owner, &plan, stage, command.clone(), expected_payload,
@@ -1935,21 +1929,25 @@ fn command_payload(stage: &str, plan: &Plan, report: Option<&ForkReport>,
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-async fn retained_payload_with_native_work(
+async fn retained_payload(
     context: &ToolContext, file: &FileRef, maximum: u64,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
-    if file.descriptor().byte_length() > maximum.min(context.effective_scope().limits().file_bytes) {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-            reason: "retained recursive payload exceeds its original bound" });
+    cancellation: &CancellationToken, io: Option<&super::PreparationIo>,
+) -> Result<Value> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(io) = io.filter(|io| io.uses_native_work()) {
+        let work = io.original_native_work().expect("native payload reads preserve their original ledger");
+        work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+        if file.descriptor().byte_length() > maximum.min(context.effective_scope().limits().file_bytes) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "retained recursive payload exceeds its original bound" });
+        }
+        let bytes = context.read_file_with_native_work(file, work).await?;
+        return Ok(io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained());
     }
-    let bytes = context.read_file_with_native_work(file, work).await?;
-    let io = super::PreparationIo::from_native_work(work)?;
-    let value = io.decode_preparation::<Value>(&bytes)?.into_native_parts()?;
-    drop(bytes);
-    Ok(value)
+    let _ = io;
+    let bytes = context.task().read_file_measured(file, finite_budget(maximum, maximum), cancellation).await
+        .map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    crate::contract::json_from_slice(&bytes).map_err(|error| Error::Storage(error.to_string()))
 }
 async fn stage(context: &ToolContext, operation: OperationId, label: &str, value: &Value, maximum: u64,
     cancellation: &CancellationToken, io: Option<&super::PreparationIo>) -> Result<FileRef> {
@@ -1975,10 +1973,6 @@ async fn stage(context: &ToolContext, operation: OperationId, label: &str, value
     io.receive_content(context.stage_file_once_measured(operation,
         &format!("recursive-tools/{}/{label}.json", context.operation_id()), &bytes,
         "application/json", &format!("{label}.json"), io.remaining()?, cancellation).await)
-}
-async fn read(context: &TaskContext, file: &FileRef, maximum: u64, cancellation: &CancellationToken) -> Result<acyclic_stream::OwnedBytes> {
-    context.read_file_measured(file, finite_budget(maximum, maximum), cancellation).await
-        .map(|receipt| receipt.value).map_err(|failure| failure.error)
 }
 pub(crate) fn finite_budget(work: u64, bytes: u64) -> WorkBudget {
     WorkBudget {
@@ -2059,7 +2053,7 @@ where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
     }
     let file: FileRef = decode(selected, io)?;
     let command: WorkflowCommand = decode(&binding.child.input, io)?;
-    recursive_observe(io, |work| command.validate_with_work(work))?;
+    recursive_observe(io, |work| command.validate(work))?;
     if command.payload != file || !binding.input_files.contains(&file) {
         return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
             "child msg reference is not its exact admitted immutable command input"));
@@ -2109,7 +2103,7 @@ fn recursive_exact_file_granted(grants: &Capabilities, file: &FileRef, io: Optio
 
 fn recursive_decode_bytes<T: super::PreparationRecord>(bytes: &[u8], io: Option<&super::PreparationIo>) -> Result<T> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(io) = io { return Ok(io.decode_preparation::<T>(bytes)?.into_retained()); }
+    if let Some(io) = io { return Ok(io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?.into_retained()); }
     let _ = io;
     crate::contract::json_from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))
 }
@@ -2207,12 +2201,9 @@ fn check_merge_binding<P: StreamProvider, A, O>(plan: &RecursiveMergeToolPlan,
 fn recursive_effective_scope<'a>(
     context: &'a ToolContext, io: Option<&super::PreparationIo>,
 ) -> &'a RuntimeScope {
-    #[cfg(not(target_arch = "wasm32"))]
-    if io.is_some_and(|io| io.original_native_work().is_some()) {
-        return context.effective_scope();
-    }
-    let _ = io;
-    context.scope()
+    if io.is_some_and(super::PreparationIo::uses_native_work) {
+        context.effective_scope()
+    } else { context.scope() }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A, O> {

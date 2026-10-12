@@ -71,12 +71,7 @@ pub struct TextSelection {
 }
 
 /// Selects exactly the requested interval, rejecting invalid UTF-8 boundaries.
-pub fn read_range(source: &str, range: TextRange, options: ReadOptions) -> Result<TextSelection> {
-    options.validate()?;
-    read_range_engine(source, range, options, &mut AlgorithmWork::ordinary())
-}
-
-pub(super) fn read_range_engine(
+pub(crate) fn read_range(
     source: &str, range: TextRange, options: ReadOptions, work: &mut AlgorithmWork,
 ) -> Result<TextSelection> {
     if options.maximum_input_bytes == 0
@@ -175,12 +170,7 @@ pub struct SearchMatches {
 }
 
 /// Searches every legal candidate under an actual comparison counter.
-pub fn literal_search(source: &str, query: &str, options: SearchOptions) -> Result<SearchMatches> {
-    options.validate()?;
-    literal_search_engine(source, query, options, &mut AlgorithmWork::ordinary())
-}
-
-pub(super) fn literal_search_engine(
+pub(crate) fn literal_search(
     source: &str, query: &str, options: SearchOptions, work: &mut AlgorithmWork,
 ) -> Result<SearchMatches> {
     if options.maximum_input_bytes == 0
@@ -265,7 +255,7 @@ mod tests {
     #[test]
     fn read_records_omissions_and_preserves_exact_utf8_and_crlf() -> Result<()> {
         assert_eq!(
-            read_range("a\r\n🦀\r\nb", TextRange { start: 3, end: 9 }, READ)?,
+            read_range("a\r\n🦀\r\nb", TextRange { start: 3, end: 9 }, READ, &mut AlgorithmWork::ordinary())?,
             TextSelection {
                 range: TextRange { start: 3, end: 9 },
                 text: "🦀\r\n".into(),
@@ -279,10 +269,10 @@ mod tests {
             TextRange { start: 9, end: 8 },
             TextRange { start: 0, end: 11 },
         ] {
-            assert!(read_range("a\r\n🦀\r\nb", range, READ).is_err());
+            assert!(read_range("a\r\n🦀\r\nb", range, READ, &mut AlgorithmWork::ordinary()).is_err());
         }
         assert_eq!(
-            read_range("abc", TextRange { start: 3, end: 3 }, READ)?.text,
+            read_range("abc", TextRange { start: 3, end: 3 }, READ, &mut AlgorithmWork::ordinary())?.text,
             ""
         );
         assert!(
@@ -292,7 +282,8 @@ mod tests {
                 ReadOptions {
                     maximum_text_bytes: 2,
                     ..READ
-                }
+                },
+                &mut AlgorithmWork::ordinary(),
             )
             .is_err()
         );
@@ -302,7 +293,7 @@ mod tests {
     #[test]
     fn overlaps_omissions_and_work_are_explicit() -> Result<()> {
         assert_eq!(
-            literal_search("aaa", "aa", SEARCH)?,
+            literal_search("aaa", "aa", SEARCH, &mut AlgorithmWork::ordinary())?,
             SearchMatches {
                 matches: vec![TextRange { start: 0, end: 2 }],
                 total_matches: 2,
@@ -310,7 +301,7 @@ mod tests {
                 work: 4
             }
         );
-        assert_eq!(literal_search("🦀🦀", "🦀", SEARCH)?.total_matches, 2);
+        assert_eq!(literal_search("🦀🦀", "🦀", SEARCH, &mut AlgorithmWork::ordinary())?.total_matches, 2);
         assert!(
             literal_search(
                 "aaa",
@@ -318,12 +309,13 @@ mod tests {
                 SearchOptions {
                     maximum_work: 3,
                     ..SEARCH
-                }
+                },
+                &mut AlgorithmWork::ordinary(),
             )
             .is_err()
         );
-        assert_eq!(literal_search("a", "long", SEARCH)?.work, 0);
-        assert_eq!(literal_search("ABC", "abc", SEARCH)?.total_matches, 0);
+        assert_eq!(literal_search("a", "long", SEARCH, &mut AlgorithmWork::ordinary())?.work, 0);
+        assert_eq!(literal_search("ABC", "abc", SEARCH, &mut AlgorithmWork::ordinary())?.total_matches, 0);
         for options in [
             SearchOptions {
                 maximum_input_bytes: 0,
@@ -346,9 +338,9 @@ mod tests {
                 ..SEARCH
             },
         ] {
-            assert!(literal_search("a", "a", options).is_err());
+            assert!(literal_search("a", "a", options, &mut AlgorithmWork::ordinary()).is_err());
         }
-        assert!(literal_search("a", "", SEARCH).is_err());
+        assert!(literal_search("a", "", SEARCH, &mut AlgorithmWork::ordinary()).is_err());
         Ok(())
     }
 
@@ -372,7 +364,7 @@ mod tests {
                                 })
                         })
                         .collect();
-                    let actual = literal_search(&source, query, SEARCH)?;
+                    let actual = literal_search(&source, query, SEARCH, &mut AlgorithmWork::ordinary())?;
                     assert_eq!(actual.total_matches, expected.len() as u64);
                     assert_eq!(
                         actual.matches,
