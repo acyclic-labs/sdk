@@ -11,11 +11,12 @@ fn inputs(command: &WorkflowCommand) -> Vec<Value> {
     );
     let alternative = FileRef::new(
         command.payload.volume().clone(),
-        "different-result.json",
-        "different",
-        acyclic_harness::conversation::FileDescriptor::from_bytes(b"[]", "application/json")
+        "different-result.json".into(),
+        "different".into(),
+        acyclic_harness::conversation::FileDescriptor::from_bytes(b"[]", "application/json", &mut None)
             .unwrap(),
-        "different-result.json",
+        "different-result.json".into(),
+        &mut None,
     )
     .unwrap();
     vec![

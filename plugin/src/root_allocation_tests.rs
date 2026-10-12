@@ -26,9 +26,10 @@ fn preparing_state(path: PathBuf) -> AdapterState {
                 key.clone(),
                 VolumeRef::new(
                     provider.clone(),
-                    "project",
+                    "project".into(),
                     VolumeClass::Project,
                     VolumeOwner::Project("project".to_owned()),
+                    &mut None,
                 )
                 .unwrap(),
             )]),
@@ -36,9 +37,10 @@ fn preparing_state(path: PathBuf) -> AdapterState {
             scratch: PiScratchBinding {
                 volume: VolumeRef::new(
                     provider,
-                    "scratch",
+                    "scratch".into(),
                     VolumeClass::AgentPrivate,
                     VolumeOwner::Agent(agent),
+                    &mut None,
                 )
                 .unwrap(),
                 allocation: PiScratchAllocation::Preparing,

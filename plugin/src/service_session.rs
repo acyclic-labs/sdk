@@ -514,9 +514,12 @@ impl PiSession {
             ).await.map_err(|(source, custody)| RootError::NativeLineage { source, custody })?.into_parts();
             drop(lineage.0);
             drop(lineage.1);
-            let mut workspace_name = binding.project_volumes.get(key)
+            let mut io = acyclic_harness::store::history::native_work_io(original_native_work)
+                .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
+            let workspace_name = binding.project_volumes.get(key)
                 .ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root lost its project volume" })?
-                .storage_name_with_native_work(original_native_work)?;
+                .storage_name(&mut Some(&mut io))?;
+            let mut workspace_name = (workspace_name, io.into_custody());
             context_roots.push(WorkspaceContextRoot {
                 root_id: WorkspaceRootId::from_bytes(root.root_id), source_path: root.path.clone(),
                 workspace_id: handle.workspace.workspace().id(),
@@ -795,7 +798,36 @@ impl PiSession {
             )?;
             self.runtime.verify_owner_with_native_work(&owner, &query_work)?;
             let caller = request.arguments.get("caller")
-                .map(|value| acyclic_harness::core::Scope::from_value_with_native_work(value, &query_work))
+                .map(|value| {
+                    let native = |cause| RootError::NativeWork { cause, custody: None };
+                    let remaining = query_work.remaining().map_err(native)?;
+                    let mut custody = query_work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native)?;
+                    let decoded = acyclic_harness::json_from_value_bounded::<acyclic_harness::core::Scope, _>(
+                        std::borrow::Cow::Borrowed(value), acyclic_harness::JsonBounds {
+                            maximum_bytes: crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+                            maximum_items: remaining.items_examined, maximum_depth: 64,
+                        }, std::mem::size_of::<acyclic_harness::core::Scope>() as u64,
+                        acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
+                        &mut |charge| {
+                            if let acyclic_harness::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } = charge {
+                                let owned = acyclic_harness::json_value_decode_owned_bytes(value_shape)?;
+                                let diagnostic = acyclic_harness::json_typed_diagnostic_owned_bytes(value_shape,
+                                    pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES,
+                                    Some(acyclic_harness::wire::ErrorCode::Invalid))?;
+                                let quota = maximum_owned_bytes.checked_add(owned).and_then(|bytes| bytes.checked_add(diagnostic))
+                                    .ok_or_else(|| native(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow)))?;
+                                custody.resize_retained(quota).map_err(native)
+                            } else { pi_root_provider::native_buffer_codec_charge(&query_work, &mut custody, charge) }
+                        });
+                    match decoded {
+                        Ok(scope) => Ok((scope, custody)),
+                        Err(RootError::NativeDecode { code, source, custody: None }) =>
+                            Err(RootError::NativeDecode { code, source, custody: Some(custody) }),
+                        Err(RootError::NativeWork { cause, custody: None }) =>
+                            Err(RootError::NativeWork { cause, custody: Some(custody) }),
+                        Err(error) => Err(error),
+                    }
+                })
                 .transpose()?;
             let caller_task = if let Some((scope, _custody)) = &caller {
                 let binding = pi_caller::verify(

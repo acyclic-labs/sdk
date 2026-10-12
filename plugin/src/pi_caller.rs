@@ -55,9 +55,12 @@ pub(crate) fn issue(
         }
     };
     let capabilities = Capabilities::new_with_native_work([CALLER_CAPABILITY], work)?;
-    let scope = authority.0.issuer.root_for_agent_with_native_work(
-        binding.agent_id, identity_text, &capabilities.0, work,
-    )?;
+    let scope = {
+        let mut io = acyclic_harness::store::history::native_work_io(work)
+            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let scope = authority.0.issuer.issue(identity_text, &capabilities.0, Some(binding.agent_id), None, &mut Some(&mut io))?;
+        (scope, io.into_custody())
+    };
     drop(identity.0);
     drop(identity.1);
     drop(capabilities.0);
@@ -110,7 +113,7 @@ pub(crate) fn verify<'a>(
         code: acyclic_harness::wire::ErrorCode::Invalid, reason,
     };
     let authority = owner.authority_with_native_work(work)?;
-    let verified = authority.0.verifier.verify_with_native_work(scope, work);
+    let verified = authority.0.verifier.verify(scope, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?));
     drop(authority.0);
     drop(authority.1);
     verified?;

@@ -75,23 +75,54 @@ pub(crate) async fn register(
     let native_error = |cause| acyclic_harness::Error::NativeWork { cause, custody: None };
     let root_label = work.display(&format_args!("{:032x}", u128::from_be_bytes(root_id))).map_err(native_error)?;
     let owner_label = work.display(&root_label.0).map_err(native_error)?;
-    let journal_metadata = VolumeRef::new_with_native_work(
-        &provider, "journal", VolumeClass::AgentPrivate, &VolumeOwner::Agent(agent), work,
-    )?;
+    let journal_metadata = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(native_error)?;
+        let copied_provider = ProviderRef::new(
+            acyclic_harness::store::history::HistoryIo::clone_text(&mut io, provider.namespace())?,
+            acyclic_harness::store::history::HistoryIo::clone_text(&mut io, provider.family())?,
+            acyclic_harness::store::history::HistoryIo::clone_text(&mut io, provider.version())?, &mut Some(&mut io))?;
+        let id = acyclic_harness::store::history::HistoryIo::clone_text(&mut io, "journal")?;
+        let owner = VolumeOwner::Agent(agent);
+        let volume = VolumeRef::new(copied_provider, id, VolumeClass::AgentPrivate, owner, &mut Some(&mut io))?;
+        (volume, io.into_custody())
+    };
     let journal = &journal_metadata.0;
-    let scratch_metadata = VolumeRef::new_with_native_work(
-        &provider, "scratch", VolumeClass::AgentPrivate, &VolumeOwner::Agent(agent), work,
-    )?;
+    let scratch_metadata = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(native_error)?;
+        let copied_provider = ProviderRef::new(
+            acyclic_harness::store::history::HistoryIo::clone_text(&mut io, provider.namespace())?,
+            acyclic_harness::store::history::HistoryIo::clone_text(&mut io, provider.family())?,
+            acyclic_harness::store::history::HistoryIo::clone_text(&mut io, provider.version())?, &mut Some(&mut io))?;
+        let id = acyclic_harness::store::history::HistoryIo::clone_text(&mut io, "scratch")?;
+        let owner = VolumeOwner::Agent(agent);
+        let volume = VolumeRef::new(copied_provider, id, VolumeClass::AgentPrivate, owner, &mut Some(&mut io))?;
+        (volume, io.into_custody())
+    };
     let scratch = &scratch_metadata.0;
-    let project_owner = VolumeOwner::Project(owner_label.0);
-    let project_metadata = VolumeRef::new_with_native_work(
-        &provider, "project", VolumeClass::Project, &project_owner, work,
-    )?;
+    let project_metadata = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(native_error)?;
+        let copied_provider = ProviderRef::new(
+            acyclic_harness::store::history::HistoryIo::clone_text(&mut io, provider.namespace())?,
+            acyclic_harness::store::history::HistoryIo::clone_text(&mut io, provider.family())?,
+            acyclic_harness::store::history::HistoryIo::clone_text(&mut io, provider.version())?, &mut Some(&mut io))?;
+        let id = acyclic_harness::store::history::HistoryIo::clone_text(&mut io, "project")?;
+        let owner = VolumeOwner::Project(acyclic_harness::store::history::HistoryIo::clone_text(&mut io, &owner_label.0)?);
+        let volume = VolumeRef::new(copied_provider, id, VolumeClass::Project, owner, &mut Some(&mut io))?;
+        (volume, io.into_custody())
+    };
     let project = &project_metadata.0;
     let binding_session = work.display(session).map_err(native_error)?;
     let project_key = work.display(&root_label.0).map_err(native_error)?;
-    let project_copy = project.clone_with_native_work(work)?;
-    let scratch_copy = scratch.clone_with_native_work(work)?;
+    let project_copy = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = project.copy(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
+    let scratch_copy = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = scratch.copy(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let path_key = work.display(&root_label.0).map_err(native_error)?;
     let root_path = work.display(path_text).map_err(native_error)?;
     let binding = PiTaskBinding {
@@ -150,7 +181,11 @@ pub(crate) async fn register(
     let capabilities = Capabilities::new_with_native_work(
         GRANTS.iter().copied().chain(grants.iter().map(|grant| grant.0.as_str())), work,
     )?;
-    let policy_journal = journal.clone_with_native_work(work)?;
+    let policy_journal = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = journal.copy(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let policy = (
         PiOwnerPolicy {
             root_task: task, agent, journal: policy_journal.0, grants: capabilities.0,

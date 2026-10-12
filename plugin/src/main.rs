@@ -79,7 +79,7 @@ use acyclic_fs::{
     TransactionCommit, WatchBatch, WatchChange, WorkBudget, Workspace,
     WorkspaceContextId, WorkspaceContextRoot, WorkspaceContextState, WorkspaceDelete,
     WorkspaceError, WorkspaceMultiRootPublisherError, WorkspaceOperationFinish, WorkspacePathApply,
-    WorkspaceRestore, WorkspaceRootId, apply_git_patch_with_permit, blame_git_generations,
+    WorkspaceRestore, WorkspaceRootId, apply_git_patch, blame_git_generations,
     capture_baseline, capture_git_compatible_generation,
     capture_git_compatible_generation_at, capture_git_compatible_generation_incremental,
     capture_watch_batch, git_compatible_diff_counts, grep_git_generation,

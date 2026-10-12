@@ -67,7 +67,7 @@ impl PiRootPreparation {
         let super::pi_task::PiTaskExecution::Host { root, preparation } = &admitted.0.execution else {
             return Err(invalid("Pi root preparation requires its original host admission"));
         };
-        preparation.validate()?;
+        preparation.validate(&mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?;
         if preparation.kind != EFFECT_TASK_COMMAND_KIND
             || preparation.operation_id != preparation_operation(owner.policy().root_task, work)? {
             return Err(invalid("Pi root preparation command identity differs"));

@@ -180,7 +180,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work<P: StreamProv
     let project = request.binding.project_volumes.get(root_key).ok_or(Error::NativeBoundary {
         code: ErrorCode::Unauthorized, reason: "root source is not selected by its original admission",
     })?;
-    current_owner.require_volume_grant_with_native_work(project, VolumeOperation::Read, work)?;
+    current_owner.require_volume_grant(project, VolumeOperation::Read, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
     context.verify_original_volume_read_with_native_work(current_owner, project, work).await?;
     if current_owner.task_id() != request.binding.task_id
         || preparation.command.operation_id != super::pi_root_inputs::preparation_operation(request.binding.task_id, work)?
@@ -386,8 +386,7 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
         || binding.task_id != owner.policy().root_task {
         return Err(invalid());
     }
-    current_owner.require_volume_grant_with_native_work(&binding.scratch.volume,
-        VolumeOperation::Write, work)?;
+    current_owner.require_volume_grant(&binding.scratch.volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
     current_owner.verify_with_native_work(false, work).await?;
     let preparation = load_original_preparation_with_native_work(&owner, &filesystem, binding, root,
         Arc::clone(&context), work).await?;
@@ -433,7 +432,7 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
     context: Arc<acyclic_harness::runtime::NativeTaskContext>, current_owner: &TaskJournalOwner<P>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    current_owner.require_volume_grant_with_native_work(project, VolumeOperation::Read, work)?;
+    current_owner.require_volume_grant(project, VolumeOperation::Read, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
     context.context().verify_original_volume_read_with_native_work(current_owner, project, work).await?;
     let preparation = load_original_preparation_with_native_work(&owner, &filesystem, binding, intent,
         Arc::clone(&context), work).await?;
@@ -495,16 +494,18 @@ fn pi_input_write_grant_with_native_work(
 ) -> Result<(ContentGrant, NativeAllocation)> {
     let authority = owner.authority_with_native_work(work)?;
     let authority = (authority.0, authority.1);
-    let grant = ContentGrant::verify_with_native_work(
-        &authority.0.verifier, &authority.0.signed, &owner.policy().journal,
-        VolumeOperation::Write, work)?;
+    let grant = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let grant = ContentGrant::verify(&authority.0.verifier, &authority.0.signed, &owner.policy().journal, VolumeOperation::Write, u64::MAX, &mut Some(&mut io))?;
+        (grant, io.into_custody())
+    };
     Ok((grant.0, grant.1))
 }
 
 fn validate_pi_input_media(
     owner: &PiOwnerConfig, file: &FileRef, path: &str, display_name: &str, media_type: &str,
 ) -> Result<()> {
-    owner.policy().limits.validate_file(file)?;
+    owner.policy().limits.validate_file(file, &mut None)?;
     if file.volume() != &owner.policy().journal || file.path() != path || file.display_name() != display_name
         || file.descriptor().media_type() != media_type
         || file.descriptor().byte_length() > owner.policy().maximum_payload_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES) {
@@ -1070,7 +1071,11 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             let mut kind = work.display(ROOT_ALLOCATION_EFFECT).map_err(native)?;
             let mut root = work.display(key).map_err(native)?;
             let mut native_path = work.display(path).map_err(native)?;
-            let mut volume = self.preparation.request.binding.project_volumes[key].clone_with_native_work(work)?;
+            let mut volume = {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                let value = self.preparation.request.binding.project_volumes[key].copy(&mut Some(&mut io))?;
+                (value, io.into_custody())
+            };
             volume.1.absorb(&mut provider.1).map_err(native)?;
             volume.1.absorb(&mut kind.1).map_err(native)?;
             volume.1.absorb(&mut root.1).map_err(native)?;
@@ -1179,7 +1184,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         }
         owner.verify_with_native_work(false, work).await?;
         let volume = &self.preparation.request.binding.scratch.volume;
-        owner.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)?;
+        owner.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         if self.creation_with_native_work(effect, attempt, "scratch", volume,
             VolumeConfig::portable(Lifecycle::Durable), work).await?.is_none() {
             owner.verify_with_native_work(false, work).await?;
@@ -1446,8 +1451,11 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         self.check_native_ledger(work)?;
         let effect = self.effect_id_with_native_work(work)?;
         let verifier = self.owner.effect_verifier_with_native_work(work)?;
-        let reader = HistoryReader::new_with_native_work(
-            &self.stream, verifier.0.audience(), &verifier.0, work)?;
+        let reader = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = HistoryReader::new(&self.stream, verifier.0.audience(), &verifier.0, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let cursor = reader.0.pin_with_native_work(0, work).await?;
         let (value, custody) = reader.0.effect_with_native_work(&cursor.0, effect,
             HistoryReadLimits { maximum_events: self.owner.policy().limits.context_messages,

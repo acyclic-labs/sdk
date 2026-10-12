@@ -179,20 +179,20 @@ fn fork_initialization_retains_raw_child_message_and_independent_source_choice()
 struct RejectUnexpectedSource(AtomicUsize);
 impl RecursiveDefaultToolSource<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend> for RejectUnexpectedSource {
     fn owner<'a>(&'a self, _: &'a ToolContext, _: &'a ResumableTool, _: &'a ToolInvocation,
-        _: &'a CancellationToken, io: Option<&'a super::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveToolOwner<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>>> {
+        _: &'a CancellationToken, io: Option<&'a crate::filesystem::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveToolOwner<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>>> {
         self.0.fetch_add(1, Ordering::SeqCst); crate::conversation::BoundedContentFuture::new(io, || async { Err(Error::Unauthorized("unexpected source access".into())) })
     }
     fn select<'a>(&'a self, _: &'a ToolContext, _: &'a ForkToolArguments,
-        _: &'a CancellationToken, io: Option<&'a super::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveForkSourceIntent>> {
+        _: &'a CancellationToken, io: Option<&'a crate::filesystem::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveForkSourceIntent>> {
         self.0.fetch_add(1, Ordering::SeqCst); crate::conversation::BoundedContentFuture::new(io, || async { Err(Error::Unauthorized("unexpected source access".into())) })
     }
     fn fork<'a>(&'a self, _: &'a ToolContext, _: &'a ForkToolArguments, _: &'a RecursiveForkSourceIntent,
-        _: Option<&'a RecursiveForkToolPlan>, _: &'a CancellationToken, io: Option<&'a super::PreparationIo>)
+        _: Option<&'a RecursiveForkToolPlan>, _: &'a CancellationToken, io: Option<&'a crate::filesystem::PreparationIo>)
         -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveForkToolBinding<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>>> {
         self.0.fetch_add(1, Ordering::SeqCst); crate::conversation::BoundedContentFuture::new(io, || async { Err(Error::Unauthorized("unexpected source access".into())) })
     }
     fn merge<'a>(&'a self, _: &'a ToolContext, _: &'a MergeToolArguments, _: Option<&'a RecursiveMergeToolPlan>,
-        _: &'a CancellationToken, io: Option<&'a super::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveMergeToolBinding<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>>> {
+        _: &'a CancellationToken, io: Option<&'a crate::filesystem::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveMergeToolBinding<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>>> {
         self.0.fetch_add(1, Ordering::SeqCst); crate::conversation::BoundedContentFuture::new(io, || async { Err(Error::Unauthorized("unexpected source access".into())) })
     }
     fn preparation<'a>(&'a self, _: &'a TaskContext, _: &'a crate::resource_preparation::TaskResourcePreparation,

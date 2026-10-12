@@ -15,26 +15,19 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
         let bytes = bytes::Bytes::from(bytes);
-        let receipt = self
-            .engine
-            .change_content(
+        let receipt = browser_call!(
+            self,
+            change_content(
                 path,
                 acyclic_fs::ContentChange::Write {
                     offset: offset,
                     bytes: (bytes).into(),
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
             )
-            .await
-            .map_err(js_error)?;
-        ts(BrowserMutationResult {
-            file_id: None,
-            work: browser_work(receipt.work),
-        })
+        )?;
+        mutation_value(receipt.work)
     }
 
     /// Replaces one logical range by stable file identity.
@@ -46,22 +39,18 @@ impl BrowserCheckout {
         bytes: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let cancellation = CancellationToken::default();
         let bytes = bytes::Bytes::from(bytes);
-        let receipt = self
-            .engine
-            .change_content(
+        let receipt = browser_call!(
+            self,
+            change_content(
                 file_id,
                 acyclic_fs::ContentChange::Write {
                     offset: offset,
                     bytes: (bytes).into(),
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
             )
-            .await
-            .map_err(js_error)?;
+        )?;
         mutation_value(receipt.work)
     }
 
@@ -77,20 +66,16 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .change_content(
+        let receipt = browser_call!(
+            self,
+            change_content(
                 path,
                 acyclic_fs::ContentChange::Resize {
                     logical_bytes: logical_bytes,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
             )
-            .await
-            .map_err(js_error)?;
+        )?;
         mutation_value(receipt.work)
     }
 
@@ -102,20 +87,16 @@ impl BrowserCheckout {
         logical_bytes: u64,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .change_content(
+        let receipt = browser_call!(
+            self,
+            change_content(
                 file_id,
                 acyclic_fs::ContentChange::Resize {
                     logical_bytes: logical_bytes,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
             )
-            .await
-            .map_err(js_error)?;
+        )?;
         mutation_value(receipt.work)
     }
 
@@ -134,10 +115,9 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .change_content(
+        let receipt = browser_call!(
+            self,
+            change_content(
                 path,
                 acyclic_fs::ContentChange::ZeroRange {
                     range: ByteRange { offset, length },
@@ -145,11 +125,8 @@ impl BrowserCheckout {
                     extend: extend,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
             )
-            .await
-            .map_err(js_error)?;
+        )?;
         mutation_value(receipt.work)
     }
 
@@ -164,10 +141,9 @@ impl BrowserCheckout {
         extend: bool,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .change_content(
+        let receipt = browser_call!(
+            self,
+            change_content(
                 file_id,
                 acyclic_fs::ContentChange::ZeroRange {
                     range: ByteRange { offset, length },
@@ -175,11 +151,8 @@ impl BrowserCheckout {
                     extend: extend,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
             )
-            .await
-            .map_err(js_error)?;
+        )?;
         mutation_value(receipt.work)
     }
 
@@ -197,21 +170,17 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .change_content(
+        let receipt = browser_call!(
+            self,
+            change_content(
                 path,
                 acyclic_fs::ContentChange::Preallocate {
                     range: ByteRange { offset, length },
                     keep_size: keep_size,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
             )
-            .await
-            .map_err(js_error)?;
+        )?;
         mutation_value(receipt.work)
     }
 
@@ -225,21 +194,17 @@ impl BrowserCheckout {
         keep_size: bool,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .change_content(
+        let receipt = browser_call!(
+            self,
+            change_content(
                 file_id,
                 acyclic_fs::ContentChange::Preallocate {
                     range: ByteRange { offset, length },
                     keep_size: keep_size,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
             )
-            .await
-            .map_err(js_error)?;
+        )?;
         mutation_value(receipt.work)
     }
 
@@ -268,10 +233,9 @@ impl BrowserCheckout {
             destination_offset,
             length,
         };
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .change_content(
+        let receipt = browser_call!(
+            self,
+            change_content(
                 request.destination,
                 acyclic_fs::ContentChange::CloneFrom {
                     source: request.source,
@@ -280,11 +244,8 @@ impl BrowserCheckout {
                     length: request.length,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
             )
-            .await
-            .map_err(js_error)?;
+        )?;
         mutation_value(receipt.work)
     }
 
@@ -300,10 +261,9 @@ impl BrowserCheckout {
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let source_file_id = FileId::from_bytes(fixed_16(&source_file_id)?);
         let destination_file_id = FileId::from_bytes(fixed_16(&destination_file_id)?);
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .change_content(
+        let receipt = browser_call!(
+            self,
+            change_content(
                 destination_file_id,
                 acyclic_fs::ContentChange::CloneFrom {
                     source: source_file_id,
@@ -312,11 +272,8 @@ impl BrowserCheckout {
                     length: length,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
             )
-            .await
-            .map_err(js_error)?;
+        )?;
         mutation_value(receipt.work)
     }
 }

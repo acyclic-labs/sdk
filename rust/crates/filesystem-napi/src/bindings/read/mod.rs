@@ -53,13 +53,7 @@ impl NativeCheckout {
     /// Resolves one canonical absolute path without following links.
     #[napi]
     pub async fn lookup_no_follow(&self, path: String) -> Result<NativeLookup> {
-        let portable = PortablePath::parse(&path, self.config.limits).map_err(napi_error)?;
-        let path = NamespacePath::from_portable_in_profile(
-            &portable,
-            self.config.profile,
-            self.config.limits,
-        )
-        .map_err(napi_error)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .lookup_no_follow(
@@ -248,13 +242,7 @@ impl NativeCheckout {
         offset: BigInt,
         length: BigInt,
     ) -> Result<NativeFileRead> {
-        let portable = PortablePath::parse(&path, self.config.limits).map_err(napi_error)?;
-        let path = NamespacePath::from_portable_in_profile(
-            &portable,
-            self.config.profile,
-            self.config.limits,
-        )
-        .map_err(napi_error)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .read_file_range(
