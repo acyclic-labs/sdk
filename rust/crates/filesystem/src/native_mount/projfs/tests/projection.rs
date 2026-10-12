@@ -395,9 +395,9 @@ fn source_failures_keep_distinct_statuses() {
     let statuses = [
         MountSourceError::NotFound,
         MountSourceError::AlreadyExists,
-        MountSourceError::Invalid(String::new()),
-        MountSourceError::Unsupported(String::new()),
-        MountSourceError::Engine(String::new()),
+        MountSourceError::Invalid("".into()),
+        MountSourceError::Unsupported("".into()),
+        MountSourceError::Engine("".into()),
         MountSourceError::Stale,
     ]
     .iter()

@@ -57,7 +57,7 @@ where
     pub fn begin_original_work(
         &self,
         work: &NativeMaterializationWork,
-    ) -> Result<super::super::OwnedNativeMountOriginalWorkScope, MountLifecycleError> {
+    ) -> Result<super::super::NativeMountWorkScope, MountLifecycleError> {
         let owner = self
             .session
             .lock()
@@ -101,10 +101,8 @@ where
             work.admit(crate::WorkCounters::default())
                 .map_err(MountLifecycleError::from)
                 .map_err(|cause| (E::from(cause), None))?;
-            with_live_session(&self.session, |session| {
-                session.flush_callbacks_with_meter(work)
-            })
-            .map_err(|cause| (E::from(cause), None))?;
+            with_live_session(&self.session, |session| session.flush_callbacks(work))
+                .map_err(|cause| (E::from(cause), None))?;
             self.source
                 .sync_async_with_permit_qualified_native_work_guarded_with_ack(
                     permit,
@@ -125,14 +123,14 @@ where
                     publication: acknowledged,
                 },
             )?;
-        with_live_session(&self.session, |session| session.revalidate_with_meter(work)).map_err(
-            |cause| NativeMountPublicationFailure {
+        with_live_session(&self.session, |session| session.revalidate(work)).map_err(|cause| {
+            NativeMountPublicationFailure {
                 cause: E::from(cause),
                 accounting_failure: None,
                 source_acknowledged: true,
                 publication: Some(publication),
-            },
-        )?;
+            }
+        })?;
         Ok(publication)
     }
 
@@ -170,10 +168,8 @@ where
                         crate::NativeTreeMaterializationError::InvalidLayout,
                     )));
                 }
-                with_live_session(&self.session, |session| {
-                    session.flush_callbacks_with_meter(work)
-                })
-                .map_err(E::from)?;
+                with_live_session(&self.session, |session| session.flush_callbacks(work))
+                    .map_err(E::from)?;
                 let snapshot = self
                     .source
                     .import_selected(
@@ -186,7 +182,7 @@ where
                         before_publication,
                     )
                     .await?;
-                with_live_session(&self.session, |session| session.revalidate_with_meter(work))
+                with_live_session(&self.session, |session| session.revalidate(work))
                     .map_err(E::from)?;
                 Ok(snapshot)
             }
@@ -205,8 +201,8 @@ where
     ) -> Result<Option<crate::LazySnapshotRef>, NativeMountError> {
         work.admit(crate::WorkCounters::default())?;
         with_live_session(&self.session, |session| {
-            session.flush_callbacks_with_meter(work)?;
-            session.revalidate_with_meter(work)
+            session.flush_callbacks(work)?;
+            session.revalidate(work)
         })
         .map_err(|cause| match cause {
             MountLifecycleError::Native(cause) => cause,
@@ -245,8 +241,8 @@ where
     fn settle(&self, work: &NativeMaterializationWork) -> Result<(), MountLifecycleError> {
         work.admit(crate::WorkCounters::default())?;
         with_live_session(&self.session, |session| {
-            session.flush_callbacks_with_meter(work)?;
-            session.revalidate_with_meter(work)
+            session.flush_callbacks(work)?;
+            session.revalidate(work)
         })
     }
 

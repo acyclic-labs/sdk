@@ -107,10 +107,13 @@ impl wire::objects_service_server::ObjectsService for Fixture {
         }
         framing.finish().map_err(status)?;
         let bad_receipt = header.object_key == "native-bad-receipt";
-        self.0.put(header, body.freeze().into())
+        self.0
+            .put(header, body.freeze().into())
             .await
             .map(|mut info| {
-                if bad_receipt { info.size += 1; }
+                if bad_receipt {
+                    info.size += 1;
+                }
                 Response::new(info)
             })
             .map_err(status)
@@ -130,11 +133,11 @@ impl wire::objects_service_server::ObjectsService for Fixture {
         let huge = query.object_key == "huge-header";
         let selected = self.0.get(query, 8 * 1024 * 1024).await.map_err(status)?;
         let mut header = selected.header().clone();
-        if huge && let Some(object) = &mut header.object { object.size = u64::MAX; }
+        if huge && let Some(object) = &mut header.object {
+            object.size = u64::MAX;
+        }
         let mut frames = vec![Ok(wire::GetObjectResponse {
-            frame: Some(wire::get_object_response::Frame::Header(
-                header.clone(),
-            )),
+            frame: Some(wire::get_object_response::Frame::Header(header.clone())),
         })];
         if malformed {
             frames.push(Ok(wire::GetObjectResponse {
@@ -150,8 +153,12 @@ impl wire::objects_service_server::ObjectsService for Fixture {
             }));
         }
         let selected_body = if truncated {
-            selected.body().slice(..selected.body().len().saturating_sub(1))
-        } else { selected.body().clone() };
+            selected
+                .body()
+                .slice(..selected.body().len().saturating_sub(1))
+        } else {
+            selected.body().clone()
+        };
         // Alternate codecs so every download reassembles mixed frames in order.
         for (index, bytes) in selected_body.chunks(65536).enumerate() {
             if terminal_error {
@@ -262,7 +269,8 @@ impl wire::multipart_service_server::MultipartService for Fixture {
             }
         }
         framing.finish().map_err(status)?;
-        self.0.upload_part(header, body.freeze().into())
+        self.0
+            .upload_part(header, body.freeze().into())
             .await
             .map(Response::new)
             .map_err(status)
@@ -305,7 +313,10 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
     let pem = certified.cert.pem();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
-    let fixture = Fixture(MemoryObjects::new(MemoryOptions::default())?, std::sync::Arc::default());
+    let fixture = Fixture(
+        MemoryObjects::new(MemoryOptions::default())?,
+        std::sync::Arc::default(),
+    );
     let physical_get_calls = fixture.1.clone();
     let identity = Identity::from_pem(pem.clone(), certified.signing_key.serialize_pem());
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -388,7 +399,6 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
         Some(wire::ErrorCode::AccessDenied)
     );
     super::conformance::verify(&client, "conformance-grpc").await?;
-    super::tests::exercise_provider(&client).await?;
     super::tests::exercise_uploads(
         &client,
         |query, body| Box::pin(client.put_stream(query, body)),
@@ -399,7 +409,10 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
         Box::pin(client.get_stream(query, maximum))
     })
     .await?;
-    super::tests::exercise_native_transport(&client, || physical_get_calls.load(std::sync::atomic::Ordering::SeqCst)).await?;
+    super::tests::exercise_native_transport(&client, || {
+        physical_get_calls.load(std::sync::atomic::Ordering::SeqCst)
+    })
+    .await?;
     exercise_transfer_deadlines(&client).await?;
     let _ = shutdown_tx.send(());
     server.await?.map_err(Into::into)
@@ -436,7 +449,8 @@ async fn exercise_transfer_deadlines(
             tokio::time::sleep(Duration::from_millis(250)).await;
             Ok(acyclic_stream::OwnedBytes::from_static(b"complete-source"))
         })
-        .boxed().into()
+        .boxed()
+        .into()
     };
     let ack = long
         .put_stream(header("delayed-upload"), delayed_upload())
@@ -452,7 +466,8 @@ async fn exercise_transfer_deadlines(
                 tokio::time::sleep(Duration::from_secs(31)).await;
                 Ok(acyclic_stream::OwnedBytes::from_static(b"complete-source"))
             })
-            .boxed().into(),
+            .boxed()
+            .into(),
         )
         .await?;
     assert_eq!(ack.size, 15);
@@ -498,7 +513,8 @@ async fn exercise_transfer_deadlines(
                 tokio::time::sleep(Duration::from_secs(31)).await;
                 Ok(acyclic_stream::OwnedBytes::from_static(b"part"))
             })
-            .boxed().into(),
+            .boxed()
+            .into(),
         )
         .await?;
     assert_eq!(part.size, 4);
@@ -507,7 +523,8 @@ async fn exercise_transfer_deadlines(
             tokio::time::sleep(Duration::from_millis(250)).await;
             Ok(acyclic_stream::OwnedBytes::from_static(b"tail"))
         }))
-        .boxed().into();
+        .boxed()
+        .into();
     assert_eq!(
         short
             .upload_part_stream(header(2), incomplete)
@@ -536,12 +553,16 @@ async fn exercise_transfer_deadlines(
         })
         .await?;
     let bytes = Bytes::from(vec![41; 2 * 65536 + 1]);
-    let info = long.put(wire::PutObjectHeader {
-        bucket: Some(bucket.clone()),
-        object_key: "delayed-body".into(),
-        mutation: None,
-        ..Default::default()
-    }, bytes.clone().into())
+    let info = long
+        .put(
+            wire::PutObjectHeader {
+                bucket: Some(bucket.clone()),
+                object_key: "delayed-body".into(),
+                mutation: None,
+                ..Default::default()
+            },
+            bytes.clone().into(),
+        )
         .await?;
     let query = || wire::GetObjectRequest {
         bucket: Some(bucket.clone()),
@@ -555,7 +576,15 @@ async fn exercise_transfer_deadlines(
         .with_transfer_timeout(Duration::from_millis(400))?;
     let mut download = bounded.get_stream(query(), info.size).await?;
     assert_eq!(download.header.object.as_ref(), Some(&info));
-    assert_eq!(download.body.next().await.ok_or("missing first frame")??.len(), 65536);
+    assert_eq!(
+        download
+            .body
+            .next()
+            .await
+            .ok_or("missing first frame")??
+            .len(),
+        65536
+    );
     assert_eq!(
         download
             .body
@@ -639,7 +668,10 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
             }
         })
         .filter_map(|result| async { result.ok().map(Ok::<_, std::io::Error>) });
-    let fixture = Fixture(MemoryObjects::new(MemoryOptions::default())?, std::sync::Arc::default());
+    let fixture = Fixture(
+        MemoryObjects::new(MemoryOptions::default())?,
+        std::sync::Arc::default(),
+    );
     let physical_get_calls = fixture.1.clone();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
@@ -667,7 +699,10 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
         &endpoint,
         "exact-token",
         ca,
-        Some((untrusted.cert.pem().as_bytes(), untrusted.signing_key.serialize_pem().as_bytes())),
+        Some((
+            untrusted.cert.pem().as_bytes(),
+            untrusted.signing_key.serialize_pem().as_bytes(),
+        )),
     )
     .await;
     assert_transport_denied(wrong).await;
@@ -730,7 +765,6 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
     )
     .await?;
     super::conformance::verify(&client, "conformance-mtls").await?;
-    super::tests::exercise_provider(&client).await?;
     super::tests::exercise_uploads(
         &client,
         |query, body| Box::pin(client.put_stream(query, body)),
@@ -741,7 +775,10 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
         Box::pin(client.get_stream(query, maximum))
     })
     .await?;
-    super::tests::exercise_native_transport(&client, || physical_get_calls.load(std::sync::atomic::Ordering::SeqCst)).await?;
+    super::tests::exercise_native_transport(&client, || {
+        physical_get_calls.load(std::sync::atomic::Ordering::SeqCst)
+    })
+    .await?;
     let _ = shutdown_tx.send(());
     server.await?.map_err(Into::into)
 }

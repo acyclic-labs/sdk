@@ -37,17 +37,18 @@ pub(super) fn staging_directory(
         crate::WorkCounters::UNCHARGED,
     )?;
     let staging = staging_path(root);
-    let parent = crate::native_host::open_root_directory_with_work(
+    let parent = crate::native_host::open_root_directory(
         staging
             .parent()
             .ok_or(NativeMountError::InvalidDestination)?,
         &mut &*work,
-    )?;
+    )
+    .map(|(directory, _)| directory)?;
     let credit = work.allocation_work().reserve_work(crate::WorkCounters {
         backend_write_operations: 3,
         ..crate::WorkCounters::UNCHARGED
     })?;
-    let file = crate::native_host::with_wide_path_with_work(
+    let file = crate::native_host::with_wide_path(
         std::path::Path::new(
             staging
                 .file_name()
@@ -55,7 +56,9 @@ pub(super) fn staging_directory(
         ),
         &mut &*work,
         |name, work| {
-            crate::native_host::create_windows_new_directory_with_work(&parent, name, work)
+            crate::native_host::create_windows_wide_at(
+                &parent, name, true, false, false, false, work,
+            )
         },
     )?;
     drop(parent);

@@ -50,14 +50,13 @@ impl ProjFsRecoveryControl {
     where
         NativeMountError: From<W::Error>,
     {
-        let (directory, identity) =
-            match native_host::open_root_directory_identity_with_work(destination, work) {
-                Ok(opened) => opened,
-                Err(error) if W::io_error_kind(&error) == Some(std::io::ErrorKind::NotFound) => {
-                    return Ok(());
-                }
-                Err(error) => return Err(error.into()),
-            };
+        let (directory, identity) = match native_host::open_root_directory(destination, work) {
+            Ok(opened) => opened,
+            Err(error) if W::io_error_kind(&error) == Some(std::io::ErrorKind::NotFound) => {
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        };
         if self.identity != Some(identity) {
             return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
         }
@@ -91,7 +90,7 @@ pub(in crate::native_mount) fn remove_empty_recovery_destination<W: NativeHostWo
 where
     NativeMountError: From<W::Error>,
 {
-    let opened = match native_host::open_root_directory_identity_with_work(destination, work) {
+    let opened = match native_host::open_root_directory(destination, work) {
         Ok(opened) => opened,
         Err(error) if W::io_error_kind(&error) == Some(std::io::ErrorKind::NotFound) => {
             return Ok(());
@@ -106,22 +105,23 @@ where
             reparse_tag: Some(tag),
         });
     }
-    let parent = native_host::open_root_directory_with_work(
+    let parent = native_host::open_root_directory(
         destination
             .parent()
             .ok_or(NativeMountError::InvalidDestination)?,
         work,
     )
+    .map(|(directory, _)| directory)
     .map_err(NativeMountError::from)?;
     let name = destination
         .file_name()
         .ok_or(NativeMountError::InvalidDestination)?;
-    native_host::with_wide_path_with_work(std::path::Path::new(name), work, |name, work| {
-        native_host::remove_windows_leaf_if_identity_with_work(&parent, name, true, opened.1, work)
+    native_host::with_wide_path(std::path::Path::new(name), work, |name, work| {
+        native_host::remove_windows_leaf(&parent, name, true, Some(opened.1), work)
     })
     .map_err(NativeMountError::from)?;
     drop(opened);
-    match native_host::root_path_identity_with_work(destination, work) {
+    match native_host::root_path_identity(destination, work) {
         Err(error) if W::io_error_kind(&error) == Some(std::io::ErrorKind::NotFound) => Ok(()),
         Err(error) => Err(error.into()),
         Ok(_) => Err(NativeMountError::ControlPending),

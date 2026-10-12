@@ -332,7 +332,9 @@ pub(super) unsafe fn notification(
             result
         } else {
             Err(MountSourceError::Unsupported(
-                "ProjFS emitted an unadmitted write notification".to_owned(),
+                "ProjFS emitted an unadmitted write notification"
+                    .to_owned()
+                    .into(),
             ))
         }
     };
@@ -404,7 +406,7 @@ pub(super) fn handle_rename_source(
 ) -> Result<(), MountSourceError> {
     if source_is_external {
         let destination = destination
-            .ok_or_else(|| MountSourceError::Invalid("rename destination is invalid".to_owned()))?;
+            .ok_or_else(|| MountSourceError::Invalid("rename destination is invalid".into()))?;
         if is_directory {
             lock_recover(post_operation_failures).queue_subtree(
                 &destination,
@@ -420,7 +422,7 @@ pub(super) fn handle_rename_source(
         return Ok(());
     }
     let destination = destination
-        .ok_or_else(|| MountSourceError::Invalid("rename destination is invalid".to_owned()))?;
+        .ok_or_else(|| MountSourceError::Invalid("rename destination is invalid".into()))?;
     if source_fs.lookup_with_meter(source, work)?.is_none() {
         if is_directory {
             lock_recover(post_operation_failures).queue_subtree(

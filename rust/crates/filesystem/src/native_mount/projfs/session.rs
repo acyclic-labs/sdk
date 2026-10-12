@@ -310,9 +310,9 @@ impl ProjFsSession {
     pub(in crate::native_mount) fn begin_original_work(
         &self,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<ProjectionWorkScope, NativeMountError> {
+    ) -> Result<NativeMountWorkScope, NativeMountError> {
         let (runtime, _) = self.live()?;
-        ProjectionWorkScope::enter(Arc::clone(runtime), work)
+        NativeMountWorkScope::enter(Arc::clone(runtime), work)
     }
 
     pub(in crate::native_mount) fn retirement_ownership(&self) -> (bool, bool) {

@@ -226,10 +226,10 @@ where
                     })
                 }
                 JoinOutcome::NoChanges(generation) => Ok(ProjectJoinOutcome::NoChanges(
-                    self.binding.host.generation_ref(generation)?,
+                    self.binding.host.generation_ref_id(generation.id())?,
                 )),
                 JoinOutcome::StaleTarget(generation) => Ok(ProjectJoinOutcome::StaleTarget(
-                    self.binding.host.generation_ref(generation)?,
+                    self.binding.host.generation_ref_id(generation.id())?,
                 )),
                 JoinOutcome::Conflicted {
                     conflicts,

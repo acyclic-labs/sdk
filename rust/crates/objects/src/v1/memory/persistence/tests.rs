@@ -1,3 +1,4 @@
+use super::opening::load_header;
 use super::*;
 use crate::v1::tests::get;
 
@@ -32,19 +33,28 @@ async fn native_journal_control_denial_keeps_original_cause_and_unpoisoned_tail(
     let durable = fs::read(&path)?;
     let before = core.lock_state()?.clone();
     let mut next = before.clone();
-    next.buckets.get_mut("recovery").ok_or("missing bucket")?
-        .objects.get_mut("retained").ok_or("missing object")?
+    next.buckets
+        .get_mut("recovery")
+        .ok_or("missing bucket")?
+        .objects
+        .get_mut("retained")
+        .ok_or("missing object")?
         .body = StoredBody::memory(OwnedBytes::from_static(b"after!"));
     let observed = Arc::new(crate::v1::tests::NativeTransportMeter::new());
     observed.limit.store(0, SeqCst);
     let journal = core.journal.as_ref().ok_or("missing journal")?;
     let failed = journal.commit(&before, &mut next, Some(observed.clone()));
-    assert!(matches!(failed, Err(NativeObjectsError { cause: NativeObjectsCause::Admission(error), .. }) if error.kind() == std::io::ErrorKind::OutOfMemory));
+    assert!(
+        matches!(failed, Err(NativeObjectsError { cause: NativeObjectsCause::Admission(error), .. }) if error.kind() == std::io::ErrorKind::OutOfMemory)
+    );
     assert_eq!(observed.allocations.load(SeqCst), 0);
     assert_eq!(observed.memory.load(SeqCst), 0);
     assert_eq!(fs::read(path)?, durable);
     journal.check()?;
-    assert_eq!(core.get(get(bucket(), "retained"), 6).await?.into_body(), OwnedBytes::from_static(b"before"));
+    assert_eq!(
+        core.get(get(bucket(), "retained"), 6).await?.into_body(),
+        OwnedBytes::from_static(b"before")
+    );
     Ok(())
 }
 
@@ -158,7 +168,10 @@ pub(super) async fn seeded(root: &Path) -> Result<MemoryObjects, Box<dyn std::er
 }
 async fn assert_poisoned(core: &MemoryObjects) {
     assert_eq!(
-        core.get(get(bucket(), "retained"), 6).await.err().map(|e| e.code),
+        core.get(get(bucket(), "retained"), 6)
+            .await
+            .err()
+            .map(|e| e.code),
         Some(Unavailable)
     );
     assert_eq!(
@@ -217,7 +230,10 @@ async fn incomplete_final_frames_repair_without_publishing_a_mutation()
             OwnedBytes::from_static(b"before")
         );
         assert_eq!(
-            core.get(get(bucket(), "interrupted"), 5).await.err().map(|e| e.code),
+            core.get(get(bucket(), "interrupted"), 5)
+                .await
+                .err()
+                .map(|e| e.code),
             Some(NotFound)
         );
         core.put(put("interrupted"), OwnedBytes::from_static(b"after"))
@@ -365,7 +381,10 @@ async fn multipart_recovery_preserves_parts_composite_ranges_and_completion_retr
         }),
         ..get(bucket(), "multipart")
     };
-    assert_eq!(core.get(range, 4).await?.into_body(), OwnedBytes::from_static(b"aaen"));
+    assert_eq!(
+        core.get(range, 4).await?.into_body(),
+        OwnedBytes::from_static(b"aaen")
+    );
     core.delete(wire::DeleteObjectRequest {
         bucket: bucket(),
         object_key: "multipart".into(),
@@ -376,7 +395,10 @@ async fn multipart_recovery_preserves_parts_composite_ranges_and_completion_retr
     let core = reopen(root.path())?;
     assert_eq!(core.complete_multipart(query).await?, receipt);
     assert_eq!(
-        core.get(get(bucket(), "multipart"), 10).await.err().map(|e| e.code),
+        core.get(get(bucket(), "multipart"), 10)
+            .await
+            .err()
+            .map(|e| e.code),
         Some(NotFound)
     );
     Ok(())
@@ -457,7 +479,10 @@ async fn uncertain_batch_item_prevents_later_exact_retries_in_the_same_admission
         OwnedBytes::from_static(b"before")
     );
     assert_eq!(
-        core.get(get(bucket(), "later"), 5).await.err().map(|e| e.code),
+        core.get(get(bucket(), "later"), 5)
+            .await
+            .err()
+            .map(|e| e.code),
         Some(NotFound)
     );
     Ok(())
@@ -476,7 +501,8 @@ async fn checkpoint_interruption_recovers_old_or_new_state_without_losing_receip
         replacement.mutation = Some(wire::MutationIdentity {
             idempotency_key: "replacement".into(),
         });
-        core.put(replacement, OwnedBytes::from_static(b"after")).await?;
+        core.put(replacement, OwnedBytes::from_static(b"after"))
+            .await?;
         core.journal
             .as_ref()
             .ok_or("missing journal")?
@@ -499,10 +525,14 @@ async fn checkpoint_interruption_recovers_old_or_new_state_without_losing_receip
             original
         );
         core.collect_local_garbage(10)?;
-        core.put(put("next"), OwnedBytes::from_static(b"next")).await?;
+        core.put(put("next"), OwnedBytes::from_static(b"next"))
+            .await?;
         drop(core);
         assert_eq!(
-            reopen(root.path())?.get(get(bucket(), "next"), 4).await?.into_body(),
+            reopen(root.path())?
+                .get(get(bucket(), "next"), 4)
+                .await?
+                .into_body(),
             OwnedBytes::from_static(b"next")
         );
     }
@@ -583,7 +613,11 @@ fn view(state: &State) -> Result<View, Error> {
     for (name, bucket) in &state.buckets {
         let mut objects = Vec::new();
         for (key, value) in &bucket.objects {
-            objects.push((key.to_string(), (*value.info).clone(), bodies(&value.body, &mut Publication::new(None)).map_err(service_error)?));
+            objects.push((
+                key.to_string(),
+                (*value.info).clone(),
+                bodies(&value.body, &mut Publication::new(None)).map_err(service_error)?,
+            ));
         }
         buckets.push((name.to_string(), (*bucket.info).clone(), objects));
     }
@@ -620,7 +654,12 @@ fn naive_changes(
         for (key, value) in &bucket.objects {
             let refs = bodies(&value.body, &mut Publication::new(None)).map_err(service_error)?;
             let unchanged = match old.and_then(|old| old.objects.get(key)) {
-                Some(prior) => prior.info == value.info && bodies(&prior.body, &mut Publication::new(None)).map_err(service_error)? == refs,
+                Some(prior) => {
+                    prior.info == value.info
+                        && bodies(&prior.body, &mut Publication::new(None))
+                            .map_err(service_error)?
+                            == refs
+                }
                 None => false,
             };
             if !unchanged {
@@ -758,19 +797,20 @@ proptest::proptest! {
 }
 
 #[tokio::test]
-async fn store_spans_omit_customer_names()
--> Result<(), Box<dyn std::error::Error>> {
+async fn store_spans_omit_customer_names() -> Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::layer::SubscriberExt as _;
     // Two dispatchers prevent concurrent callsite interest from being cached away.
     let _second = tracing::Dispatch::new(tracing_subscriber::registry());
     let seen = acyclic_grpc_observability::test_support::Capture::default();
-    let _default = tracing::subscriber::set_default(
-        tracing_subscriber::registry().with(seen.clone()),
-    );
+    let _default =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(seen.clone()));
     let root = tempfile::tempdir()?;
     let core = seeded(root.path()).await?;
     assert_eq!(
-        core.get(get(bucket(), "missing"), 1).await.err().map(|e| e.code),
+        core.get(get(bucket(), "missing"), 1)
+            .await
+            .err()
+            .map(|e| e.code),
         Some(NotFound)
     );
     core.collect_local_garbage(10)?;
@@ -781,7 +821,9 @@ async fn store_spans_omit_customer_names()
     let path = root.path().to_string_lossy();
     for span in seen.spans.iter().filter(|span| span.closed) {
         for (field, value) in &span.fields {
-            assert!(!["path", "token", "content", "body", "authorization"].contains(&field.as_str()));
+            assert!(
+                !["path", "token", "content", "body", "authorization"].contains(&field.as_str())
+            );
             for leak in ["recovery", "retained", "missing", path.as_ref()] {
                 assert!(!value.contains(leak), "{}.{}={value}", span.name, field);
             }

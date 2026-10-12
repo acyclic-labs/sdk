@@ -77,11 +77,10 @@ pub(super) fn host_windows_metadata(
         links: metadata.number_of_links(),
         size: metadata.len(),
         attributes: metadata.file_attributes(),
-        created: i64::try_from(metadata.creation_time()).map_err(|_| {
-            MountSourceError::Invalid("Windows creation time exceeds i64".to_owned())
-        })?,
+        created: i64::try_from(metadata.creation_time())
+            .map_err(|_| MountSourceError::Invalid("Windows creation time exceeds i64".into()))?,
         modified: i64::try_from(metadata.last_write_time())
-            .map_err(|_| MountSourceError::Invalid("Windows write time exceeds i64".to_owned()))?,
+            .map_err(|_| MountSourceError::Invalid("Windows write time exceeds i64".into()))?,
     })
 }
 
@@ -89,7 +88,7 @@ pub(super) fn host_relative_path(path: &MountPath) -> Result<PathBuf, MountSourc
     let mut host_path = PathBuf::new();
     for component in path.components() {
         let name = decode_utf16_name(component).ok_or_else(|| {
-            MountSourceError::Invalid("ProjFS path component is malformed".to_owned())
+            MountSourceError::Invalid("ProjFS path component is malformed".into())
         })?;
         host_path.push(std::ffi::OsString::from_wide(&name));
     }
@@ -192,7 +191,7 @@ pub(super) fn record_metadata_open(
             state.open_handles = 1;
         } else {
             state.open_handles = state.open_handles.checked_add(1).ok_or_else(|| {
-                MountSourceError::Invalid("ProjFS open-handle count overflow".to_owned())
+                MountSourceError::Invalid("ProjFS open-handle count overflow".into())
             })?;
         }
     } else {
@@ -331,7 +330,7 @@ pub(super) fn basic(
 
 pub(super) fn unix_nanoseconds(windows_ticks: i64) -> Result<i64, MountSourceError> {
     crate::native_host::filetime_to_unix_nanoseconds(windows_ticks).ok_or_else(|| {
-        MountSourceError::Invalid("Windows timestamp exceeds i64 nanoseconds".to_owned())
+        MountSourceError::Invalid("Windows timestamp exceeds i64 nanoseconds".into())
     })
 }
 

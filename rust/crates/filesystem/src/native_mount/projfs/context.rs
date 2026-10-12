@@ -1,12 +1,13 @@
 use super::*;
 
-pub(in crate::native_mount) struct ProjectionWorkScope {
+/// Original invocation retained through mounted I/O.
+pub struct NativeMountWorkScope {
     runtime: Arc<Runtime>,
     work: crate::NativeMaterializationWork,
     generation: u64,
 }
 
-impl ProjectionWorkScope {
+impl NativeMountWorkScope {
     pub(super) fn enter(
         runtime: Arc<Runtime>,
         work: &crate::NativeMaterializationWork,
@@ -20,12 +21,13 @@ impl ProjectionWorkScope {
         })
     }
 
-    pub(in crate::native_mount) fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
+    /// Retains this same invocation for one physical I/O operation.
+    pub fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
         Self::enter(Arc::clone(&self.runtime), &self.work)
     }
 }
 
-impl Drop for ProjectionWorkScope {
+impl Drop for NativeMountWorkScope {
     fn drop(&mut self) {
         lock_recover(&self.runtime.active_work).leave(&self.work, self.generation);
     }

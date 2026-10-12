@@ -285,7 +285,7 @@ pub(super) fn source_listing(
             })?;
             if previous == &next {
                 return Err(MountSourceError::Invalid(
-                    "directory listing repeated a cursor".to_owned(),
+                    "directory listing repeated a cursor".to_owned().into(),
                 ));
             }
         }

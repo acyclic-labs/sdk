@@ -171,7 +171,7 @@ pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, O
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use core_state::{
-    DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError, MeasuredMaterializationStore,
+    DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError,
 };
 #[cfg(feature = "distributed")]
 pub use distributed::StreamAuthorityStore;
@@ -204,8 +204,8 @@ pub use git_compat::{
     GitCompatStore, GitDiffCounts, GitDirtyState, GitFilesystemAction, GitFilesystemExecutor,
     GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitGrepResult, GitIgnorePolicy,
     GitObjectName, GitPatchError, GitPendingMutation, GitPendingTransition, GitPublicationRecord,
-    GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef, IntoGitTreeRef,
-    MemoryGitCompatStore, apply_git_patch, apply_git_patch_with_permit, blame_git_generations,
+    GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef,
+    MemoryGitCompatStore, apply_git_patch, blame_git_generations,
     canonicalize_git_output_json, canonicalize_git_pending_transition_json,
     capture_git_compatible_generation, capture_git_compatible_generation_at,
     capture_git_compatible_generation_incremental, git_compatible_diff_counts, grep_git_generation,
@@ -317,7 +317,7 @@ pub use native_mount::{
     NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, NativeMountDrainProof, NativeSourceIoLease, SharedCheckout, SharedCheckoutState,
-    OwnedNativeMountOriginalWorkScope,
+    NativeMountWorkScope,
     initialize_native_mount_services,
     detach_native_mount_destination_after_crash, materialize_checkout,
     materialize_checkout_paths,

@@ -566,8 +566,7 @@ mod tests {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn observed_compaction_matches_ordinary_exchange_and_input_selection() -> Result<()> {
-        use crate::conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef};
-        use crate::resources::ProviderRef;
+        use crate::{conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef}, resources::ProviderRef};
         use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
         let file = FileRef::new(VolumeRef::new(
             ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, "context".into(), VolumeClass::AgentPrivate,

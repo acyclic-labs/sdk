@@ -7,11 +7,8 @@ import {
   type WorkspaceContextRoot as WireRoot,
 } from "../generated/proto/filesystem/v2/filesystem_pb.js";
 
-import type {
-  RawWorkspaceContextRegistry,
-  WasmRawWorkspaceContextRegistry,
-  WorkCounters,
-} from "../src/contracts.js";
+import type { WorkCounters } from "../src/contracts.js";
+import type { RawWorkspaceContextRegistry } from "../src/binding-types.js";
 import * as GeneratedWasm from "../generated/wasm/acyclic_fs_wasm.js";
 import {
   adaptFs,
@@ -38,7 +35,7 @@ describe("WASM adapter canonical boundaries", () => {
   test("preserves u64 context revisions beyond JavaScript's safe integer range", async () => {
     const raw = {
       async resolve() { return snapshot(9007199254740993n); },
-    } as unknown as WasmRawWorkspaceContextRegistry;
+    } as unknown as RawWorkspaceContextRegistry;
 
     const context = await adaptWorkspaceContextRegistry(raw).resolve(Uint8Array.from(identity(1)));
     expect(context.revision).toBe(9007199254740993n);
@@ -47,7 +44,7 @@ describe("WASM adapter canonical boundaries", () => {
   test("rejects out-of-range identity bytes instead of wrapping them", async () => {
     const raw = {
       async resolve() { return snapshot(1n, { contextId: id(1).slice(1) }); },
-    } as unknown as WasmRawWorkspaceContextRegistry;
+    } as unknown as RawWorkspaceContextRegistry;
 
     await expect(
       adaptWorkspaceContextRegistry(raw).resolve(Uint8Array.from(identity(1))),
@@ -67,7 +64,7 @@ describe("WASM adapter canonical boundaries", () => {
         return toBinary(WorkspaceContextDiscardSchema,
           create(WorkspaceContextDiscardSchema, { contextIds: [id(4)] }));
       },
-    } as unknown as WasmRawWorkspaceContextRegistry;
+    } as unknown as RawWorkspaceContextRegistry;
     const registry = adaptWorkspaceContextRegistry(raw);
     const context = await registry.registerRoot(Uint8Array.from(identity(1)), [{
       rootId: Uint8Array.from(identity(2)), sourcePath: "/source",

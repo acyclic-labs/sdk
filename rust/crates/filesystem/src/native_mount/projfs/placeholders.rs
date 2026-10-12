@@ -309,11 +309,11 @@ pub(super) fn write_ordinary(
     } else {
         &staging.as_ref().expect("held original staging directory").0
     };
-    let mut file = match crate::native_host::with_wide_path_with_work(
+    let mut file = match crate::native_host::with_wide_path(
         std::path::Path::new(&temporary),
         &mut &*work,
         |name, work| {
-            crate::native_host::create_windows_provisional_file_with_work(from, name, work)
+            crate::native_host::create_windows_wide_at(from, name, false, false, false, true, work)
         },
     ) {
         Ok(file) => file,
@@ -353,15 +353,15 @@ pub(super) fn write_ordinary(
     let published = if direct {
         Ok(())
     } else if held.is_some() {
-        crate::native_host::with_wide_path_with_work(
+        crate::native_host::with_wide_path(
             std::path::Path::new(&temporary),
             &mut &*work,
             |from_name, work| {
-                crate::native_host::with_wide_path_with_work(
+                crate::native_host::with_wide_path(
                     std::path::Path::new(name),
                     work,
                     |to_name, _| {
-                        crate::native_host::rename_windows_leaf_measured(
+                        crate::native_host::rename_windows_leaf(
                             from,
                             from_name,
                             &directory,
@@ -386,7 +386,7 @@ pub(super) fn write_ordinary(
     };
     match published {
         Ok(()) => {
-            crate::native_host::keep_windows_created_file_with_work(&file, &mut &*work)
+            crate::native_host::keep_windows_created_file(&file, &mut &*work)
                 .map_err(NativeMountError::from)
                 .map_err(failed)?;
             native_call(work, false, || handle_state(&file))

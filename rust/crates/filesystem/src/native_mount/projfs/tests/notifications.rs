@@ -20,7 +20,7 @@ async fn created_and_renamed_files_stay_observed_after_capture()
         let path = windows_path(name);
         let length = source.lookup(&path)?.ok_or(MountSourceError::NotFound)?;
         let length = u32::try_from(length.node.logical_bytes)
-            .map_err(|_| MountSourceError::Invalid("test file too large".to_owned()))?;
+            .map_err(|_| MountSourceError::Invalid("test file too large".into()))?;
         Ok(source.read_range(&path, 0, length)?.to_vec())
     };
 
