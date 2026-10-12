@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 struct ProjectedToolInvocation {
     call_id: String,
     name: String,
