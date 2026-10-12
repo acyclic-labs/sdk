@@ -657,14 +657,26 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
-        let parent = StreamAggregate::open_with_native_work(
-            &self.stream,
-            authority.0.0,
-            verifier.0,
-            SchemaRegistry::new(),
-            work,
-        )
-        .await?;
+        let parent = {
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            io.preflight()?;
+            let aggregate = StreamAggregate::open(
+                &self.stream,
+                authority.0.0,
+                verifier.0,
+                SchemaRegistry::new(),
+                None,
+                acyclic_harness::store::default_projection_read_limits(),
+                acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+                None,
+                &mut Some(&mut io),
+            )
+            .await?;
+            io.return_staged_output()?;
+            (aggregate, io.into_custody()?)
+        };
         let mut parent_custody = parent.1;
         drop(authority.0.1);
         drop(authority.0.2);
