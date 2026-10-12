@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn accounting_binds_content_model_and_message_dimensions() -> Result<()> {
         let request = ModelRequest {
-            model: Model::new("provider", "model", "revision", serde_json::json!({}))?,
+            model: Model::new("provider".into(), "model".into(), "revision".into(), serde_json::json!({}))?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("hello".into()),

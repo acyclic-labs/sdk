@@ -65,7 +65,7 @@ pub(crate) use checkpoint::build_checkpoint_with_accounting;
 pub(crate) use closure::{
     prove_generation_closure_with_native_work, prove_record_closure_with_native_work};
 pub(crate) use file_read::{
-    OriginalReadAccounting, ReadDecodeError, read_object_with_accounting};
+    OriginalReadAccounting, read_object_with_accounting};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};
 pub(crate) use generation_mutation::{
     apply_generation_mutations_retaining_with_accounting, clone_generation_root_with_accounting};
@@ -139,7 +139,7 @@ pub(crate) use file_table_mutation::apply_file_table_mutations_with_accounting;
 pub(crate) use generation::{
     read_generation_root_with_accounting, read_generation_root_with_limits_and_accounting};
 pub use generation::{
-    GenerationRoot, GenerationRootDecodeStep, MAXIMUM_GENERATION_ROOT_BYTES, decode_generation_root, encode_generation_root, generation_root_id};
+    GenerationRoot, MAXIMUM_GENERATION_ROOT_BYTES, decode_generation_root, encode_generation_root, generation_root_id};
 pub use generation_mutation::{
     GenerationMutationError, GenerationMutationFailure, GenerationMutationReceipt, apply_generation_mutations};
 pub(crate) use list::{
@@ -171,8 +171,6 @@ pub use path_access::{
     ObservedPathBatch, ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup, PathLookupError, PathLookupFailure, lookup_path, lookup_path_refs, lookup_paths, observe_path_async, observe_paths_async};
 pub(crate) use persistent_point::{
     Owned, retire_allocation};
-pub(crate) use persistent_pagination::{
-    paginate_async_with_accounting, paginate_async_at_or_after_with_accounting};
 pub use probe::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, ProbeLimits, capture_content_range_bytes};
 pub(crate) use publication::contextual_publication_fingerprint;

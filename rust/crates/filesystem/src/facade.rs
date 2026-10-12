@@ -7864,7 +7864,7 @@ async fn read_record_metadata_to_file_root_with_accounting<A: AsyncAuthorityStor
             },
             error => error,
         })?;
-        crate::kernel::decode_owned(accounting, |observe| crate::kernel::decode_file_metadata(&read.bytes, DecodeLimits::for_volume(volume.config), &mut |step| observe(step))).map(|(metadata, _)| metadata).map_err(crate::kernel::ReadDecodeError::into_original_fs_error)
+        crate::kernel::decode_owned(accounting, |observe| crate::kernel::decode_file_metadata(&read.bytes, DecodeLimits::for_volume(volume.config), &mut |step| observe(step))).map(|(metadata, _)| metadata)
     }.await;
     readonly_cleanup_standalone(accounting, before, 0)?;
     result
@@ -7991,7 +7991,7 @@ async fn attach_directory_records_to_file_root_with_accounting<A: AsyncAuthority
             if record.file_id != binding.file_id || record.kind != binding.kind {
                 return Err(FsError::InvalidDirectoryRecord);
             }
-            let metadata = crate::kernel::decode_owned(accounting, |observe| crate::kernel::decode_file_metadata(&metadata.bytes, DecodeLimits::for_volume(volume.config), &mut |step| observe(step))).map(|(metadata, _)| metadata).map_err(crate::kernel::ReadDecodeError::into_original_fs_error)?;
+            let metadata = crate::kernel::decode_owned(accounting, |observe| crate::kernel::decode_file_metadata(&metadata.bytes, DecodeLimits::for_volume(volume.config), &mut |step| observe(step))).map(|(metadata, _)| metadata)?;
             let copied = WorkCounters {
                 items_examined: 1, bytes_copied: size_of::<DirectoryRecordEntry>() as u64,
                 ..WorkCounters::UNCHARGED
@@ -11227,18 +11227,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         list_named_attributes_to_file_root_with_accounting(&self.volume, metadata, after, maximum_entries, accounting, cancellation).await
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn list_named_attributes_by_id_with_native_work(
-        &mut self, file_id: FileId, after: Option<&AttributeName>, maximum_entries: u32,
-        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(AttributeListing, crate::NativeAllocation), FsError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(work, cancellation);
-        let (page, allocation) = self.list_named_attributes_by_id_with_accounting(
-            file_id, after, maximum_entries, &mut accounting, cancellation,
-        ).await?;
-        Ok((page, native_pinned_allocation(allocation)?))
-    }
-
     /// Changes one exact named attribute atomically.
     pub async fn change_named_attribute_by_id<W: FsWork>(
         &mut self, file_id: FileId, name: &AttributeName, value: Option<(&[u8], NamedAttributeWriteMode)>,
@@ -11295,7 +11283,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 ).await?)
             } else { None };
             let mut observer = crate::kernel::OriginalReadAccounting::new(accounting)?;
-            let cloned = name.try_clone::<crate::kernel::ReadDecodeError>(
+            let cloned = name.try_clone::<FsError>(
                 DecodeLimits::for_volume(volume.config).maximum_name_bytes,
                 &mut |step| observer.observe(step),
             );
@@ -11306,7 +11294,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 }
                 Err(error) => {
                     observer.release_failed()?;
-                    Err(error.into_original_fs_error())
+                    Err(error)
                 }
             }
         }.await;
@@ -11463,41 +11451,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .map_err(|error| OperationFailure::new(error, work))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn apply_group_with_native_work(
-        &mut self,
-        changes: Vec<GroupedChange>,
-        allocation: crate::NativeAllocation,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(Vec<Result<GroupedOutcome, FsError>>, crate::NativeAllocation), FsError> {
-        let bytes = allocation.bytes();
-        let input = crate::kernel::Owned::new(changes,
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation), bytes);
-        let expected = input.value.capacity().checked_mul(size_of::<GroupedChange>())
-            .ok_or(WorkError::Overflow)? as u64;
-        let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(guard) =
-            &input.allocation else { unreachable!("native grouped input keeps its original custody"); };
-        if bytes != expected || !guard.work().shares_ledger(original)
-            || !guard.work().shares_resource_allowance(original)
-        {
-            return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
-        }
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        let output = self.apply_group_with_accounting(input, &mut accounting, cancellation).await?;
-        match output.allocation {
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => Ok((output.value, allocation)),
-            _ => unreachable!("native group keeps its original custody"),
-        }
-    }
-
-    async fn apply_group_with_accounting(
+    pub(crate) async fn apply_group_with_accounting(
         &mut self,
         input: crate::kernel::Owned<Vec<GroupedChange>>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<crate::kernel::Owned<Vec<Result<GroupedOutcome, FsError>>>, FsError> {
         use crate::kernel::{Owned, split_allocation};
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            let expected = input.value.capacity().checked_mul(size_of::<GroupedChange>())
+                .ok_or(WorkError::Overflow)? as u64;
+            let KernelOwnedAllocation::NativeOriginal(guard) = &input.allocation else {
+                return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
+            };
+            if guard.bytes() != expected || !guard.work().shares_ledger(original)
+                || !guard.work().shares_resource_allowance(original)
+            {
+                return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
+            }
+        }
         let mut compiled = Owned::<Vec<Result<(Owned<Vec<Mutation>>, GroupedOutcome), FsError>>>::allocate(input.value.len(), accounting)?;
         let mut output = Owned::<Vec<Result<GroupedOutcome, FsError>>>::allocate(input.value.len(), accounting)?;
         let mut metadata = AuthoredMetadataCache::new();
@@ -12883,16 +12856,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         list_named_attributes_to_file_root_with_accounting(&self.volume, metadata, after, maximum_entries, accounting, cancellation).await
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn list_named_attributes_with_native_work(
-        &mut self, path: &NamespacePath, after: Option<&AttributeName>, maximum_entries: u32,
-        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(AttributeListing, crate::NativeAllocation), FsError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(work, cancellation);
-        let (page, allocation) = self.list_named_attributes_with_accounting(path, after, maximum_entries, &mut accounting, cancellation).await?;
-        Ok((page, native_pinned_allocation(allocation)?))
-    }
-
     /// Changes one exact named attribute atomically.
     pub async fn change_named_attribute(
         &mut self, path: NamespacePath, name: &AttributeName,
@@ -13326,20 +13289,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
             .map_err(|error| OperationFailure::new(error, work))
     }
 
-    /// Returns the genuine page buffers followed by their original physical guard.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn list_named_attributes_with_native_work(
-        &self, after: Option<&AttributeName>, maximum_entries: u32,
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(AttributeListing, crate::NativeAllocation), FsError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        let (listing, allocation) = self.list_named_attributes_with_accounting(
-            after, maximum_entries, &mut accounting, cancellation,
-        ).await?;
-        Ok((listing, native_pinned_allocation(allocation)?))
-    }
-
-    async fn list_named_attributes_with_accounting(
+    pub(crate) async fn list_named_attributes_with_accounting(
         &self, after: Option<&AttributeName>, maximum_entries: u32,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -13734,8 +13684,7 @@ fn generation_from_record_value_with_accounting(
     let initial = record.sequence == Sequence::new(1);
     observer.record_completed(item)?;
     let (record_volume, generation_root) = {
-        let mut observe = |step| observer.observe(step)
-            .map_err(crate::kernel::ReadDecodeError::into_original_fs_error);
+        let mut observe = |step| observer.observe(step);
         if initial {
             let creation = crate::kernel::decode_volume_created(&record.payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut observe)?;
             (creation.volume_id, creation.initial_generation_root)
@@ -14305,9 +14254,7 @@ fn decode_first_creation_record(
     }
     let mut projection = crate::kernel::OriginalReadAccounting::new(accounting)?;
     let creation = crate::kernel::decode_volume_created::<FsError>(
-        &first.payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| {
-            projection.observe(step).map_err(crate::kernel::ReadDecodeError::into_original_fs_error)
-        },
+        &first.payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| projection.observe(step),
     );
     projection.release_failed()?;
     let creation = creation?;

@@ -1855,7 +1855,7 @@ where
             },
             |(original, _)| async move {
                 let workspace = self.workspace();
-                let reader = workspace.readonly_pinned_reader_with_native_work(
+                let reader = workspace.reader(
                     self.id(), original, cancellation,
                 ).await?;
                 super::materialize_checkout_with_work(&reader, options, work).await
@@ -2024,9 +2024,9 @@ where
                 let config = checkout.volume_config();
                 let root = original.allocations(
                     |allocations, work, budget, cancellation| {
-                        crate::workspace::customer_path_measured(
-                            &mount.subdirectory, config, allocations, work, budget, cancellation,
-                        ).map_err(MountLifecycleError::Workspace)
+                        crate::kernel::NamespacePath::parse_in_profile_with_ledger(
+                            &mount.subdirectory, config.profile, config.limits, allocations, work, budget, cancellation,
+                        ).map_err(|error| MountLifecycleError::Workspace(WorkspaceError::from(error)))
                     },
                 )?;
                 if checkout.lookup_no_follow(&root.0, original, cancellation)
@@ -2172,8 +2172,8 @@ mod tests {
         std::fs::write(physical.path().join("unselected/cold.txt"), b"unread sibling")?;
         let fs = Fs::memory();
         let demand = Arc::new(NativeDemandSource::open(
-            physical.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
-        ).await?);
+            std::borrow::Cow::Owned(std::path::Path::new(physical.path()).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
         let lazy = LazyWorkspace::attach(
             &fs, "measured-customer-root", demand, MemoryLazyWorkspaceStore::default(),
         ).await?;
@@ -2276,8 +2276,8 @@ mod tests {
         let destination = tempfile::tempdir()?;
         let fs = Fs::memory();
         let demand = Arc::new(NativeDemandSource::open(
-            physical.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
-        ).await?);
+            std::borrow::Cow::Owned(std::path::Path::new(physical.path()).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
         let lazy = LazyWorkspace::attach(
             &fs, "measured-native-customer", demand, MemoryLazyWorkspaceStore::default(),
         ).await?;
@@ -2834,11 +2834,11 @@ mod tests {
         let fs = Fs::memory();
         let demand = Arc::new(
             NativeDemandSource::open(
-                source.path(),
+                std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(), None, None,
+                VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
             )
-            .await?,
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         );
         let lazy = LazyWorkspace::attach(
             &fs,

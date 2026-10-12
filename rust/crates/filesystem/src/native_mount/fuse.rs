@@ -373,7 +373,7 @@ impl FuseOpenFile {
 
     fn settle(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         match self {
-            Self::Source(file) => file.settle_with_meter(work),
+            Self::Source(file) => file.settle(work),
             Self::Deferred(file) => file.settle(work),
         }
     }
@@ -717,7 +717,7 @@ impl DeferredOpenFile {
                 .map_err(MountSourceError::from)).transpose()?
         };
         match opened {
-            Some(opened) => opened.settle_with_meter(work),
+            Some(opened) => opened.settle(work),
             None => Ok(()),
         }
     }
@@ -2227,8 +2227,6 @@ fn clone_fatal_source_error(error: &MountSourceError) -> Option<MountSourceError
             MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled),
         MountSourceError::OriginalSnapshotUnavailable => MountSourceError::OriginalSnapshotUnavailable,
         MountSourceError::Indeterminate => MountSourceError::Indeterminate,
-        MountSourceError::NativeRecordMaterializationInProgress =>
-            MountSourceError::NativeRecordMaterializationInProgress,
         MountSourceError::Allocation(error) => MountSourceError::Allocation(error.clone()),
         MountSourceError::ServicesNotInitialized => MountSourceError::ServicesNotInitialized,
         MountSourceError::ServiceUnavailable(error) => MountSourceError::ServiceUnavailable(Arc::clone(error)),
@@ -2306,7 +2304,7 @@ fn fatal_handler_error(error: &NativeMountError) -> bool {
             matches!(error.semantic_error(), MountSourceError::Work(_) | MountSourceError::Cancelled
                 | MountSourceError::Allocation(_) | MountSourceError::ServicesNotInitialized
                 | MountSourceError::ServiceUnavailable(_) | MountSourceError::OriginalSnapshotUnavailable
-                | MountSourceError::Indeterminate | MountSourceError::NativeRecordMaterializationInProgress
+                | MountSourceError::Indeterminate
                 | MountSourceError::Filesystem(crate::FsError::Work(_) | crate::FsError::Cancelled(_))
                 | MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)
                     | crate::kernel::NamespacePathError::Cancelled
@@ -2325,7 +2323,7 @@ fn source_callback_errno(error: &MountSourceError) -> i32 {
         MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_errno(&error.source),
         MountSourceError::NativeText { kind, .. } =>
             super::native_source_text_errno(*kind),
-        MountSourceError::Io(error) | MountSourceError::NativeRecordIo(error, _) =>
+        MountSourceError::Io(error, _) =>
             error.raw_os_error().unwrap_or(libc::EIO),
         MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) => libc::ECANCELED,
         MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)) => libc::EIO,
@@ -2987,7 +2985,7 @@ impl FusePhysicalSession {
                 if error.raw_os_error() != Some(libc::EPERM) { return Err(error.into()); }
                 let helper = retirement_helper.as_mut().ok_or(
                     NativeMountError::CapabilityUnavailable(
-                        "no canonical fusermount helper is available for retirement".into(),
+                        "no canonical fusermount helper is available for retirement",
                     ),
                 )?;
                 helper.retire(std::ffi::CStr::from_bytes_with_nul(&mount.path)
@@ -3531,7 +3529,7 @@ fn fuse_recovery_helper(
         }
     }
     Err(NativeMountError::CapabilityUnavailable(
-        "no canonical fusermount helper is available for crash recovery".into(),
+        "no canonical fusermount helper is available for crash recovery",
     ))
 }
 
@@ -3761,7 +3759,7 @@ impl FuseProjection {
             let stamp = source.view_stamp_with_meter(work)?;
             match (&open_file, current.through) {
                 (Some(open_file), _) => {
-                    self.source_write(work, || open_file.file(work)?.set_attributes_with_meter(metadata, changes.size, work)
+                    self.source_write(work, || open_file.file(work)?.set_attributes(metadata, changes.size, work)
                         .map_err(FuseRequestError::from))?;
                     Resolved {
                         lookup: open_file.file(work)?.lookup_with_meter(work).map_err(FuseRequestError::from)?,
@@ -4245,10 +4243,8 @@ impl FuseProjection {
             }
         } else {
             let metadata = create_metadata(mode, S_IFREG, request.uid(), request.gid());
-            let created = self.source_write(work, || match proof {
-                Some(proof) => source.create_absent_file(path, metadata, proof, work),
-                None => source.create_file_with_meter(path, metadata, work),
-            }.map_err(FuseRequestError::from))?;
+            let created = self.source_write(work, || source.create_file(path, metadata, proof, work)
+                .map_err(FuseRequestError::from))?;
             let claimed = claim(created.node.file_id)?;
             (
                 created,
@@ -4606,11 +4602,11 @@ impl FuseProjection {
                     Ok(file) => file,
                     Err(error) => { DeferredOpenFile::discard_packet(value, work)?; return Err(error.into()); }
                 };
-                file.write_attribute_with_meter(name.as_bytes(), value, mode, work)
+                file.write_attribute(name.as_bytes(), value, mode, work)
             }
             AttributeTarget::Path(path) => {
                 self.core.source.as_ref()
-                    .write_attribute_with_meter(&path, name.as_bytes(), value, mode, work)
+                    .write_attribute(&path, name.as_bytes(), value, mode, work)
             }
         }.map_err(FuseRequestError::from))
     }
@@ -4671,8 +4667,8 @@ impl FuseProjection {
         let _names = self.core.names()?;
         let target = self.attributes_to_write(inode, work)?;
         self.source_write(work, || match target {
-            AttributeTarget::Handle(open_file) => open_file.file(work)?.remove_attribute_with_meter(name.as_bytes(), work),
-            AttributeTarget::Path(path) => self.core.source.as_ref().remove_attribute_with_meter(&path, name.as_bytes(), work),
+            AttributeTarget::Handle(open_file) => open_file.file(work)?.remove_attribute(name.as_bytes(), work),
+            AttributeTarget::Path(path) => self.core.source.as_ref().remove_attribute(&path, name.as_bytes(), work),
         }
         .map_err(|error| match error {
             MountSourceError::NotFound => FuseRequestError::Errno(libc::ENODATA),
@@ -4854,13 +4850,13 @@ fn copy_open_range(
             transferred
         };
         let chunk = u32::try_from(chunk).unwrap_or(DETACHED_COPY_CHUNK_BYTES);
-        let sparse = match source_open.file(work).and_then(|file| file.read_sparse_range_with_meter(source_offset + relative, chunk, work)) {
+        let sparse = match source_open.file(work).and_then(|file| file.read_sparse_range(source_offset + relative, chunk, work)) {
             Ok(sparse) => sparse,
             Err(error) if transferred == 0 => return Err(error.into()),
             Err(error) => { failure = Some(error.into()); break; }
         };
         let copied = sparse.0.logical_bytes;
-        if let Err(error) = projection.source_write(work, || destination_open.file(work)?.write_sparse_range_with_meter(destination_offset + relative, sparse, work)
+        if let Err(error) = projection.source_write(work, || destination_open.file(work)?.write_sparse_range(destination_offset + relative, sparse, work)
             .map_err(FuseRequestError::from))
         {
             if transferred == 0 {
@@ -6260,7 +6256,7 @@ mod tests {
     fn a_confirmation_at_a_position_lapses_when_its_name_changes()
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, _) = shared_sources()?;
-        let file = source.create_file(&name("a"), FileMetadata::default())?;
+        let file = crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("a"), FileMetadata::default(), None, work))?;
         super::super::adapter::boundary(source.cancellation(), |work| source.hard_link(&name("a"), &name("b"), work))?;
         let file_id = file.node.file_id;
         let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
@@ -6276,13 +6272,13 @@ mod tests {
 
         // The name changes after the page was read, before it is emitted.
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&name("b"), Some(file_id), work))?;
-        source.create_file(&name("b"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("b"), FileMetadata::default(), None, work))?;
         assert!(!name_is_bound(&confirmed, &source, file_id, &name("b"), &work).expect("name history"));
         // A sibling changing leaves another name's confirmation standing.
         let mut sibling = HashMap::new();
         let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
         confirm_name(&mut sibling, file_id, super::FuseOwned::empty(name("a")), Some(stamp), &work).expect("confirmed name");
-        source.create_file(&name("c"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("c"), FileMetadata::default(), None, work))?;
         assert!(name_is_bound(&sibling, &source, file_id, &name("a"), &work).expect("name history"));
         Ok(())
     }
@@ -6291,7 +6287,7 @@ mod tests {
     fn node_facts_follow_the_node_and_directory_facts_its_listing()
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, _) = shared_sources()?;
-        let file = source.create_file(&name("file"), FileMetadata::default())?;
+        let file = crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("file"), FileMetadata::default(), None, work))?;
         let directory = super::super::adapter::boundary(source.cancellation(), |work| source.create_directory(&name("directory"), FileMetadata::default(), work))?;
         let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
         let mut file_entry = InodeEntry::new(super::FuseOwned::empty(name("file")), file, Some(stamp), 1, &super::fuse_fixture_work()).unwrap();
@@ -6301,14 +6297,11 @@ mod tests {
         assert!(file_entry.lacks_named_attributes(&source, &work).expect("node history"));
 
         // Names changing around a node leave its facts current...
-        source.create_file(&name("sibling"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("sibling"), FileMetadata::default(), None, work))?;
         super::super::adapter::boundary(source.cancellation(), |work| source.hard_link(&name("sibling"), &name("alias"), work))?;
         assert_eq!(file_entry.current_facts(&source, &work).expect("node history"), Some(stamp));
         // ...but not a directory's, whose listing they change.
-        source.create_file(
-            &name("directory").child(b"child".to_vec()),
-            FileMetadata::default(),
-        )?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("directory").child(b"child".to_vec()) , FileMetadata::default(), None, work))?;
         assert_eq!(directory_entry.current_facts(&source, &work).expect("listing history"), None);
 
         // A change to the node supersedes its facts.
@@ -6318,12 +6311,7 @@ mod tests {
         file_entry.facts = source.view_stamp();
         file_entry.lookup = source.lookup(&name("file"))?.ok_or("file")?;
         assert!(file_entry.lacks_named_attributes(&source, &work).expect("node history"));
-        source.write_attribute(
-            &name("file"),
-            b"user.present",
-            Bytes::from_static(b"value"),
-            MountAttributeWriteMode::Upsert,
-        )?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.write_attribute(&name("file"), b"user.present", crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"value").into(), 0), MountAttributeWriteMode::Upsert, work))?;
         assert!(!file_entry.lacks_named_attributes(&source, &work).expect("node history"));
         Ok(())
     }
@@ -6535,7 +6523,7 @@ mod tests {
         ));
         let around = MemorySource::new(Arc::clone(&shared), config)?;
         let path = name("write-authority");
-        let created = around.create_file(&path, FileMetadata::default())?;
+        let created = crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&path, FileMetadata::default(), None, work))?;
         let original = crate::NativeMaterializationWork::new(
             FINITE_HANDLER_POLICY, &crate::CancellationToken::new(),
         ).map_err(|(cause, _)| cause)?;
@@ -6605,7 +6593,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, around) = shared_sources()?;
         let path = name("removed-before-cancellation");
-        let created = around.create_file(&path, FileMetadata::default())?;
+        let created = crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&path, FileMetadata::default(), None, work))?;
         let source = Arc::new(source);
         let cancellation = crate::CancellationToken::new();
         let core = super::ProjectionCore::new(
@@ -6664,7 +6652,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, around) = shared_sources()?;
         let path = name("shared-original-callback");
-        around.create_file(&path, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&path, FileMetadata::default(), None, work))?;
         let source: Arc<dyn MountFilesystem> = Arc::new(source);
         let cancellation = crate::CancellationToken::new();
         let receipt = super::super::run_native_mount_handler(FINITE_HANDLER_POLICY, &cancellation, |work| {
@@ -6693,7 +6681,7 @@ mod tests {
     fn linux_installed_callbacks_observe_original_finite_mount_cancellation()
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, around) = shared_sources()?;
-        around.create_file(&name("cancelled-native-lookup"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&name("cancelled-native-lookup"), FileMetadata::default(), None, work))?;
         let volume_id = source.volume_id()?;
         let destination = tempfile::tempdir()?;
         let cancellation = crate::CancellationToken::new();
@@ -6716,7 +6704,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, _) = shared_sources()?;
         let path = name("copy-denied");
-        source.create_file(&path, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         let opened = source.open_file(&path)?;
         opened.write_range(0, Bytes::from_static(b"original"))?;
         let cancellation = crate::CancellationToken::new();
@@ -6740,7 +6728,7 @@ mod tests {
         let (source, _) = shared_sources()?;
         let source: Arc<dyn MountFilesystem> = Arc::new(source);
         let path = name("deferred-rebound");
-        let opened = source.create_file(&path, FileMetadata::default())?;
+        let opened = crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         let cancellation = crate::CancellationToken::new();
         let deferred = super::super::run_native_mount_handler(
             FINITE_HANDLER_POLICY, &cancellation, |work| {
@@ -6760,7 +6748,7 @@ mod tests {
             },
         ).map_err(|failure| failure.0)?.value;
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&path, Some(opened.node.file_id), work))?;
-        let rebound = source.create_file(&path, FileMetadata::default())?;
+        let rebound = crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         assert_ne!(rebound.node.file_id, opened.node.file_id);
         let failure = super::super::run_native_mount_handler(
             FINITE_HANDLER_POLICY, &cancellation,
@@ -6916,7 +6904,7 @@ mod tests {
         let (mounted_source, around) = shared_sources()?;
         let mounted_source = Arc::new(mounted_source);
         let file = name("file");
-        around.create_file(&file, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&file, FileMetadata::default(), None, work))?;
         around.write_range(&file, 0, Bytes::from_static(b"first"))?;
         let temporary = tempfile::tempdir()?;
         let mut session = mount(
@@ -6933,7 +6921,7 @@ mod tests {
 
         // Same length, same (unavailable) times: only invalidation can tell.
         around.write_range(&file, 0, Bytes::from_static(b"other"))?;
-        around.create_file(&name("added"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&name("added"), FileMetadata::default(), None, work))?;
         session.revalidate()?;
         assert_eq!(std::fs::read(&mounted)?, b"other");
         assert!(added.is_file());
@@ -7027,10 +7015,7 @@ mod tests {
             .map(|index| format!("entry-{index:04}"))
             .collect::<Vec<_>>();
         for entry in &expected {
-            inner.create_file(
-                &name("many").child(entry.as_bytes().to_vec()),
-                FileMetadata::default(),
-            )?;
+            crate::native_mount::adapter::boundary(inner.cancellation(), |work| inner.create_file(&name("many").child(entry.as_bytes().to_vec()) , FileMetadata::default(), None, work))?;
         }
         let temporary = tempfile::tempdir()?;
         let mut session = mount(
@@ -7059,10 +7044,7 @@ mod tests {
             Ok::<_, Box<dyn std::error::Error>>(())
         })?;
         // A change around the mount reaches the cached listing.
-        around.create_file(
-            &name("many").child(b"added".to_vec()),
-            FileMetadata::default(),
-        )?;
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&name("many").child(b"added".to_vec()) , FileMetadata::default(), None, work))?;
         session.revalidate()?;
         expected.push("added".to_owned());
         expected.sort();
@@ -7121,7 +7103,7 @@ mod tests {
             "a folding volume keys every spelling alike"
         );
         let volume_id = source.volume_id()?;
-        source.create_file(&name("foo"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("foo"), FileMetadata::default(), None, work))?;
         let temporary = tempfile::tempdir()?;
         let mut session = mount(Arc::new(source), volume_id, temporary.path())?;
         let at = |name: &str| temporary.path().join(name);
@@ -7158,7 +7140,7 @@ mod tests {
             .enable_all()
             .build()?;
         let file = name("file");
-        writer.create_file(&file, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(writer.cancellation(), |work| writer.create_file(&file, FileMetadata::default(), None, work))?;
         writer.write_range(&file, 0, Bytes::from_static(b"first"))?;
         writer.sync()?;
         runtime.block_on(reader.advance_to_head_async())?;
@@ -7175,7 +7157,7 @@ mod tests {
         assert_eq!(listing(temporary.path())?, ["file"]);
 
         writer.write_range(&file, 0, Bytes::from_static(b"other"))?;
-        writer.create_file(&name("added"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(writer.cancellation(), |work| writer.create_file(&name("added"), FileMetadata::default(), None, work))?;
         writer.sync()?;
         runtime.block_on(reader.advance_to_head_async())?;
         session.revalidate()?;
@@ -7275,10 +7257,7 @@ mod tests {
             read_range(path: &MountPath, offset: u64, length: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
             seek(path: &MountPath, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError>;
             read_directory(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountDirectoryPage, MountSourceError>;
-            create_file(path: &MountPath, metadata: FileMetadata) -> Result<MountLookup, MountSourceError>;
             list_attributes(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountAttributePage, MountSourceError>;
-            write_attribute(path: &MountPath, name: &[u8], value: Bytes, mode: MountAttributeWriteMode) -> Result<(), MountSourceError>;
-            remove_attribute(path: &MountPath, name: &[u8]) -> Result<(), MountSourceError>;
             write_range(path: &MountPath, offset: u64, bytes: Bytes) -> Result<(), MountSourceError>;
             resize(path: &MountPath, logical_bytes: u64) -> Result<(), MountSourceError>;
             allocate_range(path: &MountPath, offset: u64, length: u64, operation: MountRangeAllocation) -> Result<(), MountSourceError>;
@@ -7294,13 +7273,12 @@ mod tests {
             open_file_with_lookup_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError>;
             open_created_with_meter(path: &MountPath, created: &MountLookup, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
             detach_file_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
-            create_file_with_meter(path: &MountPath, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
-            create_absent_file(path: &MountPath, metadata: FileMetadata, stamp: ViewStamp, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
+            create_file(path: &MountPath, metadata: FileMetadata, stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
             create_symbolic_link(path: &MountPath, target: crate::kernel::OwnedSourceChunk, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
             create_special(path: &MountPath, kind: MountNodeKind, device: Option<(u32,u32)>, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
             list_attributes_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum: u32, work: &crate::NativeMaterializationWork) -> Result<(super::super::MountAttributePage, crate::NativeAllocation), MountSourceError>;
-            write_attribute_with_meter(path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk, mode: super::super::MountAttributeWriteMode, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
-            remove_attribute_with_meter(path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
+            write_attribute(path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk, mode: super::super::MountAttributeWriteMode, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
+            remove_attribute(path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             clone_range_by_id(source: FileId, source_offset: u64, destination: FileId, destination_offset: u64, length: u64, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             hard_link(source: &MountPath, destination: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             folded_path_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<Option<(MountPath,u64)>, MountSourceError>;
@@ -7375,7 +7353,7 @@ mod tests {
             super::super::adapter::boundary(inner.cancellation(), |work| inner.create_directory(&name(directory), FileMetadata::default(), work))?;
         }
         let present = name("free").child(b"present".to_vec());
-        inner.create_file(&present, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(inner.cancellation(), |work| inner.create_file(&present, FileMetadata::default(), None, work))?;
         inner.write_range(&present, 0, Bytes::from_static(b"present"))?;
         let (entered, entries) = sync_channel(4);
         let (release, released) = sync_channel(4);

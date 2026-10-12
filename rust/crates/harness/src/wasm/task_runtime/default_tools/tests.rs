@@ -31,7 +31,7 @@ fn child(template: &TaskAdmissionRecord, operation: OperationId, parent: TaskId,
     record.resource_proofs.clear(); record
 }
 async fn claim(runtime: &WasmTaskRuntime, operation: OperationId, worker: &Worker) -> std::result::Result<WorkLease, JsValue> {
-    let lease = match runtime.runtime.task_host().pull_operation(worker, operation).await.map_err(js_error)? {
+    let lease = match runtime.runtime.task_host().pull_operation(worker, operation, &mut None).await.map_err(js_error)? {
         WorkPull::Claimed(lease) => lease,
         _ => return Err(JsValue::from_str("original browser caller lease unavailable")),
     };
@@ -75,7 +75,7 @@ async fn append(runtime: &WasmTaskRuntime, authority: &Authority, agent: AgentId
 }
 fn configure_events(runtime: &mut WasmTaskRuntime, events: &Value) -> std::result::Result<(), JsValue> {
     let generate = Function::new_with_args("bytes,dispatch,signal", &format!("const events={events}; let i=0; return {{next:()=>Promise.resolve(i<events.length?{{done:false,value:events[i++]}}:{{done:true}}),return:()=>({{done:true}})}};"));
-    runtime.configure_model(to_js(&Model::new("fixture","portable-browser","1",serde_json::json!({})).map_err(js_error)?)?, generate, Function::new_no_args("return null;"),
+    runtime.configure_model(to_js(&Model::new("fixture".into(),"portable-browser".into(),"1".into(),serde_json::json!({})).map_err(js_error)?)?, generate, Function::new_no_args("return null;"),
         Some(Function::new_no_args("return {context_tokens:131072,output_tokens:8192};")), Some(Function::new_with_args("bytes,request_digest","return {request_digest,fixed_tokens:bytes.byteLength,message_tokens:JSON.parse(new TextDecoder().decode(bytes)).messages.map(()=>0)};")),
         to_js(&crate::context::CompactionPolicy::Disabled)?)
 }

@@ -2,7 +2,7 @@
 
 use super::allocation::{AllocationError, LogicalVecCapacity, VisitedObjectSet};
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
-use super::file_read::{ReadOwned, ReadDecodeError, reserve_decoded_items,
+use super::file_read::{ReadOwned, reserve_decoded_items,
     allocate_read_buffer, completed_read_work, owned_read_bytes, read_object_with_accounting, release_read_allocation};
 use crate::FsError;
 use super::codec::{
@@ -207,22 +207,8 @@ pub(super) fn blob_page_encoded_length(
 pub(crate) fn decode_blob_page_with_accounting(
     bytes: &[u8], limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
 ) -> Result<(BlobPage, u64, KernelOwnedAllocation), FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let native = accounting.native_work().is_some();
-    let decoded = super::file_read::decode_owned(accounting, |observe| decode_blob_page(bytes, limits, &mut |step| observe(step)));
-    let page = match decoded {
-        Ok(page) => page,
-        Err(error) => {
-            #[cfg(not(target_arch = "wasm32"))]
-            if native {
-                return Err(match error.into_original_fs_error() {
-                    FsError::Decode(error) => BlobReadError::Decode(error).into(),
-                    error => error,
-                });
-            }
-            return Err(read_decode_error(error));
-        }
-    };
+    let page = super::file_read::decode_owned(accounting, |observe| decode_blob_page(bytes, limits, &mut |step| observe(step)))
+        .map_err(read_decode_error)?;
     let owner = ReadOwned { value: page.0, custody: page.1 };
     let bytes = match &owner.value.node {
         BlobNode::Leaf(items) => items.capacity() * size_of::<BlobChunkRef>(),
@@ -1505,12 +1491,12 @@ impl BlobRangeMachine {
         let mut observed = super::file_read::OriginalReadAccounting::new(accounting)?;
         let mut chunks = Vec::new();
         let mut requests = Vec::new();
-        let prepared = (|| -> Result<(), ReadDecodeError> {
+        let prepared = (|| -> Result<(), FsError> {
             reserve_decoded_items(&mut chunks, count, &mut |step| observed.observe(step))?;
             reserve_decoded_items(&mut requests, count, &mut |step| observed.observe(step))?;
             let copied = usize_to_u64(size_of::<BlobChunkRef>() + size_of::<ObjectReadRequest>());
             for pending in self.pending.iter().rev().take(count) {
-                let PendingBlobRead::Chunk(chunk) = pending else { return Err(FsError::from(BlobReadError::TraversalState).into()) };
+                let PendingBlobRead::Chunk(chunk) = pending else { return Err(FsError::from(BlobReadError::TraversalState)) };
                 let completed = WorkCounters { items_examined: 1, bytes_copied: copied, ..WorkCounters::UNCHARGED };
                 observed.admit(completed)?;
                 chunks.push(*chunk);
@@ -1523,8 +1509,6 @@ impl BlobRangeMachine {
             drop(chunks);
             drop(requests);
             observed.release_failed()?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if native { return Err(error.into_original_fs_error()); }
             return Err(read_decode_error(error));
         }
         let (custody, scratch_bytes) = observed.into_parts();
@@ -1585,11 +1569,10 @@ fn blob_error(error: FsError) -> BlobReadError {
     }
 }
 
-fn read_decode_error(error: ReadDecodeError) -> FsError {
+fn read_decode_error(error: FsError) -> FsError {
     match error {
-        ReadDecodeError::Canonical(error) => BlobReadError::Decode(error).into(),
-        ReadDecodeError::AllocationFailed(_) => BlobReadError::Decode(CanonicalDecodeError::AllocationFailed).into(),
-        ReadDecodeError::Accounting(error) => error,
+        FsError::Decode(error) => BlobReadError::Decode(error).into(),
+        error => error,
     }
 }
 

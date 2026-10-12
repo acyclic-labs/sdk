@@ -504,7 +504,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 };
                 let generation = match outcome {
                     JoinOutcome::Applied(application)
-                    | JoinOutcome::AlreadyApplied(application) => application.into_generation(),
+                    | JoinOutcome::AlreadyApplied(application) => application.generation,
                     JoinOutcome::NoChanges(generation) => generation,
                     JoinOutcome::StaleTarget(_) => {
                         return Err(Self::error("Git join raced with another workspace writer"));

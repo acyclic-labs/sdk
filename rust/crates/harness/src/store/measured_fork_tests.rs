@@ -151,7 +151,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     parent.bind_published_child(&original, &created.seed, parent_scope.clone(), None, &mut None).await?;
     let task = crate::TaskId::from_bytes([84; 16]);
     assert!(matches!(fixture.admit_child(created.request.child.clone()).await?, crate::Admission::Accepted(id) if id == task));
-    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(task).await? else {
+    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(task, &mut None).await? else {
         return Err(Error::NotFound("measured fork original owner lease".into()));
     };
     let owner = fixture.host.journal_owner(task, (&lease.reservation).into()).await?;
@@ -497,7 +497,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let mut source_io = crate::store::history::native_work_io(&query)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let observation_scope = creator.issue("owner", &fixture.root_scope.grants(), Some(agent), None, &mut None).expect("scope proof");
-    let original_reservation = crate::distributed::original_reservation_proof_with_work(
+    let original_reservation = crate::distributed::original_reservation_proof(
         &fixture.stream, owner.root_bootstrap_owner(), &observation_scope, &creator.verifier(&mut None).expect("verifier copy"),
         original_root.operation_id, bootstrap.binding().fence(), &mut Some(&mut source_io),
     ).await?;

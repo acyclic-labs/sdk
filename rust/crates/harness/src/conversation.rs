@@ -120,21 +120,16 @@ impl Limits {
     pub fn validate_message(&self, message: &ConversationMessage, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         message.validate(work)?;
         self.validate_file(&message.content, work)?;
-        match &message.attachments {
-            ReferencedAttachments::Inline { items } => {
-                if items.len() > self.attachments {
-                    return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "attachments exceed harness limits"));
-                }
-                for item in items { self.validate_file(&item.file, work)?; }
-            }
-            ReferencedAttachments::Manifest { manifest, item_count } => {
-                if *item_count as usize > self.attachments {
-                    return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "attachments exceed harness limits"));
-                }
-                self.validate_file(manifest, work)?;
-            }
+        let (inline, manifest, count) = match &message.attachments {
+            ReferencedAttachments::Inline { items } => (items.as_slice(), None, items.len()),
+            ReferencedAttachments::Manifest { manifest, item_count } => (&[][..], Some(manifest), *item_count as usize),
+        };
+        if count > self.attachments {
+            return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "attachments exceed harness limits"));
         }
-        for file in message.extensions.values() { self.validate_file(file, work)?; }
+        for file in inline.iter().map(|item| &item.file).chain(manifest).chain(message.extensions.values()) {
+            self.validate_file(file, work)?;
+        }
         Ok(())
     }
 }
@@ -372,17 +367,25 @@ impl ContentGrant {
             return Err(Error::Unauthorized("internal storage file is not public content".into()));
         }
         verifier.verify(scope, &mut None)?;
-        if scope.capabilities().contains(&file.volume().capability(VolumeOperation::Read, &mut None)?) {
-            return Self::verify(verifier, scope, file.volume(), VolumeOperation::Read, u64::MAX, &mut None);
+        if contains_content_label(scope, VolumeOperation::Read.capability_prefix(),
+            crate::contract::canonical_json_digest_with_work(file.volume(), u64::MAX, &mut None)?) {
+            return Ok(Self { volume: file.volume.clone(), operation: VolumeOperation::Read,
+                exact_file: None, directory_prefix: None });
         }
-        if scope.capabilities().contains(&file.read_capability()?) {
-            return Self::verify_file_read(verifier, scope, file);
+        if contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file)?) {
+            let FileRef { volume, path, version, descriptor, display_name } = file.clone();
+            return Ok(Self { volume, operation: VolumeOperation::Read,
+                exact_file: Some((path, version, descriptor, display_name)), directory_prefix: None });
         }
         if file.volume().class() == VolumeClass::AgentPrivate {
             for prefix in std::iter::once("").chain(file.path().match_indices('/').map(|(end, _)| &file.path()[..end])) {
                 if file.volume().directory_read_capability(prefix, &mut None)
                     .is_ok_and(|capability| scope.capabilities().contains(&capability)) {
-                    let grant = Self::verify_directory_read(verifier, scope, file.volume(), prefix, &mut None)?;
+                    if scope.agent().is_none() {
+                        return Err(Error::Unauthorized("private directory read is not granted".into()));
+                    }
+                    let grant = Self { volume: file.volume.clone(), operation: VolumeOperation::Read,
+                        exact_file: None, directory_prefix: Some(prefix.to_owned()) };
                     grant.require_file_read(file, None)?;
                     return Ok(grant);
                 }
@@ -434,9 +437,9 @@ impl ContentGrant {
         volume.validate(work)?;
         if !prefix.is_empty() { validate_content_path(prefix, work)?; }
         if is_internal_path(prefix) { return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "internal storage paths cannot be delegated")); }
-        let directory = contains_content_label(scope, "directory:read:", crate::contract::canonical_json_digest_with_work(&(volume, prefix), u64::MAX, work)?);
-        let entire = contains_content_label(scope, VolumeOperation::Read.capability_prefix(), crate::contract::canonical_json_digest_with_work(volume, u64::MAX, work)?);
-        if scope.agent().is_none() || (!directory && !entire) {
+        if scope.agent().is_none()
+            || !(contains_content_label(scope, "directory:read:", crate::contract::canonical_json_digest_with_work(&(volume, prefix), u64::MAX, work)?)
+                || contains_content_label(scope, VolumeOperation::Read.capability_prefix(), crate::contract::canonical_json_digest_with_work(volume, u64::MAX, work)?)) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Unauthorized,
                 "private directory read is not granted"));
         }
@@ -454,7 +457,7 @@ impl ContentGrant {
             return Err(Error::Unauthorized("internal storage file is not public content".into()));
         }
         verifier.verify(scope, &mut None)?;
-        if !scope.capabilities().contains(&file.read_capability()?) {
+        if !contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file)?) {
             return Err(Error::Unauthorized("exact file read is not granted".into()));
         }
         let FileRef { volume, path, version, descriptor, display_name } = file.clone();
@@ -1194,20 +1197,15 @@ pub(crate) fn manifest_owned_bytes(items: &[Attachment], capacity: usize) -> Res
 pub fn decode_attachment_manifest(
     reference: &FileRef, bytes: &[u8], item_count: Option<u32>, io: Option<&ContentIo>,
 ) -> Result<Vec<Attachment>> {
-    #[cfg(feature = "filesystem")]
-    let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
-    #[cfg(feature = "filesystem")]
-    let mut work = observer.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
-    #[cfg(not(feature = "filesystem"))]
-    let mut work = None;
-    reference.validate(&mut work)?;
+    crate::executor::with_history_io(io, |work| {
+        reference.validate(work)?;
+        if reference.descriptor().media_type() != "application/vnd.acyclic.harness.attachments+json" {
+            return Err(content_error(io, crate::wire::ErrorCode::Invalid,
+                "attachment manifest metadata or allowance is invalid"));
+        }
+        reference.descriptor().verify(bytes, work)
+    })?;
     let maximum_members = item_count.map_or(MAX_PORTABLE_COUNT, |count| count as usize);
-    if reference.descriptor().media_type() != "application/vnd.acyclic.harness.attachments+json"
-        || maximum_members > MAX_PORTABLE_COUNT {
-        return Err(content_error(io, crate::wire::ErrorCode::Invalid,
-            "attachment manifest metadata or allowance is invalid"));
-    }
-    reference.descriptor().verify(bytes, &mut work)?;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         fn guard<T, E: serde::de::Error>(result: Result<T>, failure: &mut Option<Error>) -> std::result::Result<T, E> {
@@ -1313,15 +1311,13 @@ pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
     let hold;
     let bytes = verifier.read(reference, maximum_bytes, io)?.await?;
     #[cfg(feature = "filesystem")]
-    {
-        hold = match io {
-            Some(io) => { io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?; io.guard_bytes(&bytes)? },
-            None => None,
-        };
-        reference.descriptor().verify(&bytes, &mut io.map(crate::filesystem::PreparationIo::history_io).as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo))?;
-    }
+    { hold = match io {
+        Some(io) => { io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?; io.guard_bytes(&bytes)? },
+        None => None,
+    }; }
     #[cfg(not(feature = "filesystem"))]
-    { hold = None; reference.descriptor().verify(&bytes, &mut None)?; }
+    { hold = None; }
+    crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
     Ok((bytes, hold))
 }
 
@@ -1355,22 +1351,21 @@ pub async fn verified_attachment_manifest<'a, V: ContentResidencyVerifier + ?Siz
     verifier: &'a V, reference: &'a FileRef, item_count: u32, limits: &'a Limits,
     io: Option<&'a ContentIo>,
 ) -> Result<(Vec<Attachment>, Option<ContentHold<'a>>)> {
-    #[cfg(feature = "filesystem")]
-    let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
-    #[cfg(feature = "filesystem")]
-    let mut work = observer.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
-    #[cfg(not(feature = "filesystem"))]
-    let mut work = None;
-    limits.validate_file(reference, &mut work)?;
-    if item_count as usize > limits.attachments {
-        return Err(conversation_error(&work, crate::wire::ErrorCode::Invalid, "attachment manifest count exceeds limits"));
-    }
+    crate::executor::with_history_io(io, |work| {
+        limits.validate_file(reference, work)?;
+        if item_count as usize > limits.attachments {
+            return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "attachment manifest count exceeds limits"));
+        }
+        Ok(())
+    })?;
     let output = load_manifest(verifier, reference, item_count, io).await?;
     for item in &output.0 {
-        if let Some(observer) = work.as_deref_mut() {
-            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
-        }
-        limits.validate_file(&item.file, &mut work)?;
+        crate::executor::with_history_io(io, |work| {
+            if let Some(observer) = work.as_deref_mut() {
+                observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+            }
+            limits.validate_file(&item.file, work)
+        })?;
         verified_content_bytes(verifier, &item.file, limits.file_bytes, io).await?;
     }
     Ok(output)

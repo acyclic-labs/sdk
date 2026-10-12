@@ -80,7 +80,7 @@ impl MachinesHost {
             .map_err(|error| map_error(error, Some(operation_id)))?
         {
             MutationOutcome::Created(observation) => {
-                SandboxRef::new(self.provider_ref.clone(), observation.id.as_bytes(), None)
+                SandboxRef::new(self.provider_ref.clone(), observation.id.as_bytes().into(), None)
             }
             _ => Err(Error::Storage(
                 "Machines returned the wrong create outcome".into(),
@@ -110,7 +110,7 @@ impl MachinesHost {
             .map_err(|error| map_error(error, Some(operation_id)))?
         {
             MutationOutcome::Checkpointed(observation) => {
-                CheckpointRef::new(self.provider_ref.clone(), observation.id.as_bytes(), None)
+                CheckpointRef::new(self.provider_ref.clone(), observation.id.as_bytes().into(), None)
             }
             _ => Err(Error::Storage(
                 "Machines returned the wrong checkpoint outcome".into(),
@@ -149,7 +149,7 @@ impl MachinesHost {
         {
             MutationOutcome::Forked(values) => values
                 .into_iter()
-                .map(|value| SandboxRef::new(self.provider_ref.clone(), value.id.as_bytes(), None))
+                .map(|value| SandboxRef::new(self.provider_ref.clone(), value.id.as_bytes().into(), None))
                 .collect(),
             _ => Err(Error::Storage(
                 "Machines returned the wrong fork outcome".into(),
@@ -360,7 +360,7 @@ mod tests {
     async fn opaque_refs_round_trip_through_a_replaceable_provider() -> Result<()> {
         let provider_ref = ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
         let host = MachinesHost::new(Arc::new(SimulatedMachines::default()), provider_ref.clone())?;
-        let artifact = ArtifactRef::new(provider_ref, [1; 32], None)?;
+        let artifact = ArtifactRef::new(provider_ref, [1; 32].into(), None)?;
         let sandbox = host
             .create(
                 OperationId::from_bytes([1; 16]),
@@ -375,7 +375,7 @@ mod tests {
 
         let foreign = SandboxRef::new(
             ProviderRef::new("other".into(), "machines".into(), "1".into(), &mut None)?,
-            observed.id.as_bytes(),
+            observed.id.as_bytes().into(),
             None,
         )?;
         assert!(matches!(
@@ -389,14 +389,14 @@ mod tests {
     async fn create_requires_explicit_network_policy_and_provider_ownership() -> Result<()> {
         let provider_ref = ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
         let host = MachinesHost::new(Arc::new(SimulatedMachines::default()), provider_ref)?;
-        let foreign = ArtifactRef::new(ProviderRef::new("other".into(), "machines".into(), "1".into(), &mut None)?, [1; 32], None)?;
+        let foreign = ArtifactRef::new(ProviderRef::new("other".into(), "machines".into(), "1".into(), &mut None)?, [1; 32].into(), None)?;
         assert!(matches!(
             host.qualify(&foreign).await,
             Err(Error::Invalid(_))
         ));
 
         let artifact =
-            ArtifactRef::new(ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?, [1; 32], None)?;
+            ArtifactRef::new(ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?, [1; 32].into(), None)?;
         assert!(matches!(
             host.create(
                 OperationId::from_bytes([2; 16]),
@@ -416,7 +416,7 @@ mod tests {
         let machines = ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
         let simulator = Arc::new(SimulatedMachines::default());
         let host = MachinesHost::new(simulator.clone(), machines.clone())?;
-        let artifact = ArtifactRef::new(machines.clone(), [1; 32], None)?;
+        let artifact = ArtifactRef::new(machines.clone(), [1; 32].into(), None)?;
         let sandbox = host
             .create(
                 OperationId::from_bytes([1; 16]),
@@ -455,7 +455,7 @@ mod tests {
                 VolumeClass::Project,
                 owner.clone(),
             )?,
-            generation: GenerationRef::new(filesystem.clone(), [1; 32], Some("1".into()))?,
+            generation: GenerationRef::new(filesystem.clone(), [1; 32].into(), Some("1".into()))?,
         };
         let child_project = ResourceRevision::Project {
             volume: VolumeRef::new(
@@ -464,7 +464,7 @@ mod tests {
                 VolumeClass::Project,
                 owner,
             )?,
-            generation: GenerationRef::new(filesystem.clone(), [2; 32], Some("1".into()))?,
+            generation: GenerationRef::new(filesystem.clone(), [2; 32].into(), Some("1".into()))?,
         };
         let process = ResourceRevision::Process(checkpoint);
         let seed = ForkSeed { history_witness: None, summary: None,
@@ -497,7 +497,7 @@ mod tests {
                         VolumeClass::AgentPrivate,
                         VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
                     )?,
-                    generation: GenerationRef::new(filesystem.clone(), [98; 32], None)?,
+                    generation: GenerationRef::new(filesystem.clone(), [98; 32].into(), None)?,
                     paths: Vec::new(),
                 },
                 revision: ResourceRevision::PrivateVolume {
@@ -507,7 +507,7 @@ mod tests {
                         VolumeClass::AgentPrivate,
                         VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
                     )?,
-                    generation: GenerationRef::new(filesystem.clone(), [99; 32], None)?,
+                    generation: GenerationRef::new(filesystem.clone(), [99; 32].into(), None)?,
                     paths: Vec::new(),
                 },
             },
@@ -519,7 +519,7 @@ mod tests {
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
         )?,
-        child_private_generation: GenerationRef::new(filesystem, [3; 32], Some("1".into()))?,
+        child_private_generation: GenerationRef::new(filesystem, [3; 32].into(), Some("1".into()))?,
         inherited_context: Vec::new(),
         shared_grants: Vec::new(),
         attached_agents: Vec::new(),
@@ -581,7 +581,7 @@ mod tests {
         assert!(matches!(host.verify(&seed).await, Err(Error::Conflict(_))));
         let mut missing = seed;
         let unavailable =
-            ResourceRevision::Process(CheckpointRef::new(machines.clone(), [9; 16], None)?);
+            ResourceRevision::Process(CheckpointRef::new(machines.clone(), [9; 16].into(), None)?);
         missing.resources[2] = CapturedResource {
             source: unavailable.clone(),
             revision: unavailable,
@@ -592,7 +592,7 @@ mod tests {
         ));
         let forged = ResourceRevision::Process(CheckpointRef::new(
             machines,
-            [9; 16],
+            [9; 16].into(),
             Some("forged-generation".into()),
         )?);
         missing.resources[2] = CapturedResource {
