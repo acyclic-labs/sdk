@@ -128,8 +128,7 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::NativeRecordIo(error, allocation) => {
             MountSourceError::Io(error, allocation)
         }
-        LazyWorkspaceError::NativeWork(error)
-        | LazyWorkspaceError::NativeConstruction { cause: error, .. } => {
+        LazyWorkspaceError::NativeWork(error) => {
             MountSourceError::NativeWork(error)
         }
         LazyWorkspaceError::NativeRecordJson(error, allocation) => {
@@ -165,9 +164,6 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         }
         LazyWorkspaceError::NamespacePath(error) => MountSourceError::NamespacePath(error),
         LazyWorkspaceError::WorkspaceCause(error) => MountSourceError::WorkspaceCause(error),
-        LazyWorkspaceError::NativeWorkspace(cause, allocation) => {
-            MountSourceError::NativeWorkspaceCause(cause, allocation)
-        }
         LazyWorkspaceError::Store(message) => MountSourceError::Engine(message.into()),
         error => match error.semantic_error() {
             LazyWorkspaceError::NotFound => MountSourceError::NotFound,

@@ -13,7 +13,7 @@ mod open;
 #[cfg(feature = "native-execution")]
 mod protocol;
 
-use crate::{native::AuthorityBinding, terminal::MAX_FRAME_BYTES};
+use crate::native::AuthorityBinding;
 use acyclic_fs::{GenerationId, MaterializationJournal, WorkBudget, WorkCounters};
 use acyclic_harness::{
     Error, OperationId, Result, TaskId,
@@ -23,7 +23,7 @@ use acyclic_harness::{
     interaction::{InteractionResolution, InteractionTicket},
 };
 use serde::{Deserialize, Serialize};
-use std::path::{Component, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,6 +47,11 @@ pub struct NativePublicationResult {
 
 #[cfg(feature = "native-execution")]
 use crate::native::NativeSession;
+#[cfg(feature = "native-execution")]
+use crate::{
+    native::{invalid, storage},
+    terminal::MAX_FRAME_BYTES,
+};
 #[cfg(feature = "native-execution")]
 use acyclic_fs::MaterializationPhase;
 #[cfg(feature = "native-execution")]

@@ -391,7 +391,7 @@ where
             }
             self.runtime.wait(|| async {
                 self.lazy
-                    .read_unauthored(
+                    .read_resolved(
                         &lookup,
                         &text,
                         Some(crate::ByteRange {
@@ -399,6 +399,7 @@ where
                             length: u64::from(length),
                         }),
                         u64::from(length),
+                        crate::model::GenerationSelector::Head,
                         &mut accounting,
                     )
                     .await
