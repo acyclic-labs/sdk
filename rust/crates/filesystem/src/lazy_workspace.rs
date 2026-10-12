@@ -15457,9 +15457,9 @@ mod tests {
         )
         .await
         .expect("open pinned version")
-        .read_range(0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .read_range(0, 6, &mut crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new()))
         .expect("read pinned version")
-        .value.bytes).as_ref(), b"before");
+        .bytes).as_ref(), b"before");
 
         root.rebind_source(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary rebind uses ordinary funding") }).expect("rebind source");
         let LazyLookup::Source(rebound) = root.inspect("/file.txt").await.expect("reinspect")
