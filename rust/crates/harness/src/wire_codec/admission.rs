@@ -13,10 +13,7 @@ fn boundary(work: &Option<&mut dyn HistoryIo>, reason: &'static str) -> Error {
     Error::Storage(reason.into())
 }
 
-/// Prost 0.14's concrete diagnostic owns one Box<Inner> and a vector of
-/// borrowed (message, field) pairs. Its description enum's largest variant is
-/// two Strings plus its discriminant; closed EventEnvelope decoding never
-/// constructs either owned String. No Display buffer or serde witness is used.
+/// Preclaimed custody for the closed EventEnvelope prost diagnostic.
 pub(super) struct ProstDiagnostic {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     custody: Option<acyclic_fs::NativeAllocation>,
@@ -30,9 +27,7 @@ pub(super) fn prost_diagnostic_preclaim(
         let custody = if let Some(io) = work.as_deref_mut()
             .filter(|io| io.original_native_work().is_some())
         {
-            // The longest closed path is Envelope -> Reference -> Authority:
-            // three location pairs, with std Vec's four-slot minimum. Unknown
-            // groups add no generated-message location names.
+            // Envelope -> Reference -> Authority needs at most four location slots.
             let bytes = (size_of::<(u64, String, String)>()
                 + size_of::<Vec<(&'static str, &'static str)>>()
                 + 4 * size_of::<(&'static str, &'static str)>()) as u64;
@@ -74,10 +69,6 @@ impl Fields {
     }
 
     fn quota(&self, work: &Option<&mut dyn HistoryIo>) -> Result<u64> {
-        // String/Vec<u8> grow to at most twice the admitted payload, with the
-        // standard minimum eight-byte byte-buffer growth. Vec<String> has a
-        // four-slot minimum and geometric growth. Duplicate wire occurrences
-        // count even when prost subsequently replaces their values.
         let buffers = self.bytes.checked_mul(2)
             .and_then(|bytes| self.buffers.checked_mul(8).and_then(|minimum| bytes.checked_add(minimum)));
         let slots = if self.capabilities == 0 { 0 } else {
@@ -110,9 +101,7 @@ fn scan(mut input: &[u8], carrier: Carrier, fields: &mut Fields,
             | (Carrier::Scope, 1 | 2 | 3 | 4));
         if kind == WireType::LengthDelimited && (nested.is_some() || owned) {
             let framed = input;
-            // The original prost primitive owns length/underflow semantics and
-            // constructs the actual guarded cause. Only borrow its admitted
-            // frame afterward; do not replace protobuf parsing.
+            // Prost validates the frame before it is borrowed.
             skip_field(kind, tag, &mut input, DecodeContext::default())
                 .map_err(|source| diagnostic.take().expect("preclaimed prost diagnostic").forward(source))?;
             let header = framed.iter().position(|byte| byte & 0x80 == 0)
@@ -120,8 +109,7 @@ fn scan(mut input: &[u8], carrier: Carrier, fields: &mut Fields,
             let bytes = framed.len() - input.len() - header;
             let value = &framed[header..header + bytes];
             if let Some(nested) = nested {
-                // Count the framing here; the borrowed child scan counts its
-                // own bytes. This is lexical work, never another SDK read.
+                // Charge framing here and child bytes in the nested scan.
                 if let Some(io) = work.as_deref_mut() {
                     io.codec_charge(crate::contract::JsonCodecCharge::Work {
                         bytes: (before - input.len() - bytes) as u64, items: 0,
@@ -137,8 +125,7 @@ fn scan(mut input: &[u8], carrier: Carrier, fields: &mut Fields,
                 }
             }
         } else {
-            // Prost owns unknown-field and group framing semantics. This is an
-            // allocation admission scan, not another semantic event decoder.
+            // Prost validates unknown fields and group framing.
             skip_field(kind, tag, &mut input, DecodeContext::default())
                 .map_err(|source| diagnostic.take().expect("preclaimed prost diagnostic").forward(source))?;
         }
@@ -155,8 +142,7 @@ pub(super) fn decode_quota(input: &[u8], work: &mut Option<&mut dyn HistoryIo>) 
     if input.len() > acyclic_stream::MAX_RECORD_BYTES {
         return Err(boundary(work, "event exceeds SDK record boundary"));
     }
-    // This guard precedes even decode_key: constructing DecodeError itself
-    // allocates its original Box, independently of later carrier admission.
+    // Claim diagnostic custody before decode_key can allocate a DecodeError.
     let mut diagnostic = Some(prost_diagnostic_preclaim(work)?);
     let mut fields = Fields::default();
     scan(input, Carrier::Envelope, &mut fields, work, &mut diagnostic)?;
@@ -177,15 +163,12 @@ pub(super) fn encode_metadata_quota(authority: &Authority, event: &Event) -> Res
             .ok_or_else(|| boundary(&None, "event capability count overflows"))?;
     }
     if let Some(parent) = &event.causal_parent { fields.buffer(parent.authority.id.len(), &None)?; }
-    // The closed EventPayload serializer may return its actual owned SDK
-    // diagnostic after the canonical meter has relinquished its workspace.
-    // Keep an independent original producer claim until that cause is moved.
+    // Keep diagnostic custody independent of the canonical meter.
     fields.quota(&None)?.checked_add(crate::contract::sdk_json_diagnostic_bytes())
         .ok_or_else(|| boundary(&None, "event encoding diagnostic quota overflows"))
 }
 
-/// Bytes copied from existing producer fields into the original closed carrier.
-/// UUID and descriptor display output are computed, not borrowed source copies.
+/// Copied producer bytes, excluding computed UUID and descriptor strings.
 pub(super) fn encode_metadata_copy_bytes(authority: &Authority, event: &Event) -> Result<u64> {
     let (issuer, _) = event.scope.wire_parts();
     let mut bytes = 0u64;
@@ -201,8 +184,7 @@ pub(super) fn encode_metadata_copy_bytes(authority: &Authority, event: &Event) -
     Ok(bytes)
 }
 
-/// A quota guard is private producer custody. It releases on every error,
-/// including cancellation; output custody can be transferred to its owner.
+/// Producer custody released on drop or transferred to the output owner.
 pub(crate) struct Quota<'a, 'b> {
     work: &'a mut Option<&'b mut dyn HistoryIo>,
     bytes: u64,
@@ -216,9 +198,7 @@ impl<'a, 'b> Quota<'a, 'b> {
         }
         Ok(Self { work, bytes })
     }
-    /// Takes responsibility for an existing allowance on this exact observer.
-    /// The caller transfers already-paid custody; this does not admit new data.
-    /// Unlike `new`, transfer must also work after cancellation or quota denial.
+    /// Takes responsibility for already-paid custody on this observer.
     pub(crate) fn from_retained(
         work: &'a mut Option<&'b mut dyn HistoryIo>,
         bytes: u64,
@@ -226,7 +206,7 @@ impl<'a, 'b> Quota<'a, 'b> {
         Self { work, bytes }
     }
     pub(crate) fn work(&mut self) -> &mut Option<&'b mut dyn HistoryIo> { self.work }
-    pub(super) fn replace(&mut self, bytes: u64) -> Result<()> {
+    pub(crate) fn replace(&mut self, bytes: u64) -> Result<()> {
         if bytes <= self.bytes {
             if let Some(work) = self.work.as_deref_mut() { work.release_owned(self.bytes - bytes)?; }
         } else if let Some(work) = self.work.as_deref_mut() {

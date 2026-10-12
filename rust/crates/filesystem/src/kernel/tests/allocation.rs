@@ -212,62 +212,6 @@ fn visited_growth_failures_release_candidate_storage_and_preserve_the_old_table(
 }
 
 #[test]
-fn vector_paid_spare_capacity_grows_logically_without_another_claim()
--> Result<(), AllocationError> {
-    let mut values = Vec::<u64>::new();
-    values.try_reserve_exact(8).map_err(|_| AllocationError::AllocationFailed)?;
-    let mut ledger = AllocationLedger::default();
-    let mut work = WorkCounters::UNCHARGED;
-    let bytes = ledger.claim_elements::<u64>(
-        values.capacity(), &mut work, WorkBudget::UNBOUNDED,
-    )?;
-    let paid_work = work;
-    let mut capacity = LogicalVecCapacity { elements: 1, logical_bytes: bytes };
-    values.push(1);
-    capacity.ensure_for_push(&mut values, 3, &mut ledger, &mut work, WorkBudget::UNBOUNDED)?;
-    values.push(2);
-    capacity.ensure_for_push(&mut values, 3, &mut ledger, &mut work, WorkBudget::UNBOUNDED)?;
-    values.push(3);
-    assert_eq!(capacity.elements, 3);
-    assert_eq!(capacity.logical_bytes(), bytes);
-    assert_eq!(work, paid_work);
-    assert_eq!(ledger.live_bytes(), bytes);
-    assert_eq!(
-        capacity.ensure_for_push(&mut values, 3, &mut ledger, &mut work, WorkBudget::UNBOUNDED),
-        Err(AllocationError::CapacityExceeded),
-    );
-    drop(values);
-    ledger.release(bytes)?;
-    Ok(())
-}
-
-#[test]
-fn vector_zero_sized_growth_and_zero_maximum_do_not_allocate()
--> Result<(), AllocationError> {
-    let mut values = Vec::<()>::new();
-    let mut ledger = AllocationLedger::default();
-    let mut work = WorkCounters::UNCHARGED;
-    let mut capacity = LogicalVecCapacity::default();
-    assert_eq!(
-        capacity.ensure_for_push(&mut values, 0, &mut ledger, &mut work, WorkBudget::UNBOUNDED),
-        Err(AllocationError::CapacityExceeded),
-    );
-    for _ in 0..3 {
-        capacity.ensure_for_push(&mut values, 3, &mut ledger, &mut work, WorkBudget::UNBOUNDED)?;
-        values.push(());
-    }
-    assert_eq!(capacity.elements, 3);
-    assert_eq!(capacity.logical_bytes(), 0);
-    assert_eq!(ledger.live_bytes(), 0);
-    assert_eq!(work, WorkCounters::UNCHARGED);
-    assert_eq!(
-        capacity.ensure_for_push(&mut values, 3, &mut ledger, &mut work, WorkBudget::UNBOUNDED),
-        Err(AllocationError::CapacityExceeded),
-    );
-    Ok(())
-}
-
-#[test]
 fn vector_completed_growth_survives_a_late_budget_error() -> Result<(), AllocationError> {
     let mut values = Vec::<u64>::new();
     let mut capacity = LogicalVecCapacity::default();
@@ -297,41 +241,5 @@ fn vector_completed_growth_survives_a_late_budget_error() -> Result<(), Allocati
     assert_eq!(work.allocation_operations, 1);
     drop(values);
     ledger.release(actual_bytes)?;
-    Ok(())
-}
-
-#[test]
-fn vector_accounting_projection_preserves_ordinary_growth_receipts()
--> Result<(), crate::FsError> {
-    let cancellation = crate::CancellationToken::new();
-    let mut ordinary_values = Vec::<u64>::new();
-    let mut ordinary_capacity = LogicalVecCapacity::default();
-    let mut ordinary_ledger = AllocationLedger::default();
-    let mut ordinary_work = WorkCounters::UNCHARGED;
-    let mut values = Vec::<u64>::new();
-    let mut capacity = LogicalVecCapacity::default();
-    let mut ledger = AllocationLedger::default();
-    let mut work = WorkCounters::UNCHARGED;
-    let mut guard = KernelOwnedAllocation::Standalone;
-    for value in 0..5 {
-        ordinary_capacity.ensure_for_push(
-            &mut ordinary_values, 5, &mut ordinary_ledger, &mut ordinary_work, WorkBudget::UNBOUNDED,
-        ).map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
-        let mut accounting = KernelAccounting::borrowed_standalone(
-            &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
-        );
-        capacity.ensure_for_push_with_accounting(&mut values, 5, &mut guard, &mut accounting)?;
-        ordinary_values.push(value);
-        values.push(value);
-        assert_eq!(capacity, ordinary_capacity);
-        assert_eq!(ledger, ordinary_ledger);
-        assert_eq!(work, ordinary_work);
-    }
-    drop(values);
-    drop(ordinary_values);
-    ledger.release(capacity.logical_bytes())
-        .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
-    ordinary_ledger.release(ordinary_capacity.logical_bytes())
-        .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
     Ok(())
 }

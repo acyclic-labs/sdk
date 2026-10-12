@@ -94,8 +94,6 @@ pub trait EffectProvider: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<Option<EffectObservation>>>;
 
     /// Dispatches the same durable attempt on the supplied original ledger.
-    /// Unsupported providers reject before any provider work. The native future
-    /// owns its real box custody until after the physical box is dropped.
     #[cfg(all(feature = "filesystem",not(target_arch = "wasm32")))]
     fn dispatch_with_native_work<'a>(
         &'a self, _request: EffectDispatch,
@@ -163,7 +161,7 @@ pub(crate) fn validate_result_bytes(schema: &Value, result: &FileRef, bytes: &[u
     result.descriptor().verify(bytes)?;
     let value: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("effect result is not JSON: {error}")))?;
-    crate::contract::validate_json_schema_value(schema, &value, "effect result")?;
+    crate::contract::validate_json_schema_value(schema, &value, "effect result", None)?;
     Ok(())
 }
 
@@ -178,21 +176,18 @@ pub(crate) fn validate_schema_bytes(reference: &FileRef, bytes: &[u8]) -> Result
     reference.descriptor().verify(bytes)?;
     let schema: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("effect result schema is not JSON: {error}")))?;
-    crate::contract::compile_json_schema(&schema, "effect result")?;
+    crate::contract::compile_json_schema(&schema, "effect result", None)?;
     Ok(schema)
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn validate_effect_reference_with_work(
+fn validate_effect_reference(
     reference: &FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
     if let Some(io) = work.as_deref_mut() {
         io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
     }
-    // All fields are private and immutable; new and the guarded typed serde
-    // constructor already enforce this original metadata predicate. Rechecking
-    // the same predicate on an existing typed reference allocates nothing.
     reference.validate()
 }
 
@@ -206,7 +201,7 @@ pub(crate) fn validate_effect_schema_bytes_with_work(
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     {
-        validate_effect_reference_with_work(reference, work)?;
+        validate_effect_reference(reference, work)?;
         if reference.descriptor().media_type() != "application/schema+json" {
             return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
                 "effect result schema must be JSON Schema content"));
@@ -216,7 +211,7 @@ pub(crate) fn validate_effect_schema_bytes_with_work(
             .ok_or_else(|| Error::Unsupported("effect schema observer has no original native ledger".into()))?;
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
         let schema = decode.decode_preparation::<Value>(bytes)?;
-        drop(crate::contract::compile_json_schema_with_io(
+        drop(crate::contract::compile_json_schema(
             &schema, "effect result", Some(&decode))?);
         return Ok(());
     }
@@ -224,8 +219,7 @@ pub(crate) fn validate_effect_schema_bytes_with_work(
     Err(Error::Unsupported("native effect schema validation is unavailable".into()))
 }
 
-/// Shared store/registry result admission. Source bytes stay caller-guarded;
-/// decoded schema and result own their original reservations through validation.
+/// Shared store/registry result admission.
 pub(crate) fn validate_effect_result_bytes_with_work(
     schema_reference: &FileRef, schema_bytes: &[u8], result: &FileRef, bytes: &[u8],
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -236,8 +230,8 @@ pub(crate) fn validate_effect_result_bytes_with_work(
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     {
-        validate_effect_reference_with_work(schema_reference, work)?;
-        validate_effect_reference_with_work(result, work)?;
+        validate_effect_reference(schema_reference, work)?;
+        validate_effect_reference(result, work)?;
         if schema_reference.descriptor().media_type() != "application/schema+json" {
             return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
                 "effect result schema must be JSON Schema content"));
@@ -247,9 +241,8 @@ pub(crate) fn validate_effect_result_bytes_with_work(
             .ok_or_else(|| Error::Unsupported("effect result observer has no original native ledger".into()))?;
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
         let schema = decode.decode_preparation::<Value>(schema_bytes)?;
-        // Preserve schema admission before result parsing/allocation, as in the
-        // original validate_schema_bytes + validate_result_bytes sequence.
-        drop(crate::contract::compile_json_schema_with_io(
+        // Preserve schema admission before result parsing/allocation, as in the original validate_schema_bytes + validate_result_bytes sequence.
+        drop(crate::contract::compile_json_schema(
             &schema, "effect result", Some(&decode))?);
         if result.descriptor().media_type() != "application/json" {
             return Err(Error::NativeBoundary {
@@ -259,7 +252,7 @@ pub(crate) fn validate_effect_result_bytes_with_work(
         }
         result.descriptor().verify_with_native_work(bytes, original)?;
         let value = decode.decode_preparation::<Value>(bytes)?;
-        return crate::contract::validate_json_schema_value_with_io(
+        return crate::contract::validate_json_schema_value(
             &schema, &value, "effect result", Some(&decode));
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -274,7 +267,6 @@ impl EffectRegistry {
     }
 
     /// Creates the original catalog with intrinsic logical metadata custody.
-    /// BTree allocator internals and provider-owned backing are not claimed.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn new_with_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         let native_metadata = work.retain_owned(std::mem::size_of::<Self>() as u64)
@@ -316,7 +308,6 @@ impl EffectRegistry {
     }
 
     /// Copies only SDK-owned identity strings and logical map entry slots.
-    /// Provider and resolver Arcs continue to share their existing backing.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn clone_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
@@ -412,22 +403,13 @@ impl EffectRegistry {
     }
 
     /// Resolves and validates the provider-owned guarantee pinned by durable state.
-    pub fn resolve(&self, effect: &EffectState) -> Result<&Arc<dyn EffectProvider>> {
-        self.resolve_with_work(effect, &mut None)
-    }
-
-    pub(crate) fn resolve_with_work(
+    pub(crate) fn resolve(
         &self, effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<&Arc<dyn EffectProvider>> {
-        self.resolve_fields_with_work(
-            &effect.provider, &effect.effect_kind, effect.guarantee, work)
-    }
-
-    fn resolve_fields_with_work(
-        &self, provider_name: &str, effect_kind: &str, guarantee: EffectGuarantee,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<&Arc<dyn EffectProvider>> {
+        let provider_name = &effect.provider;
+        let effect_kind = &effect.effect_kind;
+        let guarantee = effect.guarantee;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             return self.resolve_fields_with_native_work(provider_name, effect_kind, guarantee, native);
@@ -458,7 +440,8 @@ impl EffectRegistry {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<&Arc<dyn EffectProvider>> {
         self.require_native_metadata(work)?;
-        work.visit(1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let provider = self.providers.get(provider_name).ok_or_else(|| Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "effect provider is not registered",
@@ -478,21 +461,12 @@ impl EffectRegistry {
         Ok(provider)
     }
 
-    /// Validates that a provider observation belongs exactly to durable state.
-    pub fn validate_observation(
-        &self,
-        effect_id: EffectId,
-        effect: &EffectState,
-        observation: &EffectObservation,
-    ) -> Result<()> {
-        self.validate_observation_with_work(effect_id, effect, observation, &mut None)
-    }
-
-    fn validate_observation_with_work(
+    /// Validates the observation against durable dispatch.
+    pub(crate) fn validate_observation(
         &self, effect_id: EffectId, effect: &EffectState, observation: &EffectObservation,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.resolve_with_work(effect, work)?;
+        self.resolve(effect, work)?;
         if observation.provider != effect.provider || observation.effect_id != effect_id
             || effect.attempts.last() != Some(&observation.attempt_id)
             || observation.request_digest != effect.request_digest
@@ -515,7 +489,7 @@ impl EffectRegistry {
         self.dispatch_and_attest_with_work(issuer, effect_id, effect, dispatch, &mut None).await
     }
 
-    pub(crate) async fn dispatch_state_and_attest_with_work(
+    pub(crate) async fn dispatch_state_and_attest(
         &self, issuer: &AuthorityIssuer, effect_id: EffectId, effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EffectAttestation> {
@@ -535,7 +509,7 @@ impl EffectRegistry {
             Some(io) => io.clone_text(&effect.effect_kind)?, None => effect.effect_kind.clone(),
         };
         custody.adopt(effect_kind.capacity() as u64)?;
-        let request = crate::effect_host::clone_file_with_work(&effect.request, custody.work())?;
+        let request = effect.request.clone_with_work(custody.work())?;
         custody.adopt(request.logical_owned_bytes()?)?;
         let dispatch = EffectDispatch {
             provider, effect_id, attempt_id, effect_kind, request,
@@ -549,8 +523,8 @@ impl EffectRegistry {
         dispatch: EffectDispatch,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EffectAttestation> {
-        let provider = self.resolve_with_work(effect, work)?;
-        self.validate_dispatch_with_work(effect_id, effect, &dispatch, work)?;
+        let provider = self.resolve(effect, work)?;
+        self.validate_dispatch(effect_id, effect, &dispatch, work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             let future = provider.dispatch_with_native_work(dispatch, native)?;
@@ -562,25 +536,16 @@ impl EffectRegistry {
             return Err(Error::Unsupported("effect observer has no original native ledger".into()));
         }
         let observation = provider.dispatch(dispatch).await?;
-        self.attest_provider_observation_with_work(
+        self.attest_provider_observation(
             issuer, effect_id, effect, observation, work).await
     }
 
-    /// Reconciles through the pinned provider without redispatching the attempt.
-    pub async fn reconcile_and_attest(
-        &self,
-        issuer: &AuthorityIssuer,
-        effect_id: EffectId,
-        effect: &EffectState,
-    ) -> Result<Option<EffectAttestation>> {
-        self.reconcile_and_attest_with_work(issuer, effect_id, effect, &mut None).await
-    }
-
-    pub(crate) async fn reconcile_and_attest_with_work(
+    /// Reconciles the pinned attempt without redispatching it.
+    pub(crate) async fn reconcile_and_attest(
         &self, issuer: &AuthorityIssuer, effect_id: EffectId, effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Option<EffectAttestation>> {
-        let provider = self.resolve_with_work(effect, work)?;
+        let provider = self.resolve(effect, work)?;
         let attempt_id = effect.attempts.last().copied().ok_or_else(||
             crate::effect_host::effect_error(work, crate::wire::ErrorCode::Conflict,
                 "effect has no durable dispatch attempt"))?;
@@ -598,7 +563,7 @@ impl EffectRegistry {
             return Err(Error::Unsupported("effect observer has no original native ledger".into()));
         }
         match provider.reconcile(attempt_id).await? {
-            Some(observation) => Ok(Some(self.attest_provider_observation_with_work(
+            Some(observation) => Ok(Some(self.attest_provider_observation(
                 issuer, effect_id, effect, observation, work).await?)),
             None => Ok(None),
         }
@@ -622,14 +587,12 @@ impl EffectRegistry {
         }
         let provider_bytes = incoming.observation.provider.capacity() as u64;
         let NativeEffectObservation { observation, custody } = incoming;
-        let result = self.attest_provider_observation_with_work(
+        let result = self.attest_provider_observation(
             issuer, effect_id, effect, observation, work).await;
         match result {
             Ok(attestation) => {
                 let io = work.as_deref_mut().expect("original observer");
                 io.absorb_native_custody(custody)?;
-                // Signing moved the status, but dropped the original echoed
-                // provider label. Only its new attestation label remains live.
                 io.release_owned(provider_bytes)?;
                 Ok(attestation)
             },
@@ -640,7 +603,7 @@ impl EffectRegistry {
         }
     }
 
-    fn validate_dispatch_with_work(
+    fn validate_dispatch(
         &self, effect_id: EffectId, effect: &EffectState, dispatch: &EffectDispatch,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -655,24 +618,24 @@ impl EffectRegistry {
         Ok(())
     }
 
-    async fn attest_provider_observation_with_work(
+    async fn attest_provider_observation(
         &self, issuer: &AuthorityIssuer, effect_id: EffectId, effect: &EffectState,
         observation: EffectObservation,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EffectAttestation> {
-        self.validate_observation_with_work(effect_id, effect, &observation, work)?;
+        self.validate_observation(effect_id, effect, &observation, work)?;
         if let EffectStatus::Succeeded { result } = &observation.status {
             let resolver = self.result_resolver.as_ref().ok_or_else(||
                 crate::effect_host::effect_error(work, crate::wire::ErrorCode::Unsupported,
                     "effect result content resolver is not bound"))?;
             if work.is_some() {
                 let mut content = crate::wire_codec::CodecQuota::new(work, 0)?;
-                let bytes = content.work().as_deref_mut().expect("observer")
+                let (bytes, claim) = content.work().as_deref_mut().expect("observer")
                     .read_content(resolver.as_ref(), result)?.await?;
-                content.adopt(bytes.capacity() as u64)?;
-                let schema_bytes = content.work().as_deref_mut().expect("observer")
+                content.adopt(claim)?;
+                let (schema_bytes, claim) = content.work().as_deref_mut().expect("observer")
                     .read_content(resolver.as_ref(), &effect.result_schema)?.await?;
-                content.adopt(schema_bytes.capacity() as u64)?;
+                content.adopt(claim)?;
                 validate_effect_result_bytes_with_work(
                     &effect.result_schema, &schema_bytes, result, &bytes, content.work())?;
             } else {

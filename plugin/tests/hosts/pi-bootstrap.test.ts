@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import { test } from "bun:test";
 import { invokePi } from "./pi-fixture.ts";
 
 // Pi's own deterministic provider exercises the installed CLI without network

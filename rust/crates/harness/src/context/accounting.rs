@@ -28,8 +28,6 @@ impl ModelContextCapacity {
 }
 
 /// Provider-owned additive upper bounds for an exact prepared request.
-/// Counters must include structured content, native media and provider framing.
-/// The SDK supplies no tokenizer or model-name capacity catalog.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -39,7 +37,6 @@ pub struct ModelTokenCount {
     /// Upper bound for tools, options and request framing independent of messages.
     pub fixed_tokens: u32,
     /// Ordered per-message upper bounds, including message-specific framing.
-    /// The provider must make these safe for ordered subsequences of this request.
     pub message_tokens: Vec<u32>,
 }
 
@@ -139,7 +136,7 @@ mod tests {
             max_output_tokens: Some(1),
         };
         let prepared =
-            PreparedModelRequest::prepare(request.clone(), crate::conversation::Limits::default())?;
+            PreparedModelRequest::prepare(request.clone(), crate::conversation::Limits::default(), None)?;
         let mut count = ModelTokenCount {
             request_digest: prepared.manifest().request_digest,
             fixed_tokens: u32::MAX,
@@ -152,7 +149,8 @@ mod tests {
             count
                 .validate(&PreparedModelRequest::prepare(
                     changed,
-                    crate::conversation::Limits::default()
+                    crate::conversation::Limits::default(),
+                    None,
                 )?)
                 .is_err()
         );
@@ -162,7 +160,8 @@ mod tests {
             count
                 .validate(&PreparedModelRequest::prepare(
                     changed,
-                    crate::conversation::Limits::default()
+                    crate::conversation::Limits::default(),
+                    None,
                 )?)
                 .is_err()
         );

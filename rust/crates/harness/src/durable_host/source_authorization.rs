@@ -35,9 +35,8 @@ impl SourceBudget {
 }
 
 impl<P: StreamProvider> TaskJournalOwner<P> {
-    /// Authorizes one project selection under the original current owner and an
-    /// explicitly configured RootService policy. Does not alter original grants.
-    #[allow(clippy::too_many_arguments, reason = "original owner, policy, snapshot and finite bounds are explicit")]
+    /// Authorizes one project selection under the original current owner and an explicitly configured RootService policy.
+    #[allow(clippy::too_many_arguments)]
     pub async fn authorize_project_source(
         self: &Arc<Self>, context: &crate::runtime::TaskContext,
         issuer: &AuthorityIssuer, provider: &dyn RootProjectSourceProvider,
@@ -60,7 +59,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if cancellation.is_cancelled() {
             return Err(Error::Unauthorized("project source invocation is cancelled".into()));
         }
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         let snapshot_bytes = crate::contract::json_byte_length(&snapshot, maximum_bytes)?;
         snapshot.project.validate()?;
         snapshot.generation.validate()?;
@@ -95,8 +94,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             created_project_authenticated,
             cancellation,
         }, &snapshot).await?;
-        // The callback may await a backend. Recheck the original lease before issuing.
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         if cancellation.is_cancelled() {
             return Err(Error::Unauthorized("project source invocation cancelled during snapshot verification".into()));
         }
@@ -105,7 +103,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             caller_admission_digest: self.original_admission_digest, caller_fence: self.fence.clone(),
             operation_id, source_task, project: snapshot.project, generation: snapshot.generation,
             native_snapshot: snapshot.native_snapshot, graph_root, maximum_work, maximum_bytes,
-            // Unissued local placeholder; it cannot verify and never escapes.
             policy_scope: Scope::from_wire(String::new(), Capabilities::default(), String::new(), None, None, [0;32]),
         };
         let label = authorization.scope_label()?;
@@ -113,8 +110,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         ProjectSourceReadHandle::seal(authorization, &self.host.verifier)
     }
 
-    /// Restores immutable issued evidence only through the genuine current
-    /// original owner. A recovered lease does not rewrite the admitted request.
+    /// Restores immutable issued evidence only through the genuine current original owner.
     pub async fn restore_project_source(
         self: &Arc<Self>, context: &crate::runtime::TaskContext,
         request: &crate::resource_preparation::ResourcePreparationRequest,
@@ -126,19 +122,17 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         {
             return Err(Error::Unauthorized("project source restoration lacks its current original owner".into()));
         }
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         request.validate()?;
         let handle = self.host.seal_prepared_project_source(request, self.task_id).await?;
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         if self.invocation_cancellation.as_ref().is_some_and(acyclic_fs::CancellationToken::is_cancelled) {
             return Err(Error::Unauthorized("project source restoration invocation is cancelled".into()));
         }
         Ok(handle)
     }
 
-    /// Restores the issued authorization retained in an original source intent
-    /// before staging effects or constructing an ordinary preparation request.
-    /// This cannot reselect a newer generation or substitute an issuing fence.
+    /// Restores the issued authorization retained in an original source intent before staging effects or constructing an ordinary preparation request.
     pub async fn restore_project_source_authorization(
         self: &Arc<Self>, context: &crate::runtime::TaskContext,
         authorization: &ProjectSourceAuthorization,
@@ -151,9 +145,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         {
             return Err(Error::Unauthorized("project source intent restoration lacks its current original owner".into()));
         }
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         let handle = self.host.seal_project_source_authorization(authorization, self.task_id).await?;
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         if self.invocation_cancellation.as_ref().is_some_and(acyclic_fs::CancellationToken::is_cancelled) {
             return Err(Error::Unauthorized("project source intent restoration invocation is cancelled".into()));
         }
@@ -240,12 +234,25 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
             drop(observer);
             drop(history);
-            let selected = crate::executor::clone_preparation(snapshot, Some(&io))?;
+            let selected = {
+                let mut history = io.history_io();
+                let mut observer: Option<&mut dyn HistoryIo> = Some(&mut history);
+                let project = snapshot.project.clone_with_work(&mut observer)?;
+                let generation = super::headless::copy_generation(&snapshot.generation, &mut observer)?;
+                let mut quota = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
+                let native_snapshot = snapshot.native_snapshot.as_ref()
+                    .map(|value| crate::core::copy_value(value, &mut quota)).transpose()?;
+                quota.transfer();
+                ProjectSourceSnapshot { project, generation, native_snapshot }
+            };
             let owner = {
                 let mut history = io.history_io();
                 history.clone_authority(&self.host.owner)?
             };
-            let caller_fence = crate::executor::clone_preparation(&self.fence, Some(&io))?;
+            let caller_fence = {
+                let mut history = io.history_io();
+                self.fence.clone_with_work(&mut Some(&mut history))?
+            };
             let mut authorization = ProjectSourceAuthorization {
                 owner, caller_task: self.task_id, caller_admission_digest: self.original_admission_digest,
                 caller_fence, operation_id, source_task, project: selected.project,
@@ -331,9 +338,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         {
             return Err(Error::Unauthorized("selected project read lacks its current original owner".into()));
         }
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         self.host.verify_project_source_authorization(handle.authorization(), self.task_id).await?;
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         cancellation.check().map_err(|_| Error::Unauthorized("selected project invocation cancelled".into()))
     }
 
@@ -364,7 +371,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     }
 
     /// Revalidates the sealed reader already captured by the original owner.
-    /// This is not a constructor and cannot install a grant or task context.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn verify_project_source_read_with_native_work(
         &self, handle: &ProjectSourceReadHandle, work: &acyclic_fs::NativeMaterializationWork,
@@ -399,11 +405,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     async fn source_admission(&self, task: TaskId, budget: &mut SourceBudget) -> Result<TaskAdmissionRecord> {
         budget.charge(1, 0)?;
         let operation = OperationId::from_bytes(task.into_bytes());
-        let spec = self.retained_declaration(operation).await?
+        let spec = self.retained_declaration_with_work(operation, &mut None).await?
             .ok_or_else(|| Error::NotFound("project source admission".into()))?;
-        // Reject oversized immutable admission content before provider IO.
         budget.charge(0, spec.state.descriptor().byte_length())?;
-        let admission = self.read_retained_admission(operation).await?;
+        let admission = self.read_retained_admission_counted(operation, &mut None).await.map(|(record, _)| record)?;
         Ok(admission)
     }
 
@@ -424,7 +429,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             match state.spec.parent {
                 Some(parent) => operation = parent.operation_id,
                 None => {
-                    coordinator.scheduler().session_limits(operation)?.validate()?;
+                    coordinator.scheduler().session_limits(operation, &mut None)?.validate()?;
                     return Ok(TaskId::from_bytes(operation.into_bytes()));
                 }
             }
@@ -435,9 +440,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, source: &TaskAdmissionRecord, project: &crate::conversation::VolumeRef,
         budget: &mut SourceBudget,
     ) -> Result<bool> {
-        // Preflight the complete existing proof verifier's recursive admission
-        // dependency tree, including repeated paths, before provider work begins.
-        // The provider remains the sole allocation-record verifier.
         let mut pending = vec![(source.clone(), BTreeSet::new())];
         while let Some((admission, mut path)) = pending.pop() {
             budget.charge(1, 0)?;
@@ -456,7 +458,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 if request.maximum_work > budget.work || request.maximum_bytes > budget.bytes {
                     return Err(Error::Invalid("creator verification exceeds selected source bounds".into()));
                 }
-                // Charge provider-declared maximums before trusting callback IO.
                 budget.charge(request.maximum_work, request.maximum_bytes)?;
                 let original_parent = preparation.parent.ok_or_else(|| Error::Unauthorized("project preparation has no parent".into()))?;
                 self.source_admission(original_parent, budget).await?;
@@ -467,7 +468,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 pending.push((preparation, path.clone()));
             }
         }
-        let access = self.verify_created_access(source, &mut BTreeSet::new()).await?;
+        let access = self.verify_created_access_with_work(source, &mut Vec::new(), &mut None).await?;
         Ok(access.as_ref().is_some_and(|access| access.content.iter().any(|binding| &binding.volume == project)))
     }
 
@@ -526,7 +527,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             match &state.spec.parent {
                 Some(parent) => operation = parent.operation_id,
                 None => {
-                    coordinator.scheduler().session_limits_with_work(operation, &mut observer)?
+                    coordinator.scheduler().session_limits(operation, &mut observer)?
                         .validate_with_work(&mut observer)?;
                     return Ok(TaskId::from_bytes(operation.into_bytes()));
                 }
@@ -556,7 +557,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut pending = Vec::new();
         let mut current = Some((Cow::Borrowed(source), Vec::new(), None));
         while let Some(mut item) = current.take().or_else(|| pending.pop()) {
-            // Keep each admission and its guard in payload-first tuple order.
             let admission = &item.0;
             let path = &mut item.1;
             budget.charge_with_native_work(1, 0, original)?;
@@ -653,7 +653,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     /// Seals the exact retained preparation selection on its original ledger.
-    /// The enclosing preparation factory already funds this borrowed future.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn seal_prepared_project_source_with_native_work(
         &self, request: &crate::resource_preparation::ResourcePreparationRequest,
@@ -662,7 +661,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let Some(record) = &request.read_authorization else {
             return work.retain_owned(0)
                 .map(|custody| (None, custody))
-                .map_err(|cause| Error::NativeWork { cause, custody: None });
+                .map_err(Error::from);
         };
         if request.child.parent != Some(parent)
             || request.maximum_work > record.maximum_work
@@ -675,8 +674,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             });
         }
         {
-            // These transient values drop before their original observer's
-            // custody; they are not retained as part of the returned token.
             let comparison = crate::filesystem::PreparationIo::from_native_work(work)?;
             let operation = comparison.value_json(&record.operation_id, request.maximum_bytes)?;
             let authorization = comparison.value_json(record, request.maximum_bytes)?;
@@ -712,7 +709,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     async fn verify_project_source_authorization(
         &self, record: &ProjectSourceAuthorization, parent: TaskId,
     ) -> Result<()> {
-        record.verify_scope(&self.verifier)?;
+        record.verify_scope_with_work(&self.verifier, &mut None)?;
         if record.owner != self.owner || record.caller_task != parent {
             return Err(Error::Unauthorized("project source differs from original caller or owning coordinator".into()));
         }
@@ -721,8 +718,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if crate::contract::canonical_json_digest(&caller)? != record.caller_admission_digest {
             return Err(Error::Unauthorized("project source original caller admission changed".into()));
         }
-        // Issuing-fence provenance survives an ordinary owner reload. Current
-        // creation is fenced by the preparation owner, not this historic fence.
         if caller.run_limits.deadline_epoch_ms.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
             return Err(Error::Unauthorized("project source original caller deadline elapsed".into()));
         }
@@ -736,8 +731,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if !created && record.source_task != record.graph_root {
             return Err(Error::Unauthorized("project source retained creator evidence changed".into()));
         }
-        // For bootstrap roots, the original issuer MAC attests the mandatory
-        // provider's protected allocation verification. No raw root scope does.
         Ok(())
     }
 

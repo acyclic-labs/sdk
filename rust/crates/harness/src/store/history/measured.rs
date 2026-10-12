@@ -8,7 +8,6 @@ use std::mem::size_of;
 
 impl<P: StreamProvider> HistoryReader<P> {
     /// Pins the original committed cut using the caller's native ledger.
-    /// The returned guard retains the cursor's admitted authority allocation.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn pin_with_native_work(
         &self,
@@ -22,7 +21,6 @@ impl<P: StreamProvider> HistoryReader<P> {
     }
 
     /// Reads the original authenticated bounded page on the same native ledger.
-    /// Values precede their guard so their allocations drop before custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn read_page_with_native_work(
         &self,
@@ -92,8 +90,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         Ok((state, native_io.into_custody()))
     }
 
-    /// Verifies the original canonical publication and initial child binding
-    /// on the caller's ledger. This read admits no publication or fresh lease.
+    /// Verifies the original canonical publication and initial child binding on the caller's ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn verify_published_child_with_native_work(
         &self,
@@ -108,7 +105,6 @@ impl<P: StreamProvider> HistoryReader<P> {
     }
 
     /// Pins the same committed Stream cut with a finite SDK-boundary receipt.
-    /// Tail metadata exposes no encoded byte size; none is invented here.
     pub async fn pin_measured(
         &self,
         after_revision: u64,
@@ -123,11 +119,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         work.finish(result)
     }
 
-    /// Reads through the original authenticated page engine with exact visible
-    /// SDK tail/read counts and original encoded record bytes, including failures.
-    /// `output_bytes` is the source canonical bytes represented by returned events,
-    /// not a re-encoding. Explicit vector capacities and concrete typed/schema
-    /// logical custody are admitted; opaque provider/allocator internals are not RSS.
+    /// Reads through the original authenticated page engine with exact visible SDK tail/read counts and original encoded record bytes, including failures.
     pub async fn read_page_measured(
         &self,
         cursor: &HistoryCursor,
@@ -145,7 +137,6 @@ impl<P: StreamProvider> HistoryReader<P> {
     }
 
     /// Original immutable operation locator and canonical event, without replay.
-    /// Successful output uses canonical source record bytes, never re-encoding.
     pub async fn operation_event_bounded_measured(
         &self,
         operation: crate::OperationId,
@@ -164,30 +155,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         work.finish(result)
     }
 
-    /// The same pinned, authenticated sequence-index range with one SDK ledger.
-    /// Failure retains actual input prefixes and returns no partial output.
-    pub async fn conversation_range_measured(
-        &self,
-        cursor: &HistoryCursor,
-        after_sequence: u64,
-        through_sequence: u64,
-        limits: HistoryReadLimits,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<Vec<crate::conversation::ConversationMessage>>, Error> {
-        let mut work = HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.conversation_range_with_work(cursor, after_sequence, through_sequence,
-                limits, &mut Some(&mut work)).await
-        }.await;
-        work.finish(result)
-    }
-
-    /// Reads one effect's authenticated transition prefix at the exact pinned
-    /// cut, including issuer-authenticated absence. This grants no execution
-    /// authority and uses the original bounded radix/locator reader, not replay.
-    /// Output bytes are the original canonical records represented by events.
+    /// Reads one effect's authenticated transition prefix at the exact pinned cut, including issuer-authenticated absence.
     pub async fn effect_events_measured(
         &self, cursor: &HistoryCursor, effect: crate::EffectId,
         limits: HistoryReadLimits, budget: WorkBudget,
@@ -204,8 +172,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         work.finish(result)
     }
 
-    /// Verifies the original published child without acquiring another lease,
-    /// restoring an aggregate, rebinding, or requiring a Summary projection.
+    /// Verifies the original published child without acquiring another lease, restoring an aggregate, rebinding, or requiring a Summary projection.
     pub async fn verify_published_child_measured(
         &self, parent: &Self, seed: &crate::fork::ForkSeed,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -232,7 +199,6 @@ pub(crate) struct HistoryWork<'a> {
     staged_items: u64,
     verification_only: bool,
 }
-
 
 impl<'a> HistoryWork<'a> {
     pub(crate) fn new(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
@@ -311,7 +277,6 @@ impl<'a> HistoryWork<'a> {
     pub(crate) fn receive_work(&mut self, mut delta: WorkCounters) -> Result<()> {
         let peak = self.live_bytes.checked_add(delta.peak_allocation_bytes)
             .ok_or_else(|| Error::Invalid("nested history peak allocation overflows".into()))?;
-        // Intermediate content is not this API's returned canonical records.
         delta.output_bytes = 0;
         delta.items_returned = 0;
         delta.peak_allocation_bytes = peak;
@@ -352,8 +317,7 @@ impl<'a> HistoryWork<'a> {
         Ok(())
     }
 
-    /// Raw source bytes have already arrived. Preserve them even when their
-    /// actual size exceeds the budget, before validating or decoding the record.
+    /// Raw source bytes have already arrived.
     pub(super) fn receive_record(&mut self, bytes: u64) -> Result<()> {
         self.work = self.combined(WorkCounters {
             authority_records_read: 1,

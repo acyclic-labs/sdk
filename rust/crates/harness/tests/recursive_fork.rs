@@ -128,8 +128,6 @@ fn fork_command(id: u16, revision: u64, scope: &Scope, seed: ForkSeed) -> Result
 
 #[test]
 fn thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_project() -> Result<()> {
-    // The broad, instrumented E2E future has a larger stack footprint than a
-    // production task. Run it on a dedicated stack without relaxing fork depth.
     std::thread::Builder::new()
         .name("recursive-fork-e2e".into())
         .stack_size(16 * 1024 * 1024)
@@ -1120,8 +1118,6 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         );
         assert_eq!(aggregate.reducer().fork(&child_authority), Some(&seed));
         if level == 1 {
-            // The cold reader authenticates the actual published seed; it does
-            // not hydrate a reducer or interpret the prefix descriptor as text.
             let reader = aggregate.history_reader()?;
             let page_limits = acyclic_harness::store::HistoryReadLimits {
                 maximum_events: 2, // one publication plus one canonical message
@@ -1213,8 +1209,6 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     .await?
                     .is_empty()
             );
-            // Assemble the imported source once from verified pages using
-            // the same public projection and ContextSource/SourceStage path.
             use acyclic_harness::context::{
                 Context, ContextInput, ContextPipeline, ContextPlacement, ContextStage, SourceStage,
             };
@@ -1240,7 +1234,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 1_024,
             )?;
             let projected =
-                select_model_context(&loaded, selection.clone(), &source_reader, 2, 4, 64 * 1_024)
+                select_model_context(&loaded, (&loaded).logical_revision(), selection.clone(), &source_reader, 2, 4, 64 * 1_024, 4, None)
                     .await?;
             let denied_reader = FilesystemContentVerifier::new(
                 host.clone(),
@@ -1249,7 +1243,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 1_024,
             )?;
             assert!(
-                select_model_context(&loaded, selection, &denied_reader, 2, 4, 64 * 1_024)
+                select_model_context(&loaded, (&loaded).logical_revision(), selection, &denied_reader, 2, 4, 64 * 1_024, 4, None)
                     .await
                     .is_err()
             );
@@ -1283,8 +1277,6 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
         }
         if level == DEEP_RETRY {
-            // Lose both process-local reducers after the parent publication and
-            // child bind, then recover the same operation from retained Streams.
             aggregate = StreamAggregate::open(
                 &stream,
                 authority.clone(),
@@ -1535,6 +1527,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     )?;
     let selected = select_model_context(
         state,
+        (state).logical_revision(),
         ModelContextSelection {
             checkpoint: None,
             conversation_revision: 2,
@@ -1544,6 +1537,8 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         256,
         2,
         128 * 1024,
+        2,
+        None,
     )
     .await?;
     assert!(

@@ -142,7 +142,7 @@ async fn native_frozen_reader_pins_epoch_cursor_and_never_promotes_source() -> s
     let directory = tempfile::tempdir()?;
     std::fs::write(directory.path().join("a.txt"), b"a")?;
     std::fs::write(directory.path().join("b.txt"), b"b")?;
-    let source = Arc::new(NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?);
+    let source = Arc::new(NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?);
     let filesystem = acyclic_fs::Fs::memory();
     let workspace = acyclic_fs::LazyWorkspace::attach(&filesystem, "actual-native-reader", Arc::clone(&source), acyclic_fs::MemoryLazyWorkspaceStore::default()).await?;
     let frozen = workspace.snapshot().await?;
@@ -179,7 +179,7 @@ async fn selected_frozen_native_baseline_is_not_an_empty_root_and_source_stays_i
     let directory = tempfile::tempdir()?;
     std::fs::write(directory.path().join("selected.txt"), b"original-selected")?;
     std::fs::write(directory.path().join("outside.txt"), b"original-outside")?;
-    let source = Arc::new(NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?);
+    let source = Arc::new(NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?);
     let filesystem = acyclic_fs::Fs::memory();
     let provider = ProviderRef::new("selected-baseline", "filesystem", "2")?;
     let agent = AgentId::from_bytes([83; 16]);
@@ -275,9 +275,9 @@ async fn canonical_selected_import_preserves_metadata_source_and_destination_con
     let destination_directory = tempfile::tempdir()?;
     let filesystem = acyclic_fs::Fs::memory();
     let source_native = Arc::new(NativeDemandSource::open(source_directory.path(),
-        FilesystemProfile::Portable, VolumeLimits::default()).await?);
+        FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?);
     let destination_native = Arc::new(NativeDemandSource::open(destination_directory.path(),
-        FilesystemProfile::Portable, VolumeLimits::default()).await?);
+        FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?);
     let source_owner = AgentId::from_bytes([101; 16]);
     let destination_owner = AgentId::from_bytes([102; 16]);
     let provider = ProviderRef::new("canonical-selected-import", "filesystem", "2")?;
@@ -368,7 +368,7 @@ async fn selected_import_does_not_infer_deletion_from_a_stale_native_source() ->
     use acyclic_fs::{demand::native::NativeDemandSource, model::{FilesystemProfile, VolumeLimits}};
     let directory = tempfile::tempdir()?;
     let native = Arc::new(NativeDemandSource::open(directory.path(), FilesystemProfile::Portable,
-        VolumeLimits::default()).await?);
+        VolumeLimits::default(), None, None).await?);
     let filesystem = acyclic_fs::Fs::memory();
     let source = acyclic_fs::LazyWorkspace::attach(&filesystem, "selected-negative-proof",
         Arc::clone(&native), acyclic_fs::MemoryLazyWorkspaceStore::default()).await?;
@@ -403,10 +403,10 @@ async fn canonical_selected_directory_import_pins_nested_generation_and_metadata
         Capabilities::new([destination_volume.capability(VolumeOperation::Write)?]));
     let verifier = issuer.verifier();
     let source = acyclic_fs::LazyWorkspace::attach(&filesystem, source_volume.storage_name()?,
-        Arc::new(NativeDemandSource::open(source_directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?),
+        Arc::new(NativeDemandSource::open(source_directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?),
         acyclic_fs::MemoryLazyWorkspaceStore::default()).await?;
     let destination = acyclic_fs::LazyWorkspace::attach(&filesystem, destination_volume.storage_name()?,
-        Arc::new(NativeDemandSource::open(destination_directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?),
+        Arc::new(NativeDemandSource::open(destination_directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?),
         acyclic_fs::MemoryLazyWorkspaceStore::default()).await?;
     let mut tree = source.workspace().begin_transaction().await?;
     tree.create_dir_all("/selected/nested").await?;

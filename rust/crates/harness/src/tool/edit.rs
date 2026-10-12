@@ -70,8 +70,7 @@ impl AlgorithmWork {
     fn record_capacity(&mut self, requested: usize, actual: usize, old: usize) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(custody) = &mut self.custody {
-            // Record the completed allocator capacity before observing late
-            // cancellation; the old allocation has now physically retired.
+            // Record the completed allocator capacity before observing late cancellation; the old allocation has now physically retired.
             let bytes = custody.bytes().checked_sub(requested as u64)
                 .and_then(|n| n.checked_add(actual as u64))
                 .and_then(|n| n.checked_sub(old as u64))
@@ -148,11 +147,6 @@ pub(crate) fn validate_edit_bound(maximum_bytes: u64) -> Result<()> {
 }
 
 /// Replaces one unambiguous exact occurrence within finite input/output bounds.
-///
-/// Matching includes overlapping occurrences. Empty needles, missing text and
-/// ambiguous matches fail before allocation. Callers publish the returned text
-/// through their existing generation-checked Filesystem transaction; this pure
-/// transformation does not acquire authority or mutate a workspace.
 pub fn exact_replace(
     source: &str,
     old_text: &str,
@@ -179,14 +173,10 @@ pub(super) fn exact_replace_engine(
     {
         return Err(work.invalid("exact edit has invalid text or byte bounds"));
     }
-    // These are logical source examinations; std's opaque substring-search
-    // implementation is not falsely reported as one SDK comparison per byte.
     work.examine(1)?;
     let start = source
         .find(old_text)
         .ok_or_else(|| work.conflict("exact edit text is missing"))?;
-    // Advance one character, rather than one match, to detect overlaps without
-    // slicing inside a UTF-8 code point.
     let first_character_bytes = old_text.chars().next().map_or(0, char::len_utf8);
     let next_start = start + first_character_bytes;
     work.examine(1)?;
@@ -257,8 +247,6 @@ mod tests {
 
     #[test]
     fn bounded_matching_agrees_with_all_utf8_start_positions() {
-        // Exhaust all binary strings through six characters, including repeated
-        // multibyte characters. The oracle counts every legal starting position.
         for alphabet in [['a', 'b'], ['é', '🦀']] {
             for length in 1..=6 {
                 for bits in 0..(1 << length) {

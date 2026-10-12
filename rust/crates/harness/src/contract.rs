@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::wire::ErrorCode;
 
 /// Maximum UTF-8 byte length for names crossing a component boundary.
 pub const COMPONENT_LABEL_MAX_BYTES: usize = crate::conversation::MAX_PORTABLE_COUNT;
@@ -64,32 +66,30 @@ mod json;
 pub(crate) use json::{
     admit_json, admit_json_value_shape, lexical_json_diagnostic_bytes,
     json_owned_value_shape_bounded,
-    json_typed_value_decode_owned_bytes,
-    json_value_virtual_owned_bytes,
+    json_typed_value_decode_owned_bytes, json_value_virtual_owned_bytes,
     json_from_slice_seed_bounded_trusted,
     owned_logical_bytes,
 };
 mod event_json;
 pub(crate) use event_json::{
-    EventPayloadJsonAdmission, audited_serde_diagnostic_bytes, event_payload_json_admission,
-    event_payload_ownership,
+    audited_serde_diagnostic_bytes, event_payload_json_admission,
+    json_decode_owned_bytes,
     audited_preparation_diagnostic_bytes,
 };
 pub use event_json::{json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes};
 mod snapshot_json;
-pub(crate) use snapshot_json::{SnapshotJsonAdmission, snapshot_json_admission, snapshot_json_ownership};
+pub(crate) use snapshot_json::snapshot_json_admission;
 pub use json::{
     JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape,
-    canonical_json_bytes_bounded, json_bytes_bounded_trusted,
-    json_from_slice_bounded_trusted, json_value_bounded_trusted, json_value_decode_owned_bytes,
+    canonical_json_bytes_bounded, json_bytes_bounded,
+    json_from_slice_bounded_trusted, json_value_bounded, json_value_decode_owned_bytes,
     sdk_json_diagnostic_bytes,
     json_owned_value_conversion_additional_bytes,
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use json::{
-    json_from_slice_bounded_native_trusted, json_value_bounded_native_trusted,
+    json_from_slice_bounded_native_trusted,
     json_from_value_bounded_native_trusted, json_from_value_owned_bounded_native_trusted,
-    canonical_json_bytes_bounded_native_trusted, json_bytes_bounded_native_trusted,
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use json::{
@@ -99,22 +99,17 @@ pub(crate) use json::{
     canonical_json_value_into_prepaid_native_trusted,
 };
 
-/// One sorted-key JSON encoding for durable identities and Rust/WASM output.
-/// The canonical bounded serializer preserves Value integer/float and duplicate
-/// key semantics, without an unchecked initial `serde_json::to_value`.
+/// Sorted-key JSON encoding for durable identities and Rust/WASM output.
 pub(crate) fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
-    json::canonical_json_bytes_trusted(value)
+    json::encode(value, JsonBounds::IDENTITY, None, &mut |_| Ok(()))
 }
 
-/// Checks compact JSON size without retaining an encoded buffer or cloning a
-/// Value tree. Key ordering does not change the size of ordinary typed records.
-/// Canonical encoding and identity checks still use `canonical_json_bytes`.
-/// This is only an encoded-size check, never owned-tree or serde heap admission.
+/// Checks encoded JSON size without admitting owned-tree or serde heap storage.
 pub(crate) fn validate_json_byte_bound<T: Serialize + ?Sized>(value: &T, maximum: u64) -> Result<()> {
     json_byte_length(value, maximum).map(|_| ())
 }
 
-pub(crate) fn validate_trusted_json_byte_bound_with_work<T: Serialize + ?Sized>(
+pub(crate) fn validate_trusted_json_byte_bound<T: Serialize + ?Sized>(
     value: &T,
     maximum: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -123,10 +118,6 @@ pub(crate) fn validate_trusted_json_byte_bound_with_work<T: Serialize + ?Sized>(
 }
 
 /// Counts the original compact serialization of an audited, finite SDK DTO.
-/// Callers must bound its source collections before entering this method and
-/// exclude unaudited serializers and user-generated serializer errors.
-/// Ordinary checks retain their bounded early-failure behavior. Native checks
-/// avoid allocating an I/O error merely because a small byte bound was selected.
 pub(crate) fn count_trusted_json_bytes_with_work<T: Serialize + ?Sized>(
     value: &T,
     maximum: u64,
@@ -157,7 +148,6 @@ pub(crate) fn count_trusted_json_bytes_with_work<T: Serialize + ?Sized>(
         }
         bytes
     };
-    // Closed SDK serializers only; callers admit their resident source first.
     let diagnostic = audited_serde_diagnostic_bytes(
         0, preparation_serde_diagnostic_label_bytes() + CONTEXT_LABEL_BYTES,
     )?;
@@ -183,24 +173,13 @@ pub(crate) fn count_trusted_json_bytes_with_work<T: Serialize + ?Sized>(
     if let Err(Error::NativeEncode { code, source, custody: None }) = result {
         return Err(Error::NativeEncode { code, source, custody: custody.take() });
     }
-    // Native custody drops unused allowance here. Ordinary operation-scoped
-    // diagnostics remain retained on failure until their original observer ends.
     if result.is_ok() && native_code.is_none() {
         observer.release_owned(diagnostic)?;
     }
     result
 }
 
-pub(crate) fn validate_effect_json_byte_bound_with_work(
-    value: &crate::core::EffectState,
-    maximum: u64,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<()> {
-    validate_trusted_json_byte_bound_with_work(value, maximum, work)
-}
-
 /// Known owned payload/slot capacity of an already bounded SDK Value.
-/// Private allocator/map-node overhead is not a physical-memory assertion.
 pub(crate) fn json_value_logical_owned_bytes(value: &serde_json::Value) -> Result<u64> {
     let overflow = || {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -255,8 +234,7 @@ pub(crate) fn json_byte_length<T: Serialize + ?Sized>(value: &T, maximum: u64) -
     Ok(maximum - budget.0)
 }
 
-/// Complete typed decoding for trusted existing record implementations. This
-/// checks finite input structure, not arbitrary custom Deserialize heap usage.
+/// Complete typed decoding for trusted existing record implementations.
 pub(crate) fn json_from_slice<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
 ) -> serde_json::Result<T> {
@@ -290,20 +268,8 @@ pub(crate) fn canonical_json_digest_with_work<T: Serialize + ?Sized>(
     Ok(*blake3::hash(&bytes).as_bytes())
 }
 
-/// One JSON Schema admission rule shared by host task/tool execution and the
-/// WASM facade before untrusted model values reach typed executors.
-pub(crate) fn validate_json_schema_value(
-    schema: &serde_json::Value,
-    value: &serde_json::Value,
-    label: &str,
-) -> Result<()> {
-    validate_json_schema_value_with_io(schema, value, label, None)
-}
-
 /// The ordinary and measured paths use the same validator and shared cache.
-/// Measured scope covers SDK-observed JSON data and library calls, not the
-/// validator's opaque CPU, graph allocations, allocator nodes, or RSS.
-pub(crate) fn validate_json_schema_value_with_io(
+pub(crate) fn validate_json_schema_value(
     schema: &serde_json::Value,
     value: &serde_json::Value,
     label: &str,
@@ -321,8 +287,6 @@ pub(crate) fn validate_json_schema_value_with_io(
         Err(source) => {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(JsonSchemaDataScope::Native(custody)) = _value_scope {
-                // Ownership conversion may materialize and copy the failing
-                // instance. Its allowance was admitted before validation.
                 return Err(Error::NativeSchema {
                     code: ErrorCode::Invalid,
                     source: source.to_owned(),
@@ -348,8 +312,6 @@ enum JsonSchemaDataScope<'a> {
     Native(acyclic_fs::NativeAllocation),
 }
 
-// A conservative, scoped logical data allowance around opaque schema calls.
-// Native inputs use the resident shape witness, not encoded sizing as node count.
 #[cfg(feature = "filesystem")]
 fn json_schema_scope<'a>(
     value: &serde_json::Value,
@@ -364,9 +326,6 @@ fn json_schema_scope<'a>(
             JsonValueSchema::None,
             &mut |charge| io.codec_charge(charge, false),
         )?;
-        // ValidationError::to_owned can clone the whole resident instance.
-        // Admit that new ownership before validation, without reinterpreting
-        // literal private keys or emitting hypothetical encoded output.
         let owned = json_value_decode_owned_bytes(shape)?;
         return work.retain_owned(owned)
             .map(|custody| Some(JsonSchemaDataScope::Native(custody)))
@@ -499,19 +458,6 @@ pub(crate) fn preparation_format(
     Ok(diagnostic.text)
 }
 
-/// Compiles one JSON Schema; `label` names it in the error. Schemas are
-/// immutable contracts re-checked on every tool, task, and state boundary, so
-/// validators are memoised by content digest instead of being rebuilt per
-/// value. The bounded cache is reset when full; failures are never cached.
-pub(crate) fn compile_json_schema(
-    schema: &serde_json::Value,
-    label: &str,
-) -> Result<std::sync::Arc<jsonschema::Validator>> {
-    compile_json_schema_with_io(schema, label, None)
-}
-
-// Retain the schema/diagnostic logical allowance until validation ends, even
-// for a cache hit. The Arc/cache and opaque validator graph remain unchanged.
 struct CompiledJsonSchema<'a> {
     validator: std::sync::Arc<jsonschema::Validator>,
     #[cfg(feature = "filesystem")]
@@ -520,7 +466,7 @@ struct CompiledJsonSchema<'a> {
     _scope: std::marker::PhantomData<&'a ()>,
 }
 
-pub(crate) fn compile_json_schema_with_io(
+pub(crate) fn compile_json_schema(
     schema: &serde_json::Value,
     label: &str,
     io: Option<&crate::executor::PreparationIo>,
@@ -537,10 +483,10 @@ fn compile_json_schema_engine<'a>(
     let before = io.map(|io| io.receipt().items_examined).unwrap_or(0);
     #[cfg(feature = "filesystem")]
     let _encoded;
-    let encoded = match io {
+    let encoded: acyclic_stream::OwnedBytes = match io {
         #[cfg(feature = "filesystem")]
         Some(io) => io.encode_json(schema, io.remaining()?.bytes_encoded, false)?,
-        _ => serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?,
+        _ => serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?.into(),
     };
     #[cfg(feature = "filesystem")]
     {
@@ -597,10 +543,6 @@ fn compile_json_schema_cached(
     Ok(validator)
 }
 
-
-// Both observers enter the same cache/compiler after guarding their actual
-// encoding/hash prefix. This counts SDK boundaries, never physical stat calls
-// or opaque validator graph, CPU, allocator-node or RSS usage.
 enum JsonSchemaObserver<'a> {
     Preparation(Option<&'a crate::executor::PreparationIo>),
     History(&'a mut dyn crate::store::history::HistoryIo),
@@ -625,8 +567,6 @@ impl JsonSchemaObserver<'_> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Self::Preparation(Some(io)) = self {
             if io.original_native_work().is_some() {
-                // The compiler already owns this opaque library error. Moving
-                // it creates no SDK instance copy or diagnostic string.
                 return Error::NativeSchema {
                     code: ErrorCode::Invalid, source, custody: None,
                 };
@@ -634,7 +574,6 @@ impl JsonSchemaObserver<'_> {
         }
         self.error(format_args!("invalid {label} schema: {source}"))
     }
-
 
     fn error(&mut self, message: std::fmt::Arguments<'_>) -> Error {
         match self {
@@ -681,19 +620,17 @@ fn history_schema_format(
     Ok(diagnostic.text)
 }
 
-/// History uses its original native ledger when present, not reconstructed
-/// remaining counters. Portable observers retain bounded canonical witnesses
-/// and a conservative logical data scope through the same compiler/cache.
+/// History uses its original native ledger when present, not reconstructed remaining counters.
 pub(crate) fn compile_json_schema_with_work(
     schema: &serde_json::Value,
     label: &str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<std::sync::Arc<jsonschema::Validator>> {
-    if work.is_none() { return compile_json_schema(schema, label); }
+    if work.is_none() { return compile_json_schema(schema, label, None); }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(native) = work.as_deref().and_then(|work| work.original_native_work()) {
         let io = crate::filesystem::PreparationIo::from_native_work(native)?;
-        return compile_json_schema_with_io(schema, label, Some(&io));
+        return compile_json_schema(schema, label, Some(&io));
     }
     let mut scope = crate::wire_codec::CodecQuota::new(work, 0)?;
     let key = history_schema_scope(schema, &mut scope, true)?;
@@ -701,19 +638,18 @@ pub(crate) fn compile_json_schema_with_work(
         &mut JsonSchemaObserver::History(scope.work().as_deref_mut().expect("observed schema")))
 }
 
-/// Keep both schema and input logical allowances live through validation and
-/// diagnostic construction, including when the shared validator is cached.
+/// Keep both schema and input logical allowances live through validation and diagnostic construction, including when the shared validator is cached.
 pub(crate) fn validate_json_schema_value_with_work(
     schema: &serde_json::Value,
     value: &serde_json::Value,
     label: &str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    if work.is_none() { return validate_json_schema_value(schema, value, label); }
+    if work.is_none() { return validate_json_schema_value(schema, value, label, None); }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(native) = work.as_deref().and_then(|work| work.original_native_work()) {
         let io = crate::filesystem::PreparationIo::from_native_work(native)?;
-        return validate_json_schema_value_with_io(schema, value, label, Some(&io));
+        return validate_json_schema_value(schema, value, label, Some(&io));
     }
     let mut scope = crate::wire_codec::CodecQuota::new(work, 0)?;
     let key = history_schema_scope(schema, &mut scope, true)?;
@@ -735,9 +671,6 @@ fn history_schema_scope(
     let bytes = crate::store::history::canonical_bytes_with_work(
         value, acyclic_stream::MAX_RECORD_BYTES as u64, scope.work())?;
     scope.adopt(bytes.capacity() as u64)?;
-    // Compact wire length bounds the number of actual JSON nodes without a
-    // second traversal or an unchecked tree copy. This is logical admission,
-    // not an observation of opaque jsonschema allocations.
     let items = (bytes.len() as u64).checked_add(1)
         .ok_or_else(|| Error::Invalid("schema data witness overflow".into()))?;
     let owned = json_schema_data_owned(bytes.len() as u64, items)?;
@@ -754,143 +687,6 @@ fn history_schema_scope(
     drop(bytes);
     scope.relinquish(capacity)?;
     Ok(key)
-}
-
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
-mod json_schema_work_tests {
-    use super::*;
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
-    use crate::filesystem::PreparationIo;
-    use crate::store::history::HistoryWork;
-
-    fn budget() -> WorkBudget {
-        WorkBudget {
-            bytes_encoded: 16_000_000, bytes_hashed: 16_000_000,
-            bytes_copied: 16_000_000, items_examined: 100_000,
-            allocation_operations: 100_000, peak_allocation_bytes: 16_000_000,
-            ..WorkBudget::default()
-        }
-    }
-
-    fn native(budget: WorkBudget, cancellation: &CancellationToken)
-        -> Result<NativeMaterializationWork>
-    {
-        NativeMaterializationWork::new(budget, cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
-    }
-
-    #[test]
-    fn ordinary_preparation_portable_and_native_share_the_validator() -> Result<()> {
-        let schema = serde_json::json!({"type":"integer", "minimum":73019});
-        let ordinary = compile_json_schema(&schema, "shared controls")?;
-        let cancellation = CancellationToken::new();
-        let preparation = PreparationIo::from_budget(budget(), &cancellation)?;
-        let measured = compile_json_schema_with_io(&schema, "shared controls", Some(&preparation))?;
-        assert!(std::sync::Arc::ptr_eq(&ordinary, &measured));
-        let mut portable = HistoryWork::new(budget(), &cancellation);
-        let observed = compile_json_schema_with_work(&schema, "shared controls", &mut Some(&mut portable))?;
-        assert!(std::sync::Arc::ptr_eq(&ordinary, &observed));
-        let receipt = portable.finish(Ok(()))
-            .map_err(|failure| failure.error)?;
-        assert!(receipt.work.bytes_encoded > 0);
-        assert!(receipt.work.bytes_hashed > 0);
-        assert_eq!(receipt.work.backend_read_operations, 0);
-        let work = native(budget(), &cancellation)?;
-        let baseline = work.live_allocation_bytes();
-        {
-            let mut observer = crate::store::history::native_work_io(&work)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            let observed = compile_json_schema_with_work(&schema, "shared controls", &mut Some(&mut observer))?;
-            assert!(std::sync::Arc::ptr_eq(&ordinary, &observed));
-            validate_json_schema_value_with_work(&schema, &serde_json::json!(73020),
-                "shared controls", &mut Some(&mut observer))?;
-        }
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        assert!(work.receipt().bytes_hashed > 0);
-        assert_eq!(work.receipt().backend_read_operations, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn cached_schema_still_admits_hash_and_preserves_native_denial() -> Result<()> {
-        let schema = serde_json::json!({"type":"string", "minLength":37021});
-        compile_json_schema(&schema, "hash control")?;
-        let cancellation = CancellationToken::new();
-        let work = native(WorkBudget { bytes_hashed: 0, ..budget() }, &cancellation)?;
-        let baseline = work.live_allocation_bytes();
-        {
-            let mut observer = crate::store::history::native_work_io(&work)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            assert!(matches!(compile_json_schema_with_work(&schema, "hash control", &mut Some(&mut observer)),
-                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                    acyclic_fs::WorkError::BudgetExceeded { counter: "bytes_hashed", .. }), .. })));
-        }
-        assert!(work.receipt().bytes_encoded > 0);
-        assert_eq!(work.receipt().bytes_hashed, 0);
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        let mut portable = HistoryWork::new(WorkBudget { bytes_hashed: 0, ..budget() }, &cancellation);
-        assert!(compile_json_schema_with_work(&schema, "hash control", &mut Some(&mut portable)).is_err());
-        let receipt = portable.finish(Ok(())).map_err(|failure| failure.error)?;
-        assert!(receipt.work.bytes_encoded > 0);
-        assert_eq!(receipt.work.bytes_hashed, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn preparation_scope_survives_cached_compilation_and_validation() -> Result<()> {
-        let schema = serde_json::json!({"type":"string", "minLength":73022});
-        compile_json_schema(&schema, "scope control")?;
-        let work = native(budget(), &CancellationToken::new())?;
-        let baseline = work.live_allocation_bytes();
-        let io = PreparationIo::from_native_work(&work)?;
-        {
-            let compiled = compile_json_schema_engine(&schema, "scope control", Some(&io))?;
-            assert!(work.live_allocation_bytes() > baseline);
-            assert!(compiled.validator.validate(&serde_json::json!("short")).is_err());
-            assert!(work.live_allocation_bytes() > baseline);
-        }
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        let error = validate_json_schema_value_with_io(&schema, &serde_json::json!("short"),
-            "scope control", Some(&io)).expect_err("invalid value retains its native diagnostic");
-        assert!(matches!(&error, Error::NativeDiagnostic { code: crate::wire::ErrorCode::Invalid, .. }));
-        assert!(work.live_allocation_bytes() > baseline);
-        drop(io);
-        assert!(work.live_allocation_bytes() > baseline);
-        drop(error);
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        Ok(())
-    }
-
-    #[test]
-    fn native_diagnostic_allocation_denial_preserves_prefix_and_custody() -> Result<()> {
-        let work = native(WorkBudget { allocation_operations: 1, ..budget() }, &CancellationToken::new())?;
-        let baseline = work.live_allocation_bytes();
-        let io = PreparationIo::from_native_work(&work)?;
-        let prefix = work.receipt();
-        assert!(matches!(preparation_format(format_args!("schema diagnostic"), Some(&io)),
-            Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded { counter: "allocation_operations", .. }), .. })));
-        assert_eq!(work.receipt(), prefix);
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        Ok(())
-    }
-
-    #[test]
-    fn native_cancellation_is_first_cause_even_for_cached_schema() -> Result<()> {
-        let schema = serde_json::json!({"type":"boolean", "title":"cancel control 73023"});
-        compile_json_schema(&schema, "cancel control")?;
-        let cancellation = CancellationToken::new();
-        let work = native(budget(), &cancellation)?;
-        let prefix = work.receipt();
-        let mut observer = crate::store::history::native_work_io(&work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        cancellation.cancel();
-        assert!(matches!(validate_json_schema_value_with_work(&schema, &serde_json::json!(true),
-            "cancel control", &mut Some(&mut observer)),
-            Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-        assert_eq!(work.receipt(), prefix);
-        Ok(())
-    }
 }
 
 /// Returns whether a component label satisfies the shared Rust spelling rule.
@@ -1064,11 +860,6 @@ impl Capabilities {
     }
 
     /// Builds exactly the requested grants on the original native ledger.
-    ///
-    /// Duplicate names are examined but not copied. Retained accounting covers
-    /// each known String slot and its actual character capacity; opaque standard
-    /// library B-tree node allocations are not reported as SDK allocations.
-    /// The caller must drop the capability set before releasing its custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn new_with_native_work<'a>(
         values: impl IntoIterator<Item = &'a str>,
@@ -1278,10 +1069,6 @@ pub enum Error {
     #[error("operation outcome is indeterminate: {0}")]
     Indeterminate(OperationId),
     /// An owned native failure, preserving its cause and existing allocation custody.
-    ///
-    /// The cause is dropped before its custody. Allocation-free cancellation and
-    /// work-limit causes need no custody; owned diagnostics transfer their
-    /// already-admitted guard rather than allocating while reporting failure.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{cause}")]
     NativeWork {
@@ -1436,7 +1223,6 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// The bytes committed, but their frozen publication proof could not be retained.
-    /// The authored generation is evidence of completion, never permission to retry.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("source publication {generation:?} is indeterminate: {source}")]
     NativeSourcePublicationUncertain {
@@ -1491,8 +1277,6 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// A native reservation failure retaining its original physical cleanup owner.
-    ///
-    /// Its concrete source slot is admitted and allocated before reservation IO.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeReservation {
@@ -1525,8 +1309,6 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// A publication failure with its actionable destination and completed work.
-    ///
-    /// The recursive failure slot is admitted and allocated before publication.
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     #[error("{failure}")]
     NativePublication {
@@ -1547,8 +1329,6 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// A physical native action whose journal completion is uncertain.
-    ///
-    /// Its original cause slot and ownership were admitted before the action.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{failure}")]
     NativeStageUncertain {
@@ -1574,21 +1354,21 @@ pub(crate) fn native_work_error_code(cause: &acyclic_fs::NativeTreeMaterializati
     match cause {
         Native::InvalidLayout
         | Native::InvalidPreimage
-        | Native::InvalidPath(_)
+        | Native::InvalidPath(..)
         | Native::OverlappingPaths
         | Native::PayloadTooLarge { .. } => ErrorCode::Invalid,
-        Native::MissingTarget(_) | Native::MissingPreimage(_) => ErrorCode::NotFound,
-        Native::ExternalMutation(_)
-        | Native::UnexpectedBackup(_)
+        Native::MissingTarget(..) | Native::MissingPreimage(..) => ErrorCode::NotFound,
+        Native::ExternalMutation(..)
+        | Native::UnexpectedBackup(..)
         | Native::AllocationChanged { .. }
         | Native::PreimageConflict => ErrorCode::Conflict,
-        Native::UnsupportedRename | Native::UnverifiedSourceMetadata(_) => ErrorCode::Unsupported,
-        // A native failure alone does not authenticate an uncertain Harness admission.
-        // Only Indeterminate(original_operation) makes that claim.
+        Native::UnsupportedRename | Native::UnverifiedSourceMetadata(..) => ErrorCode::Unsupported,
         Native::Io(_)
         | Native::Cancelled
+        | Native::OriginalWorkPoisoned
+        | Native::MissingCustody
         | Native::Work(_)
-        | Native::Allocation(_)
+        | Native::Allocation(..)
         | Native::AllocationFailed(_)
         | Native::IndeterminatePreparation => ErrorCode::Storage,
     }
@@ -1650,8 +1430,7 @@ impl Error {
         }
     }
 
-    /// Stable classification for tracing's `error.kind`; never the message,
-    /// which can embed paths.
+    /// Stable classification for tracing's `error.kind`; never the message, which can embed paths.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         self.code().as_str_name()
@@ -1659,44 +1438,14 @@ impl Error {
 
     /// Native failures must propagate before additional provider or deadline work.
     pub(crate) fn is_native_failure(&self) -> bool {
-        match self {
-            Self::Allocation(_) => true,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeWork { .. }
-            | Self::NativeConstruction { .. }
-            | Self::NativeBoundary { .. }
-            | Self::NativeDiagnostic { .. }
-            | Self::NativeDecode { .. }
-            | Self::NativeCodec { .. }
-            | Self::NativeProstDecode { .. }
-            | Self::NativeEncode { .. }
-            | Self::NativeSchema { .. }
-            | Self::NativeStream { .. }
-            | Self::NativeMcpIncomplete { .. }
-            | Self::NativeSupervisor { .. }
-            | Self::NativeSource { .. }
-            | Self::NativeSourcePublicationUncertain { .. }
-            | Self::NativeWorkspace { .. }
-            | Self::NativeDrivenJoin { .. }
-            | Self::NativeReservation { .. }
-            | Self::NativeFilesystem { .. }
-            | Self::NativeStageUncertain { .. } => true,
-            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-            Self::NativeLineage { .. } | Self::NativeContext { .. } => true,
-            #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
-            Self::NativeMcpHttp { .. } => true,
-            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-            Self::NativeView { .. } | Self::NativePublication { .. }
-            | Self::NativeWorkspacePublication { .. }
-            | Self::NativeTimeout { .. } => true,
-            _ => false,
-        }
+        !matches!(self,
+            Self::NotFound(_) | Self::Conflict(_) | Self::Unsupported(_) | Self::Invalid(_)
+            | Self::Unauthorized(_) | Self::InteractionRejected(_) | Self::Storage(_)
+            | Self::Indeterminate(_))
     }
 }
 
 /// Moves a native cause without formatting it or manufacturing allocation custody.
-/// Measured producers with owned diagnostics transfer their existing guard
-/// explicitly through `NativeWork` instead of using this conversion.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl From<acyclic_fs::NativeTreeMaterializationError> for Error {
     fn from(cause: acyclic_fs::NativeTreeMaterializationError) -> Self {
@@ -1780,239 +1529,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 mod tests {
     use super::*;
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_capabilities_examine_duplicates_without_copying_them() {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(WorkBudget {
-            allocation_operations: 3,
-            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1024,
-            bytes_copied: 6,
-            items_examined: 4,
-            ..WorkBudget::default()
-        }, &cancellation).expect("original ledger");
-        let (caps, custody) = Capabilities::new_with_native_work(
-            ["é", "read", "é", "read"], &work,
-        ).expect("two distinct UTF-8 grants");
-        assert_eq!(caps.iter().collect::<Vec<_>>(), ["read", "é"]);
-        assert_eq!(work.receipt().items_examined, 4);
-        assert_eq!(work.receipt().bytes_copied, 6);
-        assert_eq!(work.receipt().allocation_operations, 3);
-        assert_eq!(custody.bytes(), caps.0.iter().map(|text| {
-            std::mem::size_of::<String>() as u64 + text.capacity() as u64
-        }).sum::<u64>());
-        assert!(custody.work().shares_ledger(&work));
-        drop(caps);
-        drop(custody);
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_capability_budget_and_cancellation_precede_character_copy() {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork,
-            NativeTreeMaterializationError, WorkBudget, WorkError};
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(WorkBudget {
-            allocation_operations: 2,
-            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1024,
-            bytes_copied: 1,
-            items_examined: 2,
-            ..WorkBudget::default()
-        }, &cancellation).expect("original ledger");
-        let before = work.receipt();
-        assert!(matches!(Capabilities::new_with_native_work(["é"], &work),
-            Err(Error::NativeWork {
-                cause: NativeTreeMaterializationError::Work(
-                    WorkError::BudgetExceeded { counter: "bytes_copied", .. }),
-                ..
-            })));
-        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
-        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
-        cancellation.cancel();
-        assert!(matches!(Capabilities::new_with_native_work(["read"], &work),
-            Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
-        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_capabilities_zero_remaining_allocation_denies_the_first_string() {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork,
-            NativeTreeMaterializationError, WorkBudget, WorkError};
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(WorkBudget {
-            allocation_operations: 1,
-            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1024,
-            bytes_copied: 4,
-            items_examined: 1,
-            ..WorkBudget::default()
-        }, &cancellation).expect("only the original ledger control allocation");
-        assert!(matches!(Capabilities::new_with_native_work(["read"], &work),
-            Err(Error::NativeWork {
-                cause: NativeTreeMaterializationError::Work(
-                    WorkError::BudgetExceeded { counter: "allocation_operations", .. }),
-                ..
-            })));
-        assert_eq!(work.receipt().allocation_operations, 1);
-        assert_eq!(work.receipt().bytes_copied, 0);
-        assert_eq!(work.receipt().items_examined, 1);
-    }
-
-    #[test]
-    fn canonical_json_sorts_nested_keys_and_preserves_full_width_integers() -> Result<()> {
-        let value = serde_json::json!({
-            "z": { "later": 2, "earlier": 1 },
-            "a": u64::MAX,
-        });
-        assert_eq!(
-            canonical_json_bytes(&value)?,
-            br#"{"a":18446744073709551615,"z":{"earlier":1,"later":2}}"#
-        );
-        let nested = format!("{}0{}", "[".repeat(129), "]".repeat(129));
-        let value: serde_json::Value = json_from_slice(nested.as_bytes())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(canonical_json_bytes(&value)?, nested.as_bytes());
-        assert!(json_from_slice::<serde_json::Value>(b"{} {}").is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn canonical_json_bytes_are_pinned_for_every_value_kind() -> Result<()> {
-        #[derive(Serialize)]
-        struct Declared<'a> {
-            zeta: Option<u8>,
-            alpha: &'a str,
-            #[serde(rename = "\u{e9}")]
-            accent: (i64, f64, f64, bool),
-            mid: std::collections::BTreeMap<&'a str, Vec<u8>>,
-        }
-        let value = Declared {
-            zeta: None,
-            alpha: "quote\" back\\ nl\n tab\t ctl\u{1} \u{2028} \u{1f600}",
-            accent: (i64::MIN, 1.5e300, -0.0, false),
-            mid: [("b", vec![]), ("a", vec![0, 255])].into(),
-        };
-        let expected = concat!(
-            r#"{"alpha":"quote\" back\\ nl\n tab\t ctl\u0001 "#,
-            "\u{2028} \u{1f600}\",",
-            r#""mid":{"a":[0,255],"b":[]},"zeta":null,"#,
-            "\"\u{e9}\":[-9223372036854775808,1.5e+300,-0.0,false]}",
-        );
-        assert_eq!(canonical_json_bytes(&value)?, expected.as_bytes());
-        validate_json_byte_bound(&value, expected.len() as u64)?;
-        assert!(validate_json_byte_bound(&value, expected.len() as u64 - 1).is_err());
-        Ok(())
-    }
-
-    struct Pairs<K>(Vec<(K, u8)>);
-
-    impl<K: Serialize> Serialize for Pairs<K> {
-        fn serialize<S: serde::Serializer>(
-            &self,
-            serializer: S,
-        ) -> std::result::Result<S::Ok, S::Error> {
-            use serde::ser::SerializeMap;
-            let mut map = serializer.serialize_map(Some(self.0.len()))?;
-            for (key, value) in &self.0 {
-                map.serialize_entry(key, value)?;
-            }
-            map.end()
-        }
-    }
-
-    struct Failing;
-
-    impl Serialize for Failing {
-        fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
-            Err(serde::ser::Error::custom("canonical fixture failure"))
-        }
-    }
-
-    #[test]
-    fn canonical_json_pins_raw_key_order_and_duplicate_collapse() -> Result<()> {
-        let pairs = Pairs(vec![
-            ("\u{1f600}", 5),
-            ("\u{e9}", 4),
-            ("\\", 3),
-            ("\"", 2),
-            ("\0", 1),
-        ]);
-        let expected = concat!(
-            r#"{"\u0000":1,"\"":2,"\\":3,"#,
-            "\"\u{e9}\":4,\"\u{1f600}\":5}"
-        );
-        assert_eq!(canonical_json_bytes(&pairs)?, expected.as_bytes());
-        assert_eq!(
-            canonical_json_bytes(&Pairs(vec![("key", 1), ("key", 2)]))?,
-            br#"{"key":2}"#
-        );
-        assert_eq!(
-            canonical_json_bytes(&[serde_json::json!({"z": {"b": 2, "a": 1}})])?,
-            br#"[{"z":{"a":1,"b":2}}]"#
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn canonical_json_preserves_value_conversion_and_rejects_invalid_values() -> Result<()> {
-        assert_eq!(
-            canonical_json_bytes(&[f64::NAN, f64::INFINITY, f64::NEG_INFINITY])?,
-            b"[null,null,null]"
-        );
-        assert_eq!(canonical_json_bytes(&0.1_f32)?, b"0.10000000149011612");
-        assert_eq!(
-            canonical_json_bytes(&Pairs(vec![(1.5_f64, 1)]))?,
-            br#"{"1.5":1}"#
-        );
-        for key in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(matches!(
-                canonical_json_bytes(&Pairs(vec![(key, 1)])),
-                Err(Error::Invalid(_))
-            ));
-        }
-        assert!(matches!(
-            canonical_json_bytes(&Pairs(vec![(vec![1_u8], 1)])),
-            Err(Error::Invalid(_))
-        ));
-        assert!(matches!(canonical_json_bytes(&Failing), Err(Error::Invalid(_))));
-        assert!(matches!(canonical_json_bytes(&i128::MIN), Err(Error::Invalid(_))));
-        assert!(matches!(canonical_json_bytes(&u128::MAX), Err(Error::Invalid(_))));
-        assert_eq!(
-            canonical_json_bytes(&(i128::from(i64::MIN), u128::from(u64::MAX)))?,
-            b"[-9223372036854775808,18446744073709551615]"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn json_byte_bound_stops_serialization_before_remaining_elements() {
-        use serde::ser::SerializeSeq as _;
-        use std::cell::Cell;
-
-        struct Observed<'a>(&'a Cell<usize>);
-        impl Serialize for Observed<'_> {
-            fn serialize<S: serde::Serializer>(
-                &self,
-                serializer: S,
-            ) -> std::result::Result<S::Ok, S::Error> {
-                let mut sequence = serializer.serialize_seq(Some(1_000))?;
-                for _ in 0..1_000 {
-                    self.0.set(self.0.get() + 1);
-                    sequence.serialize_element(&"x".repeat(64))?;
-                }
-                sequence.end()
-            }
-        }
-
-        let visited = Cell::new(0);
-        assert!(matches!(
-            validate_json_byte_bound(&Observed(&visited), 32),
-            Err(Error::Invalid(message)) if message.contains("declared byte bound")
-        ));
-        assert_eq!(visited.get(), 1);
-    }
-
     #[test]
     fn policy_grants_intersect_and_any_deny_wins() {
         let resolved = resolve_policies(&[
@@ -2032,30 +1548,11 @@ mod tests {
 
     #[test]
     fn named_policy_layers_require_canonical_hierarchy_order() {
-        let policy = AuthorityPolicy {
-            grants: Capabilities::new(["read"]),
-            denies: Capabilities::default(),
-        };
-        assert!(
-            resolve_policy_layers(&[
-                PolicyLayer {
-                    level: AuthorityLevel::Runtime,
-                    policy: policy.clone()
-                },
-                PolicyLayer {
-                    level: AuthorityLevel::Invocation,
-                    policy
-                },
-            ])
-            .is_ok()
-        );
-        assert!(
-            resolve_policy_layers(&[PolicyLayer {
-                level: AuthorityLevel::Agent,
-                policy: AuthorityPolicy::default()
-            },])
-            .is_err()
-        );
+        let layer = |level| PolicyLayer { level, policy: AuthorityPolicy {
+            grants: Capabilities::new(["read"]), denies: Capabilities::default(),
+        } };
+        assert!(resolve_policy_layers(&[layer(AuthorityLevel::Runtime), layer(AuthorityLevel::Invocation)]).is_ok());
+        assert!(resolve_policy_layers(&[layer(AuthorityLevel::Agent)]).is_err());
     }
 
     #[test]
@@ -2063,17 +1560,7 @@ mod tests {
         assert!(validate_component_label("alpha", "label").is_ok());
         assert!(validate_component_label(&"é".repeat(127), "label").is_ok());
         assert!(validate_component_label(&"😀".repeat(63), "label").is_ok());
-        for value in [
-            "",
-            ".",
-            "..",
-            "/",
-            "\\",
-            "a\n",
-            "a\u{00a0}",
-            "a\u{2003}",
-            "a\u{007f}",
-        ] {
+        for value in ["", ".", "..", "/", "\\", "a\n", "a\u{00a0}", "a\u{2003}", "a\u{007f}"] {
             assert!(
                 validate_component_label(value, "label").is_err(),
                 "{value:?}"

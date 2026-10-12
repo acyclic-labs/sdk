@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::FileRef;
 use crate::test_stream::LostSessionAck;
 use crate::filesystem::PreparationIo;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
@@ -9,7 +10,7 @@ type MailRuntime = FilesystemTaskRuntime<LostSessionAck<MemoryStream>, MemoryAut
 fn budget() -> WorkBudget {
     let units = 65_536;
     let bytes = 64 * 1_024 * 1_024;
-    WorkBudget { authority_records_read: units, authority_records_acknowledged: units,
+    WorkBudget { authority_records_read: units, authority_records_appended: units,
         authority_bytes_read: bytes, authority_bytes_written: bytes,
         object_probes: units, backend_read_operations: units, backend_write_operations: units,
         durability_operations: units, page_reads: units, page_writes: units,
@@ -104,7 +105,7 @@ async fn native_mail_sdk_cursor_atomic_lost_ack_and_multi_recipient_are_original
     let retry = fixture.send(1, operation, &io).await?;
     assert_eq!(retry, ack);
     assert_eq!(fixture.sdk.io_snapshot().records, committed);
-    assert!(fixture.runtime.task_host().reconcile_sent_mail_with_io(fixture.tasks[0].0, &fixture.tasks[0].1,
+    assert!(fixture.runtime.task_host().reconcile_sent_mail(fixture.tasks[0].0, &fixture.tasks[0].1,
         fixture.tasks[1].0, operation, fixture.payload.clone_with_io(&io)?, Some(&io)).await?);
     assert_eq!(fixture.sdk.io_snapshot().records, committed);
     let rejected = fixture.send(2, operation, &io).await;
@@ -180,7 +181,6 @@ async fn native_mail_sdk_cursor_rejects_actual_hostile_version_and_recipient_rec
         }))?);
         let target = if index == 0 { acyclic_stream::CommitCondition::Absent { path: mailbox.clone() } }
             else { acyclic_stream::CommitCondition::Tail { path: mailbox.clone(), expected: index as u64 } };
-        // Actual SDK atomic fixture publication, never a forged receipt/witness.
         let committed = StreamClient::new(Arc::clone(&fixture.sdk)).commit(acyclic_stream::CommitRequest {
             conditions: vec![target, acyclic_stream::CommitCondition::Absent { path: intent.clone() }],
             mutations: vec![

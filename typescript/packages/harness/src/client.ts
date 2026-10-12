@@ -3,7 +3,7 @@ import type { FileRef, ReferencedAttachments } from "./conversation.js";
 import { NativeContracts } from "./native-contracts.js";
 import { isSafeAuthorityId } from "./rust-policy.js";
 import { SnapshotStore } from "./client-snapshot.js";
-import { RequestScheduler } from "./client-requests.js";
+import { RequestScheduler, requestBound } from "./client-requests.js";
 
 export interface ReplayCursor {
   readonly generation: string;
@@ -136,8 +136,8 @@ export class MemoryOutbox implements OutboxStore {
   #bytes = 0;
 
   constructor(readonly maximumCommands = 1024, readonly maximumBytes = 16 * 1024 * 1024) {
-    positiveBound(maximumCommands, "maximumCommands");
-    positiveBound(maximumBytes, "maximumBytes");
+    requestBound(maximumCommands, "maximumCommands");
+    requestBound(maximumBytes, "maximumBytes");
   }
 
   async load(): Promise<readonly ClientCommand[]> {
@@ -172,7 +172,7 @@ export class MemoryOutbox implements OutboxStore {
 export class MemoryCursorStore implements CursorStore {
   readonly #cursors = new Map<string, ReplayCursor>();
 
-  constructor(readonly maximumCursors = 64) { positiveBound(maximumCursors, "maximumCursors"); }
+  constructor(readonly maximumCursors = 64) { requestBound(maximumCursors, "maximumCursors"); }
 
   async loadCursors(): Promise<ReadonlyMap<string, ReplayCursor>> {
     return new Map(this.#cursors);
@@ -216,11 +216,11 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
   readonly #maximumCheckpointBytes: number;
 
   constructor(options: IndexedDbClientStoreOptions) {
-    this.#maximumCommands = positiveBound(options.maximumCommands ?? 1024, "maximumCommands");
-    this.#maximumBytes = positiveBound(options.maximumBytes ?? 16 * 1024 * 1024, "maximumBytes");
-    this.#maximumResidentBytes = positiveBound(options.maximumResidentBytes ?? 16 * 1024 * 1024, "maximumResidentBytes");
-    this.#maximumCursors = positiveBound(options.maximumCursors ?? 64, "maximumCursors");
-    this.#maximumCheckpointBytes = positiveBound(options.maximumCheckpointBytes ?? 256 * 1024, "maximumCheckpointBytes");
+    this.#maximumCommands = requestBound(options.maximumCommands ?? 1024, "maximumCommands");
+    this.#maximumBytes = requestBound(options.maximumBytes ?? 16 * 1024 * 1024, "maximumBytes");
+    this.#maximumResidentBytes = requestBound(options.maximumResidentBytes ?? 16 * 1024 * 1024, "maximumResidentBytes");
+    this.#maximumCursors = requestBound(options.maximumCursors ?? 64, "maximumCursors");
+    this.#maximumCheckpointBytes = requestBound(options.maximumCheckpointBytes ?? 256 * 1024, "maximumCheckpointBytes");
     this.#factory = options.indexedDB ?? globalThis.indexedDB;
     if (options.databaseName.trim() === "") throw new TypeError("databaseName is required");
     this.#name = options.databaseName;
@@ -501,33 +501,14 @@ export class HarnessClient<Event = unknown> {
     readonly cursorStore: CursorStore = isCursorStore(outbox) ? outbox : new MemoryCursorStore(),
     admission: ClientAdmissionLimits = { requests: 128, bytes: 16 * 1024 * 1024, commandBytes: 1024 * 1024 },
   ) {
-    positiveBound(admission.commandBytes, "commandBytes");
+    requestBound(admission.commandBytes, "commandBytes");
     this.admission = Object.freeze({ ...admission });
     this.#mutations = new RequestScheduler({ concurrent: 1, requests: admission.requests, bytes: admission.bytes });
   }
 
   async handle(kind: AggregateKind, id: string): Promise<AggregateHandle<Event>> {
-    return new AggregateHandle(this, await authority(kind, id));
-  }
-
-  async agent(id: string): Promise<AgentHandle<Event>> {
-    return new AgentHandle(this, await authority("agent", id));
-  }
-
-  async conversation(id: string): Promise<ConversationHandle<Event>> {
-    return new ConversationHandle(this, await authority("conversation", id));
-  }
-
-  async session(id: string): Promise<SessionHandle<Event>> {
-    return new SessionHandle(this, await authority("session", id));
-  }
-
-  async turn(id: string): Promise<TurnHandle<Event>> {
-    return new TurnHandle(this, await authority("turn", id));
-  }
-
-  async task(id: string): Promise<TaskHandle<Event>> {
-    return new TaskHandle(this, await authority("task", id));
+    if (!(await isSafeAuthorityId(id))) throw new TypeError("aggregate identity is not a safe path segment");
+    return new AggregateHandle(this, { kind, id });
   }
 
   /** Registers at-least-once projection delivery; callbacks must be idempotent. */
@@ -888,12 +869,6 @@ export class AggregateHandle<Event = unknown> {
   }
 }
 
-export class AgentHandle<Event = unknown> extends AggregateHandle<Event> {}
-export class ConversationHandle<Event = unknown> extends AggregateHandle<Event> {}
-export class SessionHandle<Event = unknown> extends AggregateHandle<Event> {}
-export class TurnHandle<Event = unknown> extends AggregateHandle<Event> {}
-export class TaskHandle<Event = unknown> extends AggregateHandle<Event> {}
-
 export class ReplayError extends Error {
   constructor(
     readonly authority: Authority,
@@ -912,22 +887,12 @@ function authorityKey(authority: Authority): string {
   return `${authority.kind}:${authority.id}`;
 }
 
-async function authority(kind: AggregateKind, id: string): Promise<Authority> {
-  if (!(await isSafeAuthorityId(id))) throw new TypeError("aggregate identity is not a safe path segment");
-  return { kind, id };
-}
-
 function isCursorStore(store: OutboxStore): store is OutboxStore & CursorStore {
   return "loadCursors" in store && "putCursor" in store && "deleteCursor" in store;
 }
 
 function isAtomicClientStateStore(store: OutboxStore): store is AtomicClientStateStore {
   return isCursorStore(store) && "commit" in store && "loadRecovery" in store;
-}
-
-function positiveBound(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive safe integer`);
-  return value;
 }
 
 /** An offline retry record may carry refs and routing metadata, never a bearer or inline body. */

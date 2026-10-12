@@ -167,7 +167,7 @@ fn effect_extraction_keeps_original_custody_and_retires_other_receipt_data() {
         work: WorkCounters::default(), _custody: Some(work.retain_owned(retained).unwrap()),
     };
     let allocations = work.receipt().allocation_operations;
-    let (effect, custody) = receipt.into_effect_with_native_custody().unwrap();
+    let (effect, custody) = receipt.into_effect().unwrap();
     assert_eq!(custody.bytes(), super::receipt_observation::effect_bytes(&effect).unwrap());
     assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
     assert_eq!(work.receipt().allocation_operations, allocations);

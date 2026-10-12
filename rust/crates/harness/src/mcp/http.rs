@@ -36,8 +36,7 @@ pub struct McpHttpRequest {
     pub maximum_response_bytes: u32,
 }
 
-/// Streaming response. Providers must not hydrate an unlimited response before
-/// this boundary, follow redirects to another authority, or retry a POST.
+/// Streaming response.
 pub struct McpHttpResponse {
     /// Observed HTTP status.
     pub status: u16,
@@ -48,8 +47,6 @@ pub struct McpHttpResponse {
 }
 
 /// Platform network I/O only; Rust owns protocol/session/result semantics.
-/// The caller supplies an already admitted operation identity. A failed or
-/// cancelled POST may have taken effect and must not be automatically retried.
 pub trait McpHttpProvider: acyclic_stream::ProviderPlatform {
     /// Performs exactly one admitted exchange with finite I/O bounds.
     fn exchange<'a>(
@@ -58,15 +55,13 @@ pub trait McpHttpProvider: acyclic_stream::ProviderPlatform {
         request: McpHttpRequest,
     ) -> BoxProviderFuture<'a, Result<McpHttpResponse>>;
     /// Reads a provider-retained response to the exact operation without POST.
-    /// Providers lacking such a receipt return `None` explicitly.
     fn reconcile<'a>(
         &'a self,
         operation: OperationId,
     ) -> BoxProviderFuture<'a, Result<Option<McpHttpResponse>>>;
 }
 
-/// Pinned HTTP endpoint, session, and finite exchange allowances. Construction
-/// performs no initialization, starts no worker, and grants no network authority.
+/// Pinned HTTP endpoint, session, and finite exchange allowances.
 #[derive(Clone)]
 pub struct HttpMcpTransport {
     provider: Arc<dyn McpHttpProvider>,
@@ -78,9 +73,7 @@ pub struct HttpMcpTransport {
 }
 
 impl HttpMcpTransport {
-    /// Constructs a bounded initialize request for staging through an ordinary
-    /// admitted host operation. No capabilities requiring G's callback router
-    /// are advertised by this tool-only client.
+    /// Constructs a bounded initialize request for staging through an ordinary admitted host operation.
     pub fn initialization_request(
         &self,
         operation: OperationId,
@@ -101,9 +94,7 @@ impl HttpMcpTransport {
         self.request("POST", body)
     }
 
-    /// Validates an observed initialization response, returning a new immutable
-    /// binding and the exact initialized notification for separate admission.
-    /// Old bindings are not mutated; unknown calls retain their original session.
+    /// Validates an observed initialization response, returning a new immutable binding and the exact initialized notification for separate admission.
     pub async fn accept_initialization(
         self,
         operation: OperationId,
@@ -133,8 +124,7 @@ impl HttpMcpTransport {
         Ok((binding, initialization, notification))
     }
 
-    /// Discovers one explicitly admitted page. Publication of a replacement
-    /// catalog remains separate and atomic; notifications never trigger reload.
+    /// Discovers one explicitly admitted page.
     pub async fn list_tools(
         &self,
         operation: OperationId,
@@ -144,8 +134,7 @@ impl HttpMcpTransport {
         serde_json::from_value(self.rpc(operation, "tools/list", params).await?)
             .map_err(|e| Error::Invalid(e.to_string()))
     }
-    /// Binds a host-supplied session or sessionless endpoint. Negotiation is an
-    /// explicit admitted exchange, never silently performed during a tool call.
+    /// Binds a host-supplied session or sessionless endpoint.
     pub fn new(
         provider: Arc<dyn McpHttpProvider>,
         endpoint: String,
@@ -181,8 +170,7 @@ impl HttpMcpTransport {
         })
     }
 
-    /// Binds explicit callback admission before negotiation. A live session cannot
-    /// gain callback authority by changing its transport configuration.
+    /// Binds explicit callback admission before negotiation.
     pub fn with_callbacks(mut self, policy: McpCallbackPolicy, admission: Arc<dyn McpCallbackAdmission>) -> Result<Self> {
         policy.validate()?;
         if self.session.is_some() { return Err(Error::Conflict("MCP callback policy requires fresh negotiation".into())); }
@@ -190,8 +178,7 @@ impl HttpMcpTransport {
         Ok(self)
     }
 
-    /// Executes under the enclosing ordinary task's authority. Callback results
-    /// are separately POSTed once; losing their ACK never repeats model dispatch.
+    /// Executes under the enclosing ordinary task's authority.
     pub fn rpc_with_context<'a>(&'a self, context: ToolContext, method: &'a str, params: Value) -> BoxProviderFuture<'a, Result<Value>> {
         Box::pin(async move {
             let operation = context.operation_id();
@@ -201,8 +188,7 @@ impl HttpMcpTransport {
         })
     }
 
-    /// Produces the exact next request, suitable for ordinary request staging
-    /// and admission before the host invokes its network provider.
+    /// Produces the exact next request, suitable for ordinary request staging and admission before the host invokes its network provider.
     pub fn request(&self, method: &str, body: Vec<u8>) -> Result<McpHttpRequest> {
         if !matches!(method, "POST" | "GET" | "DELETE")
             || body.len() as u64 > u64::from(self.maximum_bytes)
@@ -242,8 +228,7 @@ impl HttpMcpTransport {
 
     async fn response_with_context(&self, operation: OperationId, mut response: McpHttpResponse, context: Option<ToolContext>) -> Result<Value> {
         if response.status == 404 && self.session.is_some() {
-            // A future admission may explicitly initialize a new session. This
-            // invocation remains uncertain and is never submitted to it again.
+            // A future admission may explicitly initialize a new session.
             return Err(Error::Indeterminate(operation));
         }
         if response.status != 200 {
@@ -290,12 +275,10 @@ impl HttpMcpTransport {
                 Error::Invalid(error.to_string())
             }
         })?;
-        rpc_result(value, operation)
+        rpc_result(value, operation, None)
     }
 
-    /// Exchanges one already admitted JSON-RPC request. Initialization and
-    /// discovery use this same protocol path; the host must pin request/session
-    /// revisions and journal admission before invoking it.
+    /// Exchanges one already admitted JSON-RPC request.
     pub fn rpc<'a>(
         &'a self,
         operation: OperationId,
@@ -373,8 +356,7 @@ async fn sse_response_scoped(
     let mut requests = 0_u32;
     let mut pending = std::collections::VecDeque::new();
     let mut stream_open = true;
-    // Bound input before the library parser can buffer it. This stream owns the
-    // platform body, so dropping the response future cancels that same exchange.
+    // Bound input before the library parser can buffer it.
     let mut received = 0_usize;
     let bounded = body.map(move |chunk| -> Result<Bytes> {
         let chunk = chunk?;
@@ -395,7 +377,7 @@ async fn sse_response_scoped(
             value
         };
         if value.get("id") == Some(&json!(operation.to_string())) {
-            return rpc_result(value, operation);
+            return rpc_result(value, operation, None);
         }
         if value.get("method").is_some() && value.get("id").is_some() {
             let (transport, context) = callbacks.as_ref().ok_or_else(|| Error::Unsupported("MCP callback router is not installed".into()))?;
@@ -423,13 +405,11 @@ async fn sse_response_scoped(
                         if value.get("method").and_then(Value::as_str) == Some("notifications/cancelled")
                             && value.pointer("/params/requestId") == callback.message.get("id")
                         {
-                            notification(&value)?;
-                            // Drop this admitted future. Its existing owner retains
-                            // the claim/observed prefix; no model request is replayed.
+                            notification(&value, None)?;
                             return Err(Error::Indeterminate(operation));
                         }
                         if value.get("method").is_some() && value.get("id").is_none() {
-                            notification(&value)?;
+                            notification(&value, None)?;
                         } else {
                             if pending.len() as u64 >= u64::from(policy.maximum_requests) {
                                 return Err(Error::Invalid("MCP pending callback bound exceeded".into()));
@@ -446,7 +426,7 @@ async fn sse_response_scoped(
             drop(acknowledgement);
             continue;
         }
-        notification(&value)?;
+        notification(&value, None)?;
     }
     Err(Error::Indeterminate(operation))
 }
@@ -602,11 +582,11 @@ mod tests {
                 .as_object_mut()
                 .ok_or_else(|| Error::Invalid("fixture object absent".into()))?
                 .remove(field);
-            assert!(rpc_result(malformed, operation).is_err());
+            assert!(rpc_result(malformed, operation, None).is_err());
         }
         let mut both = value;
         both["error"] = json!({"code":-1,"message":"no"});
-        assert!(rpc_result(both, operation).is_err());
+        assert!(rpc_result(both, operation, None).is_err());
         assert!(matches!(
             sse_response(Box::pin(futures::stream::iter([Ok(Bytes::from_static(
                 b"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"sampling/createMessage\"}\n\n"))])),operation,4096).await,

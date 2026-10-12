@@ -1,17 +1,8 @@
 //! Native custody follows live reducer components, not query or replay lifetime.
-//! Each replacement installs its own ledger before allocation and keeps the old
-//! claim alive until the old payload has physically been replaced.
-//! Active transitions use the same physical field-copy factories as snapshots,
-//! merge receipts and Values; their returned scalar is newly produced custody,
-//! never a pre-spent clone recipe or a query-wide retained-byte delta. Only the
-//! explicit finite decoder/cold restore walks existing capacities and known
-//! inline entry slots. Independent ledger guards retire after their own payload,
-//! including replaced backing buffers and held copies that outlive cache prune.
 use super::*;
 use crate::store::history::HistoryIo;
 
-/// Physical field-copy producers keep temporary payloads inside their quota's
-/// lifetime and transfer only the allowance actually produced by that copy.
+/// Copies text into the supplied quota.
 pub(crate) fn copy_text(
     source: &str, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<String> {
@@ -163,8 +154,6 @@ pub(crate) fn copy_value(
     if quota.work().as_deref().is_some_and(|observer| observer.original_native_work().is_some()) {
         let observer = quota.work().as_deref_mut().expect("native Value copy observer");
         let remaining = observer.remaining()?;
-        // Copying does not consume encoded-output allowance. Inspect the
-        // original resident graph once before the first recursive copy.
         crate::contract::json_owned_value_shape_bounded(
             source,
             crate::contract::JsonBounds {
@@ -223,9 +212,6 @@ macro_rules! physical_clone_factory {
     };
 }
 physical_clone_factory!(native_effect_clone_with_custody, EffectState, copy_effect);
-physical_clone_factory!(native_extension_record_clone_with_custody, ExtensionRecord, copy_extension_record);
-physical_clone_factory!(native_extension_configuration_clone_with_custody, ExtensionConfiguration, copy_configuration);
-physical_clone_factory!(native_event_reference_clone_with_custody, EventReference, copy_reference);
 physical_clone_factory!(native_value_clone_with_custody, Value, copy_value);
 pub(crate) fn copy_boxed<T>(
     source: &T, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
@@ -283,16 +269,6 @@ pub(super) fn copy_resolution(
 physical_clone_factory!(native_interaction_ticket_clone_with_custody, InteractionTicket, copy_ticket);
 physical_clone_factory!(native_interaction_resolution_clone_with_custody, InteractionResolution, copy_resolution);
 physical_clone_factory!(native_interaction_outcome_clone_with_custody, InteractionOutcome, copy_interaction_outcome);
-fn copy_interaction_state(
-    source: &(InteractionTicket, Option<InteractionResolution>),
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<(InteractionTicket, Option<InteractionResolution>)> {
-    let ticket = copy_ticket(&source.0, quota)?;
-    let resolution = source.1.as_ref().map(|resolution| copy_resolution(resolution, quota)).transpose()?;
-    Ok((ticket, resolution))
-}
-physical_clone_factory!(native_interaction_state_clone_with_custody,
-    (InteractionTicket, Option<InteractionResolution>), copy_interaction_state);
 pub(crate) fn copy_capabilities(
     source: &Capabilities, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<Capabilities> {
@@ -532,15 +508,13 @@ pub(super) fn clone_reducer(
         )?.install(&mut output.native_custody, quota.work())?;
         drop(retired);
     }
-    let (conversation, remaining) = source.conversation.clone_with_work_and_message_custody(
-        quota.work(), &mut |sequence, produced, work| {
+    let (conversation, remaining) = source.conversation.copy(
+        quota.work(), Some(&mut |sequence, produced, work| {
             output.native_custody.absorb_produced(NativeComponentRef::ConversationMessage(sequence),
                 produced, work.as_deref_mut().expect("message producing observer"))
-        },
+        }),
     )?;
     output.conversation = conversation;
-    // The conversation buffers and cache claims are intrinsic; the callback
-    // transfers each payload to its independently retireable reducer component.
     if remaining != 0 {
         output.native_custody.absorb_produced(NativeComponentRef::Base, remaining,
             quota.work().as_deref_mut().expect("conversation remainder observer"))?;
@@ -727,14 +701,12 @@ fn owned_payload(payload: &EventPayload) -> Result<u64> {
         EventPayload::EffectDispatched { .. } | EventPayload::ConversationBound { .. } => Ok(0),
     }
 }
-/// Actual existing payload capacities and known inline entry slots; used only
-/// to reconcile the original finite decoder and explicit cold restoration.
+/// Actual existing payload capacities and known inline entry slots; used only to reconcile the original finite decoder and explicit cold restoration.
 pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
     owned_sum([event.scope.logical_owned_bytes()?,
         event.causal_parent.as_ref().map_or(0, |reference| reference.authority.id.capacity() as u64),
         owned_payload(&event.payload)?])
 }
-
 
     pub(crate) fn value_owned_bytes(value: &Value) -> Result<u64> {
         let overflow = || {
@@ -838,7 +810,6 @@ impl NativeComponentRef<'_> {
 pub(super) struct NativeComponentCustody {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     components: Vec<(NativeComponentKey, acyclic_fs::NativeAllocation, Option<acyclic_fs::NativeAllocation>)>,
-    // LAST: the actual metadata Vec allocation drops before this source claim.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     buffer: Option<acyclic_fs::NativeAllocation>,
 }
@@ -995,8 +966,6 @@ impl NativeComponentCustody {
                 let allocation;
                 let owned_key = key.copy(&mut quota)?;
                 let produced_key_bytes = quota.retained() - payload;
-                // The original observer now owns the produced scalar until
-                // pure AL splits complete; no quota may refund a split twice.
                 quota.transfer();
                 let io = quota.work().as_deref_mut().expect("native component issuer");
                 key_allocation = io.take_native_custody(produced_key_bytes)?;
@@ -1115,8 +1084,6 @@ impl NativeComponentCustody {
             drop(old);
         }
         Self::visit(reducer, |key,bytes| {
-            // Metadata keys are real field copies with exact independently
-            // produced claims, not refunded estimates on the restore ledger.
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let mut key_allocation;
             let owned_key = key.copy(&mut quota)?;
@@ -1124,9 +1091,6 @@ impl NativeComponentCustody {
             key_allocation = quota.work().as_deref_mut().expect("cold component issuer")
                 .take_native_custody(produced)?;
             quota.transfer();
-            // These two wire Vecs were moved into maps during restore. Their
-            // old A backing buffers have already been peeled by the caller;
-            // new known inline map entries were guarded on B before collect.
             let inline = match key {
                 NativeComponentRef::ExtensionConfiguration(_) =>
                     std::mem::size_of::<(ExtensionDependency, ExtensionConfiguration)>() as u64,
@@ -1150,8 +1114,6 @@ impl NativeComponentCustody {
                 Ok(claim) => claim,
                 Err(cause) => {
                     drop(owned_key);
-                    // B's real map entry is still inside the caller's reducer.
-                    // Its guard must reach the error after that payload drops.
                     return Err(Error::NativeWork { cause, custody: Some(key_allocation) });
                 }
             };
@@ -1162,9 +1124,6 @@ impl NativeComponentCustody {
     }
     fn visit(reducer: &Reducer, mut f: impl FnMut(NativeComponentRef<'_>,u64)->Result<()>) -> Result<()> {
         use NativeComponentRef as K;
-        // Cold restoration alone enumerates the finite, already materialized
-        // projection. Active replacements consume only their physical factory's
-        // produced scalar, never this visitor or an encoded inventory tree.
         f(K::Authority, reducer.authority.id.capacity() as u64)?;
         for event in &reducer.events { f(K::Event(event.revision), event_owned_bytes(event)?)?; }
         for operation in reducer.operation_positions.keys() {
@@ -1298,8 +1257,6 @@ pub(super) fn admission_from_owned_value(
         let Value::Array(values) = value else { return Err(invalid()) };
         let count = values.len();
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        // The original incoming Value guard continues to own moved Strings.
-        // Only this new, concrete typed Vec buffer is claimed by this phase.
         let mut output = reserve_copy_vector(count, &mut quota)?;
         for value in values { output.push(decode(value, quota.work())?); }
         let added = quota.retained();
@@ -1331,5 +1288,3 @@ pub(super) fn admission_from_owned_value(
     quota.transfer();
     Ok((admission, added))
 }
-
-

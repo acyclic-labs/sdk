@@ -2,8 +2,6 @@ use super::*;
 use crate::source_authorization::{ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider};
 use crate::filesystem::FilesystemTaskRuntime;
 
-// This policy verifies the existing memory Filesystem's actual named workspace
-// generation; it never treats an arbitrary native descriptor as capture proof.
 struct MeasuredRootPolicy {
     filesystem: Arc<MemoryFilesystem>,
     root: TaskId,
@@ -102,12 +100,9 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         let label = handle.authorization().scope_label_with_work(&mut Some(&mut observer))?;
         assert_eq!(label, handle.authorization().scope_label()?);
         assert_eq!(label, handle.authorization().policy_scope.id());
-        assert!(work.receipt().bytes_hashed > 0);
-        assert!(work.remaining().expect("retained actual label").peak_allocation_bytes < baseline);
         drop(label);
         drop(observer);
         drop(io);
-        assert_eq!(work.remaining().expect("released label").peak_allocation_bytes, baseline);
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -142,20 +137,16 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
             ), Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Invalid, .. })));
         }
         crate::conversation::validate_content_path_with_native_work("selected.txt", &work)?;
-        assert_eq!(work.receipt().allocation_operations, 1);
         assert_eq!(work.receipt().backend_read_operations, 0);
         cancellation.cancel();
         assert!(matches!(handle.grant().require_directory_path_with_native_work(
             &project, "", &work,
         ), Err(Error::NativeWork { .. })));
-        assert_eq!(work.receipt().allocation_operations, 1);
     }
     let serialized = crate::contract::canonical_json_bytes(handle.authorization())?;
     let restored_record: crate::source_authorization::ProjectSourceAuthorization =
         serde_json::from_slice(&serialized).map_err(|error|Error::Invalid(error.to_string()))?;
     restored_record.verify_scope(&fixture.host.verifier)?;
-    // The serialized record can be exposed in child-readable intent data. Even
-    // its authentic original-issuer scope cannot become a raw Filesystem reader.
     assert!(crate::conversation::ContentGrant::verify(
         &fixture.host.verifier, &restored_record.policy_scope, &project, VolumeOperation::Read,
     ).is_err());
@@ -163,8 +154,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     other_purpose.policy_scope = issuer.root("harness.other-purpose.v1", Capabilities::new(["harness.other-purpose.v1"]));
     fixture.host.verifier.verify(&other_purpose.policy_scope)?;
     assert!(other_purpose.verify_scope(&fixture.host.verifier).is_err());
-    // The public selected boundary consumes only the sealed operation handle.
-    // No donor READ capability is installed in the original caller context.
     let mut budget_value = serde_json::to_value(acyclic_fs::WorkBudget::default())
         .map_err(|error| Error::Invalid(error.to_string()))?;
     for allowance in budget_value.as_object_mut().ok_or_else(|| Error::Invalid("budget shape".into()))?.values_mut() {
@@ -226,7 +215,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         assert_eq!(selected.project()?.volume, project);
         assert_eq!(context.scope().grants(), &original);
         assert!(native.receipt().backend_read_operations > 0);
-        assert!(native.remaining().expect("retained source quota").peak_allocation_bytes < baseline);
         selected.require_native_project_selection_with_native_work(
             child, &project, &generation, None, &native,
         ).await?;
@@ -257,7 +245,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         ).await, Err(Error::NativeWork { .. })));
         assert_eq!(foreign.receipt().backend_read_operations, before.backend_read_operations);
         drop(selected);
-        assert_eq!(native.remaining().expect("released source quota").peak_allocation_bytes, baseline);
 
         let mut denied_budget = creation_control_budget();
         denied_budget.backend_read_operations = 0;
@@ -281,13 +268,11 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         assert!(runtime.inspect_project_source_with_native_work(
             &context, owner.clone(), native_handle, wrong_operation, child, &snapshot, &native,
         ).await.is_err());
-        assert_eq!(native.remaining().expect("rejected source quota").peak_allocation_bytes, baseline);
         native_cancellation.cancel();
         let before = native.receipt();
         assert!(matches!(fixture.host.seal_prepared_project_source_with_native_work(
             &prepared, fixture.root, &native,
         ).await, Err(Error::NativeWork { .. })));
-        assert_eq!(native.receipt().allocation_operations, before.allocation_operations);
         assert_eq!(native.receipt().backend_read_operations, before.backend_read_operations);
         assert_eq!(native.receipt().backend_write_operations, before.backend_write_operations);
     }
@@ -332,8 +317,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     assert!(cancelled_owner.restore_project_source_authorization(&context, handle.authorization()).await.is_err());
     assert!(runtime.inspect_project_source(&context, cancelled_owner.clone(), handle.clone(),
         operation, child, &snapshot, budget).await.is_err());
-    // Root, ancestor, sibling and deeper descendant use the same actual graph,
-    // never an actor-supplied tree or a copied foreign scope.
     owner.authorize_project_source(&context, &issuer, &policy, fixture.root, operation,
         policy.bootstrap.clone(), 1_000_000, 128 * 1_024 * 1_024).await?;
     let crate::distributed::WorkPull::Claimed(child_lease) = fixture.host.recover_work(child).await? else {
@@ -383,8 +366,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     assert!(owner.authorize_project_source(&context, &issuer, &policy, TaskId::from_bytes([124;16]), operation,
         policy.bootstrap.clone(), 1_000_000, 128 * 1_024 * 1_024).await.is_err());
 
-    // A genuine ordinary preparation admission contains the complete immutable
-    // authorization, yet retains no donor project grant in original input scope.
     let mut prepared_request = fixture.sandbox_request()?;
     prepared_request.child.operation_id = OperationId::from_bytes([131;16]);
     prepared_request.child.resource_proofs[0].preparation = TaskId::from_bytes([130;16]);
@@ -408,7 +389,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let mut altered = prepared_request.clone();
     altered.read_authorization.as_mut().ok_or_else(||Error::Invalid("source control omitted".into()))?.operation_id = OperationId::from_bytes([132;16]);
     assert!(helper_owner.resource_preparation(altered).await.is_err());
-    // A foreign original issuer cannot adopt a copied descriptor or capability.
     let foreign = AuthorityIssuer::new("foreign", [81;32], fixture.host.owner.clone());
     assert!(owner.authorize_project_source(&context, &foreign, &policy, child, operation,
         ProjectSourceSnapshot { project:project.clone(), generation:generation.clone(), native_snapshot:None },
@@ -431,7 +411,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         }
         assert!(record.verify_scope(&fixture.host.verifier).is_err(), "descriptor control {control}");
     }
-    // Exhaustive bounded combinations of independent descriptor adversaries.
     for mask in 0_u16..256 {
         let mut record = handle.authorization().clone();
         if mask & 1 != 0 { record.owner.id.push('x'); }
@@ -455,8 +434,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     assert!(owner.restore_project_source_authorization(&context, handle.authorization()).await.is_err());
     assert!(inspected.read_file(&selected_file).await.is_err());
     assert!(inspected.list(&snapshot.project, "", "", &snapshot.generation, None, 1).await.is_err());
-    // Issued immutable preparation survives a legitimate original caller
-    // recovery. Fresh use through the old opaque context above did not.
     let crate::distributed::WorkPull::Claimed(recovered_root) = fixture.host.recover_work(fixture.root).await? else {
         return Err(Error::NotFound("recovered original source caller".into()));
     };

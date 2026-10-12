@@ -950,6 +950,7 @@ where
     {
         // Capture the whole paid tuple: an unpolled future drops data first.
         let input = (plan, plan_allocation);
+        let cancellation = cancellation.clone();
         async move {
             let input = input;
             let plan_custody = input.1;
@@ -973,7 +974,7 @@ where
                     .map_err(E::from)?;
                 let snapshot = self.source.import_selected_meter_guarded(
                     destination, plan, operation, permit, native_work,
-                    cancellation, before_publication,
+                    &cancellation, before_publication,
                 ).await?;
                 with_live_session(&self.session, |session| session.revalidate_with_meter(native_work))
                     .map_err(E::from)?;
@@ -2193,7 +2194,7 @@ mod tests {
         std::fs::write(physical.path().join("unselected/cold.txt"), b"unread sibling")?;
         let fs = Fs::memory();
         let demand = Arc::new(NativeDemandSource::open(
-            physical.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+            physical.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
         ).await?);
         let lazy = LazyWorkspace::attach(
             &fs, "measured-customer-root", demand, MemoryLazyWorkspaceStore::default(),
@@ -2297,7 +2298,7 @@ mod tests {
         let destination = tempfile::tempdir()?;
         let fs = Fs::memory();
         let demand = Arc::new(NativeDemandSource::open(
-            physical.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+            physical.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
         ).await?);
         let lazy = LazyWorkspace::attach(
             &fs, "measured-native-customer", demand, MemoryLazyWorkspaceStore::default(),
@@ -2427,10 +2428,12 @@ mod tests {
                 let mounted = &mount;
                 async move {
                     let scope = scope.map_err(MountLifecycleError::Native)?;
-                    work.read_working_file_guarded_with_scope::<MountLifecycleError, _, _>(
-                        scope, mounted.path(), identity, Path::new("source.txt"), 32,
+                    let result = work.read_working_file_guarded::<MountLifecycleError, _, _>(
+                        mounted.path(), identity, Path::new("source.txt"), 32,
                         || std::future::ready(Ok(())),
-                    ).await
+                    ).await;
+                    drop(scope);
+                    result
                 }
             }).await?
         }).await??;
@@ -2865,7 +2868,7 @@ mod tests {
             NativeDemandSource::open(
                 source.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );

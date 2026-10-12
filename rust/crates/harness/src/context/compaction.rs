@@ -29,7 +29,6 @@ impl Default for ThresholdCompaction {
 
 impl ThresholdCompaction {
     /// Validates the defaults or replacement against the actual selected capacity.
-    /// Returns a finite effective output ceiling when the caller did not supply one.
     pub fn validate(
         &self,
         capacity: ModelContextCapacity,
@@ -64,8 +63,7 @@ impl ThresholdCompaction {
         Ok(input_tokens > u64::from(capacity.context_tokens - self.response_reserve_tokens))
     }
 
-    /// Selects a complete-message recent suffix. An oversized message is retained
-    /// whole; later mandatory/request validation may explicitly reject the budget.
+    /// Selects a complete-message recent suffix.
     pub fn recent_start(&self, count: &ModelTokenCount) -> Result<usize> {
         if self.recent_tokens == 0 {
             return Err(Error::Invalid(
@@ -97,8 +95,6 @@ impl ThresholdCompaction {
     }
 
     /// Applies a hard retained-message allowance alongside the recent token budget.
-    /// The summary occupies one position. Mandatory messages and complete tool
-    /// exchanges remain verbatim; an impossible allowance fails explicitly.
     pub fn projection_budget_with_message_limit(
         &self,
         context: &Context,
@@ -158,10 +154,6 @@ impl ThresholdCompaction {
     }
 }
 
-// Mandatory closure shrinks monotonically as the covered prefix advances.
-// Enumerate complete exchange boundaries once, then search them without a
-// quadratic scan over all possible message cuts. The current final message
-// remains outside the summary source.
 fn bounded_source_cut(
     context: &Context,
     minimum: usize,
@@ -199,8 +191,7 @@ fn bounded_source_cut(
         .ok_or_else(|| Error::Invalid("mandatory content leaves no compaction source".into()))
 }
 
-/// Replaceable primitive policy. Custom context transformations can disable
-/// the stock threshold and own their explicit admission/projection decisions.
+/// Replaceable primitive policy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(
@@ -222,15 +213,15 @@ impl Default for CompactionPolicy {
     }
 }
 
-pub(crate) fn clone_context_with_work(
+pub(crate) fn clone_context(
     context: &Context, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(Context, u64)> {
-    let (mut copy, claim) = clone_context_prefix_with_work(context, context.messages.len(), work)?;
+    let (mut copy, claim) = clone_context_prefix(context, context.messages.len(), work)?;
     copy.current_input_index = context.current_input_index;
     Ok((copy, claim))
 }
 
-pub(crate) fn clone_context_prefix_with_work(
+pub(crate) fn clone_context_prefix(
     context: &Context, through: usize,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(Context, u64)> {
@@ -243,10 +234,10 @@ pub(crate) fn clone_context_prefix_with_work(
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let mut result = Context::default();
     let copied = (|| {
-        let (messages, claim) = clone_messages_with_work(source, quota.work())?;
+        let (messages, claim) = clone_messages(source, quota.work())?;
         result.messages = messages;
         quota.adopt(claim)?;
-        let (metadata, claim) = clone_metadata_with_work(&context.metadata, quota.work())?;
+        let (metadata, claim) = clone_metadata(&context.metadata, quota.work())?;
         result.metadata = metadata;
         quota.adopt(claim)?;
         result.current_input_index = context.current_input_index.filter(|index| (*index as usize) < through);
@@ -258,7 +249,7 @@ pub(crate) fn clone_context_prefix_with_work(
     Ok((result, claim))
 }
 
-pub(crate) fn clone_metadata_with_work(
+pub(crate) fn clone_metadata(
     metadata: &std::collections::BTreeMap<String, crate::conversation::FileRef>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(std::collections::BTreeMap<String, crate::conversation::FileRef>, u64)> {
@@ -285,14 +276,14 @@ pub(crate) fn clone_metadata_with_work(
     Ok((result, claim))
 }
 
-pub(crate) fn clone_messages_with_work(
+pub(crate) fn clone_messages(
     messages: &[crate::model::ModelMessage],
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(Vec<crate::model::ModelMessage>, u64)> {
-    clone_base_messages_with_work(messages, None, &[], work)
+    clone_base_messages(messages, None, &[], work)
 }
 
-pub(crate) fn clone_base_messages_with_work(
+pub(crate) fn clone_base_messages(
     first: &[crate::model::ModelMessage], user: Option<&crate::model::ModelContent>,
     second: &[crate::model::ModelMessage],
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -329,7 +320,7 @@ pub(crate) fn clone_base_messages_with_work(
             .chain(second.iter().map(|m| (m.role, &m.content))) {
             let slot = std::mem::size_of::<ModelMessage>() as u64;
             quota.work().as_deref().expect("observed context").admit_copy(slot)?;
-            let (content, claim) = crate::model::clone_content_with_work(content, quota.work())?;
+            let (content, claim) = crate::model::clone_content(content, quota.work())?;
             quota.adopt(claim)?;
             quota.work().as_deref_mut().expect("observed context").copy_bytes(slot)?;
             result.push(ModelMessage { role, content });
@@ -355,79 +346,84 @@ fn retire_vector<T>(values: Vec<T>, quota: &mut crate::wire_codec::CodecQuota<'_
     quota.relinquish(bytes)
 }
 
-pub(crate) fn compact_context_with_work(
+pub(super) fn mandatory_flags<'a>(
+    context: &'a Context, covered: usize, retention: &super::CompactionRetention,
+    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<(Vec<bool>, Vec<(&'a str, usize)>)> {
+    let parts = context.messages.iter().try_fold(0_usize, |count, message|
+        count.checked_add(message.content.parts().len()))
+        .ok_or_else(|| compaction_error(quota.work(), "context part count overflows"))?;
+    let mut pending = quota_vector::<(&str, usize)>(parts, quota)?;
+    let mut edges = quota_vector::<(usize, usize)>(parts, quota)?;
+    let mut selected = quota_vector::<bool>(context.messages.len(), quota)?;
+    for (position, message) in context.messages.iter().enumerate() {
+        compaction_step(quota)?;
+        selected.push(context.current_input_index.map(|index| index as usize) == Some(position)
+            || position + 1 == context.messages.len()
+            || position >= covered
+            || retention.roles.contains(&message.role)
+            || (retention.native_media && message.content.contains_native_media()));
+        for part in message.content.parts() {
+            compaction_step(quota)?;
+            match part {
+                ModelContentPart::ToolCall { call_id, .. } => {
+                    if let Some(prior) = pending.iter_mut().find(|(id, _)| *id == call_id) {
+                        prior.1 = position;
+                    } else { pending.push((call_id, position)); }
+                }
+                ModelContentPart::ToolResult { call_id, .. } => {
+                    if let Some(prior) = pending.iter().position(|(id, _)| *id == call_id) {
+                        let (_, call) = pending.swap_remove(prior);
+                        edges.push((call, position));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for &(call, response) in &edges {
+            compaction_step(quota)?;
+            if selected[call] || selected[response] {
+                changed |= !selected[call] || !selected[response];
+                selected[call] = true;
+                selected[response] = true;
+            }
+        }
+        if !changed { break; }
+    }
+    retire_vector(edges, quota)?;
+    pending.clear();
+    Ok((selected, pending))
+}
+
+pub(crate) fn compact_context(
     context: &Context, maximum: usize, summary: &super::ContextSummary,
     retention: &super::CompactionRetention,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(Context, u64)> {
     use crate::model::{ModelContent, ModelMessage, ModelRole};
-    if work.is_none() {
-        return super::compact_projection(context, maximum, summary, retention, None).map(|context| (context, 0));
-    }
     if maximum < 2 {
-        return Err(Error::Invalid("compaction must retain the current input and summary".into()));
+        return Err(compaction_error(work, "compaction must retain the current input and summary"));
     }
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let mut result = Context::default();
     let made = (|| {
-        let parts = context.messages.iter().try_fold(0_usize, |count, message|
-            count.checked_add(message.content.parts().len()))
-            .ok_or_else(|| Error::Invalid("context part count overflows".into()))?;
-        let mut pending = quota_vector::<(&str, usize)>(parts, &mut quota)?;
-        let mut edges = quota_vector::<(usize, usize)>(parts, &mut quota)?;
-        let mut selected = quota_vector::<bool>(context.messages.len(), &mut quota)?;
-        for (position, message) in context.messages.iter().enumerate() {
-            quota.work().as_deref_mut().expect("observed compaction")
-                .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-            selected.push(context.current_input_index.map(|index| index as usize) == Some(position)
-                || position + 1 == context.messages.len()
-                || position >= summary.source_messages as usize
-                || retention.roles.contains(&message.role)
-                || (retention.native_media && message.content.contains_native_media()));
-            for part in message.content.parts() {
-                quota.work().as_deref_mut().expect("observed compaction")
-                    .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-                match part {
-                    ModelContentPart::ToolCall { call_id, .. } => {
-                        if let Some(prior) = pending.iter_mut().find(|(id, _)| *id == call_id) {
-                            prior.1 = position;
-                        } else { pending.push((call_id, position)); }
-                    }
-                    ModelContentPart::ToolResult { call_id, .. } => {
-                        if let Some(prior) = pending.iter().position(|(id, _)| *id == call_id) {
-                            let (_, call) = pending.swap_remove(prior);
-                            edges.push((call, position));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        loop {
-            let mut changed = false;
-            for &(call, response) in &edges {
-                quota.work().as_deref_mut().expect("observed compaction")
-                    .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-                if selected[call] || selected[response] {
-                    changed |= !selected[call] || !selected[response];
-                    selected[call] = true;
-                    selected[response] = true;
-                }
-            }
-            if !changed { break; }
-        }
-        retire_vector(edges, &mut quota)?;
-        pending.clear();
+        let (mut selected, mut pending) = mandatory_flags(
+            context, summary.source_messages as usize, retention, &mut quota)?;
         let mut count = selected.iter().filter(|value| **value).count();
         if count >= maximum {
-            return Err(Error::Invalid("mandatory context exceeds compaction message budget".into()));
+            return Err(compaction_error(quota.work(), "mandatory context exceeds compaction message budget"));
         }
         for selected in selected.iter_mut().rev() {
             if count + 1 == maximum { break; }
             if !*selected { *selected = true; count += 1; }
         }
         result.messages = quota_vector::<ModelMessage>(count + 1, &mut quota)?;
-        let file = summary.output.clone_in_quota(&mut quota)?;
+        let file = if quota.work().is_some() {
+            summary.output.clone_in_quota(&mut quota)?
+        } else { summary.output.clone() };
         result.messages.push(ModelMessage { role: ModelRole::Assistant,
             content: ModelContent::Part(ModelContentPart::File {
                 file, policy: crate::model::FileProjectionPolicy::BoundedFull,
@@ -435,15 +431,14 @@ pub(crate) fn compact_context_with_work(
         for (position, message) in context.messages.iter().enumerate() {
             if !selected[position] { continue; }
             for part in message.content.parts() {
-                quota.work().as_deref_mut().expect("observed compaction")
-                    .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                compaction_step(&mut quota)?;
                 match part {
                     ModelContentPart::ToolCall { call_id, .. } => {
                         if !pending.iter().any(|(id, _)| *id == call_id) { pending.push((call_id, position)); }
                     }
                     ModelContentPart::ToolResult { call_id, .. } => {
                         let prior = pending.iter().position(|(id, _)| *id == call_id)
-                            .ok_or_else(|| Error::Invalid("compaction boundary splits a tool exchange".into()))?;
+                            .ok_or_else(|| compaction_error(quota.work(), "compaction boundary splits a tool exchange"))?;
                         pending.swap_remove(prior);
                     }
                     _ => {}
@@ -451,29 +446,45 @@ pub(crate) fn compact_context_with_work(
             }
             if context.current_input_index.map(|index| index as usize) == Some(position) {
                 result.current_input_index = Some(u32::try_from(result.messages.len())
-                    .map_err(|_| Error::Invalid("current input index exceeds portable count".into()))?);
+                    .map_err(|_| compaction_error(quota.work(), "current input index exceeds portable count"))?);
             }
             let slot = std::mem::size_of::<ModelMessage>() as u64;
-            quota.work().as_deref().expect("observed compaction").admit_copy(slot)?;
-            let (content, claim) = crate::model::clone_content_with_work(&message.content, quota.work())?;
+            if let Some(io) = quota.work().as_deref() { io.admit_copy(slot)?; }
+            let (content, claim) = crate::model::clone_content(&message.content, quota.work())?;
             quota.adopt(claim)?;
-            quota.work().as_deref_mut().expect("observed compaction").copy_bytes(slot)?;
+            if let Some(io) = quota.work().as_deref_mut() { io.copy_bytes(slot)?; }
             result.messages.push(ModelMessage { role: message.role, content });
         }
         if !pending.is_empty() {
-            return Err(Error::Invalid("compaction boundary splits a tool exchange".into()));
+            return Err(compaction_error(quota.work(), "compaction boundary splits a tool exchange"));
         }
         retire_vector(pending, &mut quota)?;
         retire_vector(selected, &mut quota)?;
-        let (metadata, claim) = clone_metadata_with_work(&context.metadata, quota.work())?;
+        let (metadata, claim) = clone_metadata(&context.metadata, quota.work())?;
         result.metadata = metadata;
         quota.adopt(claim)?;
         Ok(())
     })();
     if let Err(error) = made { drop(result); return Err(error); }
-    let claim = quota.retained();
+    let claim = if quota.work().is_some() { quota.retained() } else { 0 };
     quota.transfer();
     Ok((result, claim))
+}
+
+fn compaction_step(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+    }
+    Ok(())
+}
+
+fn compaction_error(work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+        return super::native_context_boundary(crate::wire::ErrorCode::Invalid, reason);
+    }
+    let _ = work;
+    Error::Invalid(reason.into())
 }
 
 pub(crate) fn reserve_vector_with_work<T>(
@@ -523,11 +534,9 @@ mod native {
     use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
     use std::{collections::BTreeMap, mem::size_of};
 
-
     fn overflow() -> Error {
         Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context clone storage overflows" }
     }
-
 
     pub(crate) fn native_vector<T>(capacity: usize, work: &NativeMaterializationWork) -> Result<(Vec<T>, NativeAllocation)> {
         let bytes = capacity.checked_mul(size_of::<T>()).ok_or_else(overflow)? as u64;
@@ -571,54 +580,19 @@ mod native {
     pub(crate) fn mandatory_positions_native(
         context: &Context, covered: usize, retention: &CompactionRetention, work: &NativeMaterializationWork,
     ) -> Result<(Vec<usize>, NativeAllocation)> {
-        let parts = context.messages.iter().try_fold(0_usize, |count, message|
-            count.checked_add(message.content.parts().len()).ok_or_else(overflow))?;
-        // Declare local guards first: scratch buffers must drop first on errors.
-        let (pending_guard, mut pending) = native_vector::<(&str, usize)>(parts, work).map(|(data, guard)| (guard, data))?;
-        let (edges_guard, mut edges) = native_vector::<(usize, usize)>(parts, work).map(|(data, guard)| (guard, data))?;
-        let (selected_guard, mut selected) = native_vector::<bool>(context.messages.len(), work).map(|(data, guard)| (guard, data))?;
-        for (position, message) in context.messages.iter().enumerate() {
-            examine(work)?;
-            selected.push(context.current_input_index.map(|index| index as usize) == Some(position)
-                || position + 1 == context.messages.len() || position >= covered
-                || retention.roles.contains(&message.role)
-                || (retention.native_media && message.content.contains_native_media()));
-            for part in message.content.parts() {
-                examine(work)?;
-                match part {
-                    ModelContentPart::ToolCall { call_id, .. } => {
-                        if let Some(prior) = pending.iter_mut().find(|(id, _)| *id == call_id) {
-                            prior.1 = position;
-                        } else { pending.push((call_id, position)); }
-                    }
-                    ModelContentPart::ToolResult { call_id, .. } => {
-                        if let Some(prior) = pending.iter().position(|(id, _)| *id == call_id) {
-                            let (_, call) = pending.swap_remove(prior);
-                            edges.push((call, position));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        loop {
-            let mut changed = false;
-            for &(call, result) in &edges {
-                examine(work)?;
-                if selected[call] || selected[result] {
-                    changed |= !selected[call] || !selected[result];
-                    selected[call] = true; selected[result] = true;
-                }
-            }
-            if !changed { break; }
-        }
-        let count = selected.iter().filter(|value| **value).count();
-        let (guard, mut positions) = native_vector::<usize>(count, work).map(|(data, guard)| (guard, data))?;
-        for (position, retained) in selected.iter().enumerate() {
-            if *retained { positions.push(position); }
-        }
-        drop(selected); drop(selected_guard); drop(edges); drop(edges_guard); drop(pending); drop(pending_guard);
-        Ok((positions, guard))
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
+        let (selected, pending) = mandatory_flags(context, covered, retention, &mut quota)?;
+        retire_vector(pending, &mut quota)?;
+        let mut positions = quota_vector(selected.iter().filter(|selected| **selected).count(), &mut quota)?;
+        positions.extend(selected.iter().enumerate().filter_map(|(position, selected)| selected.then_some(position)));
+        retire_vector(selected, &mut quota)?;
+        quota.transfer();
+        drop(quota);
+        drop(observed);
+        Ok((positions, io.into_custody()))
     }
 
     impl ThresholdCompaction {
@@ -720,31 +694,21 @@ mod native {
     pub(crate) fn clone_file_native(file: &FileRef, work: &NativeMaterializationWork) -> Result<(FileRef, NativeAllocation)> {
         file.clone_with_native_work(work)
     }
-    pub(crate) fn clone_content_native(content: &ModelContent, work: &NativeMaterializationWork) -> Result<(ModelContent, NativeAllocation)> {
-        let mut io = observer!(work);
-        let (copy, _) = crate::model::clone_content_with_work(content, &mut Some(&mut io))?;
-        Ok((copy, io.into_custody()))
-    }
     pub(crate) fn clone_messages_native(messages: &[ModelMessage], work: &NativeMaterializationWork) -> Result<(Vec<ModelMessage>, NativeAllocation)> {
         let mut io = observer!(work);
-        let (copy, _) = clone_messages_with_work(messages, &mut Some(&mut io))?;
-        Ok((copy, io.into_custody()))
-    }
-    pub(crate) fn clone_metadata_native(metadata: &BTreeMap<String, FileRef>, work: &NativeMaterializationWork) -> Result<(BTreeMap<String, FileRef>, NativeAllocation)> {
-        let mut io = observer!(work);
-        let (copy, _) = clone_metadata_with_work(metadata, &mut Some(&mut io))?;
+        let (copy, _) = clone_messages(messages, &mut Some(&mut io))?;
         Ok((copy, io.into_custody()))
     }
     pub(crate) fn clone_context_native(context: &Context, work: &NativeMaterializationWork) -> Result<(Context, NativeAllocation)> {
         let mut io = observer!(work);
-        let (copy, _) = clone_context_with_work(context, &mut Some(&mut io))?;
+        let (copy, _) = clone_context(context, &mut Some(&mut io))?;
         Ok((copy, io.into_custody()))
     }
     pub(crate) fn clone_context_prefix_native(
         context: &Context, through: usize, work: &NativeMaterializationWork,
     ) -> Result<(Context, NativeAllocation)> {
         let mut io = observer!(work);
-        let (copy, _) = clone_context_prefix_with_work(context, through, &mut Some(&mut io))?;
+        let (copy, _) = clone_context_prefix(context, through, &mut Some(&mut io))?;
         Ok((copy, io.into_custody()))
     }
     pub(crate) fn clone_base_messages_native(
@@ -752,10 +716,9 @@ mod native {
         work: &NativeMaterializationWork,
     ) -> Result<(Vec<ModelMessage>, NativeAllocation)> {
         let mut io = observer!(work);
-        let (copy, _) = clone_base_messages_with_work(first, user, second, &mut Some(&mut io))?;
+        let (copy, _) = clone_base_messages(first, user, second, &mut Some(&mut io))?;
         Ok((copy, io.into_custody()))
     }
-
 
     pub(crate) fn clone_retention_native(
         retention: &CompactionRetention, work: &NativeMaterializationWork,
@@ -775,7 +738,7 @@ mod native {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use native::{clone_base_messages_native, clone_content_native, clone_context_native, clone_context_prefix_native, clone_file_native, clone_messages_native, clone_metadata_native, clone_retention_native, clone_text_native, mandatory_positions_native, native_vector};
+pub(crate) use native::{clone_base_messages_native, clone_context_native, clone_context_prefix_native, clone_file_native, clone_messages_native, clone_retention_native, clone_text_native, mandatory_positions_native, native_vector};
 
 #[cfg(test)]
 mod tests {
@@ -834,7 +797,7 @@ mod tests {
         let summary = super::super::ContextSummary { operation_id: crate::OperationId::new(), step: 0,
             source_messages: 3, source_digest: [0; 32], output: file };
         let retention = CompactionRetention { roles: vec![], native_media: false };
-        let expected = super::super::compact_projection(&context, 4, &summary, &retention, None)?;
+        let expected = compact_context(&context, 4, &summary, &retention, &mut None)?.0;
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(WorkBudget {
             allocation_operations: 1024, peak_allocation_bytes: 1_048_576,
@@ -842,7 +805,7 @@ mod tests {
             ..WorkBudget::default()
         }, &cancellation).expect("original ledger");
         let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
-        let (actual, claim) = compact_context_with_work(&context, 4, &summary, &retention,
+        let (actual, claim) = compact_context(&context, 4, &summary, &retention,
             &mut Some(&mut observer))?;
         let custody = observer.into_custody();
         assert_eq!(actual, expected);
@@ -870,7 +833,7 @@ mod tests {
             ModelMessage { role: ModelRole::User, content: ModelContent::Text("second".into()) },
         ];
         let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
-        assert!(clone_messages_with_work(&messages, &mut Some(&mut observer)).is_err());
+        assert!(clone_messages(&messages, &mut Some(&mut observer)).is_err());
         assert!(work.receipt().bytes_copied >= 5);
         let custody = observer.into_custody();
         assert_eq!(custody.bytes(), 0, "failed partial payload drops before its quota releases");
@@ -893,32 +856,14 @@ mod tests {
             current_input_index: Some(1),
             ..Context::default()
         };
-        let (prefix, claim) = clone_context_prefix_with_work(&context, 1, &mut None)?;
+        let (prefix, claim) = clone_context_prefix(&context, 1, &mut None)?;
         assert_eq!(prefix.messages, context.messages[..1]);
         assert_eq!(prefix.current_input_index, None);
         assert_eq!(claim, 0);
         context.current_input_index = Some(0);
-        assert_eq!(clone_context_prefix_with_work(&context, 1, &mut None)?.0.current_input_index, Some(0));
-        assert!(clone_context_prefix_with_work(&context, 3, &mut None).is_err());
+        assert_eq!(clone_context_prefix(&context, 1, &mut None)?.0.current_input_index, Some(0));
+        assert!(clone_context_prefix(&context, 3, &mut None).is_err());
         Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn physical_vector_denial_does_not_copy_source_fields() {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(WorkBudget {
-            allocation_operations: 1,
-            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 4096,
-            bytes_copied: 4096,
-            ..WorkBudget::default()
-        }, &cancellation).expect("original ledger");
-        let messages = vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text("original field".into()) }];
-        let before = work.receipt();
-        assert!(native::clone_messages_native(&messages, &work).is_err());
-        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
-        assert_eq!(messages[0].content, ModelContent::Text("original field".into()));
     }
 
     #[test]

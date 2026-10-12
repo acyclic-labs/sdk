@@ -11,9 +11,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Reconciles only the original retained outbox under its exact lease. The
-    /// wait allowance bounds observation, never extends the admitted deadline.
-    /// No machine step, command dispatch, lease replacement or queue is created.
+    /// Reconciles only the original retained outbox under its exact lease.
     pub async fn reconcile_task(
         &self, lease: crate::distributed::WorkLease, commands: &dyn TaskCommandHost,
         maximum_commands: u32, maximum_wait_millis: u32,
@@ -128,8 +126,8 @@ where
                 if !shared.context().original_task_binding_matches(task, &fence) {
                     return Err(observed::boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "native reconciliation differs from original task binding"));
                 }
-                let body = shared.context().read_file_with_native_work(&command.payload, work)?.await?;
-                let payload = io.decode_preparation::<serde_json::Value>(&body.0)?.into_retained();
+                let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
+                let payload = io.decode_preparation::<serde_json::Value>(&body)?.into_retained();
                 drop(body);
                 commands.reconcile_with_native_work(
                     std::sync::Arc::clone(shared), observed::clone_fence(&fence, Some(io))?,

@@ -1,8 +1,4 @@
 //! Ref-only Stream journal for pinned resumable workflow transitions.
-//!
-//! Passive finite observation borrows the original task owner and cumulative
-//! preparation/native ledger. Receipts cover accepted protocol-bounded Stream
-//! records and SDK data work, not opaque provider transfers/allocations or RSS.
 
 use super::{FilesystemHost, InternalContentClass, PreparationIo};
 use super::interaction_host::interaction_boundary as observation_boundary;
@@ -29,15 +25,6 @@ use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex},
 };
-
-fn freeze_retained_bytes(
-    bytes: Vec<u8>, io: Option<&PreparationIo>,
-) -> Result<(OwnedBytes, u64)> {
-    let mut borrowed = io.map(PreparationIo::history_io);
-    let mut work = borrowed.as_mut()
-        .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-    crate::store::operations::owned_bytes_from_retained_vec(bytes, &mut work)
-}
 
 fn external_read_hold<'a>(
     bytes: &OwnedBytes, io: Option<&'a PreparationIo>,
@@ -85,8 +72,6 @@ impl VerifiedSummary {
     }
 }
 
-// Only concrete identity slots and copied retry bytes are admitted here.
-// BTree allocator nodes are deliberately outside this logical DTO witness.
 struct FiniteWorkflowIdentities<'a> {
     io: &'a PreparationIo,
     owned: u64,
@@ -153,8 +138,7 @@ pub struct FilesystemWorkflowJournal<P, A, O> {
     native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
-/// A private original-owner observation, usable only with an atomic workflow
-/// tail comparison. An admission or caller-supplied status cannot create it.
+/// A private original-owner observation, usable only with an atomic workflow tail comparison.
 pub(crate) struct WorkflowReleaseWitness<'a, P> {
     owner: &'a TaskJournalOwner<P>,
     path: &'a str,
@@ -190,8 +174,7 @@ where
         Ok(())
     }
 
-    /// Binds one task workflow to its exact worker lease. Publications atomically
-    /// compare the coordinator tail and workflow tail on the same Stream provider.
+    /// Binds one task workflow to its exact worker lease.
     pub fn for_task(
         owner: TaskJournalOwner<P>,
         host: Arc<FilesystemHost<A, O>>,
@@ -200,7 +183,7 @@ where
         scope: Scope,
         maximum_payload_bytes: u64,
     ) -> Result<Self> {
-        owner.validate_storage(&verifier, maximum_payload_bytes)?;
+        owner.validate_storage(&verifier, maximum_payload_bytes, &mut None)?;
         let mut journal = Self::new(
             owner.stream(),
             host,
@@ -228,7 +211,6 @@ where
         owner.validate_storage_with_native_work(verifier, maximum_payload_bytes, work)?;
         let original_stream = owner.stream_with_native_work(work)?;
         let io = PreparationIo::from_native_work(work)?;
-        // StreamClient's private Clone body only increments its provider Arc.
         let stream = original_stream.clone();
         ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Read, &io)?;
         ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Write, &io)?;
@@ -248,8 +230,6 @@ where
     }
 
     /// Shares an already funded journal, admitting the actual SDK Arc attempt.
-    /// The intrinsic guard covers owned metadata and the logical Self slot,
-    /// not std's opaque allocation header or retained weak-reference backing.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn into_native_shared(
         self, work: &acyclic_fs::NativeMaterializationWork,
@@ -348,16 +328,8 @@ where
         })
     }
 
-    async fn read_record(
-        &self,
-        reference: &FileRef,
-        verify_payloads: bool,
-        verify_machine: bool,
-    ) -> Result<WorkflowRecord> {
-        self.read_record_with_io(reference, verify_payloads, verify_machine, None).await
-    }
 
-    async fn read_record_with_io(
+    async fn read_record(
         &self, reference: &FileRef, verify_payloads: bool, verify_machine: bool,
         io: Option<&PreparationIo>,
     ) -> Result<WorkflowRecord> {
@@ -385,7 +357,7 @@ where
         record.validate_with_io(io)?;
         if let Some(owner) = &self.owner {
             if verify_machine {
-                owner.validate_workflow_record_with_io(&record, io)?;
+                owner.validate_workflow_record(&record, io)?;
             } else if record.prior.machine != owner.workflow_admission().initial.machine
                 || record.next.machine != owner.workflow_admission().initial.machine
             {
@@ -394,20 +366,11 @@ where
             }
         }
         if verify_payloads {
-            self.verify_command_payloads_with_io(&record, io).await?;
+            self.verify_command_payloads(&record, io).await?;
         }
         Ok(record)
     }
 
-    async fn replay_records(
-        &self,
-        after: u64,
-        maximum: u32,
-        verify_payloads: bool,
-        verify_machine: bool,
-    ) -> Result<Vec<WorkflowRecord>> {
-        self.replay_records_with_io(after, maximum, verify_payloads, verify_machine, None).await
-    }
 
     fn require_machine_io(&self, verify_machine: bool, io: Option<&PreparationIo>) -> Result<()> {
         if verify_machine && io.is_some() {
@@ -421,7 +384,7 @@ where
         Ok(())
     }
 
-    async fn replay_records_with_io(
+    async fn replay_records(
         &self, after: u64, maximum: u32, verify_payloads: bool,
         verify_machine: bool, io: Option<&PreparationIo>,
     ) -> Result<Vec<WorkflowRecord>> {
@@ -480,7 +443,7 @@ where
                     .ok_or_else(|| Error::Invalid("workflow reference custody underflow".into()))?)?),
                 _ => None,
             };
-            let record = self.read_record_with_io(&reference, verify_payloads, verify_machine, io).await?;
+            let record = self.read_record(&reference, verify_payloads, verify_machine, io).await?;
             if record.prior.revision != sequence || record.next.revision != sequence + 1 {
                 return Err(observation_boundary(io, crate::wire::ErrorCode::Storage,
                     "workflow checkpoint revision is discontinuous"));
@@ -493,8 +456,7 @@ where
         Ok(records)
     }
 
-    /// Reads one committed transition for passive observation. Command bodies
-    /// are verified individually by the task reader before readiness checks.
+    /// Reads one committed transition for passive observation.
     pub(crate) async fn observe_transition(&self, revision: u64) -> Result<WorkflowRecord> {
         self.observe_transition_with_io(revision, None).await
     }
@@ -504,7 +466,7 @@ where
     ) -> Result<WorkflowRecord> {
         let after = revision.checked_sub(1)
             .ok_or_else(|| Error::Invalid("zero observation revision".into()))?;
-        self.replay_records_with_io(after, 1, false, false, io)
+        self.replay_records(after, 1, false, false, io)
             .await?
             .into_iter()
             .next()
@@ -512,8 +474,6 @@ where
     }
 
     /// Reads the exact historical transition using the original native ledger.
-    /// The returned guard owns its audited logical decode allowance until the
-    /// record's last use; it is not an opaque allocator-footprint measurement.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn observe_transition_with_native_work(
         &self, revision: u64, work: &acyclic_fs::NativeMaterializationWork,
@@ -525,8 +485,7 @@ where
         Ok((record, custody))
     }
 
-    /// Reads original admission through the canonical authenticated engine,
-    /// retaining its audited logical decode allowance with the returned DTO.
+    /// Reads original admission through the canonical authenticated engine, retaining its audited logical decode allowance with the returned DTO.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn admission_with_native_work<'a>(
         &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
@@ -534,7 +493,7 @@ where
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
-            let admission = self.read_admission_with_io(Some(&io)).await?;
+            let admission = self.read_admission(Some(&io)).await?;
             if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
@@ -544,19 +503,17 @@ where
 
     /// Original authenticated outbox observation; no machine callback executes.
     pub(crate) async fn observe_latest_outbox(&self) -> Result<Option<crate::workflow::MachineTransition>> {
-        Ok(self.observe_latest_record().await?.map(|record| record.transition))
+        Ok(self.observe_latest_record(None).await?.map(|record| record.transition))
     }
 
     /// Observes the original authenticated outbox without a machine callback.
-    /// Returned custody retains the canonical decoder's logical high-water
-    /// allowance, not an opaque allocator measurement, through payload last use.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn observe_latest_outbox_with_native_work<'a>(
         &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<crate::workflow::MachineTransition>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let transition = self.observe_latest_record_engine(Some(&io)).await?
+            let transition = self.observe_latest_record(Some(&io)).await?
                 .map(|record| record.transition);
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
@@ -564,24 +521,16 @@ where
         })
     }
 
-    pub(crate) async fn observe_latest_record(&self) -> Result<Option<WorkflowRecord>> {
-        self.observe_latest_record_engine(None).await
-    }
 
-    pub(crate) async fn observe_latest_record_with_io(
-        &self, io: &PreparationIo,
-    ) -> Result<Option<WorkflowRecord>> {
-        self.observe_latest_record_engine(Some(io)).await
-    }
 
-    async fn observe_latest_record_engine(
+    pub(crate) async fn observe_latest_record(
         &self, io: Option<&PreparationIo>,
     ) -> Result<Option<WorkflowRecord>> {
         let owner = self.owner.as_ref().ok_or_else(||
             observation_boundary(io, crate::wire::ErrorCode::Unsupported,
                 "task outbox observation requires its original owner"))?;
         self.verify_observation_owner(owner, io).await?;
-        let Some(admission) = self.read_admission_with_io(io).await? else { return Ok(None); };
+        let Some(admission) = self.read_admission(io).await? else { return Ok(None); };
         if &admission != owner.workflow_admission() {
             return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
                 "observed outbox differs from original task admission"));
@@ -601,7 +550,7 @@ where
         };
         self.check_observation_cancellation(io)?;
         if bounds.tail == 0 { return Ok(None); }
-        let record = self.replay_records_with_io(bounds.tail - 1, 1, true, false, io).await?
+        let record = self.replay_records(bounds.tail - 1, 1, true, false, io).await?
             .into_iter().next()
             .ok_or_else(|| observation_boundary(io, crate::wire::ErrorCode::Storage,
                 "original outbox record is absent"))?;
@@ -612,7 +561,7 @@ where
     pub(crate) async fn prove_release_with_io(
         &self, io: &PreparationIo,
     ) -> Result<Option<WorkflowReleaseWitness<'_, P>>> {
-        let Some(record) = self.observe_latest_record_with_io(io).await? else { return Ok(None); };
+        let Some(record) = self.observe_latest_record(Some(io)).await? else { return Ok(None); };
         if !matches!(record.transition.status, MachineStatus::Suspended) { return Ok(None); }
         let owner = self.owner.as_ref().ok_or_else(|| {
             Error::Unsupported("workflow release requires its original task owner".into())
@@ -630,9 +579,9 @@ where
                     return owner.verify_with_native_work(true, work).await;
                 }
                 let mut borrowed = io.history_io();
-                owner.verify_with_work(true, &mut Some(&mut borrowed)).await
+                owner.verify(true, &mut Some(&mut borrowed)).await
             }
-            None => owner.verify(true).await,
+            None => owner.verify(true, &mut None).await,
         }
     }
 
@@ -753,7 +702,6 @@ where
         admission: &WorkflowAdmission,
         operation_id: crate::OperationId,
     ) -> Result<(u64, Option<WorkflowRecord>)> {
-        // Retain identities and one checkpoint, never historic state or command bodies.
         let mut summary = VerifiedSummary {
             admission: admission.clone(),
             revision: 0,
@@ -765,7 +713,7 @@ where
         let mut matched = None;
         loop {
             let page = self
-                .replay_records(summary.revision, WORKFLOW_REPLAY_PAGE_RECORDS, false, true)
+                .replay_records(summary.revision, WORKFLOW_REPLAY_PAGE_RECORDS, false, true, None)
                 .await?;
             if page.is_empty() {
                 break;
@@ -793,17 +741,6 @@ where
         Ok((revision, matched))
     }
 
-    pub(crate) async fn verified_history_with_io(
-        &self, admission: &WorkflowAdmission, operation_id: crate::OperationId,
-        io: Option<&PreparationIo>,
-    ) -> Result<(u64, Option<WorkflowRecord>)> {
-        match io {
-            None => self.verified_history(admission, operation_id).await,
-            Some(io) => self.finite_verified_history(admission, operation_id, None, false, io)
-                .await.map(|(revision, matched, _)| (revision, matched)),
-        }
-    }
-
     async fn finite_verified_history(
         &self, admission: &WorkflowAdmission, operation_id: crate::OperationId,
         candidate: Option<&WorkflowRecord>, require_next: bool, io: &PreparationIo,
@@ -812,8 +749,6 @@ where
         let mut identities = FiniteWorkflowIdentities {
             io, owned: 0, reserved: BTreeSet::new(), keys: BTreeSet::new(),
         };
-        // Borrow the admission and original replay DTOs: no checkpoint or
-        // admission clone, and no request-owned summary enters the cache.
         let mut previous_page_owned = 0;
         let mut matched_page_owned = 0;
         let mut previous: Option<WorkflowRecord> = None;
@@ -823,11 +758,9 @@ where
         let mut ready = false;
         loop {
             let before_page = io.owned_bytes()?;
-            let page = self.replay_records_with_io(
+            let page = self.replay_records(
                 revision, WORKFLOW_REPLAY_PAGE_RECORDS, false, true, Some(io),
             ).await?;
-            // Recover the actual charged page allowance, not a guessed heap
-            // size. Replay's returned DTO/vector custody belongs to this IO.
             let page_owned = io.owned_bytes()?.checked_sub(before_page)
                 .ok_or_else(|| Error::Invalid("workflow replay ownership decreased".into()))?;
             identities.owned = identities.owned.checked_add(page_owned)
@@ -888,8 +821,6 @@ where
             }
             matched = Some(prior);
         }
-        // Keep the matched page's conservative concrete DTO allowance in the
-        // same caller IO. Every other page drops physically before scope quota.
         identities.owned = identities.owned.checked_sub(matched_page_owned)
             .ok_or_else(|| Error::Invalid("workflow matched custody underflow".into()))?;
         Ok((revision, matched, ready))
@@ -903,19 +834,6 @@ where
         crate::workflow::validate_workflow_next_with_io(
             checkpoint, terminal, &identities.reserved, &identities.keys, record, Some(io),
         )
-    }
-
-    pub(crate) async fn cached_preflight_with_io(
-        &self, admission: &WorkflowAdmission, record: &WorkflowRecord,
-        io: Option<&PreparationIo>,
-    ) -> Result<bool> {
-        let Some(io) = io else { return self.cached_preflight(admission, record); };
-        // A native local summary cannot be trusted through the permanent cache.
-        // Re-run the authoritative full chain and prove the required next step.
-        let (_, _, ready) = self.finite_verified_history(
-            admission, record.operation_id, Some(record), true, io,
-        ).await?;
-        Ok(ready)
     }
 
     pub(crate) fn advance_cached_with_io(
@@ -996,11 +914,8 @@ where
         Ok(true)
     }
 
-    async fn read_admission(&self) -> Result<Option<WorkflowAdmission>> {
-        self.read_admission_with_io(None).await
-    }
 
-    pub(crate) async fn read_admission_with_io(&self, io: Option<&PreparationIo>) -> Result<Option<WorkflowAdmission>> {
+    pub(crate) async fn read_admission(&self, io: Option<&PreparationIo>) -> Result<Option<WorkflowAdmission>> {
         let _path;
         let path = crate::contract::preparation_format(
             format_args!("harness/v2/workflow-admissions/{}", self.workflow_id), io,
@@ -1122,11 +1037,8 @@ where
         }
     }
 
-    async fn verify_command_payloads(&self, record: &WorkflowRecord) -> Result<()> {
-        self.verify_command_payloads_with_io(record, None).await
-    }
 
-    async fn verify_command_payloads_with_io(
+    async fn verify_command_payloads(
         &self, record: &WorkflowRecord, io: Option<&PreparationIo>,
     ) -> Result<()> {
         for command in &record.transition.commands {
@@ -1154,15 +1066,11 @@ where
         Ok(())
     }
 
-    async fn stage(&self, record: &WorkflowRecord) -> Result<FileRef> {
-        self.stage_with_io(record, None).await
-    }
 
-    pub(crate) async fn stage_with_io(
+    pub(crate) async fn stage(
         &self, record: &WorkflowRecord, io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
-        // Recovery can expose commands immediately; authenticate every payload first.
-        self.verify_command_payloads_with_io(record, io).await?;
+        self.verify_command_payloads(record, io).await?;
         let _bytes;
         let bytes = match io {
             Some(io) => io.encode_json(record, self.maximum_payload_bytes, false)?,
@@ -1192,7 +1100,7 @@ where
     }
 
     async fn reconcile(&self, record: &WorkflowRecord) -> Result<Option<WorkflowCommitOutcome>> {
-        let admission = self.read_admission().await?.ok_or_else(|| {
+        let admission = self.read_admission(None).await?.ok_or_else(|| {
             Error::Conflict("workflow transition has no retained admission".into())
         })?;
         let (_, existing) = self
@@ -1200,13 +1108,12 @@ where
             .await?;
         if let Some(existing) = existing {
             return if existing == *record {
-                self.verify_command_payloads(&existing).await?;
+                self.verify_command_payloads(&existing, None).await?;
                 Ok(Some(WorkflowCommitOutcome::Replayed(existing)))
             } else {
                 Err(Error::Conflict("workflow operation identity reused".into()))
             };
         }
-        // Validate collisions with committed command identities as well.
         let cached = self
             .verified
             .lock()
@@ -1227,15 +1134,13 @@ where
         &self, record: &WorkflowRecord, io: Option<&PreparationIo>,
     ) -> Result<Option<WorkflowCommitOutcome>> {
         let Some(io) = io else { return self.reconcile(record).await; };
-        let admission = self.read_admission_with_io(Some(io)).await?.ok_or_else(|| {
+        let admission = self.read_admission(Some(io)).await?.ok_or_else(|| {
             Error::Conflict("workflow transition has no retained admission".into())
         })?;
         let (_, existing, _) = self.finite_verified_history(
             &admission, record.operation_id, Some(record), false, io,
         ).await?;
         let Some(existing) = existing else { return Ok(None); };
-        // Compare the exact original operation, never just a mutable-head
-        // existence predicate. Both complete DTO traversals are admitted.
         let _expected_hold;
         let expected = io.encode_json(record, self.maximum_payload_bytes, false)?;
         _expected_hold = io.guard_bytes(&expected)?;
@@ -1245,7 +1150,7 @@ where
         if existing != *record {
             return Err(Error::Conflict("workflow operation identity reused".into()));
         }
-        self.verify_command_payloads_with_io(&existing, Some(io)).await?;
+        self.verify_command_payloads(&existing, Some(io)).await?;
         Ok(Some(WorkflowCommitOutcome::Replayed(existing)))
     }
 
@@ -1256,18 +1161,17 @@ where
         record: WorkflowRecord,
         io: Option<&PreparationIo>,
     ) -> Result<WorkflowCommitOutcome> {
-        // Capability denial precedes owner verification and every backend call.
         self.require_machine_io(true, io)?;
         if let Some(io) = io { io.check_cancellation()?; }
         if let Some(owner) = &self.owner {
             let mut borrowed = io.map(PreparationIo::history_io);
             let mut work = borrowed.as_mut()
                 .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-            owner.verify_with_work(false, &mut work).await?;
+            owner.verify(false, &mut work).await?;
         }
         let _admission;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let admission = self.read_admission_with_io(io).await?.ok_or_else(|| {
+        let admission = self.read_admission(io).await?.ok_or_else(|| {
             Error::Conflict("workflow transition has no retained admission".into())
         })?;
         _admission = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
@@ -1277,7 +1181,7 @@ where
             expected_revision, &idempotency_key, &record, io,
         )?;
         if let Some(owner) = &self.owner {
-            owner.validate_workflow_record_with_io(&record, io)?;
+            owner.validate_workflow_record(&record, io)?;
         }
         {
             let history_hold;
@@ -1293,7 +1197,7 @@ where
                         "workflow operation identity is already bound".into(),
                     ));
                 }
-                self.verify_command_payloads_with_io(&existing, io).await?;
+                self.verify_command_payloads(&existing, io).await?;
                 if let Some(held) = history_hold { held.into_retained(); }
                 return Ok(WorkflowCommitOutcome::Replayed(existing));
             }
@@ -1310,14 +1214,14 @@ where
         }
         let _reference;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let reference = self.stage_with_io(&record, io).await?;
+        let reference = self.stage(&record, io).await?;
         _reference = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| Error::Invalid("workflow staging custody underflow".into()))?))
             .transpose()?;
         {
             let _staged;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let staged = self.read_record_with_io(&reference, true, true, io).await?;
+            let staged = self.read_record(&reference, true, true, io).await?;
             _staged = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| Error::Invalid("workflow staged-record custody underflow".into()))?))
                 .transpose()?;
@@ -1354,14 +1258,9 @@ where
             }
             blake3::hash(hash_input.as_bytes())
         };
-        // Fund the actual digest vector before freezing its original byte
-        // custody into the key, including all append-envelope aliases.
         let _key;
         let key_bytes = super::fork_preparer_io::clone_bytes(digest.as_bytes(), io)?;
-        let (key_bytes, retained) = freeze_retained_bytes(key_bytes, io)?;
-        _key = if retained == 0 { None } else {
-            io.map(|io| io.guard_owned(retained)).transpose()?
-        };
+        _key = io.map(|io| io.guard_bytes(&key_bytes)).transpose()?.flatten();
         let key = StreamKey::new(key_bytes).map_err(|error| {
             #[cfg(not(target_arch = "wasm32"))]
             if io.is_some() {
@@ -1395,7 +1294,7 @@ where
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append_keyed_with_work(
+                crate::distributed::append_keyed(
                     (&stream, &self.stream), body, Some(expected_revision), key,
                     record.operation_id, "workflow retry identity", &mut Some(&mut borrowed),
                 ).await
@@ -1451,9 +1350,9 @@ where
             let mut borrowed = io.map(PreparationIo::history_io);
             let mut work = borrowed.as_mut()
                 .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-            owner.verify_with_work(false, &mut work).await?;
+            owner.verify(false, &mut work).await?;
         }
-        if let Some(existing) = self.read_admission_with_io(io).await? {
+        if let Some(existing) = self.read_admission(io).await? {
             return if existing == admission { Ok(existing) } else {
                 Err(Error::Conflict("workflow admission identity is already bound".into()))
             };
@@ -1512,10 +1411,7 @@ where
         };
         let _key;
         let key_bytes = super::fork_preparer_io::clone_bytes(digest.as_bytes(), io)?;
-        let (key_bytes, retained) = freeze_retained_bytes(key_bytes, io)?;
-        _key = if retained == 0 { None } else {
-            io.map(|io| io.guard_owned(retained)).transpose()?
-        };
+        _key = io.map(|io| io.guard_bytes(&key_bytes)).transpose()?.flatten();
         let key = StreamKey::new(key_bytes).map_err(|error| {
             #[cfg(not(target_arch = "wasm32"))]
             if io.is_some() {
@@ -1533,7 +1429,7 @@ where
             if owner.append_workflow_with_work(true, 0, &key, body, &mut work).await? {
                 return Ok(admission);
             }
-            return match self.read_admission_with_io(io).await? {
+            return match self.read_admission(io).await? {
                 Some(existing) if existing == admission => Ok(existing),
                 Some(_) => Err(Error::Conflict("workflow admission identity is already bound".into())),
                 None => Err(Error::Conflict("workflow admission ownership changed".into())),
@@ -1545,7 +1441,7 @@ where
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append_keyed_with_work(
+                crate::distributed::append_keyed(
                     (&stream, &self.stream), body, Some(0), key, admission.operation_id,
                     "workflow admission identity", &mut Some(&mut borrowed),
                 ).await
@@ -1560,12 +1456,12 @@ where
             Ok(AppendOutcome::Committed(receipt)) if receipt.start == 0 && receipt.end == 1 => Ok(admission),
             Ok(AppendOutcome::Committed(_)) => Err(Error::Storage("workflow admission receipt is invalid".into())),
             Ok(AppendOutcome::TailConflict { .. }) | Err(Error::Conflict(_)) =>
-                match self.read_admission_with_io(io).await? {
+                match self.read_admission(io).await? {
                     Some(existing) if existing == admission => Ok(existing),
                     Some(_) => Err(Error::Conflict("workflow admission identity is already bound".into())),
                     None => Err(Error::Indeterminate(admission.operation_id)),
                 },
-            Err(Error::Indeterminate(_)) => match self.read_admission_with_io(io).await {
+            Err(Error::Indeterminate(_)) => match self.read_admission(io).await {
                 Ok(Some(existing)) if existing == admission => Ok(existing),
                 Ok(Some(_)) => Err(Error::Conflict("workflow admission identity is already bound".into())),
                 Ok(None) | Err(Error::Storage(_)) => Err(Error::Indeterminate(admission.operation_id)),
@@ -1609,7 +1505,7 @@ where
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
-            let records = self.replay_records_with_io(after, maximum, true, true, Some(&io)).await?;
+            let records = self.replay_records(after, maximum, true, true, Some(&io)).await?;
             if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
@@ -1654,12 +1550,12 @@ where
     }
 
     fn admission(&self) -> BoxFuture<'_, Result<Option<WorkflowAdmission>>> {
-        Box::pin(self.read_admission())
+        Box::pin(self.read_admission(None))
     }
 
     fn replay(&self, after: u64, maximum: u32) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>> {
         let span = obs_span!("acyclic.harness.workflow.replay", rev = after);
-        traced(span, self.replay_records(after, maximum, true, true))
+        traced(span, self.replay_records(after, maximum, true, true, None))
     }
 
     fn commit<'a>(

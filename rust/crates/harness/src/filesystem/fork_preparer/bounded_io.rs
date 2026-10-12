@@ -1,13 +1,10 @@
 //! Finite per-attempt accounting over the Filesystem's measured engine APIs.
 use super::*;
-use crate::conversation::{FileDescriptor, FileRef, VolumeOwner};
+use crate::conversation::{FileDescriptor, FileRef};
 use acyclic_fs::{CancellationToken, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError};
 use std::sync::Mutex;
 
-/// The pinned Filesystem creation contract interprets maximum_work as the
-/// allowance for each SDK-observed non-byte counter, and maximum_bytes as the
-/// allowance for each SDK-observed byte counter. Opaque provider work is not
-/// invented as physical I/O; receipts aggregate across the complete attempt.
+/// The pinned Filesystem creation contract interprets maximum_work as the allowance for each SDK-observed non-byte counter, and maximum_bytes as the allowance for each SDK-observed byte counter.
 pub(crate) struct PreparationIo {
     ledger: PreparationLedger,
     pub(crate) cancellation: CancellationToken,
@@ -41,7 +38,6 @@ impl Drop for OrdinaryPublicationScope<'_> {
 }
 
 /// A real logical quota reservation spanning an audited opaque serde decode.
-/// It is not a claim about allocator calls, allocated bytes, or RSS.
 pub(crate) struct DecodeReservation<'a> {
     io: &'a PreparationIo,
     bytes: u64,
@@ -71,9 +67,7 @@ impl Drop for DecodeReservation<'_> {
     }
 }
 
-/// The actual admitted typed-decode allowance. Native decoding owns its guard
-/// directly until Serde succeeds, so a decoder error can move that same guard
-/// without a fallible post-error transfer or another retention attempt.
+/// The actual admitted typed-decode allowance.
 struct TrustedDecodeReservation<'a> {
     io: &'a PreparationIo,
     scoped: Option<DecodeReservation<'a>>,
@@ -91,7 +85,7 @@ impl<'a> TrustedDecodeReservation<'a> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = self.io.original_native_work() {
             self.native = Some(work.retain_owned(bytes)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?);
+                .map_err(Error::from)?);
             return Ok(());
         }
         self.scoped = Some(self.io.reserve_decode(bytes)?);
@@ -119,8 +113,6 @@ impl<'a> TrustedDecodeReservation<'a> {
                 return Err(error);
             }
         };
-        // Serde has returned successfully and its diagnostic temporaries have
-        // physically dropped. Only payload custody survives this boundary.
         if self.diagnostic_bytes != 0 {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(guard) = self.native.as_mut() {
@@ -144,8 +136,7 @@ impl<'a> TrustedDecodeReservation<'a> {
         Ok(ReservedDecoded { value, _reservation })
     }
 
-    /// Known SDK serialization diagnostics use the existing audited logical
-    /// allowance, not a measurement of Serde's private Message/ErrorImpl heap.
+    /// Known SDK serialization diagnostics use the existing audited logical allowance, not a measurement of Serde's private Message/ErrorImpl heap.
     #[cfg(not(target_arch = "wasm32"))]
     fn finish_serialization<T>(mut self, result: Result<T>) -> Result<T> {
         match result {
@@ -156,18 +147,12 @@ impl<'a> TrustedDecodeReservation<'a> {
     }
 }
 
-/// Audited closed Harness DTOs only, including their Value/string/vector
-/// containers. This is not an arbitrary DeserializeOwned heap sandbox.
+/// Audited closed Harness DTOs only, including their Value/string/vector containers.
 pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {
-    fn maximum_slot_bytes() -> u64;
-    /// Audited static fields, discriminators, expected types, and custom error
-    /// labels reachable by this closed visitor; include list punctuation.
-    fn diagnostic_label_bytes() -> u64;
-    /// Payload/scratch allowance before the audited visitor, including custom
-    /// DTO reconstruction/cache temporaries and the closed codec diagnostic base
-    /// exactly once. Typed formatter diagnostics are reserved separately from
-    /// diagnostic_label_bytes(). Snapshot overrides remove their old diagnostic
-    /// component and use the canonical admission, never a second source scan.
+    fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
+    /// Audited static fields, discriminators, expected types, and custom error labels reachable by this closed visitor; include list punctuation.
+    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
+    /// Payload/scratch allowance before the audited visitor, including custom DTO reconstruction/cache temporaries and the closed codec diagnostic base exactly once.
     fn decode_owned_allowance(
         shape: crate::contract::JsonValueShape, codec_scratch: u64, input_bytes: u64,
         native_code: Option<crate::wire::ErrorCode>,
@@ -185,8 +170,6 @@ fn preparation_decode_owned_allowance<T: PreparationRecord>(
     native_code: Option<crate::wire::ErrorCode>,
 ) -> Result<u64> {
     let value_owned = match T::json_value_schema() {
-        // Value-free visitors have scanner scratch but no full-Value base.
-        // Value-bearing profiles below already include this closed codec base.
         crate::contract::JsonValueSchema::None => codec_scratch
             .checked_add(crate::contract::sdk_json_diagnostic_bytes())
             .ok_or_else(|| decode_allowance_error("preparation codec base overflow", native_code))?,
@@ -244,13 +227,6 @@ pub(crate) fn preparation_slot_bytes<T>() -> u64 {
         std::mem::size_of::<crate::workflow::MachineCheckpoint>(),
         std::mem::size_of::<crate::workflow::MachineTransition>(),
     ].into_iter().max().unwrap_or(0) as u64;
-    // Pinned Serde 229 Content storage is distinct from the eventual DTO.
-    // The closed model graph has at most five simultaneous Content envelopes:
-    // ModelContent -> ModelContentPart -> ToolResultContent -> ModelDataPart ->
-    // NativeMediaIntent (or VolumeOwner). ModelDataPart is nonrecursive.
-    // Each envelope permits the actual Content/pair vector's geometric
-    // capacity. The decoder's 8*N multiplier covers these audited containers;
-    // arbitrary DeserializeOwned implementations are not admitted by this API.
     let content = std::mem::size_of::<serde::__private229::de::Content<'static>>()
         .max(std::mem::size_of::<(
             serde::__private229::de::Content<'static>,
@@ -262,11 +238,7 @@ pub(crate) fn preparation_slot_bytes<T>() -> u64 {
 macro_rules! audited_preparation_records {
     ($($record:ty => $schema:ident),+ $(,)?) => {$(
         impl PreparationRecord for $record {
-            fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
-            fn diagnostic_label_bytes() -> u64 {
-                crate::contract::preparation_serde_diagnostic_label_bytes()
-            }
-            fn json_value_schema() -> crate::contract::JsonValueSchema {
+                fn json_value_schema() -> crate::contract::JsonValueSchema {
                 crate::contract::JsonValueSchema::$schema
             }
         }
@@ -294,9 +266,6 @@ audited_preparation_records!(
 
 impl PreparationRecord for crate::Outcome<serde_json::Value> {
     fn maximum_slot_bytes() -> u64 {
-        // Outcome is externally tagged: only Succeeded reaches Value, Failed
-        // owns one String, and Indeterminate carries one fixed operation ID.
-        // It has no internally tagged/untagged Content buffering layers.
         [
             std::mem::size_of::<Self>(),
             std::mem::size_of::<serde_json::Value>(),
@@ -305,16 +274,11 @@ impl PreparationRecord for crate::Outcome<serde_json::Value> {
             std::mem::size_of::<crate::OperationId>(),
         ].into_iter().max().unwrap_or(0) as u64
     }
-    fn diagnostic_label_bytes() -> u64 {
-        crate::contract::preparation_serde_diagnostic_label_bytes()
-    }
     fn json_value_schema() -> crate::contract::JsonValueSchema {
         crate::contract::JsonValueSchema::TaskOutcome
     }
 }
 
-// A raw Value has no closed SDK typed visitor or expected-field inventory.
-// Its canonical full-Value decode allowance already covers diagnostics.
 impl PreparationRecord for serde_json::Value {
     fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
     fn diagnostic_label_bytes() -> u64 { 0 }
@@ -355,8 +319,6 @@ impl<'a, T> ReservedDecoded<'a, T> {
     }
 
     pub(crate) fn into_retained(mut self) -> T {
-        // Transfer actual held logical quota to this attempt's DTO custody.
-        // It is conservative allowance, not an allocator-capacity assertion.
         self._reservation.bytes = 0;
         self.value
     }
@@ -397,8 +359,8 @@ impl PreparationIo {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
-        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let custody = work.retain_owned(0).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.remaining().map_err(Error::from)?;
+        let custody = work.retain_owned(0).map_err(Error::from)?;
         Ok(Self {
             ledger: PreparationLedger::Native { work: work.clone(), custody: Mutex::new(custody) },
             cancellation: work.cancellation().clone(),
@@ -406,8 +368,6 @@ impl PreparationIo {
     }
 
     /// Moves genuine existing custody without consulting cancellation or quota.
-    /// Recovery must observe those conditions while it still owns the lease.
-    /// This does not admit growth, allocate a guard, or create another ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn from_native_custody(custody: acyclic_fs::NativeAllocation) -> Self {
         let work = custody.work().clone();
@@ -470,7 +430,7 @@ impl PreparationIo {
         match &self.ledger {
             PreparationLedger::Native { custody, .. } => custody.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .split_off(bytes).map_err(|cause| Error::NativeWork { cause, custody: None }),
+                .split_off(bytes).map_err(Error::from),
             PreparationLedger::Owned { .. } => Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
             }),
@@ -508,9 +468,6 @@ impl PreparationIo {
         }
     }
 
-
-    // Honest ordinary convenience uses the same engine without pretending its
-    // allowance is finite. Measured public entry points use from_budget.
     pub(crate) fn for_unmeasured(cancellation: &CancellationToken) -> Result<Self> {
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         Ok(Self {
@@ -552,7 +509,7 @@ impl PreparationIo {
         match &self.ledger {
             PreparationLedger::Owned { .. } => self.preflight_workspace(next).map_err(Error::from),
             #[cfg(not(target_arch = "wasm32"))]
-            PreparationLedger::Native { work, .. } => work.admit(next).map_err(|cause| Error::NativeWork { cause, custody: None }),
+            PreparationLedger::Native { work, .. } => work.admit(next).map_err(Error::from),
         }
     }
 
@@ -611,7 +568,7 @@ impl PreparationIo {
             PreparationLedger::Native { custody, .. } => {
                 let mut guard = custody.lock().map_err(|_| Error::Storage("native preparation custody is poisoned".into()))?;
                 let live = guard.bytes().checked_add(bytes).ok_or_else(|| Error::Invalid("native preparation ownership overflow".into()))?;
-                guard.resize_retained(live).map_err(|cause| Error::NativeWork { cause, custody: None })
+                guard.resize_retained(live).map_err(Error::from)
             }
         }
     }
@@ -635,7 +592,7 @@ impl PreparationIo {
             }
             #[cfg(not(target_arch = "wasm32"))]
             PreparationLedger::Native { custody, .. } => custody.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                .release(bytes).map_err(|cause| Error::NativeWork { cause, custody: None }),
+                .release(bytes).map_err(Error::from),
         }
     }
 
@@ -663,7 +620,7 @@ impl PreparationIo {
         match &self.ledger {
             PreparationLedger::Owned { .. } => self.remaining_workspace().map_err(Error::from),
             #[cfg(not(target_arch = "wasm32"))]
-            PreparationLedger::Native { work, .. } => work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None }),
+            PreparationLedger::Native { work, .. } => work.remaining().map_err(Error::from),
         }
     }
 
@@ -698,7 +655,7 @@ impl PreparationIo {
         match &self.ledger {
             PreparationLedger::Owned { budget, .. } => self.receipt().verify(*budget).map_err(|error| Error::Invalid(error.to_string())),
             #[cfg(not(target_arch = "wasm32"))]
-            PreparationLedger::Native { work, .. } => work.remaining().map(|_| ()).map_err(|cause| Error::NativeWork { cause, custody: None }),
+            PreparationLedger::Native { work, .. } => work.remaining().map(|_| ()).map_err(Error::from),
         }
     }
 
@@ -706,7 +663,7 @@ impl PreparationIo {
         match &self.ledger {
             PreparationLedger::Owned { .. } => self.spent_workspace(next).map_err(Error::from),
             #[cfg(not(target_arch = "wasm32"))]
-            PreparationLedger::Native { work, .. } => work.spent(next).map_err(|cause| Error::NativeWork { cause, custody: None }),
+            PreparationLedger::Native { work, .. } => work.spent(next).map_err(Error::from),
         }
     }
 
@@ -773,9 +730,6 @@ impl PreparationIo {
 
     fn encoding_bounds(&self, maximum_bytes: u64) -> Result<crate::contract::JsonBounds> {
         let remaining = self.remaining()?;
-        // A valid JSON value necessarily consumes a byte and a token. This is
-        // admission only: actual codec work remains charged by its callbacks.
-        // Keep an explicit invalid caller bound for the codec to diagnose.
         if maximum_bytes != 0 {
             self.preflight(WorkCounters { bytes_encoded: 1, items_examined: 1, ..Default::default() })?;
         }
@@ -798,52 +752,24 @@ impl PreparationIo {
     ) -> Result<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.original_native_work().is_some() {
-            // Only closed SDK serializers are called by this producer. User
-            // serializer work and arbitrary custom messages are not sandboxed.
             let mut diagnostics = TrustedDecodeReservation::new(self);
             diagnostics.reserve(crate::contract::sdk_json_diagnostic_bytes())?;
             let result = if canonical {
-                crate::contract::canonical_json_bytes_bounded_native_trusted(
-                    value, bounds, crate::wire::ErrorCode::Invalid, charge,
+                crate::contract::canonical_json_bytes_bounded(
+                    value, bounds, Some(crate::wire::ErrorCode::Invalid), charge,
                 )
             } else {
-                crate::contract::json_bytes_bounded_native_trusted(
-                    value, bounds, crate::wire::ErrorCode::Invalid, charge,
+                crate::contract::json_bytes_bounded(
+                    value, bounds, Some(crate::wire::ErrorCode::Invalid), charge,
                 )
             };
             return diagnostics.finish_serialization(result);
         }
         if canonical {
-            crate::contract::canonical_json_bytes_bounded(value, bounds, charge)
+            crate::contract::canonical_json_bytes_bounded(value, bounds, None, charge)
         } else {
-            crate::contract::json_bytes_bounded_trusted(value, bounds, charge)
+            crate::contract::json_bytes_bounded(value, bounds, None, charge)
         }
-    }
-
-    pub(crate) fn encode_for_clone<T: Serialize>(&self, value: &T, maximum_bytes: u64) -> Result<acyclic_stream::OwnedBytes> {
-        let bounds = self.encoding_bounds(maximum_bytes)?;
-        let mut transferred = DecodeReservation { io: self, bytes: 0 };
-        let encoded = self.encode_at_bounds(value, bounds, true, &mut |next| {
-            match next {
-                crate::contract::JsonCodecCharge::Release { .. } => Ok(()),
-                crate::contract::JsonCodecCharge::Retain { bytes } => {
-                    self.codec_charge(next, true)?;
-                    transferred.bytes = transferred.bytes.checked_add(bytes)
-                        .ok_or_else(|| self.invalid("clone admission overflow"))?;
-                    Ok(())
-                }
-                next => self.codec_charge(next, true),
-            }
-        })?;
-        if self.uses_native_work() {
-            transferred.bytes = transferred.bytes.checked_sub(encoded.capacity() as u64)
-                .ok_or_else(|| self.invalid("clone byte ownership exceeds admitted quota"))?;
-        }
-        let encoded = source_bytes_from_vec(encoded, Some(self))?;
-        // The concrete Context clone consumes this admitted ownership. Failure
-        // instead drops the guard without consulting cancellation or authority.
-        transferred.bytes = 0;
-        Ok(encoded)
     }
 
     pub(crate) fn capability<T: Serialize>(&self, value: &T, prefix: &str) -> Result<String> {
@@ -880,9 +806,7 @@ impl PreparationIo {
         Ok(granted)
     }
 
-    /// Admit the actual ordinary History box before constructing it. Shared
-    /// History observers release only this frame after the box physically drops;
-    /// any returned DTO custody remains in the same IO ledger.
+    /// Admit the actual ordinary History box before constructing it.
     pub(crate) fn history_future<'a, T, F, B>(
         &'a self, build: B,
     ) -> Result<crate::store::history::HistoryContentFuture<'a, T>>
@@ -908,15 +832,10 @@ impl PreparationIo {
             crate::store::history::HistoryContentFuture::Native(_) => 0,
         };
         let result = future.await;
-        // Await consumes and destroys the future before its ordinary frame
-        // claim is retired. Native bundles retire their own original guard.
         let released = if frame == 0 { Ok(()) } else { self.release(frame) };
         result.and(released)
     }
 
-    // Audited closed serde derives only: upload records and approval-only wires.
-    // Their strings/key vectors occupy at most twice encoded input bytes plus
-    // the concrete root body; opaque allocator nodes and RSS are excluded.
     pub(crate) fn decode_json<T: UploadRecord>(&self, bytes: &[u8]) -> Result<T> {
         let remaining = self.remaining()?;
         let native_code = self.uses_native_work().then_some(crate::wire::ErrorCode::Storage);
@@ -1029,8 +948,7 @@ impl PreparationIo {
         reservation.finish(result)
     }
 
-    /// Builds the original serde JSON graph directly. Wire-size admission is
-    /// distinct from bytes actually encoded: this path creates no wire buffer.
+    /// Builds the original serde JSON graph directly.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn value_json<T: Serialize>(
         &self, source: &T, maximum_bytes: u64,
@@ -1048,8 +966,8 @@ impl PreparationIo {
         let root_hold = self.guard_owned(root)?;
         let mut diagnostics = TrustedDecodeReservation::new(self);
         diagnostics.reserve(crate::contract::sdk_json_diagnostic_bytes())?;
-        let result = crate::contract::json_value_bounded_native_trusted(
-            source, bounds, crate::wire::ErrorCode::Invalid,
+        let result = crate::contract::json_value_bounded(
+            source, bounds, Some(crate::wire::ErrorCode::Invalid),
             &mut |next| self.codec_charge(next, false),
         );
         let value = diagnostics.finish_serialization(result)?;
@@ -1057,8 +975,7 @@ impl PreparationIo {
         Ok(value)
     }
 
-    /// Checks the original JSON wire-size policy without building a graph or
-    /// buffer. Resident strings are inspected before the serde sizing scan.
+    /// Checks the original JSON wire-size policy without building a graph or buffer.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn check_json_byte_bound(
         &self, source: &serde_json::Value, maximum_bytes: u64,
@@ -1082,7 +999,6 @@ impl PreparationIo {
     }
 
     /// The original borrowed Value visitor, restricted to audited SDK DTOs.
-    /// No whole-Value clone, byte encoding, or parser round trip is performed.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn value_decode<T: UploadRecord>(
         &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
@@ -1150,76 +1066,9 @@ impl PreparationIo {
         reservation.finish(result)
     }
 
-    /// Preserves the consuming `serde_json::from_value` protocol. The old
-    /// strings are moved, not cloned; their existing allocation stays live
-    /// across the visitor and is combined with the preadmitted new temporaries.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn value_decode_owned<T: UploadRecord>(
-        &self, value: serde_json::Value, allocation: acyclic_fs::NativeAllocation,
-        code: crate::wire::ErrorCode,
-    ) -> Result<(T, acyclic_fs::NativeAllocation)> {
-        // Field order matters on every early error: Value physically drops
-        // before its original guard, including cancellation before inspection.
-        let mut input = (value, allocation);
-        let work = self.original_native_work()
-            .ok_or_else(|| self.invalid("owned Value decoding requires original work"))?;
-        if !work.shares_ledger(input.1.work()) {
-            return Err(self.invalid("owned Value belongs to a different work ledger"));
-        }
-        let bounds = crate::contract::JsonBounds {
-            maximum_bytes: u64::MAX,
-            maximum_items: self.remaining()?.items_examined,
-            maximum_depth: 128,
-        };
-        let shape = crate::contract::json_owned_value_shape_bounded(
-            &input.0, bounds, T::json_value_schema(),
-            &mut |next| self.codec_charge(next, false),
-        ).map_err(|error| decode_allowance_with_code(error, Some(code)))?;
-        let nodes = shape.lexical_items().checked_add(shape.virtual_items())
-            .ok_or_else(|| decode_allowance_error("owned Value item count overflow", Some(code)))?;
-        let additional = crate::contract::json_owned_value_conversion_additional_bytes(shape)
-            .map_err(|error| decode_allowance_with_code(error, Some(code)))?;
-        // Only ModelContent's reachable untagged visitor clones ContentRef
-        // strings. Tagged descendants consume those strings by visit_string.
-        // This funds NEW temporary copies, not the existing moved input.
-        let content_copy_bytes = match T::json_value_schema() {
-            crate::contract::JsonValueSchema::ModelContent
-            | crate::contract::JsonValueSchema::Context
-            | crate::contract::JsonValueSchema::ResponseProjection
-            | crate::contract::JsonValueSchema::ModelRequest => shape.input_bytes().checked_mul(2)
-                .ok_or_else(|| decode_allowance_error("owned Content string reservation overflow", Some(code)))?,
-            _ => 0,
-        };
-        let allowance = nodes.checked_mul(preparation_slot_bytes::<T>())
-            .and_then(|bytes| bytes.checked_mul(8))
-            .and_then(|bytes| bytes.checked_add(additional))
-            .and_then(|bytes| bytes.checked_add(content_copy_bytes))
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<T>() as u64))
-            .ok_or_else(|| decode_allowance_error("owned Value reservation overflow", Some(code)))?;
-        let mut reservation = TrustedDecodeReservation::new(self);
-        let diagnostics = crate::contract::json_typed_diagnostic_owned_bytes(
-            shape, T::diagnostic_label_bytes(), Some(code),
-        )?;
-        reservation.reserve_typed(allowance, diagnostics, Some(code))?;
-        let result = serde_json::from_value(input.0)
-            .map_err(|source| Error::NativeDecode { code, source, custody: None });
-        let mut output = reservation.finish(result)?.into_native_parts()?;
-        if let Err(cause) = output.1.absorb(&mut input.1) {
-            return Err(Error::NativeWork { cause, custody: Some(input.1) });
-        }
-        let actual = (std::mem::size_of::<T>() as u64)
-            .checked_add(output.0.logical_owned_bytes()?)
-            .ok_or_else(|| decode_allowance_error("owned typed Value ownership overflow", Some(code)))?;
-        output.1.substitute(actual)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(output)
-    }
-
     pub(crate) fn codec_charge(&self, next: crate::contract::JsonCodecCharge, encode: bool) -> Result<()> {
         match next {
             crate::contract::JsonCodecCharge::Retain { bytes } => {
-                // Codec reports finite logical ownership, not opaque allocator
-                // operations. Never invent one allocation per logical node.
                 self.retain_owned(bytes)
             }
             crate::contract::JsonCodecCharge::Release { bytes } => self.release(bytes),
@@ -1258,28 +1107,21 @@ impl PreparationIo {
 }
 
 pub(crate) trait UploadRecord: serde::de::DeserializeOwned {
-    /// Deep owned capacities only. Direct Value conversion separately owns
-    /// sizeof(Self); existing upload/staging DTO contracts remain deep-only.
+    /// Deep owned capacities only.
     fn logical_owned_bytes(&self) -> Result<u64>;
-    fn diagnostic_label_bytes() -> u64;
+    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
     fn json_value_schema() -> crate::contract::JsonValueSchema {
         crate::contract::JsonValueSchema::None
     }
 }
 
 impl UploadRecord for FileRef {
-    fn diagnostic_label_bytes() -> u64 {
-        crate::contract::preparation_serde_diagnostic_label_bytes()
-    }
     fn logical_owned_bytes(&self) -> Result<u64> {
         FileRef::logical_owned_bytes(self)
     }
 }
 
 impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
-    fn diagnostic_label_bytes() -> u64 {
-        crate::contract::preparation_serde_diagnostic_label_bytes()
-    }
     fn logical_owned_bytes(&self) -> Result<u64> {
         let mut bytes = self.0.logical_owned_bytes()?;
         if let Some(generation) = &self.1 {
@@ -1290,13 +1132,22 @@ impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
     }
 }
 
-pub(in crate::filesystem) fn invalid(io: Option<&PreparationIo>, reason: &'static str) -> Error {
+pub(in crate::filesystem) fn failure(io: Option<&PreparationIo>, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
-    if io.and_then(PreparationIo::original_native_work).is_some() {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
+    if io.is_some_and(PreparationIo::uses_native_work) {
+        return Error::NativeBoundary { code, reason };
     }
-    let _ = io;
-    Error::Invalid(reason.into())
+    match code {
+        crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
+        crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
+        crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
+        crate::wire::ErrorCode::Storage => Error::Storage(reason.into()),
+        _ => Error::Invalid(reason.into()),
+    }
+}
+
+pub(in crate::filesystem) fn invalid(io: Option<&PreparationIo>, reason: &'static str) -> Error {
+    failure(io, crate::wire::ErrorCode::Invalid, reason)
 }
 
 pub(in crate::filesystem) fn validate_content_path(path: &str, io: Option<&PreparationIo>) -> Result<()> {
@@ -1337,30 +1188,34 @@ pub(in crate::filesystem) fn hex_key(bytes: &[u8], io: Option<&PreparationIo>) -
 }
 
 pub(in crate::filesystem) fn conflict(io: Option<&PreparationIo>, reason: &'static str) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if io.and_then(PreparationIo::original_native_work).is_some() {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason };
-    }
-    let _ = io;
-    Error::Conflict(reason.into())
+    failure(io, crate::wire::ErrorCode::Conflict, reason)
 }
 
 pub(in crate::filesystem) fn unauthorized(io: Option<&PreparationIo>, reason: &'static str) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if io.and_then(PreparationIo::original_native_work).is_some() {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason };
-    }
-    let _ = io;
-    Error::Unauthorized(reason.into())
+    failure(io, crate::wire::ErrorCode::Unauthorized, reason)
 }
 
 pub(in crate::filesystem) fn unsupported(io: Option<&PreparationIo>, reason: &'static str) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if io.and_then(PreparationIo::original_native_work).is_some() {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason };
+    failure(io, crate::wire::ErrorCode::Unsupported, reason)
+}
+
+pub(in crate::filesystem) fn reserve<T>(values: &mut Vec<T>, capacity: usize, io: Option<&PreparationIo>) -> Result<()> {
+    if capacity <= values.capacity() { return Ok(()); }
+    let old = values.capacity();
+    let bytes = (capacity - old).checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| invalid(io, "vector capacity overflow"))? as u64;
+    let copy = WorkCounters { bytes_copied: (values.len() * std::mem::size_of::<T>()) as u64, ..Default::default() };
+    if let Some(io) = io {
+        io.claim(bytes)?;
+        io.preflight(copy)?;
+        io.allocation_attempt(bytes)?;
     }
-    let _ = io;
-    Error::Unsupported(reason.into())
+    values.try_reserve_exact(capacity - values.len()).map_err(Error::Allocation)?;
+    if let Some(io) = io {
+        io.claim(((values.capacity() - capacity) * std::mem::size_of::<T>()) as u64)?;
+        io.charge(copy)?;
+    }
+    Ok(())
 }
 
 pub(in crate::filesystem) fn vector<T>(capacity: usize, io: Option<&PreparationIo>) -> Result<Vec<T>> {
@@ -1383,16 +1238,6 @@ pub(in crate::filesystem) fn vector<T>(capacity: usize, io: Option<&PreparationI
 pub(in crate::filesystem) fn clone_bytes(bytes: &[u8], io: Option<&PreparationIo>) -> Result<acyclic_stream::OwnedBytes> {
     let copied = WorkCounters { bytes_copied: bytes.len() as u64, ..Default::default() };
     if let Some(io) = io { io.preflight(copied)?; }
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = io.and_then(PreparationIo::original_native_work) {
-        original.admit(copied)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut output = vector(bytes.len(), io)?;
-        output.extend_from_slice(bytes);
-        original.spent(copied)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        return source_bytes_from_vec(output, io);
-    }
     let mut output = vector(bytes.len(), io)?;
     output.extend_from_slice(bytes);
     if let Some(io) = io { io.charge(copied)?; }
@@ -1410,7 +1255,11 @@ pub(in crate::filesystem) fn source_bytes_from_vec(bytes: Vec<u8>, io: Option<&P
         return acyclic_stream::OwnedBytes::from_vec_with_guard(bytes, custody, original.runtime_meter_owner())
             .map_err(|failure| {
                 let error = failure.into_error();
-                Error::NativeWork { cause: original.runtime_error(error), custody: None }
+                Error::NativeWork { cause: match error {
+                    acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
+                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+                    | acyclic_stream::PreparedOwnedBytesError::NotUnique => acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                }, custody: None }
             });
     }
     let _ = io;
@@ -1465,16 +1314,16 @@ pub(in crate::filesystem) async fn operation_generation<A: AsyncAuthorityStore, 
             if let Some(original) = io.original_native_work() {
                 let hash = WorkCounters {
                     bytes_hashed: key.as_str().len() as u64,
-                    ..WorkCounters::UNCHARGED
+                    ..WorkCounters::default()
                 };
                 original.admit(hash)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                    .map_err(Error::from)?;
                 let operation = super::super::filesystem_key(key);
                 original.spent(hash)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                    .map_err(Error::from)?;
                 return workspace.operation_generation_with_native_work(
-                    operation, original, &io.cancellation,
-                ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+                    acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, &io.cancellation,
+                ).await.map_err(native_workspace_error);
             }
             let hash = WorkCounters { bytes_hashed: key.as_str().len() as u64, ..Default::default() };
             io.preflight(hash)?;
@@ -1486,105 +1335,49 @@ pub(in crate::filesystem) async fn operation_generation<A: AsyncAuthorityStore, 
 }
 
 pub(in crate::filesystem) fn content_workspace(
-    host_provider: &crate::resources::ProviderRef, volume: &VolumeRef,
-    io: Option<&PreparationIo>,
+    host_provider: &crate::resources::ProviderRef, volume: &VolumeRef, io: Option<&PreparationIo>,
 ) -> Result<WorkspaceRef> {
-    let _name_hold;
     let name = volume_storage_name(volume, io)?;
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        // The generated hash name is already canonical ASCII. Transfer that
-        // same paid string backing into the reference key without another copy.
-        return WorkspaceRef::new(host_provider.clone_with_io(io)?, name.into_bytes(), None);
-    }
-    _name_hold = io.map(|io| io.guard_owned(name.len() as u64)).transpose()?;
-    if let Some(io) = io {
-        strings(io, &[host_provider.namespace(), host_provider.family(), host_provider.version()])?;
-        io.claim(name.len() as u64)?;
-    }
-    workspace_ref(host_provider.clone(), &name)
+    let provider = match io {
+        Some(io) => host_provider.clone_with_io(io)?,
+        None => host_provider.clone(),
+    };
+    WorkspaceRef::new(provider, name.into_bytes(), None)
 }
 
-pub(in crate::filesystem) fn volume_storage_name(
-    volume: &VolumeRef, io: Option<&PreparationIo>,
-) -> Result<String> {
+pub(in crate::filesystem) fn volume_storage_name(volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<String> {
     let Some(io) = io else { return volume.storage_name(); };
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = io.original_native_work() {
-        let encoded = io.encode_json(volume, io.remaining()?.bytes_encoded, true)?;
-        let hash = WorkCounters {
-            bytes_hashed: encoded.len() as u64,
-            ..WorkCounters::UNCHARGED
-        };
-        original.admit(hash)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let digest = blake3::hash(&encoded);
-        original.spent(hash)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut custody = original.claim(72)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut name = String::new();
-        name.try_reserve_exact(72).map_err(|source| Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(source),
-            custody: None,
-        })?;
-        custody.reconcile_capacity(name.capacity() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let copy = WorkCounters {
-            bytes_copied: 72, bytes_encoded: 64, ..WorkCounters::UNCHARGED
-        };
-        original.admit(copy)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        name.push_str("harness-");
-        name.push_str(digest.to_hex().as_str());
-        original.spent(copy)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        io.absorb_native_custody(custody)?;
-        return Ok(name);
-    }
-    let _encoded_hold;
     let encoded = io.encode_json(volume, io.remaining()?.bytes_encoded, true)?;
-    _encoded_hold = io.guard_bytes(&encoded)?;
+    let hold = io.guard_bytes(&encoded)?;
     let hash = WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
     io.preflight(hash)?;
     let digest = blake3::hash(&encoded);
     io.charge(hash)?;
-    io.claim(72)?;
-    io.allocation_attempt(72)?;
-    let mut name = String::with_capacity(72);
-    name.push_str("harness-");
-    name.push_str(&digest.to_hex());
-    Ok(name)
+    let encoding = WorkCounters { bytes_encoded: if io.uses_native_work() { 64 } else { 0 }, ..Default::default() };
+    io.preflight(encoding)?;
+    let mut label = [0_u8; 72];
+    label[..8].copy_from_slice(b"harness-");
+    label[8..].copy_from_slice(digest.to_hex().as_bytes());
+    io.charge(encoding)?;
+    drop(encoded);
+    drop(hold);
+    clone_text(std::str::from_utf8(&label).expect("ASCII storage name"), Some(io))
 }
 
 pub(crate) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Workspace<A, O>> {
+    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
+    if reference.as_resource().provider() != &host.provider {
+        return Err(invalid(Some(io), "resource belongs to another Filesystem provider"));
+    }
+    let name = std::str::from_utf8(reference.as_resource().key())
+        .map_err(|_| invalid(Some(io), "workspace reference key must be UTF-8"))?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
-        original.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        // WorkspaceRef construction and deserialization validate its canonical
-        // shape. Check this host binding without rebuilding owned diagnostics.
-        if reference.as_resource().provider() != &host.provider {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "resource belongs to another Filesystem provider",
-            });
-        }
-        let name = std::str::from_utf8(reference.as_resource().key())
-            .map_err(|_| Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "workspace reference key must be UTF-8",
-            })?;
-        return host.filesystem.open_workspace_with_native_work(
-            name, original, &io.cancellation,
-        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+        return host.filesystem.open_workspace_with_native_work(name, original, &io.cancellation)
+            .await.map_err(native_workspace_error);
     }
-    reference.validate()?;
-    host.validate_provider(reference.as_resource().provider())?;
-    let name = std::str::from_utf8(reference.as_resource().key())
-        .map_err(|_| Error::Invalid("workspace reference key must be UTF-8".into()))?;
     io.receive(host.filesystem.open_workspace_measured(name, io.remaining()?, &io.cancellation).await)
 }
 
@@ -1592,34 +1385,19 @@ pub(crate) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, workspace: &acyclic_fs::Workspace<A, O>,
     reference: &crate::resources::GenerationRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Generation<A, O>> {
+    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
+    if reference.as_resource().provider() != &host.provider {
+        return Err(invalid(Some(io), "resource belongs to another Filesystem provider"));
+    }
+    let bytes: [u8; 32] = reference.as_resource().key().try_into()
+        .map_err(|_| invalid(Some(io), "generation reference key must be 32 bytes"))?;
+    let id = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(bytes));
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
-        original.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        if reference.as_resource().provider() != &host.provider {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "resource belongs to another Filesystem provider",
-            });
-        }
-        let bytes: [u8; 32] = reference.as_resource().key().try_into()
-            .map_err(|_| Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "generation reference key must be 32 bytes",
-            })?;
-        return workspace.generation_with_native_work(
-            acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(bytes)),
-            original, &io.cancellation,
-        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+        return workspace.generation_with_native_work(id, original, &io.cancellation)
+            .await.map_err(native_workspace_error);
     }
-    reference.validate()?;
-    host.validate_provider(reference.as_resource().provider())?;
-    let bytes: [u8; 32] = reference.as_resource().key().try_into()
-        .map_err(|_| Error::Invalid("generation reference key must be 32 bytes".into()))?;
-    io.receive(workspace.generation_measured(
-        acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(bytes)),
-        io.remaining()?, &io.cancellation,
-    ).await)
+    io.receive(workspace.generation_measured(id, io.remaining()?, &io.cancellation).await)
 }
 
 pub(in crate::filesystem) async fn read<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1631,9 +1409,9 @@ pub(in crate::filesystem) async fn read<A: AsyncAuthorityStore, O: AsyncObjectSt
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
         let generation = workspace.head_with_native_work(original, &io.cancellation)
-            .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+            .await.map_err(native_workspace_error)?;
         return generation.read_with_native_work(path, maximum_bytes, original, &io.cancellation)
-            .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+            .await.map_err(native_workspace_error);
     }
     let bytes = io.receive(workspace.read_measured(path, maximum_bytes, io.remaining()?, &io.cancellation).await)?;
     io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
@@ -1648,9 +1426,21 @@ pub(in crate::filesystem) async fn resolve<A: AsyncAuthorityStore, O: AsyncObjec
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
         let generation = workspace.head_with_native_work(original, &io.cancellation)
-            .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+            .await.map_err(native_workspace_error)?;
         return Ok(super::super::WorkspaceObservation {
-            workspace: reference.clone_with_io(io)?,
+            workspace: {
+                let mut history = io.history_io();
+                let mut observer = Some(&mut history as &mut dyn crate::store::history::HistoryIo);
+                let mut quota = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
+                let reference = reference.as_resource();
+                let provider = crate::core::copy_provider(reference.provider(), &mut quota)?;
+                let key = crate::core::copy_copy_vector(reference.key(), &mut quota)?;
+                let version = reference.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
+                let resource = ResourceRef::new_with_work(reference.kind(), provider, key, version, quota.work())?;
+                let workspace = WorkspaceRef::from_resource_with_work(resource, quota.work())?;
+                quota.transfer();
+                workspace
+            },
             generation: generation_ref(host, &generation, Some(io))?,
         });
     }
@@ -1667,27 +1457,25 @@ pub(in crate::filesystem) async fn create_guarded<A: AsyncAuthorityStore, O: Asy
     host: &FilesystemHost<A, O>, name: &str, key: &IdempotencyKey, io: Option<&PreparationIo>,
     preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.and_then(PreparationIo::original_native_work) {
-        let guard = std::sync::Arc::clone(native_creation_guard.ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "task-bound native creation requires its original issued creation guard",
-        })?);
+        let guard = std::sync::Arc::clone(native_creation_guard.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "task-bound native creation requires its original issued creation guard"))?);
         guard.verify_creation_with_native_work(original)?.await?;
         let hashing = WorkCounters { bytes_hashed: key.as_str().len() as u64, ..Default::default() };
-        original.admit(hashing).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        original.admit(hashing).map_err(Error::from)?;
         let operation = acyclic_fs::OperationId::from_bytes(super::super::filesystem_key(key).into_bytes());
-        original.spent(hashing).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        original.spent(hashing).map_err(Error::from)?;
         let lifecycle = if host.filesystem.capabilities().durable {
             acyclic_fs::Lifecycle::Durable
         } else {
             acyclic_fs::Lifecycle::Ephemeral
         };
         let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
-            let verified = guard.verify_creation_with_native_work(work);
-            async move { verified?.await }
+            let guard = Arc::clone(&guard);
+            let work = work.clone();
+            async move { guard.verify_creation_with_native_work(&work)?.await }
         };
         host.filesystem.create_workspace_with_operation_guarded_with_native_work(
             name, acyclic_fs::VolumeConfig::portable(lifecycle), operation,
@@ -1716,19 +1504,19 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
         let hash_work = WorkCounters {
-            bytes_hashed: key.as_str().len() as u64, ..WorkCounters::UNCHARGED
+            bytes_hashed: key.as_str().len() as u64, ..WorkCounters::default()
         };
         original.admit(hash_work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let operation = acyclic_fs::OperationId::from_bytes(
             super::super::filesystem_key(key).into_bytes(),
         );
         original.spent(hash_work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         host.filesystem.create_workspace_with_operation_with_native_work(
             name, acyclic_fs::VolumeConfig::portable(lifecycle),
-            operation, original, &io.cancellation,
-        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+            acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, &io.cancellation,
+        ).await.map_err(native_workspace_error)?;
         return Ok(());
     }
     let operation = acyclic_fs::OperationId::from_bytes(
@@ -1747,7 +1535,7 @@ pub(in crate::filesystem) async fn apply_guarded<A: AsyncAuthorityStore, O: Asyn
     key: &IdempotencyKey, io: Option<&PreparationIo>,
     preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<crate::resources::GenerationRef> {
     let generation = apply_generation_task_guarded(
         host, reference, expected, mutations, key, io, preparation,
@@ -1763,17 +1551,15 @@ pub(in crate::filesystem) async fn apply_generation_task_guarded<A: AsyncAuthori
     key: &IdempotencyKey, io: Option<&PreparationIo>,
     preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<acyclic_fs::Generation<A, O>> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let guard = std::sync::Arc::clone(native_creation_guard.ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "task-bound native mutation requires its original issued creation guard",
-        })?);
+        let guard = std::sync::Arc::clone(native_creation_guard.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "task-bound native mutation requires its original issued creation guard"))?);
         let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
-            let verified = guard.verify_creation_with_native_work(work);
-            async move { verified?.await }
+            let guard = Arc::clone(&guard);
+            let work = work.clone();
+            async move { guard.verify_creation_with_native_work(&work)?.await }
         };
         return apply_generation_guarded(
             host, reference, expected, mutations, key, io, &mut before,
@@ -1783,14 +1569,7 @@ pub(in crate::filesystem) async fn apply_generation_task_guarded<A: AsyncAuthori
         if let Some(preparation) = preparation { preparation.verify_creation().await?; }
         Ok(())
     };
-    match io {
-        Some(io) => apply_generation_measured_guarded(
-            host, reference, expected, mutations, key, io, &mut before,
-        ).await,
-        None => apply_generation_ordinary_guarded(
-            host, reference, expected, mutations, key, &mut before,
-        ).await,
-    }
+    publish_generation(host, reference, expected, mutations, key, io, &mut before).await
 }
 
 pub(in crate::filesystem) async fn apply<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1851,10 +1630,9 @@ where
                 }
             }
             WorkspaceMutation::PutFile { path, bytes } => {
-                let result = transaction.put_measured(
+                let result = transaction.write_measured(
                     path, bytes.clone(), io.remaining()?, &io.cancellation,
                 ).await;
-                // Candidate custody may retain the transferred buffer until commit.
                 match result {
                     Ok(work) => io.charge(work)?,
                     Err(failure) => { io.spent(*failure.work)?; return Err(Error::from(failure.error)); }
@@ -1906,41 +1684,19 @@ where
     }
 }
 
-/// Runs the original ordinary transaction engine with its actual owner check
-/// at every authoritative seal and stale retry, without a native ledger.
-pub(in crate::filesystem) async fn apply_generation_ordinary_guarded<A, O, F, Fut>(
+pub(in crate::filesystem) async fn publish_generation<A, O, F, Fut>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef,
     expected: Option<&crate::resources::GenerationRef>, mutations: &[WorkspaceMutation],
-    key: &IdempotencyKey, before_publication: &mut F,
+    key: &IdempotencyKey, io: Option<&PreparationIo>, before_publication: &mut F,
 ) -> Result<acyclic_fs::Generation<A, O>>
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-    F: FnMut() -> Fut + Send,
-    Fut: std::future::Future<Output = Result<()>> + Send,
+where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    F: FnMut() -> Fut + Send, Fut: Future<Output = Result<()>> + Send,
 {
-    host.apply_generation_guarded(
-        reference, expected, mutations, key, before_publication,
-    ).await
-}
-
-/// Uses the finite ordinary transaction with an owner callback borrowing this
-/// exact PreparationIo/history observer and its original cancellation token.
-pub(in crate::filesystem) async fn apply_generation_measured_guarded<A, O, F, Fut>(
-    host: &FilesystemHost<A, O>, reference: &WorkspaceRef,
-    expected: Option<&crate::resources::GenerationRef>, mutations: &[WorkspaceMutation],
-    key: &IdempotencyKey, io: &PreparationIo, before_publication: &mut F,
-) -> Result<acyclic_fs::Generation<A, O>>
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-    F: FnMut() -> Fut + Send,
-    Fut: Future<Output = Result<()>> + Send,
-{
+    let Some(io) = io else {
+        return host.apply_generation_guarded(reference, expected, mutations, key, before_publication).await;
+    };
     let workspace = open(host, reference, io).await?;
-    apply_generation_ordinary_measured(
-        host, &workspace, expected, mutations, key, io, before_publication,
-    ).await
+    apply_generation_ordinary_measured(host, &workspace, expected, mutations, key, io, before_publication).await
 }
 
 fn exclude_publication_callback(mut work: WorkCounters, callback: WorkCounters) -> Result<WorkCounters> {
@@ -1957,8 +1713,6 @@ fn exclude_publication_callback(mut work: WorkCounters, callback: WorkCounters) 
         bytes_encoded, source_bytes_read, source_path_components, source_entries_visited, output_bytes,
         items_examined, items_returned, allocation_operations, materializations
     );
-    // Peak is simultaneous memory, not an additive callback counter. The
-    // original ledger's callback events already included actual SDK overlap.
     Ok(work)
 }
 
@@ -1974,10 +1728,7 @@ where
     F: for<'m> FnMut(&'m acyclic_fs::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
     Fut: std::future::Future<Output = Result<()>> + Send + 'static,
 {
-    let original = io.original_native_work().ok_or(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Invalid,
-        reason: "guarded native publication requires its original accounting scope",
-    })?;
+    let original = io.original_native_work().ok_or(native_error(crate::wire::ErrorCode::Invalid, "guarded native publication requires its original accounting scope"))?;
     before_publication(original).await?;
     let workspace = open(host, reference, io).await?;
     apply_generation_native(
@@ -2002,37 +1753,34 @@ where
         let pinned = match expected {
             Some(reference) => generation(host, &workspace, reference, io).await?,
             None => workspace.head_with_native_work(original, &io.cancellation)
-                .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?,
+                .await.map_err(native_workspace_error)?,
         };
         let hashing = WorkCounters {
-            bytes_hashed: key.0.len() as u64, ..WorkCounters::UNCHARGED
+            bytes_hashed: key.0.len() as u64, ..WorkCounters::default()
         };
         original.admit(hashing)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let operation = super::super::filesystem_key(key);
         original.spent(hashing)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let mut transaction = workspace.begin_pinned_transaction_with_native_work(
             &pinned, operation, original, &io.cancellation,
-        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+        ).await.map_err(native_workspace_error)?;
         for mutation in mutations {
             before_publication(original).await?;
             match mutation {
                 WorkspaceMutation::CreateDirectory { path } => {
                     transaction.create_directories_with_native_work(
                         path, original, &io.cancellation,
-                    ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                    ).await.map_err(native_workspace_error)?;
                 }
                 WorkspaceMutation::PutFile { path, bytes } => {
                     transaction.write_with_native_work(
                         path, bytes.clone(), original, &io.cancellation,
-                    ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                    ).await.map_err(native_workspace_error)?;
                 }
                 WorkspaceMutation::Remove { .. } => {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unsupported,
-                        reason: "bounded publication does not remove content",
-                    });
+                    return Err(native_error(crate::wire::ErrorCode::Unsupported, "bounded publication does not remove content"));
                 }
             }
         }
@@ -2042,18 +1790,9 @@ where
         ).await? {
             acyclic_fs::TransactionCommit::Committed(generation)
             | acyclic_fs::TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-            acyclic_fs::TransactionCommit::Conflict { .. } => Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Conflict,
-                reason: "workspace generation changed",
-            }),
-            acyclic_fs::TransactionCommit::Fenced => Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Conflict,
-                reason: "workspace writer was fenced",
-            }),
-            acyclic_fs::TransactionCommit::IdempotencyConflict => Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Conflict,
-                reason: "filesystem idempotency key belongs to another mutation",
-            }),
+            acyclic_fs::TransactionCommit::Conflict { .. } => Err(native_error(crate::wire::ErrorCode::Conflict, "workspace generation changed")),
+            acyclic_fs::TransactionCommit::Fenced => Err(native_error(crate::wire::ErrorCode::Conflict, "workspace writer was fenced")),
+            acyclic_fs::TransactionCommit::IdempotencyConflict => Err(native_error(crate::wire::ErrorCode::Conflict, "filesystem idempotency key belongs to another mutation")),
         };
 }
 
@@ -2085,7 +1824,6 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
 }
 
 /// Pins the acknowledged immutable generation with its original typed cause.
-/// The fixed label needs no display allocation or independent custody.
 pub(in crate::filesystem) async fn retain_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &acyclic_fs::Generation<A, O>, io: Option<&PreparationIo>,
 ) -> std::result::Result<(), acyclic_fs::LazyWorkspaceError> {
@@ -2117,7 +1855,7 @@ pub(in crate::filesystem) async fn retain_generation<A: AsyncAuthorityStore, O: 
         original.spent(encoding)?;
         return generation.pin_with_native_work(identity, original, &io.cancellation)
             .await.map(|_| ()).map_err(|(source, custody)| LazyWorkspaceError::NativeWorkspaceCause(
-                acyclic_fs::NativeLazyWorkspaceCause { source, custody }));
+                acyclic_fs::lazy_workspace::NativeLazyWorkspaceCause { source, custody }));
     }
     io.spent_workspace(encoding).map_err(LazyWorkspaceError::WorkspaceCause)?;
     let result = generation.pin_measured(
@@ -2146,138 +1884,74 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
     host: &FilesystemHost<A, O>, source: &VolumeRef, grant: &ContentGrant,
     source_generation: &crate::resources::GenerationRef, child: &VolumeRef,
     paths: Option<Vec<String>>, key: &IdempotencyKey, io: Option<&PreparationIo>,
-) -> Result<super::super::WorkspaceObservation> {
-    fork_inner(host, source, grant, source_generation, child, paths, key, io,
-        #[cfg(not(target_arch = "wasm32"))]
-        None,
-    ).await
-}
-
-pub(in crate::filesystem) async fn fork_guarded<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    host: &FilesystemHost<A, O>, source: &VolumeRef, grant: &ContentGrant,
-    source_generation: &crate::resources::GenerationRef, child: &VolumeRef,
-    paths: Option<Vec<String>>, key: &IdempotencyKey, io: Option<&PreparationIo>,
     preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<super::super::WorkspaceObservation> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.and_then(PreparationIo::original_native_work) {
-        native_creation_guard.ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "task-bound native fork requires its original issued creation guard",
-        })?.verify_creation_with_native_work(original)?.await?;
+        native_creation_guard.ok_or(native_error(crate::wire::ErrorCode::Unauthorized,
+            "task-bound native fork requires its original issued creation guard"))?
+            .verify_creation_with_native_work(original)?.await?;
     } else if let Some(preparation) = preparation { preparation.verify_creation().await?; }
     #[cfg(target_arch = "wasm32")]
     if let Some(preparation) = preparation { preparation.verify_creation().await?; }
-    let observed = fork_inner(host, source, grant, source_generation, child, paths, key, io,
-        #[cfg(not(target_arch = "wasm32"))]
-        native_creation_guard,
-    ).await?;
-    if let Some(preparation) = preparation {
-        #[cfg(not(target_arch = "wasm32"))]
-        if io.and_then(PreparationIo::original_native_work).is_none() {
-            preparation.verify_creation().await?;
+    grant.require_with_io(source, VolumeOperation::Read, io)?;
+    let observed = if let Some(io) = io {
+        let mut history = io.history_io();
+        source.validate_with_work(&mut Some(&mut history))?;
+        child.validate_with_work(&mut Some(&mut history))?;
+        if source.provider() != &host.provider || child.provider() != &host.provider || source == child {
+            return Err(invalid(Some(io), "volume fork has a foreign or identical destination"));
         }
-        #[cfg(target_arch = "wasm32")]
-        preparation.verify_creation().await?;
-    }
-    Ok(observed)
-}
-
-async fn fork_inner<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    host: &FilesystemHost<A, O>, source: &VolumeRef, grant: &ContentGrant,
-    source_generation: &crate::resources::GenerationRef, child: &VolumeRef,
-    paths: Option<Vec<String>>, key: &IdempotencyKey, io: Option<&PreparationIo>,
-    #[cfg(not(target_arch = "wasm32"))]
-    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
-) -> Result<super::super::WorkspaceObservation> {
-    let Some(io) = io else {
-        grant.require(source, VolumeOperation::Read)?;
-        return host.fork_volume_pinned(source, source_generation, child, paths, key).await;
-    };
-    grant.require_with_io(source, VolumeOperation::Read, Some(io))?;
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = io.original_native_work() {
-        source.validate_with_native_work(original)?;
-        child.validate_with_native_work(original)?;
-        if source.provider() != &host.provider || child.provider() != &host.provider
-            || source == child
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "volume fork has a foreign or identical destination",
-            });
-        }
-        let source_reference = content_workspace(&host.provider, source, Some(io))?;
-        let workspace = open(host, &source_reference, io).await?;
+        let source_ref = content_workspace(&host.provider, source, Some(io))?;
+        let workspace = open(host, &source_ref, io).await?;
         let pinned = generation(host, &workspace, source_generation, io).await?;
         retain(host, &pinned, io).await?;
         let child_name = volume_storage_name(child, Some(io))?;
-        let hashing = WorkCounters {
-            bytes_hashed: key.0.len() as u64, ..WorkCounters::UNCHARGED
-        };
-        original.admit(hashing)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let creation = super::super::filesystem_key(key);
-        original.spent(hashing)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let options = acyclic_fs::ForkOptions::from_generation(pinned, creation);
-        let options = match paths {
-            Some(paths) => options.inherit_paths(paths),
-            None => options,
-        };
-        let forked = if let Some(guard) = native_creation_guard {
-            let guard = std::sync::Arc::clone(guard);
+        let hashing = WorkCounters { bytes_hashed: key.as_str().len() as u64, ..Default::default() };
+        io.preflight(hashing)?;
+        let operation = super::super::filesystem_key(key);
+        io.charge(hashing)?;
+        let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
+        let options = match paths { Some(paths) => options.inherit_paths(paths), None => options };
+        #[cfg(not(target_arch = "wasm32"))]
+        let forked = if let Some(original) = io.original_native_work() {
+            let guard = Arc::clone(native_creation_guard.expect("native creation guard was verified"));
             let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
-                let verified = guard.verify_creation_with_native_work(work);
-                async move { verified?.await }
+                let guard = Arc::clone(&guard);
+                let work = work.clone();
+                async move { guard.verify_creation_with_native_work(&work)?.await }
             };
-            workspace.fork_with_permit_guarded_with_native_work(
-                &child_name, options, acyclic_fs::PublicationPermit::Unrestricted,
-                original, &io.cancellation, &mut before,
-            ).await?
+            workspace.fork_with_permit_guarded_with_native_work(&child_name, options,
+                acyclic_fs::PublicationPermit::Unrestricted, original, &io.cancellation, &mut before).await?
         } else {
-            workspace.fork_with_native_work(
-                &child_name, options, original, &io.cancellation,
-            ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
+            io.receive(workspace.fork_measured(&child_name, options, io.remaining()?, &io.cancellation).await)?
         };
-        let initial = forked.operation_generation_with_native_work(
-            creation, original, &io.cancellation,
-        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Storage,
-                reason: "fork creation has no durable original generation",
-            })?;
+        #[cfg(target_arch = "wasm32")]
+        let forked = io.receive(workspace.fork_measured(&child_name, options, io.remaining()?, &io.cancellation).await)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let initial = if let Some(original) = io.original_native_work() {
+            forked.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, &io.cancellation)
+                .await.map_err(native_workspace_error)?
+        } else {
+            io.receive(forked.operation_generation_measured(operation, io.remaining()?, &io.cancellation).await)?
+        };
+        #[cfg(target_arch = "wasm32")]
+        let initial = io.receive(forked.operation_generation_measured(operation, io.remaining()?, &io.cancellation).await)?;
+        let initial = initial.ok_or_else(|| failure(Some(io), crate::wire::ErrorCode::Storage,
+            "fork creation has no durable original generation"))?;
         retain(host, &initial, io).await?;
-        let provider = host.provider.clone_with_io(io)?;
-        let reference = WorkspaceRef::new(provider, child_name.into_bytes(), None)?;
-        return Ok(super::super::WorkspaceObservation {
-            workspace: reference,
+        super::super::WorkspaceObservation {
+            workspace: WorkspaceRef::new(host.provider.clone_with_io(io)?, child_name.into_bytes(), None)?,
             generation: generation_ref(host, &initial, Some(io))?,
-        });
-    }
-    source.validate()?;
-    child.validate()?;
-    host.validate_provider(source.provider())?;
-    host.validate_provider(child.provider())?;
-    if source == child { return Err(Error::Invalid("volume fork requires a distinct destination".into())); }
-    let source_ref = workspace_ref(host.provider.clone(), &source.storage_name()?)?;
-    let workspace = open(host, &source_ref, io).await?;
-    let source = generation(host, &workspace, source_generation, io).await?;
-    retain(host, &source, io).await?;
-    let child_name = child.storage_name()?;
-    let key = super::super::filesystem_key(key);
-    let options = acyclic_fs::ForkOptions::from_generation(source, key);
-    let options = match paths { Some(paths) => options.inherit_paths(paths), None => options };
-    let forked = io.receive(workspace.fork_measured(&child_name, options, io.remaining()?, &io.cancellation).await)?;
-    let initial = io.receive(forked.operation_generation_measured(key, io.remaining()?, &io.cancellation).await)?
-        .ok_or_else(|| Error::Storage("fork creation has no durable generation".into()))?;
-    retain(host, &initial, io).await?;
-    Ok(super::super::WorkspaceObservation {
-        workspace: workspace_ref(host.provider.clone(), &child_name)?,
-        generation: host.generation_ref(&initial)?,
-    })
+        }
+    } else {
+        host.fork_volume_pinned(source, source_generation, child, paths, key).await?
+    };
+    if !io.is_some_and(PreparationIo::uses_native_work)
+        && let Some(preparation) = preparation { preparation.verify_creation().await?; }
+    Ok(observed)
 }
 
 #[cfg(test)]
@@ -2301,37 +1975,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ordinary_publication_scope_admits_before_io_and_measures_local_peak() -> Result<()> {
-        use crate::store::history::HistoryIo;
-        let cancellation = CancellationToken::new();
-        let io = PreparationIo::from_budget(publication_budget(), &cancellation)?;
-        io.claim(256)?;
-        io.charge(WorkCounters { peak_allocation_bytes: 2048, ..Default::default() })?;
-        let budget = io.remaining()?;
-        let allowance = WorkBudget {
-            backend_read_operations: 1,
-            peak_allocation_bytes: budget.peak_allocation_bytes - 512,
-            ..budget
-        };
-        let scope = io.borrow_publication(budget, allowance)?;
-        io.claim(128)?;
-        let mut history = io.history_io();
-        history.begin_call()?;
-        let calls_before_denial = io.receipt().backend_read_operations;
-        assert!(history.begin_call().is_err(), "the second physical call must not start");
-        assert_eq!(io.receipt().backend_read_operations, calls_before_denial);
-        io.release(128)?;
-        let callback = scope.finish();
-        assert_eq!(callback.backend_read_operations, 1);
-        assert_eq!(callback.peak_allocation_bytes, 128);
-        assert_eq!(io.receipt().peak_allocation_bytes, 2048,
-            "historical global peak must not masquerade as callback memory");
-        assert_eq!(io.owned_bytes()?, 256);
-        assert!(io.remaining()?.backend_read_operations > 1, "original allowance is restored");
-        Ok(())
-    }
-
     #[tokio::test]
     async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix() -> Result<()> {
         let provider = crate::resources::ProviderRef::new("ordinary-owner-control", "filesystem", "2")?;
@@ -2342,9 +1985,9 @@ mod tests {
         let mutations = [WorkspaceMutation::PutFile { path: "/file".into(), bytes: b"owned".to_vec() }];
         let cancellation = CancellationToken::new();
         let denied_io = PreparationIo::from_budget(publication_budget(), &cancellation)?;
-        let denied = apply_generation_measured_guarded(
+        let denied = publish_generation(
             &host, &initial.workspace, Some(&initial.generation), &mutations,
-            &IdempotencyKey::new("expired-owner-publication")?, &denied_io,
+            &IdempotencyKey::new("expired-owner-publication")?, Some(&denied_io),
             &mut || async {
                 let _checked = open(&host, &initial.workspace, &denied_io).await?;
                 Err(Error::Indeterminate(crate::OperationId::from_bytes([113; 16])))
@@ -2356,9 +1999,9 @@ mod tests {
         assert!(denied_io.receipt().bytes_hashed > 0);
         assert_eq!(denied_io.receipt().authority_records_appended, 0);
         let accepted_io = PreparationIo::from_budget(publication_budget(), &cancellation)?;
-        let accepted = apply_generation_measured_guarded(
+        let accepted = publish_generation(
             &host, &initial.workspace, Some(&initial.generation), &mutations,
-            &IdempotencyKey::new("live-owner-publication")?, &accepted_io,
+            &IdempotencyKey::new("live-owner-publication")?, Some(&accepted_io),
             &mut || async {
                 let _checked = open(&host, &initial.workspace, &accepted_io).await?;
                 Ok(())
@@ -2396,17 +2039,23 @@ mod tests {
         let selected_read = ContentGrant::verify(&issuer.verifier(), &scope, &source, VolumeOperation::Read)?;
         let caller_read = ContentGrant::verify(&issuer.verifier(), &scope, &caller, VolumeOperation::Read)?;
         assert!(matches!(fork(&host, &source, &caller_read, &selected_generation, &denied_child,
-            None, &IdempotencyKey::new("denied-source-read")?, None).await, Err(Error::Unauthorized(_))));
+            None, &IdempotencyKey::new("denied-source-read")?, None, None,
+            #[cfg(not(target_arch = "wasm32"))]
+            None).await, Err(Error::Unauthorized(_))));
         let denied_ref = workspace_ref(provider.clone(), &denied_child.storage_name()?)?;
         assert!(host.resolve(&denied_ref).await.is_err());
         assert!(fork(&host, &source, &selected_read, &wrong_generation, &denied_child,
-            None, &IdempotencyKey::new("wrong-generation")?, None).await.is_err());
+            None, &IdempotencyKey::new("wrong-generation")?, None, None,
+            #[cfg(not(target_arch = "wasm32"))]
+            None).await.is_err());
         assert!(host.resolve(&denied_ref).await.is_err());
         let later_generation = host.apply(&initial.workspace, Some(&selected_generation),
             &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"later".to_vec() }],
             &IdempotencyKey::new("later-generation")?).await?;
         let forked = fork(&host, &source, &selected_read, &selected_generation, &child,
-            None, &IdempotencyKey::new("pinned-selected-fork")?, None).await?;
+            None, &IdempotencyKey::new("pinned-selected-fork")?, None, None,
+            #[cfg(not(target_arch = "wasm32"))]
+            None).await?;
         assert_eq!(host.read(&forked.workspace, Some(&forked.generation), "/value.txt", 32).await?,
             bytes::Bytes::from_static(b"selected"));
         host.apply(&forked.workspace, Some(&forked.generation),
@@ -2420,52 +2069,34 @@ mod tests {
         Ok(())
     }
 }
-/// Borrows the original preparation ledger; there is no second meter.
-pub(crate) struct PreparationHistoryIo<'a> {
-    io: &'a PreparationIo,
-}
-
 impl PreparationIo {
-    pub(crate) fn history_io(&self) -> PreparationHistoryIo<'_> {
-        PreparationHistoryIo { io: self }
-    }
-}
+    pub(crate) fn history_io(&self) -> &Self { self }
 
-impl PreparationHistoryIo<'_> {
     fn charged(&self, delta: WorkCounters) -> Result<()> {
-        self.io.preflight(delta)?;
-        self.io.charge(delta)
+        self.preflight(delta)?;
+        self.charge(delta)
     }
 
-    fn reserve<T>(&self, values: &mut Vec<T>, maximum: usize) -> Result<()> {
+    fn reserve_history<T>(&self, values: &mut Vec<T>, maximum: usize) -> Result<()> {
         if values.len() < values.capacity() { return Ok(()); }
-        let old = values.capacity();
-        let target = old.checked_mul(2).unwrap_or(maximum).max(4).min(maximum);
-        if target <= old { return Err(Error::Invalid("history vector exceeds declared maximum".into())); }
-        let bytes = target.checked_sub(old).and_then(|count| count.checked_mul(std::mem::size_of::<T>()))
-            .ok_or_else(|| Error::Invalid("history vector ownership overflow".into()))? as u64;
-        self.io.claim(bytes)?;
-        self.io.allocation_attempt(bytes)?;
-        values.try_reserve_exact(target - values.len()).map_err(Error::Allocation)?;
-        let actual = (values.capacity() - old).checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| self.io.invalid("history vector ownership overflow"))? as u64;
-        if actual > bytes { self.io.claim(actual - bytes)?; }
-        else { self.io.release(bytes - actual)?; }
-        Ok(())
+        let target = values.capacity().checked_mul(2).unwrap_or(maximum).max(4).min(maximum);
+        if target <= values.capacity() { return Err(self.invalid("history vector exceeds declared maximum")); }
+        reserve(values, target, Some(self))
     }
+
 }
 
-impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
+impl crate::store::history::HistoryIo for &PreparationIo {
     #[cfg(not(target_arch = "wasm32"))]
     fn original_native_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> {
-        self.io.original_native_work()
+        PreparationIo::original_native_work(self)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn absorb_native_custody(&mut self, incoming: acyclic_fs::NativeAllocation) -> Result<()> {
-        self.io.absorb_native_custody(incoming)
+        PreparationIo::absorb_native_custody(self, incoming)
     }
     fn check_cancellation(&self) -> Result<()> {
-        self.io.check_cancellation()
+        PreparationIo::check_cancellation(self)
     }
     fn begin_call(&mut self) -> Result<()> {
         self.charged(WorkCounters { backend_read_operations: 1, ..Default::default() })
@@ -2474,26 +2105,24 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         self.charged(WorkCounters { backend_write_operations: 1, ..Default::default() })
     }
     fn receive_record(&mut self, bytes: u64) -> Result<()> {
-        // Observe arrival before cancellation/quota. A rejected receipt owns
-        // no new record claim and callers must not release one.
-        self.io.spent(WorkCounters { authority_records_read: 1,
+        self.spent(WorkCounters { authority_records_read: 1,
             authority_bytes_read: bytes, items_examined: 1,
             peak_allocation_bytes: bytes, ..Default::default() })?;
-        self.io.remaining()?;
-        self.io.retain_owned(bytes)
+        self.remaining()?;
+        self.retain_owned(bytes)
     }
-    fn release_record(&mut self, bytes: u64) -> Result<()> { self.io.release(bytes) }
-    fn retain_owned(&mut self, bytes: u64) -> Result<()> { self.io.retain_owned(bytes) }
+    fn release_record(&mut self, bytes: u64) -> Result<()> { self.release(bytes) }
+    fn retain_owned(&mut self, bytes: u64) -> Result<()> { PreparationIo::retain_owned(self, bytes) }
     fn admit_owned(&self, bytes: u64) -> Result<()> {
         self.check_cancellation()?;
-        if bytes > self.io.remaining()?.peak_allocation_bytes {
-            return Err(self.io.invalid("history exceeds live logical byte allowance"));
+        if bytes > self.remaining()?.peak_allocation_bytes {
+            return Err(self.invalid("history exceeds live logical byte allowance"));
         }
         Ok(())
     }
-    fn release_owned(&mut self, bytes: u64) -> Result<()> { self.io.release(bytes) }
+    fn release_owned(&mut self, bytes: u64) -> Result<()> { self.release(bytes) }
     fn decode_json_value(&mut self, bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
-        let decoded = self.io.decode_preparation::<serde_json::Value>(bytes)?;
+        let decoded = self.decode_preparation::<serde_json::Value>(bytes)?;
         let held = decoded._reservation.bytes;
         Ok((decoded.into_retained(), held))
     }
@@ -2501,88 +2130,91 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         Ok(crate::core::Authority { kind: authority.kind, id: self.clone_text(&authority.id)? })
     }
     fn clone_text(&mut self, text: &str) -> Result<String> {
-        self.io.claim(text.len() as u64)?;
-        self.io.preflight(WorkCounters { bytes_copied: text.len() as u64, ..Default::default() })?;
-        if !text.is_empty() { self.io.allocation_attempt(text.len() as u64)?; }
+        self.claim(text.len() as u64)?;
+        self.preflight(WorkCounters { bytes_copied: text.len() as u64, ..Default::default() })?;
+        if !text.is_empty() { self.allocation_attempt(text.len() as u64)?; }
         let mut copy = String::new();
         copy.try_reserve_exact(text.len()).map_err(Error::Allocation)?;
         if copy.capacity() > text.len() {
-            self.io.claim((copy.capacity() - text.len()) as u64)?;
+            self.claim((copy.capacity() - text.len()) as u64)?;
         }
         copy.push_str(text);
-        self.io.charge(WorkCounters { bytes_copied: text.len() as u64, ..Default::default() })?;
+        self.charge(WorkCounters { bytes_copied: text.len() as u64, ..Default::default() })?;
         Ok(copy)
     }
-    fn reserve_events(&mut self, values: &mut Vec<crate::core::Event>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
-    fn reserve_records(&mut self, values: &mut Vec<crate::store::operations::ObservedRecord>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
-    fn reserve_messages(&mut self, values: &mut Vec<crate::conversation::ConversationMessage>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
-    fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
+    fn reserve_events(&mut self, values: &mut Vec<crate::core::Event>, maximum: usize) -> Result<()> { self.reserve_history(values, maximum) }
+    fn reserve_records(&mut self, values: &mut Vec<crate::store::operations::ObservedRecord>, maximum: usize) -> Result<()> { self.reserve_history(values, maximum) }
+    fn reserve_messages(&mut self, values: &mut Vec<crate::conversation::ConversationMessage>, maximum: usize) -> Result<()> { self.reserve_history(values, maximum) }
+    fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, maximum: usize) -> Result<()> { self.reserve_history(values, maximum) }
     fn reserve_bytes(&mut self, values: &mut Vec<u8>, capacity: usize) -> Result<()> {
         if capacity <= values.capacity() { return Ok(()); }
         let old = values.capacity();
-        self.io.claim((capacity - old) as u64)?;
-        self.io.allocation_attempt((capacity - old) as u64)?;
+        self.claim((capacity - old) as u64)?;
+        self.allocation_attempt((capacity - old) as u64)?;
         values.try_reserve_exact(capacity - values.len()).map_err(Error::Allocation)?;
-        if values.capacity() > capacity { self.io.claim((values.capacity() - capacity) as u64)?; }
+        if values.capacity() > capacity { self.claim((values.capacity() - capacity) as u64)?; }
         Ok(())
     }
     fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()> {
         if capacity <= text.capacity() { return Ok(()); }
         let old = text.capacity();
-        self.io.claim((capacity - old) as u64)?;
-        self.io.allocation_attempt((capacity - old) as u64)?;
+        self.claim((capacity - old) as u64)?;
+        self.allocation_attempt((capacity - old) as u64)?;
         text.try_reserve_exact(capacity - text.len()).map_err(Error::Allocation)?;
-        if text.capacity() > capacity { self.io.claim((text.capacity() - capacity) as u64)?; }
+        if text.capacity() > capacity { self.claim((text.capacity() - capacity) as u64)?; }
         Ok(())
     }
     fn admit_allocation(&mut self, bytes: u64) -> Result<()> {
         self.admit_owned(bytes)?;
-        if bytes != 0 { self.io.allocation_attempt(bytes)?; }
+        if bytes != 0 { self.allocation_attempt(bytes)?; }
         Ok(())
+    }
+    fn admit_copy(&self, bytes: u64) -> Result<()> {
+        self.preflight(WorkCounters { bytes_copied: bytes, ..Default::default() })
     }
     fn copy_bytes(&mut self, bytes: u64) -> Result<()> {
         self.charged(WorkCounters { bytes_copied: bytes, ..Default::default() })
     }
     fn encoded_bytes(&mut self, bytes: u64) -> Result<()> {
-        self.io.charge(WorkCounters { bytes_encoded: bytes, ..Default::default() })
+        self.charge(WorkCounters { bytes_encoded: bytes, ..Default::default() })
     }
     fn admit_encoding(&self, bytes: u64) -> Result<()> {
-        self.io.preflight(WorkCounters { bytes_encoded: bytes, ..Default::default() })
+        self.preflight(WorkCounters { bytes_encoded: bytes, ..Default::default() })
     }
     fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()> {
         match charge {
             crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } =>
-                self.io.claim(maximum_owned_bytes.max(
+                self.claim(maximum_owned_bytes.max(
                     crate::contract::json_value_decode_owned_bytes(value_shape)?)),
-            _ => self.io.codec_charge(charge, true),
+            _ => PreparationIo::codec_charge(self, charge, true),
         }
     }
     fn hashed_bytes(&mut self, bytes: u64) -> Result<()> {
         self.charged(WorkCounters { bytes_hashed: bytes, ..Default::default() })
     }
     fn admit_acknowledgment(&self, bytes: u64, count: u64) -> Result<()> {
-        self.io.preflight(WorkCounters { authority_bytes_written: bytes, authority_records_appended: count, ..Default::default() })
+        self.preflight(WorkCounters { authority_bytes_written: bytes, authority_records_appended: count, ..Default::default() })
     }
     fn acknowledged(&mut self, bytes: u64, count: u64) -> Result<()> {
-        self.io.charge(WorkCounters { authority_bytes_written: bytes, authority_records_appended: count, ..Default::default() })
+        self.charge(WorkCounters { authority_bytes_written: bytes, authority_records_appended: count, ..Default::default() })
     }
     fn admit_output(&self, bytes: u64, count: u64) -> Result<()> {
-        self.io.preflight(WorkCounters { output_bytes: bytes, items_returned: count, ..Default::default() })
+        self.preflight(WorkCounters { output_bytes: bytes, items_returned: count, ..Default::default() })
     }
     fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()> { self.admit_output(bytes, count) }
     fn return_output(&mut self, bytes: u64, count: u64) -> Result<()> {
         self.charged(WorkCounters { output_bytes: bytes, items_returned: count, ..Default::default() })
     }
-    fn remaining(&self) -> Result<WorkBudget> { self.io.remaining() }
-    fn cancellation(&self) -> &CancellationToken { &self.io.cancellation }
+    fn remaining(&self) -> Result<WorkBudget> { PreparationIo::remaining(self) }
+    fn cancellation(&self) -> &CancellationToken { &self.cancellation }
     fn receive_work(&mut self, mut work: WorkCounters) -> Result<()> {
         work.output_bytes = 0;
         work.items_returned = 0;
-        self.io.spent(work)
+        self.spent(work)
     }
     fn verify_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a FileRef) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
-        let io = self.io;
+        let io = *self;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             return crate::NativeFutureBundle::new(work, || async move {
@@ -2597,23 +2229,21 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
     }
     fn read_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a FileRef) -> Result<crate::store::history::HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
-        let io = self.io;
+        let io = *self;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             return crate::NativeFutureBundle::new(work, || async move {
                 let bytes = verifier.read_with_native_work(reference,
                     reference.descriptor().byte_length(), work)?.await?;
-                // Its intrinsic original guard owns all byte storage. No
-                // additional History/Preparation retention was acquired.
                 Ok((bytes, 0))
             }).map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
             let bytes = io.receive_content(verifier.read_measured(reference, reference.descriptor().byte_length(),
                 io.remaining()?, &io.cancellation).await)?;
-            let retained = bytes.capacity() as u64;
+            let retained = bytes.retained_capacity().unwrap_or(0) as u64;
             io.retain_owned(retained)?;
-            Ok((acyclic_stream::OwnedBytes::from(bytes), retained))
+            Ok((bytes, retained))
         })
     }
 }

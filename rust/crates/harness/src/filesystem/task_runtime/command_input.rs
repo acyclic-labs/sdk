@@ -36,13 +36,11 @@ impl CommandDispatch {
                 match custody {
                     None => *custody = Some(incoming),
                     Some(primary) if primary.shares_ledger(&incoming) => {
-                        // prepare_custody_transfer checked this exact unchanged
-                        // sum. absorb neither allocates nor checks cancellation.
-                        primary.absorb(&mut incoming).map_err(native_error)?;
+                        primary.absorb(&mut incoming).map_err(Error::from)?;
                     }
                     Some(_) => {
                         if let Some(existing) = additional_custody.iter_mut().find(|guard| guard.shares_ledger(&incoming)) {
-                            existing.absorb(&mut incoming).map_err(native_error)?;
+                            existing.absorb(&mut incoming).map_err(Error::from)?;
                         } else {
                             additional_custody.push(incoming);
                         }
@@ -52,8 +50,6 @@ impl CommandDispatch {
             }
             TaskCommandProgress::Pending | TaskCommandProgress::Indeterminate => unreachable!(),
         };
-        // Original result custody has already moved to self. Every fallible
-        // envelope operation therefore drops its value before that custody.
         let mut envelope = Map::new();
         #[cfg(not(target_arch = "wasm32"))]
         let native = match self {
@@ -94,7 +90,7 @@ impl CommandDispatch {
         let bytes = crate::contract::canonical_json_bytes_bounded(&envelope,
             crate::contract::JsonBounds { maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
                 maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64, maximum_depth: 256 },
-            &mut |_| Ok(()))?;
+            None, &mut |_| Ok(()))?;
         Ok(bytes.len() as u64 <= maximum_bytes)
     }
 
@@ -131,38 +127,33 @@ impl CommandDispatch {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork { cause, custody: None }
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn overflow() -> Error {
-    native_error(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))
+    Error::from(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn claim(guard: &mut acyclic_fs::NativeAllocation, bytes: u64) -> Result<()> {
-    guard.resize_retained(guard.bytes().checked_add(bytes).ok_or_else(overflow)?).map_err(native_error)
+    guard.resize_retained(guard.bytes().checked_add(bytes).ok_or_else(overflow)?).map_err(Error::from)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn claim_slots(guard: &mut acyclic_fs::NativeAllocation, slots: u64) -> Result<()> {
-    // Logical key/value slots only; opaque BTree allocator nodes are excluded.
     claim(guard, slots.checked_mul(std::mem::size_of::<(String, Value)>() as u64).ok_or_else(overflow)?)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_text(guard: &mut acyclic_fs::NativeAllocation, source: &str) -> Result<String> {
     let bytes = source.len() as u64;
-    guard.work().admit(acyclic_fs::WorkCounters { bytes_copied: bytes, ..Default::default() }).map_err(native_error)?;
+    guard.work().admit(acyclic_fs::WorkCounters { bytes_copied: bytes, ..Default::default() }).map_err(Error::from)?;
     claim(guard, bytes)?;
     guard.work().charge(acyclic_fs::WorkCounters {
         allocation_operations: u64::from(bytes != 0), ..Default::default()
-    }).map_err(native_error)?;
+    }).map_err(Error::from)?;
     let mut text = String::new();
-    text.try_reserve_exact(source.len()).map_err(|cause| native_error(acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause)))?;
-    guard.work().charge(acyclic_fs::WorkCounters { bytes_copied: bytes, ..Default::default() }).map_err(native_error)?;
+    text.try_reserve_exact(source.len()).map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause)))?;
+    guard.work().charge(acyclic_fs::WorkCounters { bytes_copied: bytes, ..Default::default() }).map_err(Error::from)?;
     text.push_str(source);
     Ok(text)
 }
@@ -173,13 +164,12 @@ fn reserve_native_vec<T>(values: &mut Vec<T>, claimed: &mut u64, guard: &mut acy
     let required = values.len().checked_add(1).ok_or_else(overflow)?;
     let bytes = required.checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
     claim(guard, bytes)?;
-    guard.work().charge(acyclic_fs::WorkCounters { allocation_operations: 1, ..Default::default() }).map_err(native_error)?;
+    guard.work().charge(acyclic_fs::WorkCounters { allocation_operations: 1, ..Default::default() }).map_err(Error::from)?;
     if let Err(cause) = values.try_reserve_exact(1) {
-        guard.substitute(guard.bytes() - bytes).map_err(native_error)?;
-        return Err(native_error(acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause)));
+        guard.substitute(guard.bytes() - bytes).map_err(Error::from)?;
+        return Err(Error::from(acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause)));
     }
-    // The previous allocation is now retired; no release/reclaim live-byte gap.
-    guard.substitute(guard.bytes() - *claimed).map_err(native_error)?;
+    guard.substitute(guard.bytes() - *claimed).map_err(Error::from)?;
     *claimed = (values.capacity() * std::mem::size_of::<T>()) as u64;
     Ok(())
 }

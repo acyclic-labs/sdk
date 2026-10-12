@@ -7,8 +7,6 @@ use std::{future::Future, pin::Pin, task::{Context, Poll}};
 
 type NativeResult<T> = std::result::Result<T, NativeReceiptError>;
 
-// Serialize borrowed payloads. The protected wire contract remains Receipt;
-// neither launch nor observed payload is cloned just to encode that contract.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ReceiptWrite<'a, 'b> {
@@ -36,16 +34,6 @@ struct ObservedWrite<'a> {
     work: &'a WorkCounters,
 }
 
-pub(super) struct DispatchPayload {
-    pub(super) dispatch: EffectDispatch,
-    _custody: Option<NativeAllocation>,
-}
-
-pub(super) struct ObservedPayload {
-    pub(super) observed: NativeObservation,
-    pub(super) _custody: Option<NativeAllocation>,
-}
-
 struct SupervisorPayload {
     dispatch: EffectDispatch,
     path: StreamPath,
@@ -57,13 +45,9 @@ struct ExecutedPayload {
     execution: NativeExecution,
     path: StreamPath,
     _custody: Option<NativeAllocation>,
-    // Ordinary dispatch keeps the SDK publication ledger separate: it covers
-    // only the SDK-owned execution inventory, never the unmeasured effect DTO.
     _sdk_custody: Option<NativeAllocation>,
 }
 
-// Capture this whole value, never independent Arc fields: the shared original
-// guard must outlive every cached payload even if the registry/provider drops.
 struct SupervisorGraph<P: StreamProvider> {
     owner: Arc<TaskJournalOwner<P>>,
     view: Arc<dyn NativeProcessView<P>>,
@@ -78,7 +62,7 @@ struct SupervisorGraph<P: StreamProvider> {
 
 pub(super) fn dispatch_payload(
     dispatch: EffectDispatch, work: Option<&NativeMaterializationWork>,
-) -> NativeResult<DispatchPayload> {
+) -> NativeResult<(EffectDispatch, Option<NativeAllocation>)> {
     let custody = match work {
         Some(work) => {
             let bytes = checked_add(checked_add(dispatch.provider.capacity() as u64,
@@ -87,13 +71,12 @@ pub(super) fn dispatch_payload(
         }
         None => None,
     };
-    Ok(DispatchPayload { dispatch, _custody: custody })
+    Ok((dispatch, custody))
 }
 
 pub(super) fn into_observed_effect(
-    payload: ObservedPayload,
+    observed: NativeObservation, mut custody: Option<NativeAllocation>,
 ) -> NativeResult<(EffectObservation, Option<NativeAllocation>)> {
-    let ObservedPayload { observed, mut _custody } = payload;
     let NativeObservation {
         effect, diagnostic, publication_failure, invocation_failure, published, work: _,
     } = observed;
@@ -101,10 +84,10 @@ pub(super) fn into_observed_effect(
     drop(publication_failure);
     drop(invocation_failure);
     drop(published);
-    if let Some(custody) = _custody.as_mut() {
+    if let Some(custody) = custody.as_mut() {
         custody.substitute(receipt_observation::effect_bytes(&effect)?)?;
     }
-    Ok((effect, _custody))
+    Ok((effect, custody))
 }
 
 fn check(work: Option<&NativeMaterializationWork>) -> NativeResult<()> {
@@ -114,7 +97,7 @@ fn check(work: Option<&NativeMaterializationWork>) -> NativeResult<()> {
 
 pub(super) fn require_finite(work: &NativeMaterializationWork) -> Result<()> {
     let remaining = work.remaining()
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        .map_err(Error::from)?;
     if !remaining.has_finite_allowances() {
         return Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,
@@ -158,7 +141,7 @@ fn effect_result(receipt: NativeProcessReceipt, finite: bool)
     -> NativeResult<(EffectObservation, Option<NativeAllocation>)>
 {
     if finite {
-        receipt.into_effect_with_native_custody().map(|(effect, guard)| (effect, Some(guard)))
+        receipt.into_effect().map(|(effect, guard)| (effect, Some(guard)))
     } else { Ok((receipt.effect, None)) }
 }
 
@@ -220,8 +203,6 @@ fn require_same_launch(
     retained: &LaunchReceipt<'_>, requested: &LaunchReceipt<'_>,
     work: Option<&NativeMaterializationWork>,
 ) -> NativeResult<()> {
-    // A legitimate recovery can hold a later fence. The original recorded
-    // fence is evidence, never permission to redispatch under a new lease.
     if !examine(work, || retained.dispatch == requested.dispatch)?
         || !examine(work, || retained.plan == requested.plan)?
         || !examine(work, || retained.conversation == requested.conversation)?
@@ -241,11 +222,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         check(work)?;
         match work {
             Some(work) => self.owner.verify_with_native_work(false, work).await?,
-            None => { self.owner.verify(false).await?; }
+            None => { self.owner.verify(false, &mut None).await?; }
         }
-        // The cached reader is the original authenticated Core archive reader.
-        // Its native adapter borrows the caller's ledger; no history reader or
-        // fresh materialization allowance is constructed for dispatch.
         let mut io = work.map(crate::store::history::native_work_io).transpose()?;
         let cursor = self.history.pin_with_work(0,
             io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo)).await?;
@@ -253,7 +231,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             self.authority.history_limits,
             io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo)).await?
             .ok_or(NativeReceiptError::Record("native command has no committed effect admission"))?;
-        // Compare borrowed fields rather than cloning EffectDispatch::from_state.
         if !examine(work, || state.status == EffectStatus::Dispatched)?
             || !examine(work, || state.attempts.last() == Some(&dispatch.attempt_id))?
             || !examine(work, || dispatch.effect_id == self.effect_id)?
@@ -276,8 +253,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         let view = self.view.as_ref().ok_or(NativeReceiptError::Record(
             "recovered native provider can only reconcile receipts"))?;
         let (request, _, approval_digest) = self.executable_admission()?;
-        // These immutable request paths were checked at bind. Dispatch rechecks
-        // the original selection without a second Windows case-folding copy.
         if !examine(work, || view.manifest() == &request.view)? {
             return Err(NativeReceiptError::Record("native dispatch view changed"));
         }
@@ -301,16 +276,16 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 request.validate_native_paths(view.manifest())?;
                 self.authority.approvals.verify(self.approval, self.command, approval_digest).await?;
                 require_view_grants(&self.owner, &request.view)?;
-                self.owner.verify(false).await?;
+                self.owner.verify(false, &mut None).await?;
             }
         }
         check(work)
     }
 
     pub(super) async fn launch_original(
-        &self, payload: DispatchPayload, work: Option<&NativeMaterializationWork>,
+        &self, payload: (EffectDispatch, Option<NativeAllocation>), work: Option<&NativeMaterializationWork>,
     ) -> NativeResult<(EffectObservation, Option<NativeAllocation>)> {
-        let dispatch = &payload.dispatch;
+        let dispatch = &payload.0;
         self.require_dispatch_original(dispatch, work).await?;
         if let Some(receipt) = self.receipt_original(dispatch.attempt_id, work, None).await? {
             return effect_result(receipt, work.is_some());
@@ -334,11 +309,9 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             return effect_result(receipt, work.is_some());
         }
         drop(launch);
-        // A retained launch is never replayed. All subsequent admission or
-        // supervisor errors leave the very same launch-only uncertain slot.
         let payload = SupervisorPayload {
-            dispatch: payload.dispatch, path,
-            _custody: payload._custody,
+            dispatch: payload.0, path,
+            _custody: payload.1,
         };
         let owner = Arc::clone(&self.owner);
         let view = Arc::clone(self.view.as_ref().ok_or(NativeReceiptError::Record(
@@ -353,8 +326,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         let history = Arc::clone(&self.history);
         let approval = self.approval;
         let attempt = payload.dispatch.attempt_id;
-        // Clone only the original shared ledger handle, retaining its alias in
-        // the supervisor after either the caller or the provider is dropped.
         let original_work = work.cloned();
         let graph = SupervisorGraph {
             owner, view, authority, request, schema, supervisor, plan, history,
@@ -372,8 +343,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let history = &graph.history;
             let _completion = NativeSupervisorCompletion(Arc::clone(supervisor));
             let work = original_work.as_ref();
-            // Capture the complete payload, not individual fields: on every
-            // early return its original guards are dropped after its values.
             let payload = payload;
             let (execution, execution_custody) = execute(&owner, view.as_ref(), &authority,
                 &request, &payload.dispatch, &schema, &supervisor, work)?.await?;
@@ -413,8 +382,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                     return Err(NativeReceiptError::Record("native observed outcome was not retained"));
                 }
             }
-            // Recorded also requires physical quiescence. A durable uncertain
-            // outcome must not erase the original unresolved process phase.
             let (_, phase) = supervisor.snapshot(attempt)?;
             if matches!(phase, NativeCapturePhase::Pending | NativeCapturePhase::Drained) {
                 supervisor.record_capture(NativeCapturePhase::Recorded)
@@ -426,19 +393,14 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 effect_kind, request } = dispatch;
             drop(effect_kind);
             drop(request);
-            let result = into_observed_effect(ObservedPayload {
-                observed: NativeObservation {
+            let result = into_observed_effect(NativeObservation {
                     effect: EffectObservation { provider, effect_id, attempt_id, request_digest,
                         guarantee, status: execution.status },
                     diagnostic: execution.diagnostic,
                     publication_failure: execution.publication_failure,
                     invocation_failure: execution.invocation_failure, work: execution.work,
                     published: execution.published,
-                },
-                _custody,
-            });
-            // The observed handoff has physically dropped SDK snapshot data.
-            // Release the ordinary SDK ledger only now, including on error.
+                }, _custody);
             drop(_sdk_custody);
             result
         }, work)?;
@@ -466,7 +428,7 @@ async fn append_receipt_original<P: StreamProvider>(
             crate::contract::canonical_json_bytes_bounded(receipt,
                 JsonBounds { maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
                     maximum_items: remaining.items_examined, maximum_depth: 256 },
-                &mut |charge| {
+                None, &mut |charge| {
                     let result = match charge {
                         JsonCodecCharge::Work { bytes, items } => work.charge(WorkCounters {
                             bytes_encoded: bytes, items_examined: items, ..WorkCounters::default() }),
@@ -483,13 +445,12 @@ async fn append_receipt_original<P: StreamProvider>(
                             .and_then(|bytes| guard.resize_retained(bytes)),
                         JsonCodecCharge::Release { bytes } => guard.release(bytes),
                     };
-                    result.map_err(|cause| Error::NativeWork { cause, custody: None })
+                    result.map_err(Error::from)
                 }).map_err(|source| codec_slot.retain(source, custody.take()))?
         }
         None => crate::contract::canonical_json_bytes(receipt)?,
     };
     if let Some(guard) = custody.as_mut() {
-        // Encoding succeeded: no SDK diagnostic payload was created.
         guard.release(diagnostic_bytes)?;
     }
     if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
@@ -513,7 +474,6 @@ async fn append_receipt_original<P: StreamProvider>(
     key_bytes.extend_from_slice(hash.as_bytes());
     let key = acyclic_stream::IdempotencyKey::new(Bytes::from(key_bytes))?;
     let target = match work {
-        // StreamPath aliases its intrinsically guarded original payload.
         Some(_) => path.clone(),
         None => {
             let mut target = String::new();
@@ -699,7 +659,7 @@ mod tests {
         let alias = work.retain_owned(0).unwrap();
         cancellation.cancel();
         let before = work.receipt();
-        let (effect, guard) = receipt.into_effect_with_native_custody().unwrap();
+        let (effect, guard) = receipt.into_effect().unwrap();
         assert!(guard.shares_ledger(&alias));
         assert_eq!(guard.bytes(), receipt_observation::effect_bytes(&effect).unwrap());
         assert_eq!(work.receipt(), before);
@@ -737,8 +697,6 @@ mod tests {
         assert_eq!(retained.work().receipt().items_examined, before.items_examined + 1);
         cancellation.cancel();
         assert!(retained.work().cancellation().is_cancelled());
-        // The notification comes from the original completion guard, not a new
-        // supervisor or a reset invocation after dropping the caller handle.
         while !control.snapshot(attempt).unwrap().0 {
             tokio::task::yield_now().await;
         }
@@ -854,8 +812,6 @@ mod tests {
         let pointer = message.as_ptr();
         let inner = foreign.retain_owned(bytes).unwrap();
         let original_alias = original.retain_owned(0).unwrap();
-        // This is the closed codec constructor's inventory: temporary SDK
-        // buffers are gone, while the independently guarded cause still lives.
         drop(buffer);
         let error = root_error(slot.retain(Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Allocation(message),

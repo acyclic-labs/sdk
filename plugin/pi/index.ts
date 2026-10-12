@@ -31,7 +31,7 @@ import { Type } from "typebox";
 const executable = "__ACYCLIC_EXECUTABLE__";
 const execute = promisify(execFile);
 
-export interface NativeSourceCut {
+interface NativeSourceCut {
   mode: "caller_tool" | "scratch";
   parentSessionId: string;
   parentSessionFile: string | null;
@@ -48,8 +48,6 @@ type PiControlOperation = "SessionStart" | "TaskStatus" | "TaskCancel" | "SpawnP
   "TaskSend" | "TaskReceive" | "TaskWait" | "TaskSteer" | "TaskInspect" | "TaskDiff" | "TaskImport" | "TaskWriteback" | "TaskWritebackStatus" |
   "NativeBuiltinRead" | "NativeBuiltinWrite" | "NativeBuiltinEdit";
 
-// Finite original-owner replies are not graph snapshots. Only the remaining
-// control operations require the canonical complete tasks observation.
 const scopedPiControls: Record<string, true> = {
   SpawnCommit: true, TaskInspect: true, TaskDiff: true, TaskImport: true,
   TaskWriteback: true, TaskWritebackStatus: true,
@@ -88,8 +86,6 @@ export function captureParentCut(
       if (owner || matches !== 1) throw new Error("Spawn tool identity is duplicated in the current Pi branch");
       owner = { id: entry.id, timestamp: entry.timestamp, parentId: entry.parentId };
     } else if (owner) {
-      // Serialize each selected entry before retaining it; cap the cumulative
-      // bytes before joining, cloning, hashing or sending the captured branch.
       const encoded = JSON.stringify(entry);
       bytes += Buffer.byteLength(encoded) + (entries.length ? 1 : 0);
       if (bytes > maximumBytes) throw new Error("Pi context exceeds its byte bound");
@@ -178,8 +174,6 @@ export function childSessionBytes(
     }
   }
   if (pending.size) throw new Error("Pinned Pi context has an incomplete tool exchange");
-  // Native header structure, with the admitted cut time instead of a new clock
-  // reading on each retry. Session identity/cwd come from the prepared binding.
   const header = { ...child.getHeader(), timestamp: cut.capturedAt };
   return [header, ...child.getEntries()].map(entry => JSON.stringify(entry)).join("\n") + "\n";
 }
@@ -311,14 +305,16 @@ export async function observePiTaskUntilTerminal(
     throw new Error("Pi native wait requires an original operation and finite observation bounds");
   }
   signal?.throwIfAborted();
-  const deadline = AbortSignal.timeout(bounds.timeoutMs);
-  const waiting = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const deadline = new AbortController();
+  const timeout = setTimeout(() => deadline.abort(new DOMException("Pi polling deadline exceeded", "TimeoutError")), bounds.timeoutMs);
+  const waiting = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
   let last: Record<string, unknown> | undefined;
   let observations = 0;
   try {
     while (observations < bounds.maximumObservations) {
       waiting.throwIfAborted();
       const result = await observe(waiting);
+      waiting.throwIfAborted();
       observations++;
       if (result.uncertain) return result;
       if (result.state === "completed") {
@@ -333,9 +329,9 @@ export async function observePiTaskUntilTerminal(
     }
   } catch (error) {
     signal?.throwIfAborted();
-    if (!deadline.aborted) throw error;
+    if (!deadline.signal.aborted) throw error;
     if (!last) throw new PiControlAcknowledgementError(operation);
-  }
+  } finally { clearTimeout(timeout); }
   return { ...last, wait: { bounded: true, observations } };
 }
 
@@ -346,9 +342,9 @@ type PiWritebackRequest = {
   confirm: boolean;
 };
 
-export const writebackPreparedMessageType = "acyclic.writeback.prepared";
+const writebackPreparedMessageType = "acyclic.writeback.prepared";
 
-export interface PiWritebackObservation {
+interface PiWritebackObservation {
   prepared: (descriptor: Readonly<Record<string, unknown>>) => void;
   observe: (fields: Readonly<Record<string, unknown>>, signal: AbortSignal) => Promise<Record<string, unknown>>;
   decide?: (operation: string, digest: string, decision: "approve" | "decline") => Promise<void>;
@@ -418,8 +414,9 @@ export async function approvePiWriteback(
       !Number.isSafeInteger(bounds.intervalMs) || bounds.intervalMs < 0) {
     throw new Error("Pi writeback requires finite passive observation bounds");
   }
-  const deadline = AbortSignal.timeout(bounds.timeoutMs);
-  const waiting = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const deadline = new AbortController();
+  const timeout = setTimeout(() => deadline.abort(new DOMException("Pi polling deadline exceeded", "TimeoutError")), bounds.timeoutMs);
+  const waiting = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
   let observations = 0;
   let last: Record<string, unknown> = { ...descriptor, status: "pending", approval: "required" };
   try {
@@ -451,13 +448,13 @@ export async function approvePiWriteback(
     }
   } catch (error) {
     current();
-    if (!deadline.aborted) throw error;
-  }
+    if (!deadline.signal.aborted) throw error;
+  } finally { clearTimeout(timeout); }
   return { ...last, wait: { bounded: true, observations } };
 }
 
 /** One request through the owning service; never retry an uncertain effect. */
-export async function taskControl(
+async function taskControl(
   operation: PiControlOperation,
   ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
   fields: Readonly<Record<string, unknown>> = {},
@@ -621,8 +618,6 @@ export async function consumePiInbox(
   }
 }
 
-// Pi's output truncation is not an input allocation bound: its stock reader
-// reads the whole file first. The owning SDK enforces this before allocating.
 const maximumBuiltinBytes = 262144;
 
 /** Pinned Pi 1.1.0 lexical expansion only; the service proves the held namespace. */
@@ -678,8 +673,6 @@ function builtinWritten(result: Record<string, unknown>, operation: string) {
   if (result.written !== true) throw new Error("Pi builtin write omitted its original completed write");
 }
 
-// Pinned MIME sniffing runs on the already-authorized bounded bytes, never on a
-// host filename. Match Pi's 4100-byte sniff, including APNG/BMP exclusions.
 function builtinImageMime(bytes: Buffer) {
   const buffer = bytes.subarray(0, 4100);
   const ascii = (offset: number, text: string) => buffer.subarray(offset, offset + text.length).toString("latin1") === text;
@@ -895,9 +888,6 @@ export default function acyclic(pi: ExtensionAPI) {
       return { block: true, reason: "Pi tool has no authenticated current original invocation" };
     }
   });
-  // Definitions replace the actual builtins, preserving pinned schemas and UI.
-  // defaultActive:false respects --no-builtin-tools; --tools read,write,edit and
-  // the normal builtin defaults still select these exact scoped replacements.
   const readDefinition = createReadToolDefinition(process.cwd());
   pi.registerTool({
     ...readDefinition, defaultActive: false,
@@ -988,8 +978,6 @@ export default function acyclic(pi: ExtensionAPI) {
           signal?.throwIfAborted();
         },
       } });
-      // The stock resolver is lexical only. Preserve the literal in messages
-      // and patch headers; every actual operation uses the proven SDK path.
       return await edit.execute(operation, input, signal, update, ctx);
     },
   });

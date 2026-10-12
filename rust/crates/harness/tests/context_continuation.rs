@@ -45,8 +45,6 @@ impl ModelProvider for SummaryModel {
 
     fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
         self.counts.fetch_add(1, Ordering::SeqCst);
-        // This synthetic provider declares byte units including referenced
-        // bodies, serialized descriptors and a fixed framing allowance.
         let message_tokens = request
             .request()
             .messages
@@ -516,6 +514,7 @@ async fn large_context_payload_preserves_instruction_and_typed_tool_exchange() -
             max_output_tokens: Some(1_024),
         },
         limits,
+        None,
     )?;
     assert_eq!(prepared.request().messages, source.messages);
     Ok(())
@@ -555,8 +554,6 @@ async fn checkpoint_envelope_binds_real_published_context_and_admitted_summary()
             "checkpoint-proof.json",
         )
         .await?;
-    // The canonical selection header is caller-owned here; this test qualifies payload
-    // publication and admitted summary binding, not canonical coverage admission.
     let checkpoint = acyclic_harness::context::CanonicalContextCheckpoint {
         operation_id,
         selection: acyclic_harness::conversation::ModelContextSelection {
@@ -736,13 +733,8 @@ async fn default_canonical_continuation_keeps_stages_fresh_beyond_history_bound(
             .await?;
         operations.push((operation, file, output));
     }
-    // Twenty canonical records exceed the eight-message model bound. This is a
-    // live default-path fixture, not cold restoration or constant-memory proof.
     let generated = assert_fresh_stage_requests(&provider, limits);
     let stage_calls = calls.load(Ordering::SeqCst);
-    // A turn from the current pinned pipeline, older than the latest retired
-    // checkpoint, must hydrate its original selection instead of admitting a
-    // fresh user or choosing newer context. No stage/model work is repeated.
     let (old_operation, old_file, old_output) = operations
         .get(6)
         .ok_or_else(|| Error::Invalid("no archived completed turn".into()))?;
@@ -1067,7 +1059,6 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             .await
             .is_err()
         );
-        // A changed parent cannot silently relabel an old authenticated capture.
         assert!(matches!(
             acyclic_harness::fork::prepare_summary_fork_context(
                 reducer,
@@ -1229,8 +1220,6 @@ async fn assert_checkpoint_tail_source(
             Some(&input.input)
         );
     }
-    // This is an original-owner import, not a child admission. A later canonical
-    // append must not change either the original logical or event cutoff.
     let mut aggregate = acyclic_harness::store::StreamAggregate::open(
         storage.stream(),
         storage.conversation().clone(),
@@ -1342,8 +1331,6 @@ async fn assert_scoped_checkpoint_source(
         Err(Error::Invalid(_))
     ));
 
-    // Consume the actual default-published projection through the existing
-    // source/stage path and admit an ordinary model operation with fresh input.
     let model = Arc::new(SummaryModel::default());
     let executor = StockExecutor::new(
         Model::new("synthetic", "checkpoint-import", "1", serde_json::json!({}))?,
@@ -1539,8 +1526,6 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
     ));
     assert_eq!(reader.verifies.load(Ordering::SeqCst), verifies);
 
-    // The retained capture itself must fit the narrowed receiving admission,
-    // even when every message/metadata payload still fits independently.
     let narrow_file_bytes = reference.descriptor().byte_length() - 1;
     assert!(
         snapshot
@@ -2070,6 +2055,7 @@ async fn local_journal_admits_compaction_only_after_one_settled_summary() -> Res
             max_output_tokens: Some(32),
         },
         Limits::default(),
+        None,
     )?;
     let request_ref = journal
         .stage(
@@ -2137,8 +2123,6 @@ async fn local_journal_admits_compaction_only_after_one_settled_summary() -> Res
             .await
             .is_err()
     );
-    // A different operation must start at its own empty timeline; switching the
-    // rebuildable active index must not borrow the first operation's admission.
     let other = OperationId::new();
     journal
         .append(
@@ -2176,7 +2160,6 @@ async fn stage_fixture_json<T: serde::Serialize>(
     key: &str,
     value: &T,
 ) -> Result<FileRef> {
-    // Value's sorted object map uses the same canonical order as the wire writer.
     let value = serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
     let bytes = serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))?;
     journal
@@ -2257,8 +2240,6 @@ async fn fabricate_checkpoint(
             "application/json",
         )
         .await?;
-    // The substituted payloads satisfy the public envelope and compaction proof.
-    // Only owning-history/model-observation provenance can reject them.
     envelope.validate_projection(&source, &retained, &proof, Limits::default())?;
     let checkpoint = journal
         .stage(
@@ -2393,8 +2374,6 @@ async fn canonical_publication_rejects_fabricated_source_and_summary_then_recove
 async fn append_private_checkpoint_metadata(
     storage: &Arc<MemoryHarnessStorage>,
 ) -> Result<(FileRef, Vec<uuid::Uuid>)> {
-    // Canonical metadata between model messages must be read and verified,
-    // but must not become provider-visible instruction or turn content.
     let metadata = storage
         .stage(
             OperationId::new(),

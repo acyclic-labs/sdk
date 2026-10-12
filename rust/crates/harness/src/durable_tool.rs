@@ -1,9 +1,4 @@
 //! Pinned, journaled tool calls for resumable tasks.
-//!
-//! Ordinary and native durable calls share the same dispatch/CAS/replay state
-//! machine. Native calls require audited registered producers, the originally
-//! issued task/tool context, and custody on that operation's original work.
-//! Reconciliation-only entry points never create a missing dispatch intent.
 
 use crate::contract::capability;
 use crate::{
@@ -20,11 +15,18 @@ use crate::{
     },
 };
 use serde_json::Value;
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl crate::filesystem::UploadRecord for Value {
+    fn diagnostic_label_bytes() -> u64 { 0 }
+    fn json_value_schema() -> crate::contract::JsonValueSchema { crate::contract::JsonValueSchema::Root }
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        Ok(crate::tool::value_owned_bytes(self)? - std::mem::size_of::<Self>() as u64)
+    }
+}
 use std::{collections::BTreeMap, sync::Arc};
 
-/// A version-pinned tool implemented as a deterministic serialized state
-/// machine. Unlike an imperative `ToolExecutor`, it can suspend at recorded
-/// command/effect boundaries and resume after a process restart.
+/// A version-pinned tool implemented as a deterministic serialized state machine.
 #[derive(Clone)]
 pub struct ResumableTool {
     /// Model-visible input/output contract.
@@ -33,9 +35,7 @@ pub struct ResumableTool {
     pub machine: Arc<dyn ResumableMachine>,
 }
 
-/// Immutable registry of exact resumable tool revisions. It is separate from
-/// live executors so a durable tool cannot silently fall back to imperative
-/// execution after a restart.
+/// Immutable registry of exact resumable tool revisions.
 #[derive(Clone, Default)]
 pub struct ResumableToolRegistry(BTreeMap<(String, String), ResumableTool>);
 
@@ -63,35 +63,18 @@ impl ResumableToolRegistry {
         self.0.get(&(name.to_owned(), revision.to_owned()))
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn get_with_native_work(
-        &self, name: &str, revision: &str,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&ResumableTool>> {
-        let (name, name_hold) = work.display(name)?;
-        let (revision, revision_hold) = work.display(revision)?;
-        let key = (name, revision);
-        let found = self.0.get(&key);
-        drop(key);
-        drop(revision_hold);
-        drop(name_hold);
-        Ok(found)
-    }
-
     /// Iterates registered definitions in deterministic identity order.
     pub fn definitions(&self) -> impl Iterator<Item = &ToolDefinition> {
         self.0.values().map(|tool| &tool.definition)
     }
 
-    /// Validates every installed revision through the genuine native machine
-    /// identity and the same canonical machine registration engine.
+    /// Validates every installed revision through the genuine native machine identity and the same canonical machine registration engine.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn validate_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         work.remaining()?;
-        // Reject an unaudited installed provider before any schema/registry
-        // allocation for other rows. Native identity is a borrowed pure gate.
+        // Reject an unaudited installed provider before any schema/registry allocation for other rows.
         for tool in self.0.values() {
             work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
             if !tool.machine.supports_native_work() {
@@ -114,9 +97,7 @@ impl ResumableToolRegistry {
         Ok(())
     }
 
-    /// Copies the actual installed definitions and keys while retaining the
-    /// same erased machine implementations. The caller keeps custody until the
-    /// physical registry drops; opaque BTree/Arc backing is not claimed as RSS.
+    /// Copies the actual installed definitions and keys while retaining the same erased machine implementations.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn clone_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
@@ -151,8 +132,7 @@ impl ResumableToolRegistry {
         Ok((copied, custody))
     }
 
-    /// Uses the same exact-version tuple lookup with paid temporary keys; never
-    /// invokes ordinary lookup or clones the installed tool/issued context.
+    /// Uses the same exact-version tuple lookup with paid temporary keys; never invokes ordinary lookup or clones the installed tool/issued context.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn get_with_native_work<'a>(
         &'a self, name: &str, revision: &str,
@@ -176,8 +156,7 @@ impl ResumableToolRegistry {
 }
 
 impl ResumableTool {
-    /// Rejects a tool whose machine could be silently swapped under the same
-    /// visible revision.
+    /// Rejects a tool whose machine could be silently swapped under the same visible revision.
     pub fn validate(&self) -> Result<()> {
         self.definition.validate()?;
         let identity = self.machine.identity();
@@ -190,8 +169,7 @@ impl ResumableTool {
         registry.register(self.machine.clone())
     }
 
-    /// Validates native metadata without consulting ordinary machine identity
-    /// or allocating an unaudited ordinary registration callback.
+    /// Validates native metadata without consulting ordinary machine identity or allocating an unaudited ordinary registration callback.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn validate_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
@@ -216,8 +194,7 @@ impl ResumableTool {
         Ok(())
     }
 
-    /// Derives the complete original workflow envelope for this exact scoped
-    /// tool invocation. This is data, not authority to bypass policy or a lease.
+    /// Derives the complete original workflow envelope for this exact scoped tool invocation.
     pub fn workflow_admission(
         &self,
         context: &ToolContext,
@@ -241,13 +218,13 @@ impl ResumableTool {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input")?;
+        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input", None)?;
         let initial = MachineCheckpoint {
             machine: self.machine.identity().clone(),
             revision: 0,
             state: self.machine.initialize(&invocation.arguments)?,
         };
-        validate_value(self.machine.state_schema(), &initial.state, "tool state")?;
+        validate_value(self.machine.state_schema(), &initial.state, "tool state", None)?;
         let admission = WorkflowAdmission {
             operation_id: invocation.operation_id,
             request_digest: crate::contract::canonical_json_digest(&(
@@ -261,8 +238,7 @@ impl ResumableTool {
         Ok(admission)
     }
 
-    /// Admits one exact invocation before any transition is committed. The
-    /// owner journal must retain the admission even when its reply is lost.
+    /// Admits one exact invocation before any transition is committed.
     pub async fn open(
         &self,
         context: ToolContext,
@@ -284,8 +260,7 @@ impl ResumableTool {
         })
     }
 
-    /// Produces the same owner admission using the issued native context and
-    /// original work. The returned guard covers its complete Self and deep data.
+    /// Produces the same owner admission using the issued native context and original work.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn workflow_admission_with_native_work(
         &self,
@@ -378,8 +353,7 @@ impl ResumableTool {
         Ok(NativeWorkflowAdmission { admission, registry, registry_custody })
     }
 
-    /// Admits the same exact workflow on its original native ledger. The
-    /// returned session borrows the issued invocation and pinned definition.
+    /// Admits the same exact workflow on its original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn open_with_native_context<'a>(
         &'a self,
@@ -452,7 +426,6 @@ impl ResumableToolSession {
     }
 
     /// Commits one state transition and its complete ref-only command outbox.
-    /// A completed result is schema-checked before commit, including replay.
     pub async fn step(
         &mut self,
         operation_id: OperationId,
@@ -463,7 +436,7 @@ impl ResumableToolSession {
         self.host
             .step_checked(operation_id, idempotency_key, input, |transition| {
                 if let MachineStatus::Completed { value } = &transition.status {
-                    validate_value(output_schema, value, "tool output")?;
+                    validate_value(output_schema, value, "tool output", None)?;
                 }
                 Ok(())
             })
@@ -472,7 +445,6 @@ impl ResumableToolSession {
 }
 
 /// The same owner-bound workflow host, with borrowed original tool metadata.
-/// Its intrinsic guards outlive the physical registry and checkpoint payloads.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeResumableToolSession<'a> {
     definition: &'a ToolDefinition,
@@ -490,8 +462,7 @@ impl NativeResumableToolSession<'_> {
     /// Borrows the actual latest committed checkpoint.
     pub const fn checkpoint(&self) -> &MachineCheckpoint { self.host.checkpoint() }
 
-    /// Commits through the same native workflow host. The moved custody covers
-    /// the input and retry-key backing and survives both physical payload drops.
+    /// Commits through the same native workflow host.
     pub fn step_with_native_work<'b>(
         &'b mut self,
         operation_id: OperationId,
@@ -575,8 +546,7 @@ impl crate::filesystem::UploadRecord for WorkflowAdmission {
     }
 }
 
-/// Executes only after a durable dispatch boundary; replay observes or
-/// reconciles that boundary and never calls `execute` a second time.
+/// Executes only after a durable dispatch boundary; replay observes or reconciles that boundary and never calls `execute` a second time.
 pub struct DurableToolRunner {
     tools: ToolRegistry,
     journal: Arc<dyn ExecutionJournal>,
@@ -665,9 +635,6 @@ impl DurableToolRunner {
     }
 
     /// Runs the canonical dispatch/reconciliation engine on the original work.
-    /// Borrows the issued context and its effective scope for grants, digest and
-    /// limits before replay. Owned argument copies preserve the actual Value
-    /// graph; typed result conversion uses the same borrowed serde visitor.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn run_with_native_context<'a>(
         &'a self,
@@ -744,9 +711,6 @@ impl DurableToolRunner {
         })
     }
 
-    // Ordinary and native entry points use this single ordered state machine.
-    // CAS losers loop over authenticated replay; there is no recursive box or
-    // path from uncertainty back into a second invocation.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines,
         reason = "one canonical ordered durable tool state machine")]
     async fn run_engine(
@@ -984,7 +948,7 @@ impl DurableToolRunner {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        validate_value(&definition.input_schema, &invocation.arguments, "tool input")?;
+        validate_value(&definition.input_schema, &invocation.arguments, "tool input", None)?;
         tool.executor.authorize_with_context(context, invocation)?;
         context.task().authorize_tool(definition, invocation).await
     }
@@ -1143,7 +1107,7 @@ fn validate_tool_identity(invocation: &ToolInvocation, io: Option<&crate::execut
 fn tool_validate_value(
     schema: &Value, value: &Value, label: &str, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    crate::contract::validate_json_schema_value_with_io(schema, value, label, io)
+    crate::contract::validate_json_schema_value(schema, value, label, io)
 }
 
 fn tool_json_bound<T: serde::Serialize>(
@@ -1153,7 +1117,7 @@ fn tool_json_bound<T: serde::Serialize>(
     if let Some(io) = io {
         let encoded_hold;
         let encoded = io.encode_json(value, maximum, true)?;
-        encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+        encoded_hold = io.guard_bytes(&encoded)?;
         drop(encoded);
         drop(encoded_hold);
         return Ok(());
@@ -1260,8 +1224,6 @@ mod tests {
         }
 
         fn state_schema(&self) -> &Value {
-            // The test machine is deliberately tiny; the registry tests are
-            // about identity binding, not transition semantics.
             static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
             SCHEMA.get_or_init(|| json!({"type": "object"}))
         }

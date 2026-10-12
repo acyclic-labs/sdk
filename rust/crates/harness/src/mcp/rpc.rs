@@ -10,11 +10,7 @@ pub(super) type NativeWork<'a> = Option<&'a acyclic_fs::NativeMaterializationWor
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 pub(super) type NativeWork<'a> = Option<&'a ()>;
 
-pub(super) fn rpc_result(value: Value, operation: OperationId) -> Result<Value> {
-    rpc_result_with_native_work(value, operation, None)
-}
-
-pub(super) fn rpc_result_with_native_work(
+pub(super) fn rpc_result(
     mut value: Value, operation: OperationId, work: NativeWork<'_>,
 ) -> Result<Value> {
     if field(&value, "method", work)?.is_some()
@@ -49,11 +45,7 @@ pub(super) fn request(operation: OperationId, method: &str, params: Value) -> Re
     .map_err(|error| Error::Invalid(error.to_string()))
 }
 
-pub(super) fn notification(value: &Value) -> Result<()> {
-    notification_with_native_work(value, None)
-}
-
-pub(super) fn notification_with_native_work(value: &Value, work: NativeWork<'_>) -> Result<()> {
+pub(super) fn notification(value: &Value, work: NativeWork<'_>) -> Result<()> {
     if field(value, "method", work)?.and_then(Value::as_str).is_none()
         || field(value, "result", work)?.is_some() || field(value, "error", work)?.is_some()
     {
@@ -68,7 +60,7 @@ pub(super) fn notification_with_native_work(value: &Value, work: NativeWork<'_>)
     Ok(())
 }
 
-pub(super) fn initialization_with_native_work(value: &Value, work: NativeWork<'_>) -> Result<()> {
+pub(super) fn initialization(value: &Value, work: NativeWork<'_>) -> Result<()> {
     check_dto(Dto::Initialize, value, work)?;
     let info = field(value, "serverInfo", work)?.unwrap_or(&Value::Null);
     if field(value, "protocolVersion", work)?.and_then(Value::as_str) != Some(super::PROTOCOL_VERSION)
@@ -87,17 +79,10 @@ fn field<'a>(value: &'a Value, key: &str, work: NativeWork<'_>) -> Result<Option
 }
 
 pub(super) fn decode_tool_result(value: Value) -> Result<McpToolResult> {
-    validate_tool_result(&value)?;
+    check_dto(Dto::CallToolResult, &value, None)?;
     serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
-pub(super) fn validate_tool_result(value: &Value) -> Result<()> {
-    check_dto(Dto::CallToolResult, value, None)
-}
-
-// This closed list, not a public DeserializeOwned entry point, is the schema
-// witness for the opaque Serde quota. Adding a DTO requires auditing its nested
-// collection element types and its simultaneous Content buffering layers.
 #[derive(Clone, Copy)]
 pub(super) enum Dto {
     Initialize, PaginatedParams, CallToolParams, ReadResourceParams, GetPromptParams,
@@ -108,8 +93,6 @@ pub(super) fn check_dto(dto: Dto, value: &Value, work: NativeWork<'_>) -> Result
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let custody = if let Some(work) = work {
         let quota = dto_quota(value, work, 0)?;
-        // A real reservation on the caller's original ledger. Trusted Serde's
-        // opaque internal allocations are NOT reported as observed allocator calls.
         Some(work.retain_owned(quota).map_err(native_work_error)?)
     } else { None };
     macro_rules! check {
@@ -138,7 +121,7 @@ pub(super) fn check_dto(dto: Dto, value: &Value, work: NativeWork<'_>) -> Result
         }
         Err(source) => {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() { return Err(Error::NativeDecode { source, custody }); }
+            if work.is_some() { return Err(Error::NativeDecode { code: crate::wire::ErrorCode::Invalid, source, custody }); }
             Err(Error::Invalid(source.to_string()))
         }
     }
@@ -160,7 +143,7 @@ pub(super) fn checkpoint(work: NativeWork<'_>, items: u64, bytes: u64) -> Result
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
-            items_examined: items, bytes_copied: bytes, ..acyclic_fs::WorkCounters::UNCHARGED
+            items_examined: items, bytes_copied: bytes, ..Default::default()
         }).map_err(native_work_error)?;
     }
     let _ = (work, items, bytes);
@@ -177,14 +160,6 @@ fn dto_quota(value: &Value, work: &acyclic_fs::NativeMaterializationWork, depth:
     use std::mem::size_of;
     checkpoint(Some(work), 1, 0)?;
     if depth > 256 { return Err(protocol_error(Some(work), false, "MCP typed value exceeds structural depth")); }
-    // rmcp 3.5.1: ContentBlock is internally tagged; its embedded resource
-    // contains untagged ResourceContents. At most two Content trees coexist.
-    // serde 1.0.229 Content's largest payload is a Vec/(String, Value)-sized
-    // body. Eight slots per input node covers minimum collection capacity and
-    // doubling growth; map slots follow the canonical logical pair convention.
-    // Sixteen bytes per input byte also cover Serde debug escaping (sixfold)
-    // and diagnostic String growth, alongside copied DTO strings. Sum concrete
-    // nested DTO sizes rather than assume a generic Serde bound.
     let typed_slot = size_of::<super::McpInitializeResult>()
         + size_of::<super::McpToolDefinition>() + size_of::<super::McpToolsPage>()
         + size_of::<rmcp::model::Resource>() + size_of::<rmcp::model::ResourceTemplate>()
@@ -202,8 +177,7 @@ fn dto_quota(value: &Value, work: &acyclic_fs::NativeMaterializationWork, depth:
         .ok_or_else(overflow)?;
     match value {
         Value::String(string) => {
-            // Inspect the already-owned UTF-8 length, without rescanning Unicode
-            // or reporting a copy that an ignored field may never perform.
+            // Inspect the already-owned UTF-8 length, without rescanning Unicode or reporting a copy that an ignored field may never perform.
             quota = quota.checked_add((string.len() as u64).checked_mul(16).ok_or_else(overflow)?).ok_or_else(overflow)?;
         }
         Value::Number(number) => {
@@ -244,24 +218,24 @@ mod tests {
         let pointer = payload.as_ptr();
         let mut value = json!({"jsonrpc":"2.0","id":operation.to_string()});
         value.as_object_mut().expect("envelope").insert("result".into(), Value::String(payload));
-        let result = rpc_result(value, operation).expect("matching response");
+        let result = rpc_result(value, operation, None).expect("matching response");
         assert_eq!(result.as_str().expect("original string").as_ptr(), pointer);
         let foreign = OperationId::from_bytes([8; 16]);
-        assert!(rpc_result(json!({"jsonrpc":"2.0","id":foreign.to_string(),"result":null}), operation).is_err());
-        assert!(rpc_result(json!({"jsonrpc":"2.0","id":operation.to_string(),"result":null,"error":{}}), operation).is_err());
-        assert!(rpc_result(json!({"jsonrpc":"1.0","id":operation.to_string(),"result":null}), operation).is_err());
+        assert!(rpc_result(json!({"jsonrpc":"2.0","id":foreign.to_string(),"result":null}), operation, None).is_err());
+        assert!(rpc_result(json!({"jsonrpc":"2.0","id":operation.to_string(),"result":null,"error":{}}), operation, None).is_err());
+        assert!(rpc_result(json!({"jsonrpc":"1.0","id":operation.to_string(),"result":null}), operation, None).is_err());
     }
 
     #[test]
     fn notification_and_initialization_share_the_closed_policy() {
-        notification(&json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed","params":{}})).expect("hint only");
-        assert!(matches!(notification(&json!({"jsonrpc":"2.0","method":"sampling/createMessage","id":"callback"})), Err(Error::Unsupported(_))));
-        assert!(notification(&json!({"jsonrpc":"2.0","method":7})).is_err());
-        initialization_with_native_work(&json!({
+        notification(&json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed","params":{}}), None).expect("hint only");
+        assert!(matches!(notification(&json!({"jsonrpc":"2.0","method":"sampling/createMessage","id":"callback"}), None), Err(Error::Unsupported(_))));
+        assert!(notification(&json!({"jsonrpc":"2.0","method":7}), None).is_err());
+        initialization(&json!({
             "protocolVersion":super::super::PROTOCOL_VERSION,
             "capabilities":{},"serverInfo":{"name":"external","version":"1"},"instructions":"not authority"
         }), None).expect("supported negotiation");
-        assert!(initialization_with_native_work(&json!({
+        assert!(initialization(&json!({
             "protocolVersion":super::super::PROTOCOL_VERSION,"capabilities":[],
             "serverInfo":{"name":"external","version":"1"}
         }), None).is_err());
@@ -319,10 +293,10 @@ mod tests {
     fn foreign_identity_and_callback_keep_static_original_classification() {
         let work = native_work(1 << 20, 100);
         let operation = OperationId::from_bytes([2; 16]);
-        assert!(matches!(rpc_result_with_native_work(json!({
+        assert!(matches!(rpc_result(json!({
             "jsonrpc":"2.0","id":OperationId::from_bytes([3; 16]).to_string(),"result":{}
         }), operation, Some(&work)), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
-        assert!(matches!(notification_with_native_work(&json!({
+        assert!(matches!(notification(&json!({
             "jsonrpc":"2.0","method":"roots/list","id":"server"
         }), Some(&work)), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
     }

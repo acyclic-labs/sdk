@@ -27,8 +27,7 @@ pub(crate) fn native_work_io(
     })
 }
 
-/// Moves an actual SDK output claim into this observer without another claim
-/// or a cancellation check. Owning the DTO here closes failure/drop ordering.
+/// Moves an actual SDK output claim into this observer without another claim or a cancellation check.
 pub(crate) fn adopt_native_sdk_output<T>(
     original: &NativeMaterializationWork,
     output: acyclic_stream::NativeStreamOutput<T>,
@@ -62,8 +61,7 @@ pub(crate) fn adopt_native_sdk_output<T>(
     }
 }
 
-/// Preserves the native SDK's owned semantic failure and original allocation
-/// guard without formatting it or losing its cause during policy inspection.
+/// Preserves the native SDK's owned semantic failure and original allocation guard without formatting it or losing its cause during policy inspection.
 pub(crate) fn native_sdk_result<T>(
     original: &NativeMaterializationWork,
     result: acyclic_stream::NativeStreamResult<T>,
@@ -92,7 +90,6 @@ pub(crate) fn native_sdk_result<T>(
         },
     }
 }
-
 
 impl NativeHistoryIo<'_> {
     /// Transfers the same ledger's retained source payloads to their last user.
@@ -173,13 +170,9 @@ impl HistoryIo for NativeHistoryIo<'_> {
     fn begin_write(&mut self) -> Result<()> { self.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() }) }
     fn allocation_failure(&self, cause: std::collections::TryReserveError) -> Error { error(cause) }
     fn receive_record(&mut self, bytes: u64) -> Result<()> {
-        // Receiver prefix precedes cancellation, quota checks and all decoding.
         self.work.spent(WorkCounters { authority_records_read: 1, authority_bytes_read: bytes,
             items_examined: 1, peak_allocation_bytes: bytes, ..WorkCounters::default() })
             .map_err(|error| self.native_error(error))?;
-        // Any failure leaves no new record claim. The raw receiver prefix is
-        // already observable, but quota/cancellation must be checked before
-        // custody is retained so callers can drop a rejected record exactly.
         self.work.remaining().map_err(|error| self.native_error(error))?;
         self.retain(bytes)?;
         Ok(())
@@ -198,8 +191,6 @@ impl HistoryIo for NativeHistoryIo<'_> {
     fn clone_text(&mut self, text: &str) -> Result<String> {
         let (copy, custody) =
             crate::conversation::clone_native_reference_text(text, self.work)?;
-        // The scalar factory gates the actual reserve and copy separately.
-        // Failed growth cannot spend a copy which never happened.
         self.absorb_native_custody(custody)?;
         Ok(copy)
     }
@@ -282,8 +273,6 @@ impl HistoryIo for NativeHistoryIo<'_> {
         let value = decoded.into_retained();
         let incoming = io.into_native_custody(retained)?;
         let held = incoming.bytes();
-        // Both guards originate from this exact finite native ledger; merging
-        // transfers already admitted custody, without another claim or copy.
         self.absorb_native_custody(incoming)?;
         Ok((value, held))
     }
@@ -357,8 +346,6 @@ impl HistoryIo for NativeHistoryIo<'_> {
 }
 
 /// Observes only a protected completion accepted under pre-action custody.
-/// The original identity is not authorization to start ordinary native work.
-/// SDK buffers must die before this observer (or its transferred guard).
 pub(crate) struct AcceptedCompletionIo {
     original: NativeMaterializationWork,
     reservation: NativeWorkReservation,
@@ -366,7 +353,6 @@ pub(crate) struct AcceptedCompletionIo {
     original_pool_bytes: u64,
     staged_bytes: u64,
     staged_items: u64,
-    // Retired last: virtual releases never retire the real preheld claim.
     custody: NativeAllocation,
 }
 
@@ -396,7 +382,6 @@ impl AcceptedCompletionIo {
     pub(crate) fn into_custody(self) -> NativeAllocation { self.custody }
 
     /// Seeds virtual ownership of a request already covered by the real pool.
-    /// This is called before dispatch, never to admit another allocation.
     pub(crate) fn adopt_preheld(&mut self, bytes: u64) -> Result<()> { self.retain(bytes) }
 
     pub(crate) fn remaining_work(&self) -> WorkCounters { self.reservation.remaining_work() }
@@ -431,8 +416,6 @@ impl AcceptedCompletionIo {
     }
 
     fn available_pool_bytes(&self) -> u64 {
-        // A genuine SDK transfer adds physical custody, never another virtual
-        // completion allowance. A split can also reduce the remaining claim.
         self.original_pool_bytes.min(self.custody.bytes()) - self.retained
     }
 
@@ -457,8 +440,6 @@ impl HistoryIo for AcceptedCompletionIo {
     fn original_native_work(&self) -> Option<&NativeMaterializationWork> { Some(&self.original) }
     fn requires_prepared_native_dispatch(&self) -> bool { true }
     fn absorb_native_custody(&mut self, mut incoming: NativeAllocation) -> Result<()> {
-        // Only the closed prepared SDK ingress transfers this already-funded
-        // guard. The original identity grants no permission for another call.
         if !incoming.matches_work(&self.original) {
             return Err(Error::NativeWork {
                 cause: NativeTreeMaterializationError::InvalidLayout, custody: Some(incoming),
@@ -497,8 +478,6 @@ impl HistoryIo for AcceptedCompletionIo {
     }
     fn allocation_failure(&self, cause: std::collections::TryReserveError) -> Error { error(cause) }
     fn receive_record(&mut self, bytes: u64) -> Result<()> {
-        // The canonical read-only receiver primitive consumes owned credit
-        // and records the actual raw prefix before an over-token/pool denial.
         self.reservation.record_received_prefix(WorkCounters {
             authority_records_read: 1, authority_bytes_read: bytes,
             items_examined: 1, ..WorkCounters::default()
@@ -506,8 +485,6 @@ impl HistoryIo for AcceptedCompletionIo {
         self.retain(bytes)
     }
     fn receive_native_record(&mut self, bytes: u64) -> Result<()> {
-        // SDK source IO, visits and physical custody have their own original
-        // accepted ingress. This callback observes only authority confirmation.
         self.reservation.record_received_prefix(WorkCounters {
             authority_records_read: 1, authority_bytes_read: bytes,
             ..WorkCounters::default()
@@ -561,8 +538,6 @@ impl HistoryIo for AcceptedCompletionIo {
                 bytes_encoded: bytes, items_examined: items, ..WorkCounters::default()
             }),
             crate::contract::JsonCodecCharge::Copy { bytes } => self.copy_bytes(bytes),
-            // The private prepaid writer emits only Work and Copy. An ordinary
-            // codec must fail before it reserves, clones, or decodes anything.
             _ => Err(Self::unsupported()),
         }
     }
@@ -578,7 +553,6 @@ impl HistoryIo for AcceptedCompletionIo {
         })
     }
     fn acknowledged(&mut self, bytes: u64, count: u64) -> Result<()> {
-        // A confirmed SDK acknowledgment is not a physical-new-record claim.
         self.record_completed(WorkCounters {
             authority_bytes_written: bytes, authority_records_appended: count, ..WorkCounters::default()
         })
@@ -871,7 +845,7 @@ mod tests {
             crate::contract::JsonBounds {
                 maximum_bytes: 128, maximum_items: 8, maximum_depth: 4,
             },
-            &mut |charge| io.codec_charge(charge),
+            None, &mut |charge| io.codec_charge(charge),
         );
         assert!(matches!(encoded, Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
@@ -901,7 +875,7 @@ mod tests {
             crate::contract::JsonBounds {
                 maximum_bytes: 128, maximum_items: 8, maximum_depth: 4,
             },
-            &mut |charge| io.codec_charge(charge),
+            None, &mut |charge| io.codec_charge(charge),
         );
         assert!(matches!(encoded, Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {

@@ -1,7 +1,4 @@
 //! Optional MCP clients and dynamic tools over the ordinary Harness tool owner.
-//!
-//! Catalog replacement is explicit and atomic. A transport is a host capability;
-//! neither constructing a client nor publishing a catalog performs remote I/O.
 
 use crate::{
     Error, InteractionId, OperationId, Result,
@@ -25,8 +22,7 @@ pub mod services;
 mod rpc;
 pub mod stdio;
 
-/// Initialized-session revision, corresponding to rmcp's `LATEST_WITH_INITIALIZE`;
-/// the dependency's `LATEST` is bootstrap-neutral and is not this wire contract.
+/// Initialized-session revision, corresponding to rmcp's `LATEST_WITH_INITIALIZE`; the dependency's `LATEST` is bootstrap-neutral and is not this wire contract.
 pub const PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// Negotiated server initialization, retained with the admitted session.
@@ -71,8 +67,7 @@ impl McpInitializeResult {
     }
 }
 
-/// One bounded discovery page. A host must fetch the complete catalog before
-/// replacing its model-visible selection; a page is not a replacement catalog.
+/// One bounded discovery page.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "camelCase")]
@@ -114,8 +109,7 @@ pub struct McpToolResult {
     /// Protocol content blocks. Validation occurs at the protocol boundary.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonValue[]"))]
     pub content: Vec<Value>,
-    /// Structured value checked against the remote output contract. An explicit
-    /// JSON null is present output, distinct from an omitted structured value.
+    /// Structured value checked against the remote output contract.
     #[serde(default, deserialize_with = "deserialize_present_json", skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonValue"))]
     pub structured_content: Option<Value>,
@@ -135,9 +129,7 @@ where
     Value::deserialize(deserializer).map(Some)
 }
 
-/// Pinned host transport for one server revision. Dispatch is invoked only by
-/// an admitted Harness tool. Reconciliation must query the exact operation;
-/// it must never resend a possibly applied remote request.
+/// Pinned host transport for one server revision.
 pub trait McpToolTransport: acyclic_stream::ProviderPlatform {
     /// Exact opt-in callback identity, or `None` when no callback route is installed.
     fn callback_policy(&self) -> Option<&callbacks::McpCallbackPolicy> {
@@ -150,9 +142,7 @@ pub trait McpToolTransport: acyclic_stream::ProviderPlatform {
         name: &'a str,
         arguments: Value,
     ) -> BoxProviderFuture<'a, Result<McpToolResult>>;
-    /// Calls under the enclosing task's scope and exact tool identity. Hosts
-    /// needing task authority override this; operation-only transports keep
-    /// their existing behavior.
+    /// Calls under the enclosing task's scope and exact tool identity.
     fn call_with_context<'a>(
         &'a self,
         context: ToolContext,
@@ -182,8 +172,7 @@ pub trait McpToolTransport: acyclic_stream::ProviderPlatform {
 pub enum McpSchemaExposure {
     /// Publish every schema at the next admission.
     Eager,
-    /// Publish only these distinct server-local names. Hidden revisions remain
-    /// available for explicit typed host admission and existing in-flight calls.
+    /// Publish only these distinct server-local names.
     Selected {
         /// Exact names from the complete catalog; empty means no model schemas.
         names: Vec<String>,
@@ -201,8 +190,7 @@ pub enum McpDiscoveryPolicy {
     Search,
 }
 
-/// Bounded immutable remote catalog. The existing `ToolRegistry` is the only
-/// execution registry; this value is a validated registration input.
+/// Bounded immutable remote catalog.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
@@ -216,15 +204,13 @@ pub struct McpCatalog {
     /// Explicit local discovery selection; notifications cannot change it.
     pub discovery: McpDiscoveryPolicy,
     /// Host-selected schema for complete model-facing result envelopes.
-    /// Pinned independently of remote canonical outputs with this catalog revision.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonSchema"))]
     pub projection_schema: Value,
     /// Complete bounded catalog, not a partially fetched `tools/list` page.
     pub tools: Vec<McpToolDefinition>,
 }
 
-/// Existing signed authority and durable approval inputs for one atomic catalog
-/// replacement. The host supplies the pinned transport/projection separately.
+/// Existing signed authority and durable approval inputs for one atomic catalog replacement.
 pub struct McpCatalogInstallation<'a> {
     /// Exact installation operation used by the retained approval.
     pub operation: OperationId,
@@ -243,9 +229,7 @@ pub struct McpCatalogInstallation<'a> {
 }
 
 impl McpCatalog {
-    /// Approval identity for this complete replacement, its exact predecessor
-    /// and finite allowances. Configuration/executor identity remains pinned by
-    /// the host's immutable catalog revision, as for ordinary tool definitions.
+    /// Approval identity for this complete replacement, its exact predecessor and finite allowances.
     pub fn installation_digest(
         &self,
         previous: Option<&Self>,
@@ -270,8 +254,6 @@ impl McpCatalog {
     }
 
     /// Agent-selected installation through the ordinary scope/approval boundary.
-    /// Approval and authorization precede the existing atomic registry mutation;
-    /// publishing schemas grants no authority to call the installed tools.
     pub async fn install_scoped(
         &self,
         registry: &mut ToolRegistry,
@@ -329,7 +311,7 @@ impl McpCatalog {
         {
             return Err(Error::Invalid("MCP catalog allowance exceeded".into()));
         }
-        crate::contract::compile_json_schema(&self.projection_schema, "MCP projection")?;
+        crate::contract::compile_json_schema(&self.projection_schema, "MCP projection", None)?;
         let mut names = BTreeSet::new();
         for tool in &self.tools {
             if !names.insert(&tool.name) {
@@ -345,7 +327,7 @@ impl McpCatalog {
                         "MCP output schema must describe an object".into(),
                     ));
                 }
-                crate::contract::compile_json_schema(schema, "MCP output")?;
+                crate::contract::compile_json_schema(schema, "MCP output", None)?;
             }
         }
         if let McpSchemaExposure::Selected { names: selected } = &self.schema_exposure {
@@ -376,8 +358,7 @@ impl McpCatalog {
         })
     }
 
-    /// Returns only host-selected model schemas without changing authority or
-    /// the complete discovery catalog. Both policies must validate first.
+    /// Returns only host-selected model schemas without changing authority or the complete discovery catalog.
     pub fn model_definitions(
         &self,
         maximum_tools: u32,
@@ -434,9 +415,7 @@ impl McpCatalog {
         Ok(())
     }
 
-    /// Publishes the complete next-admission catalog, retaining every old
-    /// executor/revision for already admitted calls. Invalid replacements leave
-    /// the old registry unchanged. `previous` must be the installed catalog.
+    /// Publishes the complete next-admission catalog, retaining every old executor/revision for already admitted calls.
     pub fn install(
         &self,
         registry: &mut ToolRegistry,
@@ -505,8 +484,7 @@ impl McpCatalog {
         Ok(())
     }
 
-    /// Bounded deterministic discovery over an already pinned catalog. Search
-    /// grants no permission to call the returned definitions.
+    /// Bounded deterministic discovery over an already pinned catalog.
     pub fn search(
         &self,
         query: &str,
@@ -551,18 +529,6 @@ struct RemoteTool {
     transport: Arc<dyn McpToolTransport>,
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct NativeRemoteResult {
-    result: McpToolResult,
-    _custody: acyclic_fs::NativeAllocation,
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct NativeRemoteToolResult {
-    result: ToolResult,
-    custody: acyclic_fs::NativeAllocation,
-}
-
 impl RemoteTool {
     fn authorize_context(&self, context: &ToolContext, invocation: &ToolInvocation) -> Result<()> {
         if context.operation_id() != invocation.operation_id
@@ -593,7 +559,7 @@ impl RemoteTool {
                 }
                 return Err(Error::Invalid("MCP structured result missing".into()));
             };
-            crate::contract::validate_json_schema_value_with_io(schema, value, "MCP output", io)?;
+            crate::contract::validate_json_schema_value(schema, value, "MCP output", io)?;
         }
         Ok(())
     }
@@ -602,79 +568,10 @@ impl RemoteTool {
         self.validate_result(&result, None)?;
         let value = serde_json::to_value(result)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        rpc::validate_tool_result(&value)?;
+        rpc::check_dto(rpc::Dto::CallToolResult, &value, None)?;
         Ok(ToolResult { value })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn result_with_native_work(
-        &self,
-        remote: NativeRemoteResult,
-        operation: OperationId,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeRemoteToolResult> {
-        (|| {
-            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            self.validate_result(&remote.result, Some(&io))?;
-            let (value, custody) = crate::tool::value_with_native_work(&remote.result, work)?;
-            let output = NativeRemoteToolResult { result: ToolResult { value }, custody };
-            rpc::check_dto(rpc::Dto::CallToolResult, &output.result.value, Some(work))?;
-            Ok(output)
-        })().map_err(|error| rpc::native_response_error(error, operation))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn authorize_native_selection(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        self.supports_native_execution(work)?;
-        if context.operation_id() != invocation.operation_id || context.call_id() != invocation.call_id {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "MCP tool context identity mismatch",
-            });
-        }
-        let examined = (invocation.name.len() as u64)
-            .checked_add(self.server.len() as u64)
-            .and_then(|bytes| bytes.checked_add(self.remote.name.len() as u64))
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "MCP selected name comparison overflow",
-            })?;
-        work.charge(acyclic_fs::WorkCounters {
-            items_examined: examined, ..Default::default()
-        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let selected_name = invocation.name.strip_prefix("mcp.")
-            .and_then(|name| name.strip_prefix(self.server.as_str()))
-            .and_then(|name| name.strip_prefix('.'));
-        if selected_name != Some(self.remote.name.as_str()) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "MCP invocation names another selected remote tool",
-            });
-        }
-        // Compare borrowed canonical grant spelling without building a string.
-        for grant in context.effective_scope().grants().iter() {
-            let bytes = (grant.len() as u64).checked_add(self.server.len() as u64)
-                .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "MCP grant comparison overflow",
-                })?;
-            work.charge(acyclic_fs::WorkCounters {
-                items_examined: bytes, ..Default::default()
-            }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            if grant.strip_prefix("mcp:call:") == Some(self.server.as_str()) {
-                return Ok(());
-            }
-        }
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "MCP server capability absent",
-        })
-    }
 }
 
 impl ToolExecutor for RemoteTool {
@@ -753,79 +650,6 @@ impl ToolExecutor for RemoteTool {
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_execution(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        self.transport.supports_native_call(work)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn authorize_with_native_context(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        self.authorize_native_selection(context, invocation, work)?;
-        context.validate_native_mcp_context(work)
-    }
-
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn execute_with_native_context<'a>(
-        &'a self,
-        context: &'a ToolContext,
-        invocation: &'a ToolInvocation,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
-        self.authorize_with_native_context(context, invocation, work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let (result, custody) = self.transport.call_with_native_context(
-                context, &self.remote.name, &invocation.arguments, work,
-            )?.await?;
-            let remote = NativeRemoteResult { result, _custody: custody };
-            let output = self.result_with_native_work(remote, context.operation_id(), work)?;
-            Ok((output.result, output.custody))
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn reconcile_with_native_context<'a>(
-        &'a self,
-        context: &'a ToolContext,
-        invocation: &'a ToolInvocation,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>> {
-        self.authorize_native_selection(context, invocation, work)?;
-        context.validate_native_mcp_reconciliation_context(work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            // Observe the exact operation only. An unknown outcome is never a
-            // reason to call tools/call again.
-            let (result, custody) = self.transport
-                .reconcile_with_native_context(context, work)?.await?;
-            match result {
-                Some(result) => {
-                    let remote = NativeRemoteResult { result, _custody: custody };
-                    let mut output = self.result_with_native_work(remote, context.operation_id(), work)?;
-                    let retained = output.custody.bytes().checked_add(
-                        (std::mem::size_of::<Option<ToolResult>>()
-                            - std::mem::size_of::<ToolResult>()) as u64,
-                    ).ok_or(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Indeterminate,
-                        reason: "MCP observation ownership overflow",
-                    })?;
-                    output.custody.resize_retained(retained)
-                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    Ok((Some(output.result), output.custody))
-                }
-                None => {
-                    drop(custody);
-                    let custody = work.retain_owned(std::mem::size_of::<Option<ToolResult>>() as u64)
-                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    Ok((None, custody))
-                }
-            }
-        })
-    }
 }
 
 #[cfg(test)]
@@ -1521,8 +1345,6 @@ mod tests {
         let transport: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
         let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
         let names = ["a", "b", "c"];
-        // 8 initial subsets x 8 replacement subsets of three logical names.
-        // This checks production registry transitions, not a separate model.
         for initial in 0_u8..8 {
             for replacement in 0_u8..8 {
                 let selected = |mask: u8| {

@@ -6,7 +6,7 @@ use crate::{
         SchemaRegistry,
     },
 };
-use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream};
+use acyclic_stream::{OwnedBytes, CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream};
 use futures::TryStreamExt as _;
 use std::sync::Arc;
 
@@ -76,13 +76,13 @@ async fn publish_lifecycle(
 }
 
 async fn copy_cut(
-    canonical: &Bytes,
-    certificate: Bytes,
+    canonical: &OwnedBytes,
+    certificate: OwnedBytes,
     atomic: bool,
 ) -> Result<StreamClient<MemoryStream>> {
     let client = StreamClient::new(Arc::new(MemoryStream::default()));
     let canonical_path = StreamPath::new(authority().stream_path()?)?;
-    let proof_path = certificate_path(&authority())?;
+    let proof_path = certificate_path_with_work(&authority(), &mut None).map(|(path, _)| path)?;
     if atomic {
         client
             .commit(CommitRequest {
@@ -126,40 +126,37 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
     let client = StreamClient::new(Arc::new(MemoryStream::default()));
     let mut reducer = Reducer::new(authority(), issuer().verifier(), SchemaRegistry::new());
     publish_lifecycle(&client, &mut reducer, 1).await?;
-    let selected = select(
+    let selected = select_with_work(
         &client,
         &authority(),
         &issuer().verifier(),
         EffectId::from_bytes([92; 16]),
         1,
-        1_000_000,
-    )
+        1_000_000, &mut None)
     .await?;
     assert_eq!(selected.head, None);
     let exact = selected.consumed_bytes;
     publish_lifecycle(&client, &mut reducer, 2).await?;
     assert_eq!(
-        select(
+        select_with_work(
             &client,
             &authority(),
             &issuer().verifier(),
             EffectId::from_bytes([92; 16]),
             1,
-            exact
-        )
+            exact, &mut None)
         .await?
         .consumed_bytes,
         exact
     );
     assert!(matches!(
-        select(
+        select_with_work(
             &client,
             &authority(),
             &issuer().verifier(),
             EffectId::from_bytes([92; 16]),
             1,
-            exact - 1
-        )
+            exact - 1, &mut None)
         .await,
         Err(Error::Invalid(_))
     ));
@@ -170,7 +167,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         .try_collect::<Vec<_>>()
         .await?;
     let certificates = client
-        .stream(certificate_path(&authority())?.as_str())?
+        .stream(certificate_path_with_work(&authority(), &mut None).map(|(path, _)| path)?.as_str())?
         .read(0, 1)
         .await?
         .try_collect::<Vec<_>>()
@@ -197,7 +194,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         }
         let forged = copy_cut(
             &canonical[0].value,
-            Bytes::from(crate::contract::canonical_json_bytes(&changed)?),
+            OwnedBytes::from(crate::contract::canonical_json_bytes(&changed)?),
             true,
         )
         .await?;
@@ -345,9 +342,6 @@ async fn missing_authenticated_node_rejects_instead_of_selecting_older_state() -
 #[tokio::test]
 async fn seeded_archive_transitions_preserve_old_cuts_across_read_faults() -> Result<()> {
     use std::{collections::BTreeMap, sync::atomic::Ordering};
-    // Deterministic schedules exercise real immutable index writes, repeated
-    // transitions, arbitrary key bits, stale cuts and failed reads. The oracle
-    // records logical heads only; it does not duplicate radix traversal.
     for seed in 1..=8_u64 {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let client = StreamClient::new(provider.clone());

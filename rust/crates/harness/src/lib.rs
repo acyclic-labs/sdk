@@ -77,8 +77,7 @@ pub mod wire_validation;
 pub mod wire_values;
 pub mod workflow;
 
-/// Generated Protobuf packages, nested as their package names are, so the
-/// harness messages resolve the shared protocol handshake they import.
+/// Generated Protobuf packages, nested as their package names are, so the harness messages resolve the shared protocol handshake they import.
 #[allow(
     missing_docs,
     clippy::pedantic,
@@ -100,8 +99,7 @@ mod generated {
     }
 }
 
-/// Generated Protobuf envelopes shared by every transport: the harness
-/// contract and the protocol handshake it negotiates with.
+/// Generated Protobuf envelopes shared by every transport: the harness contract and the protocol handshake it negotiates with.
 pub mod wire {
     pub use super::generated::acyclic::harness::v2::*;
     pub use super::generated::acyclic::protocol::v1::*;
@@ -118,8 +116,8 @@ pub use contract::{
     EffectAttemptId, EffectId, Error, GroupId, IdempotencyKey, InteractionId, InteractionRejection,
     OperationId, Outcome, PolicyLayer, ProtocolIdentity, Result, SessionId, TaskId, TurnId,
     JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape,
-    canonical_json_bytes_bounded, json_bytes_bounded_trusted,
-    json_from_slice_bounded_trusted, json_value_bounded_trusted, json_value_decode_owned_bytes,
+    canonical_json_bytes_bounded, json_bytes_bounded,
+    json_from_slice_bounded_trusted, json_value_bounded, json_value_decode_owned_bytes,
     sdk_json_diagnostic_bytes,
     json_owned_value_conversion_additional_bytes, json_typed_diagnostic_owned_bytes,
     preparation_serde_diagnostic_label_bytes,
@@ -127,9 +125,9 @@ pub use contract::{
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use contract::{
-    canonical_json_bytes_bounded_native_trusted, json_bytes_bounded_native_trusted,
+     
     json_from_slice_bounded_native_trusted, json_from_value_bounded_native_trusted,
-    json_from_value_owned_bounded_native_trusted, json_value_bounded_native_trusted,
+    json_from_value_owned_bounded_native_trusted, 
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;

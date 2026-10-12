@@ -8,9 +8,9 @@ use crate::{
         ForkPreparationLimits, ForkToolArguments, MergeToolArguments, RecursiveDefaultToolSource,
         RecursiveDefaultToolset, RecursiveForkConfig, RecursiveForkSourceIntent, RecursiveForkToolBinding, RecursiveForkToolPlan,
         RecursiveMergeToolBinding, RecursiveMergeToolPlan, RecursiveSourceSnapshot, RecursiveToolOwner,
-        RetainedSourceBinding, StreamHistoryForkVerifier, recursive_default_tools, recursive_fork_source,
+        RetainedSourceBinding, recursive_default_tools, recursive_fork_source,
         restore_recursive_fork_source, workspace_ref},
-    fork::{CompositeForkVerifier, ForkRequest},
+    fork::{CompositeForkVerifier, ForkRequest, StreamHistoryForkVerifier},
     resource_preparation::TaskResourcePreparation,
     resources::ProviderRef,
     runtime::{DurableTaskHost, TaskAdmissionRecord, TaskContext, ToolContext},
@@ -31,7 +31,6 @@ type ForkBinding<P, A, O> = RecursiveForkToolBinding<P, A, O>;
 type MergeBinding<P, A, O> = RecursiveMergeToolBinding<P, A, O>;
 
 /// Host-owned conversation signing credentials and its exact signed actor.
-/// These are configuration, never model arguments or a foreign scope import.
 #[derive(Clone)]
 pub struct ConfiguredRecursiveAuthorityBinding {
     issuer: AuthorityIssuer,
@@ -39,8 +38,7 @@ pub struct ConfiguredRecursiveAuthorityBinding {
 }
 
 impl ConfiguredRecursiveAuthorityBinding {
-    /// Retains the original installed signer; setup authenticates its scope
-    /// through the same configured source validation used for wire bindings.
+    /// Retains the original installed signer; setup authenticates its scope through the same configured source validation used for wire bindings.
     #[must_use]
     pub fn new(issuer: AuthorityIssuer, scope: Scope) -> Result<Self> { Ok(Self { issuer, scope }) }
 
@@ -63,8 +61,6 @@ impl<'de> Deserialize<'de> for ConfiguredRecursiveAuthorityBinding {
             scope: Scope,
         }
         let wire = WireBinding::deserialize(deserializer)?;
-        // Move the already decoded finite credential fields into their original
-        // issuer. Deserialization neither verifies nor mints a replacement scope.
         Ok(Self { issuer: AuthorityIssuer::new(wire.issuer, wire.key, wire.authority), scope: wire.scope })
     }
 }
@@ -117,7 +113,7 @@ fn canonical_admission<'de, D: serde::Deserializer<'de>>(deserializer: D)
 pub struct ConfiguredRecursiveMerge { pub caller: TaskId, pub source: TaskId, pub notice: ConversationMessage }
 
 /// Existing trusted host-retained original cut, never a model-provided ledger.
-#[derive(Clone, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfiguredRecursiveSourceCheckpoint {
     pub caller: TaskId,
@@ -126,13 +122,12 @@ pub struct ConfiguredRecursiveSourceCheckpoint {
 }
 
 /// Finite trusted configuration shared by native and browser default consumers.
-#[derive(Clone, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfiguredRecursiveToolsConfig {
     pub callers: Vec<ConfiguredRecursiveCaller>,
     pub forks: Vec<ConfiguredRecursiveFork>,
     /// Browser host's explicit actual graph root for the creator-only policy.
-    /// Native consumers may install their separately verified policy directly.
     #[serde(default)]
     pub project_policy_graph_root: Option<TaskId>,
     pub merges: Vec<ConfiguredRecursiveMerge>,
@@ -195,20 +190,16 @@ impl crate::filesystem::PreparationRecord for SourceCheckpoint {
                 reason: "configured source checkpoint ownership overflows" },
             None => Error::Invalid("configured source checkpoint ownership overflows".into()),
         };
-        // The original sealed shape covers all Snapshot caches, its one live
-        // canonical history converter, and the selected Value/Raw payloads.
-        let snapshot = crate::contract::snapshot_json_ownership(
-            shape, 128, native_code,
+        let snapshot = crate::contract::json_decode_owned_bytes(
+            shape, true, native_code,
         )?;
-        // These are the containing DTO/ForkRequest's actual typed and Content
-        // containers and strings, not a second generic Value/Raw allowance.
         let outer = shape.lexical_items().checked_mul(10)
             .and_then(|items| items.checked_mul(Self::maximum_slot_bytes()))
             .and_then(|bytes| input_bytes.checked_mul(4).and_then(|strings| bytes.checked_add(strings)))
             .and_then(|bytes| bytes.checked_add(codec_scratch.max(input_bytes)))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
             .ok_or_else(overflow)?;
-        snapshot.maximum_owned_bytes.checked_sub(snapshot.diagnostic_bytes)
+        snapshot.0.checked_sub(snapshot.1)
             .and_then(|bytes| bytes.checked_add(crate::contract::sdk_json_diagnostic_bytes()))
             .and_then(|bytes| bytes.checked_add(outer)).ok_or_else(overflow)
     }
@@ -217,7 +208,6 @@ impl crate::filesystem::PreparationRecord for SourceCheckpoint {
 struct BoundProjectSourcePolicy {
     issuer: AuthorityIssuer,
     provider: Arc<dyn RootProjectSourceProvider>,
-    // LAST: installed issuer/provider data drops before its native allowance.
     #[cfg(not(target_arch = "wasm32"))]
     custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -307,8 +297,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.runtime.set(Arc::downgrade(runtime)).map_err(|_| Error::Conflict("configured source runtime was already bound".into()))
     }
 
-    /// Installs actual coordinator credentials and an explicitly trusted read
-    /// policy. Missing approval denies foreign imports without widening callers.
+    /// Installs actual coordinator credentials and an explicitly trusted read policy.
     pub fn with_project_source_policy(&self, issuer: AuthorityIssuer,
         provider: Arc<dyn RootProjectSourceProvider>) -> Result<()> {
         self.project_policy.set(BoundProjectSourcePolicy { issuer, provider,
@@ -316,33 +305,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             custody: None,
         })
             .map_err(|_| Error::Conflict("configured source project policy was already bound".into()))
-    }
-
-    /// Installs one genuine native policy with metadata copied from the original
-    /// held issuer, retaining its original allowance through the immutable slot.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn with_project_source_policy_with_native_work(
-        &self, issuer: &AuthorityIssuer, provider: Arc<dyn RootProjectSourceProvider>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.remaining()?;
-        if self.project_policy.get().is_some() {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                reason: "configured source project policy was already bound" });
-        }
-        if !provider.supports_native_source() {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                reason: "configured Project policy has no genuine native verifier" });
-        }
-        let mut custody = work.retain_owned(std::mem::size_of::<BoundProjectSourcePolicy>() as u64)?;
-        let copied = issuer.clone_with_native_work(work)?;
-        let mut binding = BoundProjectSourcePolicy { issuer: copied.0, provider, custody: Some(copied.1) };
-        if let Some(incoming) = binding.custody.as_mut() { custody.absorb(incoming)?; }
-        binding.custody = Some(custody);
-        self.project_policy.set(binding).map_err(|_| Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Conflict,
-            reason: "configured source project policy was already bound",
-        })
     }
 
     /// Builds the real portable file and recursive durable tools over this source.
@@ -405,9 +367,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             Arc::new(FilesystemForkVerifier::new(self.filesystem.clone(), self.limits.file_bytes)?),
             Arc::new(StreamHistoryForkVerifier::new(self.config.stream_provider.clone())?),
         ])?);
-        Ok(aggregate.with_content_verifier(content).with_fork_verifier(forks)
+        aggregate.with_content_verifier(content).with_fork_verifier(forks)
             .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(self.filesystem.clone())))
-            .with_limits(self.limits))
+            .with_limits(self.limits)
     }
 
     async fn aggregate(&self, binding: &ConfiguredRecursiveAuthorityBinding,
@@ -456,24 +418,24 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if !crate::runtime::read_granted(context.scope().grants(), file)? {
                 return Err(Error::Unauthorized("current caller cannot delegate the configured exact launch file".into()));
             }
-            context.task().authorize_file_read(file)?;
+            drop(context.task().read_file(file).await?);
             let grant = file.read_capability()?;
             grants.push(grant.clone());
             scoped.push(grant);
         }
-        for reference in source.preparer.required_reference_grants(&source.request).await? {
+        for reference in source.preparer.required_reference_grants(&source.request, None).await? {
             if reference.reader != arguments.id {
                 return Err(Error::Unauthorized("configured inherited reference targets an unlisted child reader".into()));
             }
             if !crate::runtime::read_granted(context.scope().grants(), &reference.file)? {
                 return Err(Error::Unauthorized("current caller cannot delegate this exact inherited file".into()));
             }
-            context.task().authorize_file_read(&reference.file)?;
+            drop(context.task().read_file(&reference.file).await?);
             if let Some(manifest) = &reference.attachment_manifest {
                 if !crate::runtime::read_granted(context.scope().grants(), manifest)? {
                     return Err(Error::Unauthorized("current caller cannot delegate the authenticated attachment manifest".into()));
                 }
-                context.task().authorize_file_read(manifest)?;
+                drop(context.task().read_file(manifest).await?);
             }
             let grant = reference.capability()?;
             grants.push(grant.clone());
@@ -558,8 +520,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 return Err(Error::Unauthorized("configured fork retry changed its retained original plan".into()));
             }
         }
-        // The durable workflow has already committed this intent. Reconstruct
-        // only its authoritative cut, never the current conversation tail.
         let pinned = StreamAggregate::open_at_revision_measured(&self.stream, caller.owner.authority().clone(),
             verifier(&caller.owner)?, SchemaRegistry::default(), intent.request.parent_revision,
             self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?;
@@ -584,8 +544,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             observed.value
         };
         let source_checkpoint = if let Some(checkpoint) = checkpoint { checkpoint } else {
-            // Absence of a receipt is not permission to select another cut.
-            // Repeated publication always carries the already committed intent.
             let capture = SourceCheckpoint { snapshot: pinned.reducer().snapshot_with_event_limit(1)?,
                 request: intent.request.clone(), caller: caller.task, arguments: arguments.clone() };
             let bytes = serde_json::to_vec(&capture).map_err(invalid_json)?;
@@ -705,7 +663,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let restored;
         let aggregate;
         let reducer = if let Some(checkpoint) = &preparation.source_checkpoint {
-            reader.authorize_file_read(checkpoint)?;
+            drop(reader.read_file(checkpoint).await?);
             let receipt = reader.read_file_measured(checkpoint, self.config.content_budget, cancellation)
                 .await.map_err(|failure| failure.error)?;
             let capture: SourceCheckpoint = serde_json::from_slice(&receipt.value).map_err(invalid_json)?;
@@ -718,7 +676,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if original.caller != caller || original.request != request {
                 return Err(Error::Unauthorized("trusted original record differs from the sealed preparation request".into()));
             }
-            restored = self.restore_snapshot(&binding.owner, &request, original.snapshot.clone(), cancellation).await?;
+            restored = self.restore_snapshot(&binding.owner, &request, original.snapshot.clone_with_work(&mut None)?, cancellation).await?;
             &restored
         } else {
             aggregate = StreamAggregate::open_at_revision_measured(&self.stream, binding.owner.authority().clone(),
@@ -1009,19 +967,19 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
         let verifier = binding.issuer().verifier_with_work(&mut observer)?;
         let reader = HistoryReader::new_with_native_work(&self.stream, binding.authority(), &verifier, work)?;
-        let cursor = HistoryCursor {
-            authority: observer.as_deref_mut().expect("native source checkpoint observer").clone_authority(binding.authority())?,
-            after_revision: snapshot.revision - 1, through_revision: snapshot.revision,
-        };
-        let page = reader.0.read_page_with_work(&cursor,
-            HistoryReadLimits { maximum_events: 1, maximum_bytes: self.config.history_limits.maximum_bytes },
-            &mut observer,
+        let expected = snapshot.events.last().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized, reason: "native checkpoint has no canonical head" })?;
+        let (head, retained) = reader.0.operation_event_bounded_with_work(
+            expected.operation_id, self.config.history_limits.maximum_bytes, &mut observer,
         ).await?;
+        let head_hold = io.guard_owned(retained)?;
         cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-        if snapshot.events.last().is_none() || snapshot.events.last() != page.events.last() {
+        if head.as_ref() != Some(expected) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native checkpoint head differs from immutable canonical Stream event" });
         }
+        drop(head);
+        drop(head_hold);
         Reducer::restore_with_work(snapshot, verifier, SchemaRegistry::new(), &mut observer)
     }
 
@@ -1038,9 +996,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native child allocation differs from original caller or agent" });
         }
-        let references = source.preparer.required_reference_grants_with_native_work(
-            &source.request, work,
-        )?.await?;
+        let reference_io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let references = crate::NativeFutureBundle::new(work, ||
+            source.preparer.required_reference_grants(&source.request, Some(&reference_io)))?.await?;
         let mut grants = Vec::new();
         let mut scoped = Vec::new();
         let append = |values: &mut Vec<String>, value: &str| -> Result<()> {
@@ -1070,7 +1028,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
         }
         for file in &allocation.input_files {
-            context.authorize_file_read_with_native_work(file, work)?;
+            if !crate::runtime::read_granted_with_work(context.scope().grants(), file,
+                &mut Some(&mut io.history_io()))? {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "current tool scope cannot delegate this file" });
+            }
+            drop(context.task().read_file_with_native_work(file, work).await?);
             let grant = super::fork_preparer::bounded_io::reference_key(file, Some(&io))?;
             append(&mut grants, &grant)?;
             append(&mut scoped, &grant)?;
@@ -1078,14 +1041,24 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             drop(grant);
             io.release(bytes)?;
         }
-        for reference in &references.0 {
+        for reference in &references {
             if reference.reader != arguments.id {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native inherited reference targets another child reader" });
             }
-            context.authorize_file_read_with_native_work(&reference.file, work)?;
+            if !crate::runtime::read_granted_with_work(context.scope().grants(), &reference.file,
+                &mut Some(&mut io.history_io()))? {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "current tool scope cannot delegate this file" });
+            }
+            drop(context.task().read_file_with_native_work(&reference.file, work).await?);
             if let Some(manifest) = &reference.attachment_manifest {
-                context.authorize_file_read_with_native_work(manifest, work)?;
+                if !crate::runtime::read_granted_with_work(context.scope().grants(), manifest,
+                &mut Some(&mut io.history_io()))? {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "current tool scope cannot delegate this file" });
+            }
+            drop(context.task().read_file_with_native_work(manifest, work).await?);
             }
             let grant = super::fork_preparer::bounded_io::reference_key(&reference.file, Some(&io))?;
             append(&mut grants, &grant)?;
@@ -1172,9 +1145,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     let mut history = io.history_io();
                     chosen.project.clone_with_work(&mut Some(&mut history))?
                 },
-                generation: crate::executor::clone_preparation(&generation.generation, Some(&io))?,
+                generation: generation.generation.clone_with_io(&io)?,
                 native_snapshot: match &chosen.native_snapshot {
-                    Some(value) => Some(crate::executor::clone_preparation(value, Some(&io))?),
+                    Some(value) => Some(crate::executor::stock_value_copy(value, Some(&io))?),
                     None => None,
                 },
             };
@@ -1198,7 +1171,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let _parent_custody = parent.1;
         let claims = self.native_child_claims(context, caller, allocation, arguments, &source.0, work).await?;
         let allocation_digest = allocation_digest_with_native_work(allocation, &claims.0.0, &claims.0.1, work)?;
-        let retained_arguments = crate::executor::clone_preparation(arguments, Some(&io))?;
+        let retained_arguments = ForkToolArguments { id: arguments.id, msg: super::fork_preparer_io::clone_text(&arguments.msg, Some(&io))?, source: arguments.source };
         let mut history = io.history_io();
         history.absorb_native_custody(source.1)?;
         drop(history);
@@ -1235,8 +1208,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let merge = FilesystemProjectMergeVerifier::new_with_native_work(
             Arc::clone(&self.filesystem), &verifier, scope, work,
         )?.into_native_shared(work)?;
-        Ok(aggregate.with_content_verifier(content).with_fork_verifier(forks)
-            .with_merge_verifier(merge).with_limits(self.limits))
+        aggregate.with_content_verifier(content).with_fork_verifier(forks)
+            .with_merge_verifier(merge).with_limits(self.limits)
     }
 
     async fn native_merge_binding(
@@ -1291,12 +1264,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     reason: "native merge retry changed original source or destination" });
             }
         }
-        let generation = crate::executor::clone_preparation(
-            original.map_or(&selected.generation, |original| &original.source_generation), Some(&io),
-        )?;
-        let notice = crate::executor::clone_preparation(
-            original.map_or(&allocation.notice, |original| &original.notice), Some(&io),
-        )?;
+        let generation = original.map_or(&selected.generation, |original| &original.source_generation).clone_with_io(&io)?;
+        let notice = original.map_or(&allocation.notice, |original| &original.notice).clone_with_work(&mut Some(&mut io.history_io()))?;
         let source_read = if let Some(authorization) = original.and_then(|plan| plan.authorized_source.as_ref()) {
             Some(owner.restore_project_source_authorization_with_native_work(
                 context.task(), authorization, work,
@@ -1318,9 +1287,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         let mut history = io.history_io();
                         selected.volume.clone_with_work(&mut Some(&mut history))?
                     },
-                    generation: crate::executor::clone_preparation(&generation, Some(&io))?,
+                    generation: generation.clone_with_io(&io)?,
                     native_snapshot: source_owner.native_snapshot.as_ref()
-                        .map(|value| crate::executor::clone_preparation(value, Some(&io))).transpose()?,
+                        .map(|value| crate::executor::stock_value_copy(value, Some(&io))).transpose()?,
                 };
                 Some(owner.authorize_project_source_with_native_work(context.task(), issuer, policy.as_ref(),
                     arguments.source, context.operation_id(), &snapshot,
@@ -1413,7 +1382,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native child claims changed after immutable source choice" });
         }
         let checkpoint = match original {
-            Some(original) => Some(crate::executor::clone_preparation(&original.source_checkpoint, Some(&io))?),
+            Some(original) => Some(super::fork_preparer_io::clone_file(&original.source_checkpoint, Some(&io))?),
             None => {
                 let observed = context.observe_staged_file_once_with_native_work(
                     checkpoint_operation(context.operation_id()), work,
@@ -1432,7 +1401,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 };
                 let capture = SourceCheckpoint {
                     snapshot: pinned.0.reducer().snapshot_native(1, work)?,
-                    request, caller: caller.task, arguments: crate::executor::clone_preparation(arguments, Some(&io))?,
+                    request, caller: caller.task, arguments: ForkToolArguments { id: arguments.id, msg: super::fork_preparer_io::clone_text(&arguments.msg, Some(&io))?, source: arguments.source },
                 };
                 let bytes_guard;
                 let bytes = io.encode_json(&capture, context.effective_scope().limits().file_bytes, false)?;
@@ -1487,9 +1456,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         io.absorb_native_custody(child.1)?;
         io.absorb_native_custody(claims.1)?;
         io.absorb_native_custody(source.1)?;
-        let child_message_pointer = crate::executor::clone_preparation(&allocation.child_message_pointer, Some(&io))?;
-        let child_message_file_pointer = crate::executor::clone_preparation(&allocation.child_message_file_pointer, Some(&io))?;
-        let input_files = crate::executor::clone_preparation(&allocation.input_files, Some(&io))?;
+        let child_message_pointer = super::fork_preparer_io::clone_text(&allocation.child_message_pointer, Some(&io))?;
+        let child_message_file_pointer = allocation.child_message_file_pointer.as_deref().map(|value| super::fork_preparer_io::clone_text(value, Some(&io))).transpose()?;
+        let mut input_files = Vec::new();
+        for file in &allocation.input_files {
+            let file = super::fork_preparer_io::clone_file(file, Some(&io))?;
+            crate::executor::stock_vec_push(&mut input_files, file, Some(&io))?;
+        }
         let retained = io.owned_bytes()?;
         Ok((ForkBinding {
             source: source.0, source_checkpoint, child: claims.0.0, child_message_pointer,
@@ -1499,7 +1472,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     async fn native_preparation_source(
-        &self, context: &Arc<crate::NativeTaskContext>, token: &TaskResourcePreparation,
+        &self, context: &Arc<crate::runtime::NativeTaskContext>, token: &TaskResourcePreparation,
         cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
         reconciliation_only: bool,
     ) -> Result<(RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)> {
@@ -1549,7 +1522,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native preparation changed its retained sealed Project source" });
         }
         let restored = if let Some(checkpoint) = &preparation.source_checkpoint {
-            let retained = context.read_file_with_native_work(checkpoint, work).await?;
+            let retained = context.context().read_file_with_native_work(checkpoint, work).await?;
             let capture = io.decode_preparation::<SourceCheckpoint>(&retained)?.into_retained();
             if capture.request != request || capture.caller != caller_task {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
@@ -1655,7 +1628,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn preparation_with_native_work<'a>(&'a self, context: &'a Arc<crate::NativeTaskContext>,
+    fn preparation_with_native_work<'a>(&'a self, context: &'a Arc<crate::runtime::NativeTaskContext>,
         token: &'a TaskResourcePreparation, cancellation: &'a CancellationToken,
         work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
@@ -1664,7 +1637,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 
     #[cfg(not(target_arch = "wasm32"))]
     fn preparation_for_reconciliation_with_native_work<'a>(
-        &'a self, context: &'a Arc<crate::NativeTaskContext>,
+        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>,
         token: &'a TaskResourcePreparation, cancellation: &'a CancellationToken,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
@@ -1701,9 +1674,6 @@ fn verifier(binding: &ConfiguredRecursiveAuthorityBinding) -> Result<AuthorityVe
 }
 
 fn allocation_digest(allocation: &ConfiguredRecursiveFork, child: &TaskAdmissionRecord, scope: &Scope) -> Result<[u8; 32]> {
-    // Creation proofs are bound later to the engine's actual preparation
-    // identity. All independently selected admission/reader claims are fixed
-    // here, without hashing signed token bytes or random mint metadata.
     let mut admission = child.clone();
     admission.resource_proofs.clear();
     crate::contract::canonical_json_digest(&allocation_descriptor(allocation, &admission, scope))
@@ -1734,7 +1704,7 @@ fn allocation_digest_with_native_work(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<[u8; 32]> {
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-    let mut admission = crate::executor::clone_preparation(child, Some(&io))?;
+    let (mut admission, _admission_hold) = child.clone_with_native_work(work)?;
     admission.resource_proofs.clear();
     let mut history = io.history_io();
     let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);

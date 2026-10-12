@@ -64,10 +64,8 @@ export function decodeAggregateKind(value: number): AggregateKind {
   return decoded;
 }
 
-const collectAllPolicy = Object.freeze({ kind: "collect-all" } as const);
-const cancelOnFailurePolicy = Object.freeze({ kind: "cancel-on-failure" } as const);
 /** Stable object values retained by the existing GroupPolicies API. */
 export const groupPolicies = Object.freeze({
-  collectAll: collectAllPolicy,
-  cancelOnFailure: cancelOnFailurePolicy,
+  collectAll: Object.freeze({ kind: "collect-all" } as const),
+  cancelOnFailure: Object.freeze({ kind: "cancel-on-failure" } as const),
 });

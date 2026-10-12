@@ -1,9 +1,4 @@
 //! Optional persistent task composition using the existing runtime authorities.
-//!
-//! Admitted absolute deadlines use the original owner's injected clock on both
-//! native and browser workers. Expiry cancels publication authority, not unknown
-//! provider effects: the exact lease and started intents survive for explicit,
-//! bounded `reconcile_task` observation through the ordinary command executors.
 
 use super::{
     FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
@@ -22,7 +17,7 @@ use crate::{
     model::{Model, ModelProvider},
     runtime::{
         AgentHarness, ContentBindings, DurableTaskHost, InteractionRouter, ResumableTaskSession,
-        RuntimeScope, TaskAdmissionRecord, TaskContext, TaskRegistry, TaskRunLimits, ToolPolicy,
+        OwnedTaskMailbox, RuntimeScope, TaskAdmissionRecord, TaskContext, TaskRegistry, TaskRunLimits, ToolPolicy,
     },
     scheduler::{LeaseFence, SessionLimits},
     tool::{ToolDefinition, ToolRegistry},
@@ -45,10 +40,7 @@ mod native_mailbox;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
-/// Trusted command adapter. Implementations must dispatch/reconcile each stable
-/// command identity through the existing journaled provider APIs. A ready result
-/// certifies that no uncertain dispatch remains; pending retains durable wait
-/// state rather than a future. This trait does not provide an effects ledger.
+/// Trusted command adapter.
 pub trait TaskCommandHost: acyclic_stream::ProviderPlatform {
     /// Executes or reconciles a retained command under the exact task lease.
     fn execute<'a>(
@@ -144,8 +136,7 @@ enum CommandDispatch {
     Indeterminate,
 }
 
-/// Resume hint for one finite coordinator discovery sweep. It conveys no
-/// execution authority and can be serialized by the caller across restarts.
+/// Resume hint for one finite coordinator discovery sweep.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
@@ -176,9 +167,7 @@ pub struct TaskWakePage {
 pub enum TaskWorkerAttempt {
     /// Normal worker progress, including explicit yielded/reconciling leases.
     Progress(TaskWorkerOutcome),
-    /// Admission observation or execution failed. This exact lease is a resume
-    /// attempt, not proof of ownership or provider quiescence. Resumption checks
-    /// the retained coordinator reservation before dispatch.
+    /// Admission observation or execution failed.
     Unresolved {
         /// Exact attempted or retained lease.
         lease: crate::distributed::WorkLease,
@@ -256,9 +245,7 @@ impl WorkerContext {
     }
 }
 
-/// Composes caller-owned persistent providers without creating another scheduler
-/// or registry. Callers create/reopen the private volume before opening this
-/// composition. Persistence and atomicity are properties of those providers.
+/// Composes caller-owned persistent providers without creating another scheduler or registry.
 pub struct FilesystemTaskRuntime<P, A, O> {
     stream: StreamClient<P>,
     host: Arc<CoordinatorTaskHost<P>>,
@@ -283,57 +270,22 @@ struct TaskInteractionOwner {
     volume: VolumeRef,
 }
 
-enum TaskMailboxOwner<P: StreamProvider> {
-    Ordinary(crate::durable_host::TaskJournalOwner<P>),
-    #[cfg(not(target_arch = "wasm32"))]
-    Native(Arc<crate::durable_host::TaskJournalOwner<P>>),
-}
-
-impl<P: StreamProvider> TaskMailboxOwner<P> {
-    fn borrowed(&self) -> &crate::durable_host::TaskJournalOwner<P> {
-        match self {
-            Self::Ordinary(owner) => owner,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Native(owner) => owner,
-        }
-    }
-}
-
 struct TaskJournalMailbox<P: StreamProvider> {
     host: Arc<CoordinatorTaskHost<P>>,
-    owner: TaskMailboxOwner<P>,
-    original_received_copy_read_volume: VolumeRef,
+    owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
     fn validate_scope(&self, scope: &RuntimeScope) -> Result<()> {
-        self.owner.borrowed().require_mail_scope(scope)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn original_received_copy_read_volume(&self) -> Option<&VolumeRef> {
-        Some(&self.original_received_copy_read_volume)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn verify_read_access_with_native_work<'a>(
-        &'a self, scope: &'a RuntimeScope, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        native_mailbox::verify_read_access(self, scope, work)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_received_for_model_with_native_work<'a>(
-        &'a self, scope: &'a RuntimeScope, volume: &'a VolumeRef,
-        model: OperationId, receive: OperationId,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (acyclic_stream::OwnedBytes, crate::runtime::ReceivedCopyReadWitness<'a>)>> {
-        native_mailbox::read_received_for_model(self, scope, volume, model, receive, work)
+        self.owner.as_ref().require_mail_scope(scope)
     }
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
-        self.owner.borrowed().task_binding()
+        self.owner.as_ref().task_binding()
     }
     fn matches_task_binding(&self, task: TaskId, fence: &LeaseFence) -> bool {
-        self.owner.borrowed().matches_task_binding(task, fence)
+        self.owner.as_ref().matches_task_binding(task, fence)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn validate_scope_with_native_work(&self, scope: &RuntimeScope, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
@@ -342,7 +294,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
                 code: crate::wire::ErrorCode::Unauthorized, reason: "mailbox metadata differs from original work",
             });
         }
-        self.owner.borrowed().require_mail_scope_with_native_work(scope, work)
+        self.owner.as_ref().require_mail_scope_with_native_work(scope, work)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn send_with_native_work<'a>(
@@ -369,16 +321,16 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         &'a self, recipient: TaskId, operation: OperationId, payload: crate::conversation::FileRef,
     ) -> BoxFuture<'a, Result<crate::durable_host::MailSendAck>> {
         Box::pin(async move {
-            let (task, fence) = self.owner.borrowed().task_binding();
+            let (task, fence) = self.owner.as_ref().task_binding();
             self.host.send_owned(task, fence.clone(), recipient, operation, payload).await
         })
     }
     fn inbox<'a>(&'a self, after: u64, maximum: usize) -> BoxFuture<'a, Result<Vec<crate::scheduler::InboxItem>>> {
         Box::pin(async move {
-            self.owner.borrowed().verify(true).await?;
-            let (task, _) = self.owner.borrowed().task_binding();
+            self.owner.as_ref().verify(true, &mut None).await?;
+            let (task, _) = self.owner.as_ref().task_binding();
             let items = self.host.inbox(task, after, maximum).await?;
-            self.owner.borrowed().verify(true).await?;
+            self.owner.as_ref().verify(true, &mut None).await?;
             Ok(items)
         })
     }
@@ -386,7 +338,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         &'a self, receive_operation: OperationId, item: &'a crate::scheduler::InboxItem,
     ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
-            let (task, fence) = self.owner.borrowed().task_binding();
+            let (task, fence) = self.owner.as_ref().task_binding();
             self.host.read_received_mail_owned(task, fence.clone(), receive_operation, item).await
         })
     }
@@ -434,13 +386,9 @@ impl InteractionRouter for TaskJournalInteractions {
         request_custody: acyclic_fs::NativeAllocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>> {
-        struct PaidRequest {
-            value: Interaction,
-            custody: acyclic_fs::NativeAllocation,
-        }
-        let paid = PaidRequest { value: interaction, custody: request_custody };
+        let paid = (interaction, request_custody);
         self.supports_native_interactions(work)?;
-        if !paid.custody.matches_work(work) {
+        if !paid.1.matches_work(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "interaction request differs from original work",
@@ -451,7 +399,7 @@ impl InteractionRouter for TaskJournalInteractions {
             let id = crate::durable_host::task_interaction_id_with_native_work(
                 self.task, operation_id, work,
             )?;
-            self.journal.open_interaction_with_native_work(id, &paid.value, work)?.await?;
+            self.journal.open_interaction_with_native_work(id, &paid.0, work)?.await?;
             let (outcome, custody) = self.journal.interaction_outcome_with_native_work(id, work)?.await?;
             Ok((outcome.unwrap_or(InteractionOutcome::Indeterminate { operation_id }), custody))
         })
@@ -465,7 +413,6 @@ where
     O: AsyncObjectStore + 'static,
 {
     /// Uses one Stream provider for admission, accounting and both journals.
-    /// Root admission always includes immutable session ceilings atomically.
     #[allow(
         clippy::too_many_arguments,
         reason = "explicit existing provider and authority boundaries"
@@ -541,9 +488,7 @@ where
         .await
     }
 
-    /// Composes one exact policy into the existing task host, runtime and stock
-    /// executor. The policy identity is retained at admission and must match
-    /// after reopening. Approval decisions still need an interaction binding.
+    /// Composes one exact policy into the existing task host, runtime and stock executor.
     #[allow(
         clippy::too_many_arguments,
         reason = "explicit existing provider and authority boundaries"
@@ -571,8 +516,7 @@ where
         ).await
     }
 
-    /// Composes a fixed set of trusted resource creation verifiers into the
-    /// ordinary owner before it is shared. Proof refs alone never install access.
+    /// Composes a fixed set of trusted resource creation verifiers into the ordinary owner before it is shared.
     #[allow(
         clippy::too_many_arguments,
         reason = "explicit existing provider, policy, clock and authority boundaries"
@@ -629,7 +573,7 @@ where
             host = host.with_policy(policy.clone())?;
         }
         let host = Arc::new(host);
-        let harness = crate::runtime::HarnessBuilder {
+        let harness = crate::runtime::Bindings {
             tasks,
             tools: tools.clone(),
             resumable_tools,
@@ -638,7 +582,7 @@ where
             durable_host: Some(host.clone()),
             content: Some(ContentBindings { reader, writer: None }),
             policy: policy.clone(),
-            ..crate::runtime::HarnessBuilder::local()
+            ..crate::runtime::Bindings::local()
         }.build()?;
         Self::from_host(
             stream, harness, host, filesystem, volume, verifier, signed, tools,
@@ -646,8 +590,7 @@ where
         )
     }
 
-    /// Installs the same configured recursive source used by registered default
-    /// tools. Preparation dispatch resolves its exact original request per task.
+    /// Installs the same configured recursive source used by registered default tools.
     #[must_use]
     pub fn with_recursive_source(
         mut self,
@@ -664,7 +607,6 @@ where
     }
 
     /// Opens the same stock composition using its original native producers.
-    /// Configuration remains borrowed until its paid SDK copies are installed.
     #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::too_many_arguments, reason = "the original explicit stock configuration plus native work")]
     pub async fn open_with_creation_providers_with_native_work(
@@ -722,8 +664,6 @@ where
     }
 
     /// Attaches stock commands to the same already-configured host and harness.
-    /// This does not issue task authority; native contexts still require the
-    /// current original owner and fence through `task_context_with_native_work`.
     #[allow(clippy::too_many_arguments, reason = "the original explicit configured provider and authority boundaries")]
     pub fn from_host(
         stream: StreamClient<P>, harness: Arc<AgentHarness>,
@@ -781,21 +721,6 @@ where
         })
     }
 
-    #[must_use]
-    pub fn with_recursive_source(
-        mut self,
-        source: Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>,
-    ) -> Self {
-        self.recursive_source = Some(source);
-        self
-    }
-
-    pub(super) fn recursive_source(
-        &self,
-    ) -> Option<&Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>> {
-        self.recursive_source.as_ref()
-    }
-
     #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(crate) fn original_lease_fence_with_io(
         lease: &crate::distributed::WorkLease, io: &super::PreparationIo,
@@ -805,8 +730,6 @@ where
     }
 
     /// Binds the existing conversation owner for task approval/question tickets.
-    /// Each dispatch uses its admitted task journal and exact lease; this scope
-    /// permits request publication and conveys no participant response rights.
     pub fn with_interaction_owner(
         mut self,
         verifier: AuthorityVerifier,
@@ -958,8 +881,7 @@ where
         Ok(ready)
     }
 
-    /// Inspects retained model/tool artifacts without constructing an executor
-    /// or granting a passive task a lease. Wake publication rechecks suspension.
+    /// Inspects retained model/tool artifacts without constructing an executor or granting a passive task a lease.
     #[allow(
         clippy::too_many_lines,
         reason = "one read-only readiness proof keeps claims, retained request and tool settlement checks in order"
@@ -1009,7 +931,7 @@ where
         let mut latest = None;
         while let Some(page) = replay.next_page(&journal).await? {
             self.host
-                .verify_model_history(task, operation, &page)
+                .verify_model_history(task, operation, page.iter(), &mut None)
                 .await?;
             for record in page {
                 if let ExecutionEvent::ModelStarted {
@@ -1343,8 +1265,8 @@ where
             })
     }
 
-    pub(super) fn tool_registry(&self) -> ToolRegistry {
-        self.tools.clone()
+    pub(super) fn tool_registry(&self) -> &ToolRegistry {
+        &self.tools
     }
 
     pub(super) async fn execution_journal(
@@ -1360,49 +1282,30 @@ where
         ))
     }
 
-    /// Constructs the ordinary retained scope/parent context with the exact
-    /// current mailbox owner token. Unbound context constructors cannot send.
+    /// Constructs the ordinary retained scope/parent context with the exact current mailbox owner token.
     pub async fn task_context(&self, task: TaskId, fence: LeaseFence) -> Result<TaskContext> {
         let owner = self.host.journal_owner(task, fence).await?;
         let context = self.harness.durable_context(
             task, OperationId::from_bytes(task.into_bytes()),
         ).await?;
         context.with_owned_mailbox(task, Arc::new(TaskJournalMailbox {
-            host: Arc::clone(&self.host), owner: TaskMailboxOwner::Ordinary(owner),
-            original_received_copy_read_volume: self.volume.clone(),
+            host: Arc::clone(&self.host), owner: Arc::new(owner),
             #[cfg(not(target_arch = "wasm32"))]
             native_custody: None,
         }))
     }
 
     /// Issues the stock runtime's genuine current-owner native task context.
-    /// Funding metadata does not grant capabilities or replace the caller's fence.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn task_context_with_native_work(
         &self, task: TaskId, fence: &LeaseFence, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<crate::NativeTaskContext>> {
+    ) -> Result<Arc<crate::runtime::NativeTaskContext>> {
         self.task_context_for_original_owner_with_native_work(task, fence, false, work).await
-    }
-
-    /// Observes the original readonly reservation and issues its actual READ
-    /// context without claiming a lease or creating a dispatch mailbox.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn readonly_task_context_with_native_work(
-        &self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Arc<crate::durable_host::TaskJournalOwner<P>>, Arc<crate::NativeTaskContext>)> {
-        let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?
-            .into_native_shared(work)?;
-        let mailbox = self.task_mailbox_with_native_work(Arc::clone(&owner), work)?;
-        let (context, custody) = self.harness.durable_context_for_read_with_native_work(
-            task, OperationId::from_bytes(task.into_bytes()), mailbox, work,
-        ).await?;
-        let context = context.into_native_shared(custody, work)?;
-        Ok((owner, context))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn readonly_fork_preparation_with_native_work(
-        &self, task: TaskId, query: &Arc<crate::NativeTaskContext>,
+        &self, task: TaskId, query: &Arc<crate::runtime::NativeTaskContext>,
         admitted: &crate::resource_preparation::ResourcePreparationRequest,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<Arc<crate::resource_preparation::TaskResourcePreparation>>> {
@@ -1418,7 +1321,7 @@ where
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "readonly fork request differs from its original admission" });
         }
-        let claim = self.filesystem.observe_original_fork_allocation_claim_with_native_work(
+        let claim = self.filesystem.fork_allocation(
             &witness, query, &original.0, &self.volume, work,
         )?.await?;
         let Some(claim) = claim else { return Ok(None); };
@@ -1443,12 +1346,10 @@ where
         let io = super::PreparationIo::from_native_work(work)?;
         let bytes = std::mem::size_of::<TaskJournalMailbox<P>>() as u64;
         io.retain_owned(bytes)?;
-        let original_received_copy_read_volume = self.volume.clone_with_io(Some(&io))?;
         io.allocation_attempt(bytes)?;
         let custody = io.take_native_custody(io.owned_bytes()?)?;
         Ok(Arc::new(TaskJournalMailbox {
-            host: Arc::clone(&self.host), owner: TaskMailboxOwner::Native(owner),
-            original_received_copy_read_volume,
+            host: Arc::clone(&self.host), owner,
             native_custody: Some(custody),
         }))
     }
@@ -1456,7 +1357,7 @@ where
     async fn task_context_for_original_owner_with_native_work(
         &self, task: TaskId, fence: &LeaseFence, allow_settlement: bool,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<crate::NativeTaskContext>> {
+    ) -> Result<Arc<crate::runtime::NativeTaskContext>> {
         let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
         owner.verify_with_native_work(allow_settlement, work).await?;
         let owner = owner.into_native_shared(work)?;
@@ -1474,8 +1375,7 @@ where
         context.into_native_shared(custody, work)
     }
 
-    /// Opens the original owner-fenced journal and returns its exact task/turn
-    /// namespace. Funding does not grant access or replace the current fence.
+    /// Opens the original owner-fenced journal and returns its exact task/turn namespace.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn execution_journal_with_native_work(
         &self,
@@ -1504,7 +1404,6 @@ where
     }
 
     /// Opens the protected original readonly journal for native witnesses.
-    /// Its owner cannot claim, dispatch or append fresh execution work.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn readonly_execution_journal_with_native_work(
         &self, task: TaskId, turn: OperationId, work: &acyclic_fs::NativeMaterializationWork,
@@ -1545,8 +1444,7 @@ where
         )
     }
 
-    /// Opens the canonical tool-effect workflow under the original caller
-    /// reservation. This does not acquire a replacement fence or root scope.
+    /// Opens the canonical tool-effect workflow under the original caller reservation.
     pub async fn workflow_journal_for_tool(
         &self,
         context: &crate::runtime::ToolContext,
@@ -1614,8 +1512,7 @@ where
         )?.into_native_shared(work)
     }
 
-    /// Observes the original workflow under its protected readonly owner,
-    /// including terminal records, without claiming a new lease.
+    /// Observes the original workflow under its protected readonly owner, including terminal records, without claiming a new lease.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn readonly_workflow_journal_with_native_work(
         &self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
@@ -1638,8 +1535,7 @@ where
         )
     }
 
-    /// Reopens the admitted registered task and its bound workflow without
-    /// requiring a typed definition at the worker boundary.
+    /// Reopens the admitted registered task and its bound workflow without requiring a typed definition at the worker boundary.
     pub async fn open_task(&self, task: TaskId, fence: LeaseFence) -> Result<ResumableTaskSession> {
         let journal = self.workflow_journal(task, fence.clone()).await?;
         self.harness
@@ -1668,16 +1564,7 @@ where
         ).await
     }
 
-    /// Performs one bounded discovery page followed by at most one owner-scoped
-    /// admission and worker turn through the trusted command adapter. Allowances are
-    /// checked before publication. Resource accounting uses the existing
-    /// coordinator; discovery/refresh costs retain their documented limits.
-    ///
-    /// Carry the wake cursor between ticks and repeat completed sweeps later.
-    /// Retain yielded, reconciling or unresolved leases and call `resume_task`
-    /// explicitly; another tick never rediscovers an active lease or assumes
-    /// that its provider stopped. Errors after an attempted admission return
-    /// that exact attempt in `work` rather than discarding its identity.
+    /// Performs one bounded discovery page followed by at most one owner-scoped admission and worker turn through the trusted command adapter.
     pub async fn worker_tick(
         &self,
         worker: &crate::distributed::Worker,
@@ -1704,9 +1591,7 @@ where
         Ok(TaskWorkerTick { wake, work })
     }
 
-    /// Polls and claims only the original admitted task, then uses the same
-    /// fenced worker execution path. An active uncertain lease must instead be
-    /// reconciled and supplied to `resume_task`; this never guesses ownership.
+    /// Polls and claims only the original admitted task, then uses the same fenced worker execution path.
     pub async fn run_operation(
         &self,
         worker: &crate::distributed::Worker,
@@ -1715,22 +1600,6 @@ where
         maximum_transitions: u32,
     ) -> Result<Option<TaskWorkerAttempt>> {
         self.run_operation_observed(worker, task, commands, maximum_transitions, None).await
-    }
-
-    /// Runs the original finite worker on its caller's original work ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn run_operation_with_native_work(
-        &self,
-        worker: &crate::distributed::Worker,
-        task: TaskId,
-        commands: &dyn TaskCommandHost,
-        maximum_transitions: u32,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Option<TaskWorkerAttempt>, acyclic_fs::NativeAllocation)> {
-        let io = super::PreparationIo::from_native_work(work)?;
-        let value = self.run_operation_observed(worker, task, commands, maximum_transitions, Some(&io)).await?;
-        let custody = io.take_native_custody(io.owned_bytes()?)?;
-        Ok((value, custody))
     }
 
     async fn run_operation_observed(
@@ -1761,7 +1630,7 @@ where
                 matches!(outcome, Outcome::Succeeded(_) | Outcome::Failed { .. } | Outcome::Cancelled))
         };
         if terminal { return Ok(None); }
-        let pulled = deadline::run_observed(
+        let pulled = deadline::run(
             &self.host, task, None, admission.run_limits.deadline_epoch_ms,
             admission.operation_id,
             async {
@@ -1790,8 +1659,7 @@ where
         })
     }
 
-    /// Resumes an explicit lease; every error returns the original attempt
-    /// so callers can reconcile or verify it without silently releasing capacity.
+    /// Resumes an explicit lease; every error returns the original attempt so callers can reconcile or verify it without silently releasing capacity.
     pub async fn resume_task(
         &self,
         lease: crate::distributed::WorkLease,
@@ -1802,7 +1670,6 @@ where
     }
 
     /// Resumes only this original lease and returns it unchanged on failure.
-    /// Moves the genuine recovered DTO custody with the original lease.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn resume_task_with_native_work(
         &self,
@@ -1839,16 +1706,7 @@ where
         }
     }
 
-    /// Inspects one page of a finite coordinator snapshot and polls its owned
-    /// passive waits. The caller selects a positive allowance. A cursor is only a resume
-    /// hint: each candidate's current owner, wait and command are rechecked.
-    ///
-    /// Pass None to begin a sweep; persist/reuse the returned cursor until None
-    /// marks completion. Start another sweep later to revisit waits that were
-    /// not ready, including timers and inboxes without new coordinator events.
-    /// A failed page may be retried with the same cursor: earlier wake fills are
-    /// idempotent and are not another execution or accounting charge. This page
-    /// bound does not bound the existing resident coordinator's refresh costs.
+    /// Inspects one page of a finite coordinator snapshot and polls its owned passive waits.
     pub async fn poll_task_wake_page(
         &self,
         cursor: Option<TaskWakeCursor>,
@@ -1882,63 +1740,9 @@ where
         })
     }
 
-    /// Reads the exact suspended workflow checkpoint under this runtime's
-    /// protected service scope. No lease is acquired and no machine is advanced.
-    /// This is not a task-level grant to read another task's private state.
-    pub async fn observe_workflow_checkpoint(
-        &self,
-        task: TaskId,
-    ) -> Result<crate::workflow::MachineCheckpoint> {
-        use crate::workflow::WorkflowJournal as _;
-        let slot = self.host.workflow_suspension(task).await?
-            .ok_or_else(|| Error::Conflict("workflow is not passively suspended".into()))?;
-        let admission = self.host.observe_admission(task).await?;
-        let journal = FilesystemWorkflowJournal::new(
-            self.host.workflow_stream(),
-            self.filesystem.clone(),
-            &admission.operation_id.to_string(),
-            self.volume.clone(),
-            self.verifier.clone(),
-            self.signed.clone(),
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
-        )?;
-        let retained = journal.admission().await?
-            .ok_or_else(|| Error::Storage("suspended workflow admission is absent".into()))?;
-        if retained.operation_id != admission.operation_id
-            || retained.request_digest != crate::contract::canonical_json_digest(&admission)?
-            || retained.initial.machine != admission.machine
-        {
-            return Err(Error::Unauthorized("observed workflow differs from admitted task".into()));
-        }
-        let record = journal.observe_transition(slot.revision).await?;
-        if record.next.revision != slot.revision
-            || record.next.machine != admission.machine
-            || !matches!(record.transition.status, MachineStatus::Suspended)
-        {
-            return Err(Error::Conflict("observed checkpoint differs from suspension".into()));
-        }
-        // A concurrently consumed/replaced resume slot cannot be represented as
-        // the same passive checkpoint to the caller.
-        if self.host.workflow_suspension(task).await?.as_ref() != Some(&slot) {
-            return Err(Error::Conflict("workflow suspension changed during observation".into()));
-        }
-        Ok(record.next)
-    }
-
-    /// Polls one durable passive wait and fills its existing authenticated wake
-    /// slot when ready. Callers drive bounded task discovery; this keeps no
-    /// watcher, sleep future, execution reservation or second queue.
+    /// Polls one durable passive wait and fills its existing authenticated wake slot when ready.
     pub async fn poll_task_wake(&self, task: TaskId) -> Result<bool> {
         self.poll_task_wake_observed(task, None).await
-    }
-
-    /// Polls only the original passive wait, using authenticated history custody.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn poll_task_wake_with_native_work(
-        &self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<bool> {
-        let io = super::PreparationIo::from_native_work(work)?;
-        self.poll_task_wake_observed(task, Some(&io)).await
     }
 
     async fn poll_task_wake_observed(
@@ -2053,7 +1857,7 @@ where
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wait payload requires original observer",
             ))?;
             let body = context.context().read_file_with_native_work(&command.payload, work).await?;
-            io.decode_preparation::<Value>(&body.0)?.into_retained()
+            io.decode_preparation::<Value>(&body)?.into_retained()
         } else {
             crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
                 .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?
@@ -2065,8 +1869,6 @@ where
         {
             return Ok(false);
         }
-        // The authenticated publication rechecks the exact revision and phase
-        // after every asynchronous readiness read, including cancellation races.
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| observed::boundary(
@@ -2114,10 +1916,7 @@ where
         }
     }
 
-    /// Drives an already-claimed lease through the registered machine. The first
-    /// trigger is null; wake values and ordered command results are subsequent
-    /// machine inputs. Commands use `{"commands":[{"operation_id":...,"value":...}]}`.
-    /// Callers choose the invocation allowance; suspended work consumes no slot.
+    /// Drives an already-claimed lease through the registered machine.
     pub async fn run_task(
         &self,
         lease: crate::distributed::WorkLease,
@@ -2174,7 +1973,7 @@ where
         let task = TaskId::from_bytes(operation_id.into_bytes());
         let admission = self.admission_observed(task, io).await?;
         let fence = observed::lease_fence(lease, io)?;
-        deadline::run_observed(
+        deadline::run(
             &self.host, task, Some(&fence), admission.run_limits.deadline_epoch_ms,
             operation_id, self.run_task_owned(lease, &fence, commands, maximum_transitions, io), io, |_| false,
         ).await
@@ -2256,8 +2055,6 @@ where
             };
             #[cfg(target_arch = "wasm32")]
             let mut transition = session.latest_transition().await?;
-            // Check the allowance before provider work whose result requires a
-            // further step. Terminal transitions may still settle at the bound.
             if advanced == maximum_transitions
                 && transition.as_ref().is_none_or(|value| {
                     matches!(value.status, MachineStatus::Suspended) && !value.commands.is_empty()
@@ -2321,8 +2118,6 @@ where
             if advanced == maximum_transitions {
                 return Ok(WorkerTurn::Yielded);
             }
-            // The checkpoint itself is the durable consumption marker. Recovery
-            // retries this identity rather than creating another input ledger.
             if let Some(io) = io {
                 let hashed = acyclic_fs::WorkCounters {
                     bytes_hashed: b"harness/v2/task-worker-step\0".len() as u64 + 24,
@@ -2342,9 +2137,7 @@ where
                 custody: Some(primary), additional_custody, ..
             }) = command_input.as_mut() {
                 for incoming in additional_custody {
-                    primary.absorb(incoming).map_err(|cause| Error::NativeWork {
-                        cause, custody: None,
-                    })?;
+                    primary.absorb(incoming).map_err(Error::from)?;
                 }
                 let key = native_step_key_with_custody(revision, primary)?;
                 Some(key)
@@ -2360,8 +2153,6 @@ where
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "native input has no original command custody",
                 })?;
-                // The returned tuple drops transition data before its guard;
-                // storage has consumed both before advancing the worker loop.
                 session.step_with_native_work(
                     OperationId::from_bytes(bytes), key, input, custody,
                 ).await?;
@@ -2455,7 +2246,7 @@ where
                     });
                 }
                 let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
-                let payload = io.decode_preparation::<Value>(&body.0)?.into_retained();
+                let payload = io.decode_preparation::<Value>(&body)?.into_retained();
                 drop(body);
                 commands.execute_with_native_work(
                     Arc::clone(shared), observed::clone_fence(fence, Some(io))?,
@@ -2546,7 +2337,7 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn stock_executor_with_native_work(
         &self, task: TaskId, fence: &LeaseFence, operation: OperationId,
-        context: &Arc<crate::NativeTaskContext>, model: &Model,
+        context: &Arc<crate::runtime::NativeTaskContext>, model: &Model,
         provider: Arc<dyn ModelProvider>, pipeline: &ContextPipeline,
         journal: &Arc<FilesystemExecutionJournal<P, A, O>>,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -2572,9 +2363,7 @@ where
         Ok(executor)
     }
 
-    /// Constructs stock execution with mandatory shared accounting, retained
-    /// task scope and a journal fenced by that same host. The logical turn is
-    /// namespaced by task identity, so another task cannot alias its journal.
+    /// Constructs stock execution with mandatory shared accounting, retained task scope and a journal fenced by that same host.
     pub async fn stock_execution(
         &self,
         task: TaskId,
@@ -2690,7 +2479,7 @@ pub(super) fn execution_operation_with_native_work(
     work.charge(acyclic_fs::WorkCounters {
         bytes_hashed: b"harness/v2/task-execution\0".len() as u64 + 32,
         ..Default::default()
-    }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    }).map_err(Error::from)?;
     Ok(execution_operation(task, turn))
 }
 
@@ -2704,8 +2493,7 @@ pub fn execution_operation(task: TaskId, turn: OperationId) -> OperationId {
     OperationId::from_bytes(bytes)
 }
 
-/// A stock executor and its mandatory task-owned journal. No caller-selected
-/// journal or accounting override is accepted by this execution entry point.
+/// A stock executor and its mandatory task-owned journal.
 pub struct FilesystemTaskExecution<P, A, O> {
     operation_id: OperationId,
     executor: StockExecutor,
@@ -2754,14 +2542,11 @@ where
             Some(&self.fence),
             self.run_limits.deadline_epoch_ms,
             self.operation_id,
-            self.executor.execute_progress(input, &self.journal),
-        )
+            self.executor.execute_progress(input, &self.journal), None, |_| false)
         .await
     }
 
     /// Observes retained model/tool attempts without starting another step.
-    /// Consumes this composition so the existing executor changes mode in place.
-    /// `None` means the observation allowance elapsed; effects remain uncertain.
     pub async fn reconcile(
         self,
         input: TurnInput,

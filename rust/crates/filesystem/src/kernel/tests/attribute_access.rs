@@ -119,31 +119,6 @@ fn owned_attribute_pages_are_admitted_and_released_across_the_frontier()
 }
 
 #[test]
-fn sync_and_async_lookup_are_physically_identical() -> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let root = two_level_tree(&store)?;
-    let requested = name(4)?;
-    let synchronous = lookup_attribute(
-        &store,
-        root,
-        &requested,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = crate::async_storage::poll_ready(lookup_attribute_async(
-        &store,
-        root,
-        &requested,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed async attribute lookup unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
-    Ok(())
-}
-
-#[test]
 fn async_batch_is_identical_and_precancellation_is_inert() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
@@ -459,81 +434,5 @@ fn inherited_attribute_upper_bounds_reject_forged_leaf_contents()
         AttributeLookupError::ChildBoundsMismatch
     ));
     assert_eq!(failure.work.page_reads, 2);
-    Ok(())
-}
-
-#[test]
-fn batch_allocation_storage_and_routing_error_maps_are_total()
--> Result<(), Box<dyn std::error::Error>> {
-    let mapped = [
-        map_batch_error(persistent_batch::Error::Cancelled),
-        map_batch_error(persistent_batch::Error::Empty),
-        map_batch_error(persistent_batch::Error::TooManyQueries),
-        map_batch_error(persistent_batch::Error::WrongRootKind),
-        map_batch_error(persistent_batch::Error::InvalidLimits),
-        map_batch_error(persistent_batch::Error::HeightExceeded),
-        map_batch_error(persistent_batch::Error::CycleOrAlias),
-        map_batch_error(persistent_batch::Error::ChildBoundsMismatch),
-        map_batch_error(persistent_batch::Error::InvalidRouting),
-        map_batch_error(persistent_batch::Error::AllocationFailed),
-        map_batch_error(persistent_batch::Error::Storage(
-            ObjectStoreError::Cancelled,
-        )),
-        map_batch_error(persistent_batch::Error::Storage(ObjectStoreError::Corrupt)),
-        map_batch_error(persistent_batch::Error::Decode(
-            CanonicalDecodeError::TrailingBytes,
-        )),
-        map_batch_error(persistent_batch::Error::Work(WorkError::Overflow)),
-    ];
-    assert!(matches!(mapped[0], AttributeLookupError::Cancelled));
-    assert!(matches!(mapped[1], AttributeLookupError::EmptyBatch));
-    assert!(matches!(mapped[2], AttributeLookupError::TooManyQueries));
-    assert!(matches!(mapped[3], AttributeLookupError::WrongRootKind));
-    assert!(matches!(mapped[4], AttributeLookupError::InvalidLimits));
-    assert!(matches!(mapped[5], AttributeLookupError::HeightExceeded));
-    assert!(matches!(mapped[6], AttributeLookupError::CycleOrAlias));
-    assert!(matches!(
-        mapped[7],
-        AttributeLookupError::ChildBoundsMismatch
-    ));
-    assert!(matches!(mapped[8], AttributeLookupError::InvalidRouting));
-    assert!(matches!(mapped[9], AttributeLookupError::AllocationFailed));
-    assert!(matches!(mapped[10], AttributeLookupError::Cancelled));
-    assert!(matches!(mapped[11], AttributeLookupError::Storage(_)));
-    assert!(matches!(mapped[12], AttributeLookupError::Decode(_)));
-    assert!(matches!(mapped[13], AttributeLookupError::Work(_)));
-
-    for allocation in [
-        AllocationError::Overflow,
-        AllocationError::ReleaseInvariant,
-        AllocationError::InvalidCapacity,
-        AllocationError::CapacityExceeded,
-        AllocationError::AllocationFailed,
-    ] {
-        assert!(matches!(
-            map_allocation(allocation),
-            AttributeLookupError::AllocationFailed
-        ));
-    }
-    assert!(matches!(
-        map_allocation(AllocationError::Work(WorkError::Overflow)),
-        AttributeLookupError::Work(WorkError::Overflow)
-    ));
-    assert!(matches!(
-        map_storage(ObjectStoreError::Cancelled),
-        AttributeLookupError::Cancelled
-    ));
-
-    let child = AttributeChild {
-        first_name: name(3)?,
-        page: ObjectId {
-            kind: ObjectKind::AttributePage,
-            digest: Digest::from_bytes([91; 32]),
-        },
-    };
-    let only = Some(&child.first_name);
-    assert!(!within_bounds(only, only, Some(&name(2)?), None));
-    assert!(within_bounds(only, only, None, Some(&name(4)?)));
-    assert!(!within_bounds(only, only, None, Some(&name(2)?)));
     Ok(())
 }

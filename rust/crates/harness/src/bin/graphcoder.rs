@@ -182,7 +182,6 @@ fn input_lines() -> acyclic_harness::Result<tokio::sync::mpsc::Receiver<acyclic_
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(clippy::too_many_lines, reason = "one bounded input and worker-result presentation loop")]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_harness::{Error, wire, wire_api::current_protocol};
     use std::io::{IsTerminal as _, Write as _};
@@ -304,7 +303,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(clippy::too_many_lines, reason = "one finite terminal command table delegates all semantics to public owners")]
 async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyclic_harness::wire::ReplayCursor,
     #[cfg(feature = "filesystem-local")] parent: &mut Option<acyclic_harness::TaskId>,
     #[cfg(feature = "filesystem-local")] workers: &mut tokio::task::JoinSet<acyclic_harness::Result<String>>,
@@ -714,8 +712,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
                     .and_then(|()| output.flush()).map_err(|error| Error::Storage(error.to_string()))?;
                 native.prompt_command(command, command_operation).await?
             };
-            // Publish the caller-held identity before attempting admission. On
-            // lost acknowledgement, /reconcile observes it without resending.
+            // Publish the caller-held identity before attempting admission.
             writeln!(output, "admission-attempt operation={operation} command-operation={}", command.operation_id)
                 .and_then(|()| output.flush()).map_err(|error| Error::Storage(error.to_string()))?;
             return match native.queue(operation, command, *parent).await? {

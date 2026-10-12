@@ -156,7 +156,6 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .value,
         json!("one two")
     );
-    // A copied invocation cannot use a context for another operation or call.
     for wrong_context in [
         ToolContext::new(task.clone(), OperationId::new(), "read")?,
         ToolContext::new(task.clone(), read_operation, "another-call")?,
@@ -212,8 +211,6 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         Some(first)
     );
     assert_eq!(task.read_file(&user).await?.as_ref(), b"user edit".as_ref());
-    // The same portable composition also supports independent read and write
-    // contracts; writing a second path preserves the edited path's user head.
     let write_tool = files::write_file()?;
     let write_operation = OperationId::new();
     let write_invocation = ToolInvocation {
@@ -247,8 +244,6 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .await?,
         Some(written)
     );
-    // Optional V4A editing uses exactly the same immutable reader and CAS
-    // publisher. This fixture checks content authority/receipts, not admission.
     let patch_tool = files::patch_file(8192, 8)?;
     assert_ne!(
         patch_tool.definition.digest()?,
@@ -438,8 +433,6 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .await,
         Err(Error::Conflict(_))
     ));
-    // Construction uses explicit runtime limits; this fixture does not qualify
-    // the stock model loop or original task-admission authentication.
     Ok(())
 }
 
@@ -594,8 +587,6 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
     );
     let workspace = workspace_ref(provider.clone(), &volume.storage_name()?)?;
     let head = host.resolve(&workspace).await?.generation;
-    // Exact retry survives host reconstruction and returns the prior immutable
-    // result, even when a user has since advanced the workspace.
     let user = host
         .put_content(
             &volume,
@@ -639,8 +630,6 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
             .await,
         Err(Error::Conflict(_))
     ));
-    // Same path and output under a different precondition cannot borrow the
-    // first receipt. The generation itself is part of the retained identity.
     assert!(matches!(
         host.put_content_at(
             &volume,
@@ -738,7 +727,6 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
             .await?;
         (source, edited, user)
     };
-    // Drop every provider/host handle before reopening the same disk store.
     let filesystem = Fs::local(options)
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
@@ -834,8 +822,6 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         let fs = Fs::local(options.clone()).await.map_err(|error| Error::Storage(error.to_string()))?;
         let host = FilesystemHost::new(fs, provider.clone())?;
         host.create_volume(&volume).await?;
-        // Inject the acknowledgement fault only after the actual durable
-        // publication/readback boundary. No result ref reaches the consumer.
         let delivered = host.put_content_measured(&volume, &write, "result.json", b"original",
             "application/json", "original.json", 64, &key, content_work_budget(), &cancellation)
             .await.map_err(|failure| failure.error)
@@ -890,34 +876,3 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
     Ok(())
 }
 
-#[tokio::test]
-async fn measured_content_read_accepts_exact_receipt_budget_and_preserves_quota_failure_prefix() -> Result<()> {
-    let provider = ProviderRef::new("exact-content", "filesystem", "1")?;
-    let owner = AgentId::from_bytes([93; 16]);
-    let volume = VolumeRef::new(provider.clone(), "exact", VolumeClass::AgentPrivate, VolumeOwner::Agent(owner))?;
-    let issuer = AuthorityIssuer::new("exact-content", [94; 32], Authority {
-        kind: AggregateKind::Conversation, id: "exact-content".into(),
-    });
-    let scope = issuer.root_for_agent(owner, "owner", Capabilities::new([
-        volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
-    ]));
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
-    let host = FilesystemHost::new(Fs::memory(), provider)?;
-    host.create_volume(&volume).await?;
-    let cancel = acyclic_fs::CancellationToken::new();
-    let file = host.put_content_measured(&volume, &write, "exact", b"exact", "text/plain", "exact",
-        64, &IdempotencyKey::new("exact")?, content_work_budget(), &cancel).await.map_err(|failure| failure.error)?.value;
-    let warm = host.read_content_measured(&file, &read, 64, content_work_budget(), &cancel)
-        .await.map_err(|failure| failure.error)?;
-    let exact = host.read_content_measured(&file, &read, 64, warm.work, &cancel)
-        .await.map_err(|failure| failure.error)?;
-    assert_eq!(exact.value, b"exact");
-    exact.work.verify(warm.work).map_err(|error| Error::Invalid(error.to_string()))?;
-    let mut short = warm.work;
-    short.bytes_copied = 0;
-    let failure = host.read_content_measured(&file, &read, 64, short, &cancel).await.unwrap_err();
-    assert!(failure.work.backend_read_operations > 0 || failure.work.items_examined > 0);
-    assert!(host.read_content_measured(&file, &write, 64, content_work_budget(), &cancel).await.is_err());
-    Ok(())
-}

@@ -1,8 +1,4 @@
 //! Authenticated restoration of the reducer projection, without transition replay.
-//! Native captures and deep copies use the original physical field producers;
-//! each allocation/copy is fenced at the operation and its actual produced
-//! custody survives the query. Restoration moves original authenticated fields
-//! into live component custody; the private wire is still parsed only once.
 
 use super::{
     Authority, AuthorityVerifier, EffectState, Event, EventReference, ExtensionConfiguration,
@@ -38,9 +34,6 @@ fn canonical_digest_with_work<T: Serialize>(
     Ok(digest)
 }
 
-// A borrowed source-field walk, not JSON sizing or a cloned/encoded tree.
-// Only the closed reducer/snapshot/event and preparation schemas use this witness.
-// Reservations are logical quota custody, never allocator/RSS observations.
 #[derive(Default)]
 struct CloneInventory<'w> {
     bytes: u64,
@@ -49,13 +42,9 @@ struct CloneInventory<'w> {
     depth: u16,
     slots: u64,
     slot_bytes: Option<u64>,
-    // Inspection mode counts actual field/node visits, not clone ownership,
-    // encoded bytes, or an assumed completed string-comparison prefix.
     metadata_only: bool,
 }
 
-// A zero-allocation serde carrier; recover the original owner/native failure
-// below rather than formatting it into a new serde diagnostic.
 #[derive(Debug)]
 struct InventoryError;
 impl std::fmt::Display for InventoryError {
@@ -219,8 +208,6 @@ pub(crate) fn source_inventory<T: Serialize + ?Sized>(source: &T) -> Result<u64>
 }
 
 /// Inspects the closed SDK admission DTOs before their canonical comparison.
-/// No output, clone, or ownership claim is created. String lengths are O(1);
-/// this visitor does not claim that their contents were scanned or encoded.
 pub(crate) fn source_metadata_inspection_with_work<T: Serialize + ?Sized>(
     source: &T, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
@@ -240,9 +227,6 @@ pub(crate) fn source_metadata_inspection_with_work<T: Serialize + ?Sized>(
         None => Err(preparation_inventory_error(work, "closed admission metadata inspection rejected")),
     }
 }
-pub(crate) fn scope_clone_owned_bytes(scope: &super::Scope) -> Result<u64> { source_inventory(scope) }
-pub(crate) fn fork_seed_clone_reservation(seed: &ForkSeed) -> Result<u64> { source_inventory(seed) }
-
 fn preparation_inventory_error(
     work: &Option<&mut dyn HistoryIo>, reason: &'static str,
 ) -> Error {
@@ -328,9 +312,6 @@ pub(crate) fn resource_preparation_owned_bytes(
         if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
         return Ok(bytes);
     }
-    // The request root contains its admission and all optional inline fields.
-    // Existing reachable slots plus the actual preparation proof type close the
-    // collection inventory; four slots per live element cover Vec minimum/growth.
     let slot = CloneInventory::SLOT
         .max(std::mem::size_of::<crate::resource_preparation::ResourcePreparationRequest>() as u64)
         .max(std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>() as u64);
@@ -376,20 +357,6 @@ pub(crate) fn resource_creation_proof_clone_with_custody(
     Ok((copied, retained))
 }
 
-pub(crate) fn event_clone_reservation(event: &Event) -> Result<u64> {
-    source_inventory(event)
-}
-
-pub(crate) fn effect_clone_reservation(effect: &EffectState) -> Result<u64> {
-    source_inventory(effect)
-}
-pub(crate) fn command_clone_reservation(command: &super::Command) -> Result<u64> {
-    // Cover the original transition result and event construction while both
-    // remain live, including their fixed digests and original recorded scope.
-    source_inventory(command)?.checked_mul(2)
-        .ok_or_else(|| Error::Invalid("command clone reservation overflows".into()))
-}
-
 #[cfg(feature = "filesystem")]
 pub(crate) fn resource_creation_clone_reservation(
     request: &crate::resource_preparation::ResourcePreparationRequest,
@@ -406,7 +373,6 @@ pub(crate) fn resource_creation_clone_reservation(
     if let Some(work) = work.as_deref_mut() { work.retain_owned(bytes)?; }
     Ok(bytes)
 }
-
 
 /// Versioned, issuer-authenticated accelerator; Stream events remain authoritative.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -425,8 +391,6 @@ pub struct Snapshot {
     pub state_digest: [u8; 32],
     /// Domain-separated issuer proof over the digest and aggregate identity.
     pub attestation: [u8; 32],
-    // Last: every owned wire/projection buffer is destroyed before its issuer's
-    // native reservation. This is not serialized or part of state equality.
     #[serde(skip)]
     native_custody: SnapshotCustody,
 }
@@ -447,8 +411,6 @@ impl PartialEq for SnapshotCustody {
     fn eq(&self, _: &Self) -> bool { true }
 }
 
-// Keep configuration and fork maps as ordered entry arrays: their structured
-// keys cannot be represented by JSON object keys. UUID-keyed maps remain maps.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Projection<C = ConversationState> {
@@ -468,14 +430,11 @@ struct Projection<C = ConversationState> {
     conversation: C,
     latest_context_checkpoint: Option<FileRef>,
     interactions: BTreeMap<uuid::Uuid, (InteractionTicket, Option<InteractionResolution>)>,
-    // Rebuild the retry map from the authenticated cache, without applying
-    // payloads. This avoids storing every retained Event a second time.
     bindings: Vec<(ExtensionDependency, [u8; 32])>,
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn snapshot_map_entry<T>(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {
-    // Logical entry payload only; opaque BTree nodes remain excluded.
     let bytes = std::mem::size_of::<T>() as u64;
     let observer = quota.work().as_deref_mut().expect("snapshot component observer");
     observer.admit_owned(bytes)?;
@@ -571,7 +530,6 @@ fn copy_snapshot_terminal_effects(
     Ok(VecDeque::from(output))
 }
 
-
 /// The original snapshot DTO, deferring only its observed conversation rebuild.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -585,7 +543,6 @@ pub(crate) struct SnapshotWire {
     attestation: [u8; 32],
 }
 
-// Deferring reconstruction removes caches; it never enlarges the guarded DTO.
 const _: () = {
     assert!(std::mem::size_of::<SnapshotWire>() <= std::mem::size_of::<Snapshot>());
     assert!(std::mem::size_of::<Projection<crate::conversation::ConversationStateWire>>()
@@ -669,7 +626,7 @@ impl Snapshot {
         } else { 0 };
         let mut quota = crate::wire_codec::CodecQuota::new(work, reservation)?;
         let native_custody = SnapshotCustody::default();
-        let conversation = self.projection.conversation.clone_with_work(quota.work())?;
+        let conversation = self.projection.conversation.copy(quota.work(), None)?.0;
         let copied = Self {
             format_version: self.format_version,
             authority: self.authority.clone(),
@@ -696,7 +653,6 @@ impl Snapshot {
             attestation: self.attestation,
             native_custody,
         };
-        // Legacy HistoryIo keeps its established caller-owned quota policy.
         quota.transfer();
         Ok(copied)
     }
@@ -743,7 +699,7 @@ impl Snapshot {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut copied = Self::empty_intrinsic(self.authority.kind, self.revision, self.projection.lifecycle,
             self.projection.active_extension_revision, self.projection.effects_archived, quota.work())?;
-        let (conversation, retained) = self.projection.conversation.clone_with_work_and_custody(quota.work())?;
+        let (conversation, retained) = self.projection.conversation.copy(quota.work(), None)?;
         copied.projection.conversation = conversation;
         quota.adopt(retained)?;
         copied.authority = super::native_custody::copy_authority(&self.authority, &mut quota)?;
@@ -833,9 +789,7 @@ impl Snapshot {
         Ok(value)
     }
 
-    /// Decodes the original closed wire carrier once on the supplied ledger,
-    /// including conversation cache rebuilding. Custody is intrinsic to the
-    /// returned snapshot; authority is authenticated by `Reducer::restore_native`.
+    /// Decodes the original closed wire carrier once on the supplied ledger, including conversation cache rebuilding.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn decode_with_native_work(
         bytes: &[u8], maximum_bytes: u64,
@@ -871,13 +825,9 @@ impl Snapshot {
                 },
             ).map(Some)
         } else { Ok(None) };
-        // Adoption happens even when the original guard reports a later
-        // error, so every successful prior claim is released by the same RAII.
         custody.adopt(admitted_owned)?;
         let admission = admission?;
         let mut snapshot: Snapshot = if let Some(admission) = admission {
-            // One original Serde parse moves the conversation's wire fields,
-            // then the same rebuild observes its actual original digest work.
             let wire = match Snapshot::decode_admitted_wire(&bytes) {
                 Ok(wire) => wire,
                 Err(source) => {
@@ -898,10 +848,7 @@ impl Snapshot {
                     return Err(Error::Storage(source.to_string()));
                 }
             };
-            let future_cache = admission.conversation_cache_bytes
-                .checked_add(admission.conversation_canonical_scratch_bytes)
-                .ok_or_else(|| Error::Storage("snapshot cache allowance overflows".into()))?;
-            custody.relinquish(future_cache)?;
+            custody.relinquish(admission.1)?;
             let (snapshot, cache_bytes) = wire.into_snapshot_with_work(
                 maximum_bytes, custody.work())?;
             custody.adopt(cache_bytes)?;
@@ -910,8 +857,6 @@ impl Snapshot {
             crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(error.to_string()))?
         };
-        // Transfer the original once-parsed fields' actual reservation to the
-        // snapshot itself; held snapshots outlive this query and reducer prunes.
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         {
             let retained = custody.retained();
@@ -951,8 +896,6 @@ struct ReducerCloneFields<'a> {
 impl Reducer {
 
     fn clone_reservation(&self) -> Result<u64> {
-        // Verifier Strings, canonical events and retry/cache maps are original
-        // owned state. The immutable shared schema Arc is not a deep copy.
         let fields = ReducerCloneFields {
             authority: &self.authority,
             verifier_id: &self.authority_verifier.id,
@@ -985,9 +928,6 @@ impl Reducer {
     ) -> Result<(Snapshot, u64)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
-            // The input event is a query DTO, not the preview cache's independent
-            // physical copy. Release its produced quota only after input/result
-            // data and the preview have physically dropped.
             let mut input_quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let mut preview = self.clone_with_work(input_quota.work())?;
             let (input, retained) = super::native_event_clone_with_custody(event, input_quota.work())?;
@@ -997,8 +937,7 @@ impl Reducer {
             return preview.snapshot_with_event_limit_with_work(maximum_events, input_quota.work());
         }
         let preview_reservation = if work.is_some() {
-            // Legacy observed work preserves its original caller-owned claim.
-            self.clone_reservation()?.checked_add(event_clone_reservation(event)?.checked_mul(3)
+            self.clone_reservation()?.checked_add(source_inventory(event)?.checked_mul(3)
                 .ok_or_else(|| Error::Invalid("publication event clone reservation overflows".into()))?)
                 .ok_or_else(|| Error::Invalid("publication preview reservation overflows".into()))?
         } else { 0 };
@@ -1020,19 +959,15 @@ impl Reducer {
     }
 
     /// Captures issuer-authenticated state for direct projection restoration.
-    /// Closed checkpoint-covered conversation prefixes are represented by their
-    /// authenticated logical cut and digest. Terminal projections still need cold retention.
     pub fn snapshot(&self) -> Result<Snapshot> {
         self.snapshot_with_event_limit(self.events.len())
     }
 
     /// Captures the same authenticated projection with a bounded retry suffix.
-    /// A nonempty projection must retain its head event for canonical binding.
     pub fn snapshot_with_event_limit(&self, maximum_events: usize) -> Result<Snapshot> {
         self.snapshot_with_event_limit_with_work(maximum_events, &mut None)
             .map(|(snapshot, _)| snapshot)
     }
-
 
     /// Captures an independently owned native snapshot on the supplied ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1068,8 +1003,6 @@ impl Reducer {
             return self.snapshot_intrinsic_with_work(maximum_events, work).map(|snapshot| (snapshot, 0));
         }
         let reservation = if work.is_some() {
-            // The original map.clone().into_iter().collect() briefly owns both
-            // map payload and destination vector slots during capture.
             self.clone_reservation()?.checked_mul(2)
                 .ok_or_else(|| Error::Invalid("snapshot clone reservation overflows".into()))?
         } else { 0 };
@@ -1132,8 +1065,8 @@ impl Reducer {
         let mut snapshot = Snapshot::empty_intrinsic(self.authority.kind, self.revision, self.lifecycle,
             self.active_extension_revision, self.effects_archived, quota.work())?;
         let (conversation, retained) = match self.resident_checkpoint_selection() {
-            Some(selection) => self.conversation.checkpointed_suffix_with_work_and_custody(selection, quota.work())?,
-            None => self.conversation.clone_with_work_and_custody(quota.work())?,
+            Some(selection) => self.conversation.checkpointed_suffix(selection, quota.work(), None)?,
+            None => self.conversation.copy(quota.work(), None)?,
         };
         snapshot.projection.conversation = conversation;
         quota.adopt(retained)?;
@@ -1204,8 +1137,8 @@ impl Reducer {
     fn checkpointed_conversation(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<ConversationState> {
         let checkpoint_selection = self.resident_checkpoint_selection();
         match checkpoint_selection {
-            Some(selection) => self.conversation.checkpointed_suffix_with_work(selection, work),
-            None => self.conversation.clone_with_work(work),
+            Some(selection) => self.conversation.checkpointed_suffix(selection, work, None).map(|(state, _)| state),
+            None => self.conversation.copy(work, None).map(|(state, _)| state),
         }
     }
 
@@ -1232,8 +1165,8 @@ impl Reducer {
                 prepared.push((message.sequence, None));
             }
             let mut next = 0;
-            let (replacement, _) = self.conversation.checkpointed_suffix_with_work_and_message_custody(
-                selection, slots.work(), &mut |sequence, produced, work| {
+            let (replacement, _) = self.conversation.checkpointed_suffix(
+                selection, slots.work(), Some(&mut |sequence, produced, work| {
                     while next < prepared.len() && prepared[next].0 < sequence { next += 1; }
                     if next == prepared.len() || prepared[next].0 != sequence {
                         return Err(preparation_inventory_error(work, "conversation copied component identity is invalid"));
@@ -1244,9 +1177,7 @@ impl Reducer {
                         Key::ConversationMessage(sequence), allocation));
                     next += 1;
                     Ok(())
-                })?;
-            // Exact produced claims are staged before replacement. The old
-            // component claims remain installed until original data has dropped.
+                }))?;
             self.conversation = replacement;
             for (sequence, claim) in prepared {
                 if let Some(claim) = claim {
@@ -1257,13 +1188,11 @@ impl Reducer {
             }
             return Ok(());
         }
-        self.conversation = self.conversation.checkpointed_suffix_with_work(selection, work)?;
+        self.conversation = self.conversation.checkpointed_suffix(selection, work, None).map(|(state, _)| state)?;
         Ok(())
     }
 
     /// Restores authenticated state without invoking any historical transition.
-    /// Original registry bindings must still be installed exactly; additional
-    /// bindings may be installed without invalidating the checkpoint.
     pub fn restore(
         snapshot: Snapshot,
         authority_verifier: AuthorityVerifier,
@@ -1310,8 +1239,6 @@ impl Reducer {
         let intrinsic = work.as_deref().is_some_and(|work| work.original_native_work().is_some());
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let intrinsic = false;
-        // The original decoded fields retain their issuing ledger. New map and
-        // retry slots are pre-admitted before any original restore constructor.
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if intrinsic && snapshot.native_custody.allocation.is_none() {
             let required = snapshot.predecoded_native_owned_bytes()?;
@@ -1364,8 +1291,6 @@ impl Reducer {
         let mut allocation = snapshot.native_custody.allocation.take();
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let _retired_vector_backing = if let Some(source) = allocation.as_mut() {
-            // Old A Vec storage overlaps new B map entries. Failure returns the
-            // original claim so it cannot release before the Snapshot data drops.
             match source.split_off(retired_vector_bytes) {
                 Ok(retired) => Some(retired),
                 Err(cause) => return Err(Error::NativeWork { cause, custody: allocation.take() }),
@@ -1417,9 +1342,6 @@ impl Reducer {
 impl Snapshot {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn restoration_metadata_reservation(&self) -> Result<u64> {
-        // Original operation-position entries and Vec-to-map normalization
-        // allocate known inline payload slots under B before construction.
-        // Holder backing and owned keys use their physical producers separately.
         super::native_custody::owned_sum([
             super::native_custody::owned_buffer::<(crate::OperationId, u64)>(self.events.len())?,
             super::native_custody::owned_buffer::<(ExtensionDependency, ExtensionConfiguration)>(
@@ -1483,7 +1405,6 @@ impl Snapshot {
     pub(crate) fn adopt_predecoded_native_custody(
         mut self, allocation: acyclic_fs::NativeAllocation,
     ) -> Result<Self> {
-        // Install first: even a rejected claim must outlive all decoded fields.
         let incoming = allocation;
         if self.native_custody.allocation.is_some() {
             return Err(Error::NativeWork {
@@ -1523,8 +1444,6 @@ impl Snapshot {
                 .and_then(|items| items.checked_mul(CloneInventory::SLOT))
                 .ok_or_else(|| Error::Invalid("snapshot verification slots overflow".into()))?
         } else { 0 };
-        // Original validation sets are temporary source containers, not part of
-        // the restored state; their claim ends only after both sets are dropped.
         let mut scratch = crate::wire_codec::CodecQuota::new(work, scratch_bytes)?;
         if self.format_version != 6 {
             return Err(Error::Unsupported(format!(
@@ -1558,7 +1477,7 @@ impl Snapshot {
         let mut identities = BTreeSet::new();
         let mut previous = None;
         for event in &self.events {
-            verifier.verify_event_with_work(event, scratch.work())?;
+            verifier.verify_event(event, scratch.work())?;
             if event.revision == 0
                 || event.revision > self.revision
                 || previous
@@ -1732,42 +1651,6 @@ mod tests {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn conversation_fixture() -> Result<(Reducer, AuthorityIssuer)> {
-        use crate::conversation::{ConversationMessage, FileDescriptor, MessageKind,
-            VolumeClass, VolumeOwner, VolumeRef};
-        let authority = Authority { kind: AggregateKind::Conversation, id: "snapshot-conversation".into() };
-        let issuer = AuthorityIssuer::new("snapshot-conversation-owner", [24; 32], authority.clone());
-        let mut reducer = Reducer::new(authority, issuer.verifier(), SchemaRegistry::new());
-        let agent = crate::AgentId::from_bytes([9; 16]);
-        let content = FileRef::new(
-            VolumeRef::new(crate::resources::ProviderRef::new("test", "filesystem", "2")?,
-                "snapshot-content", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?,
-            "conversation/input.json", "generation-1",
-            FileDescriptor::from_bytes(br#"{"text":"owned conversation clone input"}"#, "application/json")?,
-            "input.json",
-        )?;
-        let actions = [
-            super::super::Action::BindConversation { agent },
-            super::super::Action::AppendConversationMessage { message: Box::new(ConversationMessage {
-                id: uuid::Uuid::from_bytes([10; 16]), sequence: 1, kind: MessageKind::User,
-                content, attachments: Vec::new().into(), reply_to: None,
-                tool_call_id: None, extensions: BTreeMap::new(),
-            }) },
-        ];
-        for (index, action) in actions.into_iter().enumerate() {
-            reducer.apply(super::super::Command {
-                operation_id: crate::OperationId::from_bytes([index as u8 + 11; 16]),
-                idempotency_key: crate::IdempotencyKey::new(format!("snapshot-conversation-{index}"))?,
-                expected_revision: index as u64,
-                scope: issuer.root("snapshot-conversation",
-                    crate::Capabilities::new(["conversation:bind", "conversation:append"])),
-                causal_parent: None, action,
-            })?;
-        }
-        Ok((reducer, issuer))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn native_captured_snapshot_restores_exact_source_claims_on_independent_metadata_ledger() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
@@ -1883,46 +1766,6 @@ mod tests {
         assert!(c.admit_retained(available).is_err(), "the independent real deep copy remains alive");
         drop(cloned);
         c.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_snapshot_clone_denials_preserve_source_and_drop_partial_owned_copy() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
-        let (reducer, _) = conversation_fixture()?;
-        let source_token = CancellationToken::new();
-        let source = NativeMaterializationWork::new(native_budget(), &source_token).expect("source ledger");
-        let snapshot = reducer.snapshot_native(2, &source)?;
-        let first_phase_copies = snapshot.projection.conversation.native_clone_copy_recipe()?.1;
-        assert!(first_phase_copies > 0);
-        assert!(matches!(snapshot.try_clone(), Err(Error::NativeBoundary { .. })));
-        let source_receipt = source.receipt();
-        for counter in ["bytes_copied", "allocation_operations", "mid-clone-bytes"] {
-            let mut allowance = native_budget();
-            if counter == "bytes_copied" { allowance.bytes_copied = 0; }
-            if counter == "allocation_operations" { allowance.allocation_operations = 0; }
-            // Permit the actual message/cache phase, then deny the separate
-            // original event-cache/projection clone on the same cumulative ledger.
-            if counter == "mid-clone-bytes" { allowance.bytes_copied = first_phase_copies; }
-            let token = CancellationToken::new();
-            let denied = NativeMaterializationWork::new(allowance, &token).expect("original denial ledger");
-            let prefix = denied.receipt();
-            let error = snapshot.clone_native(&denied).expect_err("real source clone must preflight native work");
-            let Error::NativeWork { cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: denied_counter, ..
-            }), .. } = error else { panic!("original typed clone denial") };
-            assert_eq!(denied_counter, if counter == "mid-clone-bytes" { "bytes_copied" } else { counter });
-            if counter == "mid-clone-bytes" {
-                assert_eq!(denied.receipt().bytes_copied - prefix.bytes_copied, first_phase_copies);
-            } else {
-                assert_eq!(denied.receipt().bytes_copied, prefix.bytes_copied);
-            }
-            assert_eq!(source.receipt(), source_receipt);
-            assert_eq!(snapshot.events.len(), 2);
-            denied.admit_retained(allowance.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        }
         Ok(())
     }
 

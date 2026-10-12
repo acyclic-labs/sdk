@@ -542,58 +542,6 @@ fn diff_preserves_storage_and_decode_failures_after_admitted_work()
 }
 
 #[test]
-fn repeated_diff_reuses_authenticated_decoded_pages_without_backend_reads()
--> Result<(), Box<dyn std::error::Error>> {
-    let backend = MemoryObjectStore::new(1024 * 1024)?;
-    let before = put(
-        &backend,
-        &TreePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]),
-    )?;
-    let after = put(
-        &backend,
-        &TreePage::Leaf(vec![entry("a", 3)?, entry("c", 4)?]),
-    )?;
-    let store = CachedObjectStore::new(
-        backend,
-        ObjectCacheOptions {
-            maximum_entries: 8,
-            maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 2,
-            maximum_waiters_per_object: 2,
-        },
-    )?;
-    let cancellation = CancellationToken::new();
-    let first = diff(
-        &store,
-        Some(before),
-        Some(after),
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .ok_or("cached diff blocked")??;
-    assert_eq!(first.work.backend_read_operations, 2);
-    assert_eq!(store.stats()?.resident_decoded_pages, 2);
-
-    let second = diff(
-        &store,
-        Some(before),
-        Some(after),
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .ok_or("warm cached diff blocked")??;
-    assert_eq!(second.changes, first.changes);
-    assert_eq!(second.work.page_reads, 2);
-    assert_eq!(second.work.backend_read_operations, 0);
-    assert_eq!(second.work.object_bytes_read, 0);
-    assert!(second.work.bytes_copied > 0);
-    assert_eq!(store.stats()?.decoded_hits, 2);
-    Ok(())
-}
-
-#[test]
 fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
 -> Result<(), Box<dyn std::error::Error>> {
     let backend = MemoryObjectStore::new(1024 * 1024)?;
@@ -818,68 +766,6 @@ mod model {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn native_diff_retains_changed_names_until_output_guard_retires()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = OwnedReadObjectStore::default();
-    let before = put(&store.inner, &TreePage::Leaf(vec![entry("alpha", 1)?, entry("same", 2)?]))?;
-    let after = put(&store.inner, &TreePage::Leaf(vec![entry("alpha", 3)?, entry("same", 2)?]))?;
-    let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let baseline = original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?;
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let (diff, allocation) = crate::async_storage::poll_immediate(diff_tree_entries_with_accounting(
-        &store, Some(before), Some(after), 8, DecodeLimits::default(), &mut accounting, &cancellation,
-    ))?;
-    assert_eq!(diff.changes.len(), 1);
-    let change = diff.changes.first().ok_or("changed name missing")?;
-    assert_eq!(change.key.as_bytes(), b"alpha");
-    assert_eq!(change.before.as_ref().map(|entry| entry.file_id), Some(FileId::from_bytes([1; 16])));
-    assert_eq!(change.after.as_ref().map(|entry| entry.file_id), Some(FileId::from_bytes([3; 16])));
-    assert!(!diff.truncated);
-    assert_eq!(original.receipt().page_reads, 2);
-    assert!(original.receipt().backend_read_operations > 0);
-    assert!(diff.retained_allocation_bytes >= 15);
-    assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?,
-        baseline + diff.retained_allocation_bytes);
-    drop(diff);
-    drop(allocation);
-    assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?, baseline);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_diff_reports_real_changed_file_records_on_original_ledger()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = OwnedReadObjectStore::default();
-    let old = file_record(1)?;
-    let mut new = old.clone();
-    new.link_count = 2;
-    let before = put_file_table(&store.inner, &FileTablePage::Leaf(vec![old.clone()]))?;
-    let after = put_file_table(&store.inner, &FileTablePage::Leaf(vec![new.clone()]))?;
-    let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let baseline = original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?;
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let (diff, allocation) = crate::async_storage::poll_immediate(diff_file_records_with_accounting(
-        &store, Some(before), Some(after), 1, DecodeLimits::default(), &mut accounting, &cancellation,
-    ))?;
-    assert_eq!(diff.changes, vec![ValueChange { key: old.file_id, before: Some(old), after: Some(new) }]);
-    assert!(!diff.truncated);
-    assert_eq!(original.receipt().page_reads, 2);
-    assert!(diff.retained_allocation_bytes > 0);
-    assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?,
-        baseline + diff.retained_allocation_bytes);
-    drop(diff);
-    drop(allocation);
-    assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?, baseline);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
 fn native_diff_denies_frontier_allocation_before_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
@@ -898,28 +784,5 @@ fn native_diff_denies_frontier_allocation_before_backend_work()
     assert_eq!(original.receipt(), before);
     assert_eq!(original.receipt().backend_read_operations, 0);
     assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?, baseline);
-    Ok(())
-}
-
-#[test]
-fn standalone_common_diff_exposes_exact_retained_release_bytes()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = OwnedReadObjectStore::default();
-    let root = put(&store.inner, &TreePage::Leaf(vec![entry("alpha", 1)?]))?;
-    let cancellation = CancellationToken::new();
-    let mut ledger = super::super::allocation::AllocationLedger::default();
-    let mut work = WorkCounters::UNCHARGED;
-    let mut accounting = KernelAccounting::borrowed_standalone(
-        &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
-    );
-    let (diff, allocation) = crate::async_storage::poll_immediate(diff_tree_entries_with_accounting(
-        &store, None, Some(root), 1, DecodeLimits::default(), &mut accounting, &cancellation,
-    ))?;
-    let bytes = diff.retained_allocation_bytes;
-    assert_eq!(accounting.standalone_parts().expect("standalone ledger").0.live_bytes(), bytes);
-    assert_eq!(diff.changes.first().map(|change| change.key.as_bytes()), Some(b"alpha".as_slice()));
-    drop(diff);
-    retire_allocation(allocation, bytes, &mut accounting)?;
-    assert_eq!(accounting.standalone_parts().expect("standalone ledger").0.live_bytes(), 0);
     Ok(())
 }

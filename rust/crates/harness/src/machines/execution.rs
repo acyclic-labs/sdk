@@ -18,9 +18,7 @@ use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
 pub type AccessFuture<'a> = Pin<Box<dyn Future<Output = Result<[u8; 32]>> + Send + 'a>>;
 type PlacementFuture<'a> = Pin<Box<dyn Future<Output = Result<ExecutionPlacement>> + Send + 'a>>;
 
-/// Host-owned preflight for input transfer, mounts, and scoped credential
-/// bindings. It returns a nonzero commitment, never credential bytes. The
-/// spawner performs/reconciles preparation under the stable operation ID.
+/// Host-owned preflight for input transfer, mounts, and scoped credential bindings.
 pub trait MachinesExecutionAccess: Send + Sync {
     /// Verifies one task's build, transferred inputs, mounts, and secret grants.
     fn task<'a>(&'a self, request: &'a TaskAdmissionRecord) -> AccessFuture<'a>;
@@ -28,8 +26,7 @@ pub trait MachinesExecutionAccess: Send + Sync {
     fn batch<'a>(&'a self, request: &'a DurableBatchRequest) -> AccessFuture<'a>;
 }
 
-/// One immutable code build and compatible ready sandbox registered for an
-/// exact logical task and resumable state machine.
+/// One immutable code build and compatible ready sandbox registered for an exact logical task and resumable state machine.
 #[derive(Clone)]
 pub struct MachinesTaskBuild {
     /// Exact registered logical task.
@@ -62,9 +59,7 @@ impl MachinesTaskBuild {
     }
 }
 
-/// Packages a Machines qualifier with the durable route that actually admits
-/// and observes the work. It does not execute an arbitrary local closure or
-/// infer that local paths and credentials are accessible in a sandbox.
+/// Packages a Machines qualifier with the durable route that actually admits and observes the work.
 pub struct MachinesExecution {
     host: MachinesHost,
     identity: ComponentIdentity,

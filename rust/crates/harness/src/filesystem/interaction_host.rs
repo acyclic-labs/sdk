@@ -31,13 +31,10 @@ pub struct FilesystemInteractionHost<P, A, O> {
     owner_scope: Scope,
     private_volume: VolumeRef,
     maximum_bytes: u64,
-    // Owned metadata fields physically drop before their original-ledger custody.
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
-// Literal schema closure of the two actual participant DTOs below. It adds
-// no custom callback/validator diagnostics to the trusted Serde allowance.
 const INTERACTION_DIAGNOSTIC_LABEL_BYTES: u64 = {
     let labels = [
         "Interaction", "InteractionResponse", "ChoiceOption", "type", "question", "choice",
@@ -53,7 +50,6 @@ const INTERACTION_DIAGNOSTIC_LABEL_BYTES: u64 = {
     }
     bytes
 };
-
 
 impl PreparationRecord for Interaction {
     fn maximum_slot_bytes() -> u64 {
@@ -79,9 +75,6 @@ impl PreparationRecord for InteractionResponse {
 }
 
 impl<P, A, O> FilesystemInteractionHost<P, A, O> {
-    pub(super) fn verify_responder_scope(&self, id: InteractionId, scope: &Scope) -> Result<()> {
-        self.verify_responder_scope_with_io(id, scope, None)
-    }
 
     pub(super) fn verify_responder_scope_with_io(
         &self, id: InteractionId, scope: &Scope, io: Option<&PreparationIo>,
@@ -200,8 +193,6 @@ where
         )
     }
 
-    // Incoming owned metadata is already covered by the constructing
-    // execution journal's original ledger and intrinsic, last-field custody.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new_with_io(
         stream: StreamClient<P>,
@@ -288,16 +279,6 @@ where
         Ok(interaction_host)
     }
 
-    /// Stages the exact JSON request before admission; a staged orphan is reclaimable.
-    pub async fn stage_request(
-        &self,
-        id: InteractionId,
-        request: &Interaction,
-        deadline_unix_ms: Option<u64>,
-    ) -> Result<InteractionTicket> {
-        self.stage_request_with_io(id, request, deadline_unix_ms, None).await
-    }
-
     pub(crate) async fn stage_request_with_io(
         &self, id: InteractionId, request: &Interaction, deadline_unix_ms: Option<u64>,
         io: Option<&PreparationIo>,
@@ -320,7 +301,7 @@ where
             }),
             _ => None,
         };
-        let reference = self.stage_with_io(id, "request", request, io).await?;
+        let reference = self.stage(id, "request", request, io).await?;
         let ticket = InteractionTicket {
             id: interaction_uuid(id)?,
             kind: request.kind(),
@@ -367,7 +348,7 @@ where
                 "interaction answer identity cannot be formatted"))?;
         if let Some(io) = io { io.charge(copied)?; }
         kind_hold = io.map(|io| io.guard_owned(kind.capacity() as u64)).transpose()?;
-        let result = self.stage_with_io(id, &kind, response, io).await;
+        let result = self.stage(id, &kind, response, io).await;
         drop(kind);
         drop(kind_hold);
         result
@@ -402,10 +383,10 @@ where
             let mut work = borrowed.as_mut().map(
                 |work| work as &mut dyn crate::store::history::HistoryIo);
             if let Some(owner) = owner {
-                owner.require_interaction_grant_with_work(&mut work)?;
-                owner.verify_with_work(false, &mut work).await?;
+                owner.require_interaction_grant(&mut work)?;
+                owner.verify(false, &mut work).await?;
             }
-            let mut aggregate = self.aggregate_with_io(io).await?;
+            let mut aggregate = self.aggregate(io).await?;
             let (committed, _) = crate::store::operations::find_operation_bounded_with_work(
                 &self.stream, &self.authority, &self.verifier, operation_id,
                 2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut work,
@@ -466,8 +447,7 @@ where
         self.execute(
             operation_id,
             scope,
-            Action::ResolveInteraction { resolution },
-        )
+            Action::ResolveInteraction { resolution }, None)
         .await
     }
 
@@ -476,13 +456,11 @@ where
         resolution: InteractionResolution, io: Option<&PreparationIo>,
     ) -> Result<()> {
         let scope = self.clone_scope_with_io(scope, io)?;
-        self.execute_with_io(operation_id, scope, Action::ResolveInteraction { resolution }, io)
+        self.execute(operation_id, scope, Action::ResolveInteraction { resolution }, io)
             .await.map(|_| ())
     }
 
-    /// Authenticates a responder, validates one typed answer against the
-    /// admitted request, stages its bytes, then CAS-resolves the conversation.
-    /// A lost acknowledgement is retried with the same operation ID.
+    /// Authenticates a responder, validates one typed answer against the admitted request, stages its bytes, then CAS-resolves the conversation.
     pub async fn resolve_answer(
         &self,
         operation_id: OperationId,
@@ -516,8 +494,6 @@ where
     }
 
     /// Resolves an approval of the ticket's exact operation and argument digest.
-    /// The complete decision, including an optional explanation, is staged as
-    /// a ref so exact retries can compare it without guessing intent.
     pub async fn resolve_approval(
         &self,
         operation_id: OperationId,
@@ -617,15 +593,20 @@ where
     ) -> Result<Option<(InteractionTicket, Option<InteractionResolution>)>> {
         let aggregate_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let aggregate = self.aggregate_with_io(io).await?;
+        let aggregate = self.aggregate(io).await?;
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let value = aggregate.reducer().interaction(&interaction_uuid(id)?)
-            .map(|value| crate::core::native_interaction_state_clone_with_custody(value, &mut work)
-                .map(|(value, _)| value)).transpose()?;
+            .map(|(ticket, resolution)| -> Result<_> {
+                let ticket = crate::core::native_interaction_ticket_clone_with_custody(ticket, &mut work)?.0;
+                let resolution = resolution.as_ref().map(|value|
+                    crate::core::native_interaction_resolution_clone_with_custody(value, &mut work)
+                        .map(|(value, _)| value)).transpose()?;
+                Ok((ticket, resolution))
+            }).transpose()?;
         drop(aggregate);
         drop(aggregate_hold);
         Ok(value)
@@ -636,7 +617,7 @@ where
     ) -> Result<Option<InteractionOutcome>> {
         let aggregate_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let aggregate = self.aggregate_with_io(io).await?;
+        let aggregate = self.aggregate(io).await?;
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
@@ -675,7 +656,7 @@ where
     ) -> Result<Option<Interaction>> {
         let aggregate_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let aggregate = self.aggregate_with_io(io).await?;
+        let aggregate = self.aggregate(io).await?;
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
@@ -687,7 +668,7 @@ where
                 ContentGrant::verify_original_volume_with_io(&self.verifier, &self.owner_scope,
                     ticket.request.volume(), VolumeOperation::Read, io)?;
                 let bytes_hold;
-                let bytes = self.host.read_pinned_owned_io(&ticket.request, self.maximum_bytes, io).await?;
+                let bytes = self.host.read_pinned_io(&ticket.request, self.maximum_bytes, Some(io)).await?;
                 bytes_hold = io.guard_bytes(&bytes)?;
                 let request = io.decode_preparation::<Interaction>(&bytes)?;
                 let mut borrowed = io.history_io();
@@ -709,17 +690,12 @@ where
         Ok(Some(request))
     }
 
-    /// Resolves only the currently admitted answer under the owner's read grant.
-    pub async fn read_answer(&self, id: InteractionId) -> Result<Option<Vec<u8>>> {
-        self.read_answer_with_io(id, None).await
-    }
-
     pub(crate) async fn read_answer_with_io(
         &self, id: InteractionId, io: Option<&PreparationIo>,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         let aggregate_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let aggregate = self.aggregate_with_io(io).await?;
+        let aggregate = self.aggregate(io).await?;
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
@@ -733,17 +709,12 @@ where
         Ok(Some(bytes))
     }
 
-    /// Reads the admitted approval decision artifact, when one was recorded.
-    pub async fn read_decision_detail(&self, id: InteractionId) -> Result<Option<Vec<u8>>> {
-        self.read_decision_detail_with_io(id, None).await
-    }
-
     pub(crate) async fn read_decision_detail_with_io(
         &self, id: InteractionId, io: Option<&PreparationIo>,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         let aggregate_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let aggregate = self.aggregate_with_io(io).await?;
+        let aggregate = self.aggregate(io).await?;
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
@@ -759,36 +730,28 @@ where
 
     async fn read_resolution_content_with_io(
         &self, reference: &FileRef, io: Option<&PreparationIo>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<acyclic_stream::OwnedBytes> {
         match io {
             Some(io) => {
                 ContentGrant::verify_original_volume_with_io(&self.verifier, &self.owner_scope,
                     reference.volume(), VolumeOperation::Read, io)?;
-                self.host.read_pinned_owned_io(reference, self.maximum_bytes, io).await
+                self.host.read_pinned_io(reference, self.maximum_bytes, Some(io)).await
             }
             None => {
                 let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
                     reference.volume(), VolumeOperation::Read)?;
-                Ok(self.host.read_content(reference, &grant, self.maximum_bytes).await?.to_vec())
+                self.host.read_content(reference, &grant, self.maximum_bytes).await
             }
         }
     }
 
-    async fn execute(
-        &self,
-        operation_id: OperationId,
-        scope: Scope,
-        action: Action,
-    ) -> Result<ApplyResult> {
-        self.execute_with_io(operation_id, scope, action, None).await
-    }
 
-    async fn execute_with_io(
+    async fn execute(
         &self, operation_id: OperationId, scope: Scope, action: Action, io: Option<&PreparationIo>,
     ) -> Result<ApplyResult> {
         let aggregate_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let mut aggregate = self.aggregate_with_io(io).await?;
+        let mut aggregate = self.aggregate(io).await?;
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
@@ -827,11 +790,11 @@ where
     ) -> Result<()> {
         let replay_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let aggregate = self.aggregate_with_io(io).await?;
+        let aggregate = self.aggregate(io).await?;
         replay_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "approval replay custody underflows"))?)).transpose()?;
-        let Some((ticket, Some(resolution))) = aggregate.reducer().interaction(interaction_uuid(id)?) else {
+        let Some((ticket, Some(resolution))) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
             return Err(interaction_boundary(io, crate::wire::ErrorCode::Unauthorized,
                 "tool installation lacks a resolved approval"));
         };
@@ -846,16 +809,7 @@ where
             |work| work as &mut dyn crate::store::history::HistoryIo);
         let bytes_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let buffered = match io {
-            Some(io) => Some(self.read_resolution_content_with_io(&ticket.request, Some(io)).await?),
-            None => None,
-        };
-        let direct = if io.is_none() {
-            let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
-                ticket.request.volume(), VolumeOperation::Read)?;
-            self.host.read_content(&ticket.request, &grant, self.maximum_bytes).await?
-        } else { bytes::Bytes::new() };
-        let bytes = buffered.as_deref().unwrap_or(direct.as_ref());
+        let bytes = self.read_resolution_content_with_io(&ticket.request, io).await?;
         bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "approval request bytes custody underflows"))?)).transpose()?;
@@ -872,8 +826,7 @@ where
         request_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "approval request custody underflows"))?)).transpose()?;
-        drop(buffered);
-        drop(direct);
+        drop(bytes);
         drop(bytes_hold);
         if let Some(detail) = &resolution.detail {
             if detail.descriptor().media_type() != "application/json" {
@@ -882,16 +835,7 @@ where
             }
             let detail_bytes_hold;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let buffered = match io {
-                Some(io) => Some(self.read_resolution_content_with_io(detail, Some(io)).await?),
-                None => None,
-            };
-            let direct = if io.is_none() {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
-                    detail.volume(), VolumeOperation::Read)?;
-                self.host.read_content(detail, &grant, self.maximum_bytes).await?
-            } else { bytes::Bytes::new() };
-            let bytes = buffered.as_deref().unwrap_or(direct.as_ref());
+            let bytes = self.read_resolution_content_with_io(detail, io).await?;
             detail_bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                     "approval decision bytes custody underflows"))?)).transpose()?;
@@ -904,8 +848,7 @@ where
                 None => ticket.validate_decision_bytes(
                     &request, &resolution.outcome, detail, &bytes)?,
             }
-            drop(buffered);
-            drop(direct);
+            drop(bytes);
             drop(detail_bytes_hold);
         }
         drop(request);
@@ -915,11 +858,8 @@ where
         Ok(())
     }
 
-    async fn aggregate(&self) -> Result<StreamAggregate<P>> {
-        self.aggregate_with_io(None).await
-    }
 
-    async fn aggregate_with_io(&self, io: Option<&PreparationIo>) -> Result<StreamAggregate<P>> {
+    async fn aggregate(&self, io: Option<&PreparationIo>) -> Result<StreamAggregate<P>> {
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
@@ -930,19 +870,15 @@ where
         let aggregate_verifier = self.verifier.clone_with_work(&mut work)?;
         let content_authority = self.verifier.clone_with_work(&mut work)?;
         let scope = self.owner_scope.clone_with_work(&mut work)?;
-        content_authority.verify_with_work(&scope, &mut work)?;
         if let Some(io) = io {
             io.claim(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
             io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
         }
-        let content_verifier = FilesystemContentVerifier {
-            host: Arc::clone(&self.host), verifier: content_authority,
-            scope, maximum_bytes: self.maximum_bytes,
-        };
+        let content_verifier = FilesystemContentVerifier::new_with_io(
+            Arc::clone(&self.host), content_authority, scope, self.maximum_bytes, io)?;
         let content_verifier = Arc::new(content_verifier);
-        let aggregate = StreamAggregate::open_with_work(
-            &self.stream, authority, aggregate_verifier, self.schemas.clone(), &mut work,
-        ).await?.with_content_verifier(content_verifier);
+        let aggregate = StreamAggregate::open_with_read_limits_with_work(
+            &self.stream, authority, aggregate_verifier, self.schemas.clone(), crate::store::default_projection_read_limits(), &mut work).await?.with_content_verifier(content_verifier);
         let agent = aggregate
             .reducer()
             .conversation()
@@ -956,16 +892,8 @@ where
         Ok(aggregate)
     }
 
-    async fn stage<T: serde::Serialize>(
-        &self,
-        id: InteractionId,
-        kind: &str,
-        value: &T,
-    ) -> Result<FileRef> {
-        self.stage_with_io(id, kind, value, None).await
-    }
 
-    async fn stage_with_io<T: serde::Serialize>(
+    async fn stage<T: serde::Serialize>(
         &self, id: InteractionId, kind: &str, value: &T, io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
         let bytes_hold;

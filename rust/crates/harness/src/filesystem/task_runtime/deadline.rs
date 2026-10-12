@@ -6,24 +6,8 @@ use futures::future::{Either, select};
 use std::{future::Future, pin::pin};
 use crate::live::sleep_millis;
 
-/// A timeout is not proof that a dispatched provider effect stopped. Cancel the
-/// original operation, keep its exact reservation, and leave retained intents
-/// available to the existing settlement/reconciliation APIs.
+/// A timeout is not proof that a dispatched provider effect stopped.
 pub(super) async fn run<P, T>(
-    host: &CoordinatorTaskHost<P>,
-    task: TaskId,
-    fence: Option<&LeaseFence>,
-    deadline: Option<u64>,
-    operation: OperationId,
-    future: impl Future<Output = Result<T>>,
-) -> Result<T>
-where
-    P: StreamProvider + 'static,
-{
-    run_observed(host, task, fence, deadline, operation, future, None, |_| false).await
-}
-
-pub(super) async fn run_observed<P, T>(
     host: &CoordinatorTaskHost<P>,
     task: TaskId,
     fence: Option<&LeaseFence>,
@@ -39,7 +23,7 @@ where
     if let Some(io) = io { io.check_cancellation()?; }
     let Some(deadline) = deadline else { return future.await; };
     if host.now_unix_millis() >= deadline {
-        expire_observed(host, task, fence, io).await?;
+        expire(host, task, fence, io).await?;
         return Err(Error::Indeterminate(operation));
     }
     let result = {
@@ -53,16 +37,14 @@ where
     if let Some(result) = result {
         #[cfg(not(target_arch = "wasm32"))]
         if result.as_ref().is_err_and(|error| error.is_native_failure()) { return result; }
-        // A native failed admission also has an exact attempted lease. Preserve
-        // that whole Unresolved pull before clocks or expiry can replace it.
         if result.as_ref().is_ok_and(&has_native_failure) { return result; }
         if host.now_unix_millis() < deadline { return result; }
     }
-    expire_observed(host, task, fence, io).await?;
+    expire(host, task, fence, io).await?;
     Err(Error::Indeterminate(operation))
 }
 
-async fn expire_observed<P: StreamProvider + 'static>(
+async fn expire<P: StreamProvider + 'static>(
     host: &CoordinatorTaskHost<P>, task: TaskId, fence: Option<&LeaseFence>,
     io: Option<&crate::filesystem::PreparationIo>,
 ) -> Result<()> {
@@ -103,8 +85,6 @@ where
         if now >= deadline {
             return Ok(());
         }
-        // Re-read the injected owner clock after finite sleeps, including clock
-        // jumps. The deadline is never replaced by a process-relative Instant.
         sleep_millis(deadline.saturating_sub(now).min(1_000)).await?;
     }
 }

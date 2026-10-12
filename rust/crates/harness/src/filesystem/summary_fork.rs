@@ -1,7 +1,7 @@
 //! Child-owned Summary materialization through existing Filesystem operations.
 use super::{ParentProjectController, PreparationIo, WorkspaceMutation, fork_preparer_io};
 use crate::{
-    IdempotencyKey, Result,
+    Error, IdempotencyKey, Result,
     context::Context,
     conversation::{ContentResidencyVerifier, FileDescriptor, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::Reducer,
@@ -178,7 +178,7 @@ async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     io: Option<&PreparationIo>,
     preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
 ) -> Result<GenerationRef> {
     let generation = fork_preparer_io::apply_generation_task_guarded(
         controller.host, workspace, Some(expected), mutations, key, io, preparation,
@@ -221,7 +221,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         io: Option<&PreparationIo>,
         preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
         #[cfg(not(target_arch = "wasm32"))]
-        native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+        native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<(SummaryForkCapture, GenerationRef)> {
         #[cfg(not(target_arch = "wasm32"))]
         let native = io.and_then(PreparationIo::original_native_work).is_some();
@@ -238,7 +238,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             && let Some(preparation) = preparation
         { preparation.verify_creation().await?; }
         if let Some(io) = io {
-            let capability = io.capability(&self.volume, "volume:read:")?;
+            let capability = io.capability(&self.project, "volume:read:")?;
             if !self.scope.capabilities().contains("fork:publish") || !self.scope.capabilities().contains(&capability) {
                 return Err(fork_preparer_io::unauthorized(Some(io), "summary fork scope lacks original publication authority"));
             }
@@ -292,9 +292,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                     fork_preparer_io::invalid(io, "summary fork copies exceed aggregate byte allowance")
                 })?;
         }
-        // Generation keys encode to 64 hex bytes. Preflight the final context
-        // before reading payloads or publishing either phase, without a cycle
-        // between a context's bytes and the generation containing those bytes.
         const ZERO_VERSION: &str = "0000000000000000000000000000000000000000000000000000000000000000";
         let planned = copy_references(&payloads, child_private, ZERO_VERSION, io)?;
         let context = rewritten_context(prepared.context(), &planned, io)?;
@@ -410,7 +407,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             &context_version, &descriptor(&bytes, io)?,
             "summary-context.json", io)?;
         let committed = self.host.read_pinned_io(&context, maximum_bytes, io).await?;
-        if committed.as_ref() != bytes {
+        if committed.as_ref() != bytes.as_ref() {
             return Err(fork_preparer_io::conflict(io, "summary fork retry changed its context"));
         }
         let capture = SummaryForkCapture {

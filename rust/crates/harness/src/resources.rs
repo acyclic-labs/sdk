@@ -4,7 +4,6 @@ use crate::{Error, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Copies a known metadata field immediately after its own allocation admission.
-/// The caller retains the closed value's capacity ceiling before entering.
 #[cfg(feature = "filesystem")]
 pub(crate) fn copy_metadata_string(
     source: &str, io: &crate::filesystem::PreparationIo,
@@ -18,7 +17,7 @@ pub(crate) fn copy_metadata_string(
 }
 
 /// Stable identity of a replaceable resource provider.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, schemars::JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ProviderRef {
     /// Globally unique namespace, such as `acyclic` or a reverse DNS name.
@@ -73,7 +72,6 @@ impl ProviderRef {
     }
 
     /// Copies a validated identity under the caller's original native work.
-    /// Constructing an identity grants no access to the represented provider.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn new_with_native_work(
         namespace: &str, family: &str, version: &str,
@@ -170,7 +168,6 @@ impl ProviderRef {
         Ok(())
     }
 
-
     pub(crate) fn validation_error(&self) -> Option<&'static str> {
         self.validation_reason()
     }
@@ -186,21 +183,6 @@ impl ProviderRef {
                     { Error::Invalid("provider capacity inventory overflows".into()) }
                 })
             })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn clone_in_native_allocation(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-        allocation: &mut acyclic_fs::NativeAllocation,
-    ) -> Result<Self> {
-        Ok(Self {
-            namespace: crate::conversation::clone_native_reference_text_into(
-                &self.namespace, work, allocation)?,
-            family: crate::conversation::clone_native_reference_text_into(
-                &self.family, work, allocation)?,
-            version: crate::conversation::clone_native_reference_text_into(
-                &self.version, work, allocation)?,
-        })
     }
 
     /// Globally unique provider namespace.
@@ -468,8 +450,6 @@ typed_reference!(
 
 impl GenerationRef {
     /// Copies one generation identity on the original native ledger.
-    /// Custody covers deep SDK-owned capacities; the enclosing DTO owns its
-    /// inline reference slot. This operation grants no storage authority.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn new_with_native_work(
         provider: &ProviderRef, key: &[u8], version: Option<&str>,
@@ -628,7 +608,6 @@ typed_reference!(
     "Reference to an immutable model context."
 );
 typed_reference!(RunRef, Run, "Reference to a recoverable model run.");
-
 
 #[cfg(test)]
 mod tests {

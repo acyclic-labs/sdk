@@ -29,10 +29,6 @@ pub fn edit_file() -> Result<Tool> {
 }
 
 /// Explicitly selects exact V4A update-file editing with pinned finite work limits.
-///
-/// The original task's file-byte ceiling bounds input and output. The limits
-/// below are part of the definition schema digest, so different configurations
-/// cannot silently reuse an admitted definition.
 pub fn patch_file(maximum_work: u64, maximum_hunks: u32) -> Result<Tool> {
     super::patch::PatchLimits {
         maximum_bytes: 1,
@@ -286,8 +282,6 @@ impl FileTool {
             scope.limits().file_bytes,
         )?;
         if let Self::Write = self {
-            // The original TaskContext publisher owns the destination volume and
-            // checks its exact write grant; the template does not capture a writer.
             let path = invocation
                 .arguments
                 .get("path")
@@ -390,8 +384,7 @@ impl ToolExecutor for FileTool {
                 let result = self.run_native(context, invocation, work).await?;
                 return Ok((Some(result.0), result.1));
             }
-            // Never redispatch an uncertain publication. The original owner
-            // receipt, not an edited reconstruction, supplies reconciliation.
+            // Never redispatch an uncertain publication.
             let receipt = context.observe_staged_file_once_with_native_work(
                 invocation.operation_id, work,
             ).await?;
@@ -468,8 +461,7 @@ impl ToolExecutor for FileTool {
         context: ToolContext,
         invocation: ToolInvocation,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        // Reads always use the original immutable ref; publications resolve the
-        // existing operation receipt before attempting a generation-checked CAS.
+        // Reads always use the original immutable ref; publications resolve the existing operation receipt before attempting a generation-checked CAS.
         Box::pin(async move { self.run(context, invocation).await.map(Some) })
     }
 }
@@ -627,12 +619,13 @@ impl FileTool {
         match self {
             Self::Read => {
                 let input = super::decode_with_native_work::<ReadFileInput>(&invocation.arguments, work)?;
-                let mut read = context.read_file_with_native_work(&input.0.file, work).await?;
-                read.1.resize_retained(read.1.bytes() + std::mem::size_of::<ToolResult>() as u64)
-                    .map_err(super::edit::native_error)?;
-                let text = String::from_utf8(std::mem::take(&mut read.0))
+                let read = context.read_file_with_native_work(&input.0.file, work).await?;
+                let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("file read requires UTF-8 content"))?;
-                Ok((ToolResult { value: Value::String(text) }, read.1))
+                let (text, mut custody) = work.display(source)?;
+                custody.resize_retained(custody.bytes() + std::mem::size_of::<ToolResult>() as u64)
+                    .map_err(super::edit::native_error)?;
+                Ok((ToolResult { value: Value::String(text) }, custody))
             }
             Self::Write => {
                 let input = super::decode_with_native_work::<WriteFileInput>(&invocation.arguments, work)?;
@@ -646,7 +639,7 @@ impl FileTool {
             Self::Edit => {
                 let input = super::decode_with_native_work::<EditFileInput>(&invocation.arguments, work)?;
                 let read = context.read_file_with_native_work(&input.0.file, work).await?;
-                let source = std::str::from_utf8(&read.0)
+                let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("exact text edit requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
                 let edited = super::edit::exact_replace_engine(
@@ -671,7 +664,7 @@ impl FileTool {
                     return Err(native::invalid("patch input exceeds original task file bound"));
                 }
                 let read = context.read_file_with_native_work(&input.0.file, work).await?;
-                let source = std::str::from_utf8(&read.0)
+                let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("patch editing requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
                 let edited = super::patch::apply_update_engine(source, &input.0.diff, limits, &mut allocation)?;
@@ -689,11 +682,11 @@ impl FileTool {
 pub(super) mod native {
     use super::*;
 
-    pub(super) fn invalid(reason: &'static str) -> Error {
+    pub(in crate::tool) fn invalid(reason: &'static str) -> Error {
         Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason }
     }
 
-    pub(super) fn context(
+    pub(in crate::tool) fn context(
         context: &ToolContext, invocation: &ToolInvocation, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         work.remaining()?;
@@ -715,7 +708,7 @@ pub(super) mod native {
         Ok(())
     }
 
-    pub(super) fn public_path(path: &str, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+    pub(in crate::tool) fn public_path(path: &str, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         crate::conversation::validate_content_path_with_native_work(path, work)?;
         if crate::conversation::is_internal_path(path) {
             return Err(Error::NativeBoundary {
@@ -725,9 +718,7 @@ pub(super) mod native {
         Ok(())
     }
 
-    pub(super) fn bound<T: Serialize>(value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        // Count the canonical typed serializer without allocating a discarded
-        // encoded buffer. Only audited file/text DTOs use this writer.
+    pub(in crate::tool) fn bound<T: Serialize>(value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let diagnostic_bytes = crate::contract::sdk_json_diagnostic_bytes();
         io.claim(diagnostic_bytes)?;
@@ -757,8 +748,6 @@ pub(super) mod native {
         let mut counter = Counter { remaining: maximum, work, denial: None };
         let encoded = serde_json::to_writer(&mut counter, value);
         if let Some(error) = counter.denial.take() {
-            // Drop serde's opaque error metadata while the original diagnostic
-            // quota is still paid; propagate an actual native denial unchanged.
             drop(encoded);
             return Err(error);
         }
@@ -767,8 +756,7 @@ pub(super) mod native {
         })
     }
 
-
-    pub(super) fn summary_reference(
+    pub(in crate::tool) fn summary_reference(
         file: &FileRef, maximum: usize, arguments: std::fmt::Arguments<'_>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Value, acyclic_fs::NativeAllocation)> {

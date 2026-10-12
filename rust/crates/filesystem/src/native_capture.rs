@@ -6989,7 +6989,9 @@ mod native_range_tests {
             scope.custody.as_ref().expect("live scope"))?;
         let base = meter.allocation_owner().expect("capture allocations use the original base");
         assert!(std::sync::Arc::ptr_eq(&base, &original.runtime_meter_owner()));
-        let packet = native.read_bounded_exact_async(0, 3, meter)?.await?;
+        let packet = acyclic_native_runtime::AsyncRangeReader::new(
+            std::sync::Arc::clone(&native), 0, 3,
+        ).read_exact_measured(3, meter).await?;
         let prefix = original.receipt();
         scope.release()?;
         // The real returned data and native file tail remain alive here.

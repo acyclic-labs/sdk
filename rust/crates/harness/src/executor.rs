@@ -17,13 +17,13 @@ use crate::{
         DurableTaskHost, RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval,
         tool_approval_request, validate_policy_identity,
     },
-    tool::{ToolInvocation, ToolRegistry, ToolResult, validate_value},
+    tool::{ToolInvocation, ToolRegistry, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, sync::Arc};
+use std::sync::Arc;
 
 mod native_stock;
 use native_stock::*;
@@ -57,8 +57,6 @@ pub struct TurnInput {
     /// Typed provider-neutral input; canonical conversation storage still uses file refs.
     pub input: ModelContent,
     /// Exact, separately recorded canonical history selection for this turn.
-    /// When present its last user message is the current `input`; the stock
-    /// context pipeline does not synthesize a duplicate user message.
     #[serde(default)]
     pub selected_context: Option<SelectedModelContext>,
     /// Maximum model/tool steps permitted for this turn.
@@ -66,9 +64,7 @@ pub struct TurnInput {
 }
 
 impl TurnInput {
-    /// Constructs a turn from an exact, already recorded conversation
-    /// selection. The final selected user message is the turn input, so no
-    /// text is copied from a conversation event into a durable request.
+    /// Constructs a turn from an exact, already recorded conversation selection.
     pub fn from_selected_context(
         operation_id: OperationId,
         selected_context: SelectedModelContext,
@@ -279,17 +275,11 @@ impl ToolFailureKind {
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Authenticated canonical aggregate whose selections this journal publishes.
-    /// A provider must return its original bound authority, never an identity
-    /// supplied by the importer. `None` leaves owner-bound checkpoint import
-    /// unavailable; standalone execution and scoped loading remain independent.
     fn canonical_authority(&self) -> Option<&crate::core::Authority> {
         None
     }
 
     /// Implementations must scope sequences and retry keys by `operation_id`.
-    /// Reads at most `maximum` records after the exclusive one-based sequence
-    /// `after`. Zero starts at the first record. A provider may return a shorter
-    /// internal batch than requested; no complete-history fallback is provided.
     fn replay<'a>(
         &'a self,
         operation_id: OperationId,
@@ -298,7 +288,6 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>>;
 
     /// Optional finite replay of the same authenticated journal engine.
-    /// Missing capability fails before an ordinary replay or provider I/O.
     #[cfg(feature = "filesystem")]
     fn replay_measured<'a>(
         &'a self, _operation: OperationId, _after: u64, _maximum: u32,
@@ -316,10 +305,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         event: ExecutionEvent,
     ) -> BoxFuture<'a, Result<()>>;
 
-    /// Atomically appends a dispatch or terminal observation at an exact
-    /// journal tail. A claimant may execute or publish only when this returns
-    /// true; false means another host advanced the journal. Providers unable
-    /// to offer a linearizable compare-and-append must fail closed.
+    /// Atomically appends a dispatch or terminal observation at an exact journal tail.
     fn append_if_tail<'a>(
         &'a self,
         _operation_id: OperationId,
@@ -335,7 +321,6 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     }
 
     /// Stages immutable private bytes before any referring observation is appended.
-    /// Retries with the same key and different bytes must fail closed.
     fn stage<'a>(
         &'a self,
         operation_id: OperationId,
@@ -344,8 +329,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         media_type: &'static str,
     ) -> BoxFuture<'a, Result<FileRef>>;
 
-    /// Observes an already staged immutable payload by its original operation
-    /// and retry key. This never stages bytes or consults a mutable head.
+    /// Observes an already staged immutable payload by its original operation and retry key.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn staged_ref_with_native_work<'a>(
         &'a self, _operation_id: OperationId, _idempotency_key: &'a str,
@@ -360,7 +344,6 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>>;
 
     /// Optional finite-work load under the same original journal-owner grant.
-    /// Unsupported journals reject before reading or invoking an unbounded load.
     #[cfg(feature = "filesystem")]
     fn load_measured<'a>(
         &'a self, _reference: &'a FileRef, _budget: acyclic_fs::WorkBudget,
@@ -415,8 +398,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
             Error::Unsupported("finite model content verification is unavailable".into()))) })
     }
 
-    /// Confirms the selected model context is the exact projection of the
-    /// owning conversation's previously committed selection for this turn.
+    /// Verifies the selected context against the committed conversation.
     fn verify_selected_context<'a>(
         &'a self,
         _operation_id: OperationId,
@@ -542,7 +524,6 @@ pub(crate) use crate::filesystem::PreparationIo;
 pub(crate) type PreparationIo = ();
 
 /// Incremental replay validation retaining only a cursor and retry digests.
-/// Pages are returned to the caller and are never retained by this cursor.
 pub struct ExecutionReplay {
     operation_id: OperationId,
     after: u64,
@@ -566,8 +547,7 @@ impl ExecutionReplay {
         self.after
     }
 
-    /// Reads one bounded page, or `None` at the current tail. Invalid pages do
-    /// not advance the cursor.
+    /// Reads one bounded page, or `None` at the current tail.
     pub async fn next_page(
         &mut self,
         journal: &dyn ExecutionJournal,
@@ -624,7 +604,6 @@ impl ExecutionReplay {
         }
         let next_tail = self.after.checked_add(page.len() as u64)
             .ok_or_else(|| Error::Conflict("execution journal sequence overflows".into()))?;
-        // The bounded page's retry digests need no heap-backed staging set.
         let mut keys = [[0; 32]; EXECUTION_REPLAY_PAGE_RECORDS as usize];
         for (index, record) in page.iter().enumerate() {
             #[cfg(feature = "filesystem")]
@@ -712,7 +691,6 @@ pub(crate) async fn replay_execution_with_io(
         #[cfg(feature = "filesystem")]
         if selected.len() == selected_before {
             if let Some(io) = io {
-                // Digests remain in the replay cursor; the page no longer does.
                 io.release(held.saturating_sub(key_growth))?;
             }
         }
@@ -720,7 +698,6 @@ pub(crate) async fn replay_execution_with_io(
         if selected.len() != selected_before
             && let Some(io) = io
             && io.original_native_work().is_some() {
-            // The selected payloads remain retained; the consumed page vector does not.
             io.release(page_bytes)?;
         }
     }
@@ -779,8 +756,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>>;
 
-    /// Runs with the original ordinary task admission. Custom executors
-    /// may consume this context while retaining their complete loop.
+    /// Runs with the original ordinary task admission.
     fn execute_with_context<'a>(
         &'a self,
         context: &'a crate::runtime::TaskContext,
@@ -799,7 +775,6 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
     }
 
     /// Audited native execution, sharing the exact issued context and original work.
-    /// Custom executors reject before a callback or future allocation.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn execute_with_native_context<'a>(
         &'a self, _context: &'a Arc<crate::runtime::NativeTaskContext>, _input: &'a TurnInput,
@@ -970,11 +945,11 @@ fn stock_prepare(
 ) -> Result<crate::model::PreparedModelRequest> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        return crate::model::PreparedModelRequest::prepare_with_io(request, limits, io);
+        return crate::model::PreparedModelRequest::prepare(request, limits, Some(io));
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
-    crate::model::PreparedModelRequest::prepare(request, limits)
+    crate::model::PreparedModelRequest::prepare(request, limits, None)
 }
 
 fn stock_context_input(
@@ -1035,8 +1010,6 @@ fn stock_json_bound<T: Serialize>(
 ) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        // Closed stock callers witness resident fields before this size-only
-        // serializer. A wire buffer is neither constructed nor discarded.
         return crate::contract::validate_json_byte_bound_native_trusted(
             value, crate::contract::JsonBounds {
                 maximum_bytes: maximum, maximum_items: io.remaining()?.items_examined, maximum_depth: 256,
@@ -1097,9 +1070,7 @@ fn stock_compact(
 }
 
 impl StockExecution<'_> {
-    /// Summarizes an explicit projection through ordinary admission, accounting,
-    /// exact request retention and reconciliation. The caller persists the returned
-    /// provenance in its existing context revision; uncertain attempts never redispatch.
+    /// Summarizes an explicit projection through ordinary admission, accounting, exact request retention and reconciliation.
     pub async fn summarize(
         &self,
         journal: &dyn ExecutionJournal,
@@ -1111,8 +1082,7 @@ impl StockExecution<'_> {
             .await
     }
 
-    /// Summarizes within the parent's existing execution journal. A pending
-    /// summary remains visible to its ordinary recovery and quiescence checks.
+    /// Summarizes within the parent's existing execution journal.
     pub async fn summarize_in_turn(
         &self,
         journal: &dyn ExecutionJournal,
@@ -1177,8 +1147,6 @@ impl StockExecution<'_> {
         } else {
             executor.ensure_started(journal, &input).await?;
         }
-        // Pin even metadata omitted from the provider request. A retry cannot
-        // relabel an uncertain summary with a different source projection.
         let source_key = stock_key(format_args!("summary:{step}:source"), self.io())?;
         stage_bytes_with_io(
             journal,
@@ -1296,7 +1264,6 @@ impl StockExecutor {
         self
     }
 
-
 }
 
 impl StockExecution<'_> {
@@ -1352,8 +1319,6 @@ impl StockExecution<'_> {
         {
             return Ok(());
         }
-        // Disabling automatic compaction does not disable the selected model's
-        // admission bounds for an explicit summary operation.
         let capacity = stock_context_capacity(self.provider.as_ref(), &self.model, self.io())?;
         capacity.validate()?;
         let output = executor.output_tokens().ok_or_else(|| {
@@ -1375,9 +1340,7 @@ impl StockExecution<'_> {
 }
 
 impl StockExecutor {
-    /// Binds this worker's exact admitted task and execution fence. Fresh model
-    /// attempts consume the existing owner journal before dispatch; replay and
-    /// reconciliation do not consume another unit.
+    /// Binds this worker's exact admitted task and execution fence.
     #[must_use]
     pub fn with_durable_task(
         mut self,
@@ -1419,9 +1382,7 @@ impl StockExecutor {
         self
     }
 
-    /// Binds a child to an immutable parent model prefix. The supplied reader
-    /// must authenticate the child's exact generation-pinned read grants.
-    /// Context stages assemble local input before this prefix is prepended.
+    /// Binds a child to an immutable parent model prefix.
     pub fn with_inherited_prefix(
         mut self,
         prefix: FileRef,
@@ -1441,8 +1402,6 @@ impl StockExecutor {
 
 impl StockExecution<'_> {
     /// Freezes the exact retained model input through a completed tool exchange.
-    /// Fork composition may publish this prefix before activating children. This
-    /// only reads the existing execution journal; incomplete calls fail closed.
     pub async fn completed_tool_prefix(
         &self,
         journal: &dyn ExecutionJournal,
@@ -1455,10 +1414,6 @@ impl StockExecution<'_> {
     }
 
     /// Freezes one complete ordered tool batch from the retained model step.
-    /// Every call must have its actual validated result and projection before
-    /// this boundary is available. Missing or uncertain calls fail closed;
-    /// this method reads artifacts only and never dispatches or reconciles effects.
-    /// Child activation and fork publication remain separately admitted operations.
     pub async fn completed_tool_batch_prefix(
         &self,
         journal: &dyn ExecutionJournal,
@@ -1569,7 +1524,6 @@ impl StockExecutor {
     }
 
     /// Carries the original admitted context into one bound stock execution.
-    /// Context does not replace the durable host's current fence verification.
     pub fn with_task_context(
         mut self,
         context: &crate::runtime::TaskContext,
@@ -1683,14 +1637,10 @@ impl StockExecution<'_> {
     }
 
     fn matches_request_digest(&self, input: &TurnInput, existing: &[u8; 32]) -> Result<bool> {
-        // Fully bound requests retain their exact protocol identity. Histories
-        // that omitted the admitted context cannot infer its identity or scope
-        // during replay, even if their other request fields still match.
         Ok(existing == &self.request_digest(input)?)
     }
 
-    /// Replays the durable journal for one turn, verifying it is gapless and bound to the
-    /// exact same request, and journals the initial `Started` marker on a fresh turn.
+    /// Replays the bound turn journal and starts it when empty.
     async fn ensure_started(
         &self,
         journal: &dyn ExecutionJournal,
@@ -1726,8 +1676,6 @@ impl StockExecution<'_> {
     }
 
     /// Runs one admitted model step independently of the stock control loop.
-    /// Custom loops reuse exact artifacts, validation, reconciliation and durable
-    /// observations. A started attempt never reruns sources or redispatches effects.
     pub async fn model_step(
         &self,
         journal: &dyn ExecutionJournal,
@@ -1850,7 +1798,7 @@ impl StockExecution<'_> {
             .await?;
         let request = self.request_from_context(&context)?;
         let prepared = if let Some((prefix, verifier)) = self.inherited_prefix() {
-            crate::model::PreparedModelRequest::inherit_with_io(
+            crate::model::PreparedModelRequest::inherit(
                 request,
                 prefix,
                 verifier.as_ref(),
@@ -2028,8 +1976,6 @@ impl StockExecution<'_> {
                 {
                     return Ok(retained);
                 }
-                // Leave room for the response and the next canonical user input.
-                // Small messages can exhaust the admitted count before token capacity.
                 let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
                 let possible_message_pressure = projection.canonical.is_some()
                     && projection.context.messages.len() > self.compaction_message_limit(true, 0);
@@ -2368,8 +2314,7 @@ impl StockExecution<'_> {
         Ok(())
     }
 
-    /// Resolves one model step's events, replaying an already completed or started attempt
-    /// from the durable journal exactly once instead of re-invoking the provider.
+    /// Replays or resolves one model step.
     #[allow(
         clippy::too_many_lines,
         reason = "one exactly-once replay-or-generate operation for a single model step \
@@ -2449,8 +2394,6 @@ impl StockExecution<'_> {
             replayed_model
         } else if started {
             let ordinary_attempt = || -> Result<ModelAttempt> {
-                // Only the ordinary provider arm owns an attempt copy. The native SPI
-                // borrows the original retained events above its actual last use.
                 let observed = replayed_model.clone();
                 Ok(ModelAttempt {
                     operation_id: purpose.attempt_operation_with_io(input.operation_id, self.io())?,
@@ -2732,8 +2675,7 @@ impl StockExecution<'_> {
         traced(span, call).await
     }
 
-    /// Resolves one tool invocation against the durable journal, replaying an already
-    /// completed or started attempt exactly once, and appends the resulting message.
+    /// Replays or resolves one tool invocation and appends its message.
     #[allow(
         clippy::too_many_lines,
         reason = "one exactly-once replay-or-execute operation for a single tool call \
@@ -2753,11 +2695,6 @@ impl StockExecution<'_> {
         stock_validate_invocation(&invocation, self.io())?;
         let tool = stock_tool_lookup(&self.tools, &invocation.name, self.io())?;
         stock_tool_support(tool, self.io())?;
-        // Authorization precedes argument validation, and must stay that way. A validation error
-        // describes the tool's pinned input schema, so answering one for a tool the caller was
-        // never granted would let a model probe the contract of an ungranted tool by naming it
-        // with deliberately malformed arguments. An ungranted call is refused on its own terms,
-        // whatever its arguments look like.
         let capability = stock_key(format_args!("tool:call:{}", tool.definition.name), self.io())?;
         if !self.tool_scope().grants().contains(&capability) {
             return Err(if stock_is_native(self.io()) {
@@ -3326,9 +3263,6 @@ async fn stage_bytes(
     bytes: Vec<u8>,
 ) -> Result<FileRef> {
     let expected = crate::conversation::FileDescriptor::from_bytes(&bytes, "application/json")?;
-    // An unpublished staged payload may survive a failed journal append. A
-    // reconciled value at that position may differ; only the journal's exact
-    // append claim chooses the authoritative value, not the orphaned file.
     let payload_key = format!("{key}:{}", blake3::hash(&bytes).to_hex());
     let reference = journal
         .stage(operation_id, payload_key, bytes, "application/json")
@@ -3519,14 +3453,6 @@ async fn verify_model_contents_scoped_with_io<'a>(
     Ok(())
 }
 
-fn validate_model_content_scope(
-    content: &ModelContent,
-    limits: Limits,
-    scope: Option<&RuntimeScope>,
-) -> Result<()> {
-    validate_model_content_scope_with_io(content, limits, scope, None)
-}
-
 fn validate_model_content_scope_with_io(
     content: &ModelContent, limits: Limits, scope: Option<&RuntimeScope>,
     io: Option<&PreparationIo>,
@@ -3580,7 +3506,6 @@ fn validate_model_content_scope_with_io(
 }
 
 /// Finds the canonical base published by this execution's first response step.
-/// The existing journal owns temporal admission; this checks the payload bindings.
 pub async fn canonical_checkpoint_for_operation(
     journal: &dyn ExecutionJournal,
     operation_id: OperationId,
@@ -3651,11 +3576,6 @@ pub async fn load_canonical_checkpoint(
 }
 
 /// Loads a published checkpoint under the receiving admission's read grants and bounds.
-/// Internal checkpoint artifacts remain authenticated by the owning journal;
-/// this scope grants no access to them and must authorize every retained data
-/// and metadata reference. Caller limits may narrow, never widen, this scope.
-/// The returned context can be used as an ordinary context source. Binding it
-/// to a particular conversation cut or fork remains the caller's responsibility.
 pub async fn load_canonical_checkpoint_for_scope(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
@@ -3668,17 +3588,7 @@ pub async fn load_canonical_checkpoint_for_scope(
     load_canonical_checkpoint_scoped(journal, reference, limits, Some(scope), None).await
 }
 
-/// Imports a published checkpoint whose canonical selection is attested within
-/// the supplied owner's event interval. The history reader authenticates the
-/// exact selection through its operation index; no reducer or history replay is
-/// needed. The byte allowance includes the selection's locator and event, while
-/// checkpoint artifacts use the receiving scope's effective file/render limits.
-/// Tail metadata is not charged as encoded event bytes.
-///
-/// This does not add the history after the checkpoint's coverage watermark.
-/// A fork importer must separately preserve that delta up to its pinned cut and
-/// establish receiving read authority; this function supplies neither grants
-/// nor child task admission.
+/// Imports a published checkpoint whose canonical selection is attested within the supplied owner's event interval.
 pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
@@ -3813,17 +3723,6 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
 }
 
 /// Imports a checkpoint and its complete canonical delta through a logical cut.
-/// The selection proof and every delta record share one finite history budget;
-/// all record kinds consume work, while only ordinary model message kinds enter
-/// the projection. Later appends are excluded by the owner's event cursor.
-/// No history is dropped to fit: an oversized delta or unavailable reference
-/// fails explicitly. The old parent's current-input marker is cleared so this
-/// context can contribute messages through an ordinary `SourceStage`.
-///
-/// The supplied resolver must authenticate its original content authority.
-/// Receiving scope checks precede its artifact/manifest reads and also cover
-/// every resolved attachment. This function neither grants access nor captures
-/// a checkpoint in a fork request, publishes a seed, or admits a child task.
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -3941,10 +3840,10 @@ pub(crate) async fn load_canonical_checkpoint_through_with_io<P: acyclic_stream:
                 view
             } else {
                 _view_workspace = None;
-                crate::conversation::ConversationState::selected_view(records)?
+                crate::conversation::ConversationState::selected_view_with_work(records, &mut None).map(|(state, _)| state)?
             }
             #[cfg(not(feature = "filesystem"))]
-            crate::conversation::ConversationState::selected_view(records)?
+            crate::conversation::ConversationState::selected_view_with_work(records, &mut None).map(|(state, _)| state)?
         }
     };
     #[cfg(feature = "filesystem")]
@@ -3990,8 +3889,6 @@ pub(crate) async fn load_canonical_checkpoint_through_with_io<P: acyclic_stream:
         limits,
         io,
     };
-    // Authorize all canonical record references, including non-model records,
-    // before any content resolution. Structured projections use the same gate.
     for message in view.messages() {
         resolver.authorize(&message.content)?;
         match &message.attachments {
@@ -4005,8 +3902,9 @@ pub(crate) async fn load_canonical_checkpoint_through_with_io<P: acyclic_stream:
             }
         }
     }
-    let selected = crate::projection::select_model_context_at_revision_with_io(
+    let selected = crate::projection::select_model_context(
         &view,
+        through_sequence,
         crate::conversation::ModelContextSelection {
             conversation_revision: through_sequence,
             message_ids,
@@ -4060,9 +3958,13 @@ impl CheckpointDeltaResolver<'_> {
     }
 }
 
-impl crate::projection::AttachmentListResolver for CheckpointDeltaResolver<'_> {
+impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'_> {
+    fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, crate::Result<()>> {
+        Box::pin(async { Err(crate::Error::Unsupported("projection-only reader".into())) })
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn resolve_with_native_work<'a>(
+    fn load_manifest_with_native_work<'a>(
         &'a self, manifest: &'a FileRef, item_count: u32,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<Attachment>, acyclic_fs::NativeAllocation)>> {
@@ -4101,7 +4003,7 @@ impl crate::projection::AttachmentListResolver for CheckpointDeltaResolver<'_> {
         self.inner.read_with_native_work(file, maximum_bytes.min(self.limits.render_bytes), work)
     }
 
-    fn resolve<'a>(
+    fn load_manifest<'a>(
         &'a self,
         manifest: &'a FileRef,
         item_count: u32,
@@ -4179,8 +4081,6 @@ pub(crate) async fn load_canonical_checkpoint_scoped(
     let proof =
         load_preparation_json::<crate::context::CompactionReference>(journal, &envelope.compaction, io).await?;
     envelope.validate_projection_with_io(&source, &retained, &proof, limits, io)?;
-    // Publication authenticates the checkpoint; a new admission must still
-    // hold current owner-mediated read grants for every retained payload.
     for file in retained.metadata.values() {
         validate_checkpoint_file(file, limits, io)?;
         if let Some(scope) = scope
@@ -4237,14 +4137,6 @@ fn validate_checkpoint_json_reference(reference: &FileRef, limits: Limits, io: O
     Ok(())
 }
 
-async fn load_model_request(
-    journal: &dyn ExecutionJournal,
-    reference: &FileRef,
-    limits: Limits,
-) -> Result<crate::model::PreparedModelRequest> {
-    load_model_request_with_io(journal, reference, limits, None).await
-}
-
 #[cfg(feature = "filesystem")]
 async fn load_preparation_bytes_with_io(
     journal: &dyn ExecutionJournal, reference: &FileRef, io: &PreparationIo,
@@ -4281,9 +4173,9 @@ pub(crate) async fn load_model_request_with_io(
         let _bytes_hold;
         let bytes = load_preparation_bytes_with_io(journal, reference, io).await?;
         _bytes_hold = io.guard_bytes(&bytes)?;
-        return crate::model::PreparedModelRequest::decode_with_io(&bytes, limits, io);
+        return crate::model::PreparedModelRequest::decode(&bytes, limits, Some(io));
     }
-    crate::model::PreparedModelRequest::decode(&load_json_bytes(journal, reference).await?, limits)
+    crate::model::PreparedModelRequest::decode(&load_json_bytes(journal, reference).await?, limits, None)
 }
 
 async fn load_json_bytes(journal: &dyn ExecutionJournal, reference: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
@@ -4314,7 +4206,7 @@ fn preparation_read_granted(
     let _ = io;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        return crate::runtime::read_granted_measured(grants, file, io);
+        return crate::runtime::read_granted_with_work(grants, file, &mut Some(&mut (io).history_io()));
     }
     crate::runtime::read_granted(grants, file)
 }
@@ -4326,8 +4218,7 @@ pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {}
 #[cfg(not(feature = "filesystem"))]
 impl<T: serde::de::DeserializeOwned + Serialize> PreparationRecord for T {}
 
-/// Typed payload custody. The guard is declared after the value so its logical
-/// allowance is released only after the last owned container has dropped.
+/// Typed payload custody.
 pub(crate) struct LoadedPreparation<'a, T> {
     pub(crate) value: T,
     #[cfg(feature = "filesystem")]
@@ -4367,8 +4258,6 @@ pub(crate) fn reserve_preparation_workspace<'a, T: Serialize>(
     let _encoded_hold;
     let encoded = io.encode_json(value, io.remaining()?.bytes_encoded, false)?;
     _encoded_hold = io.guard_owned(encoded.len() as u64)?;
-    // Measured serializer visits bound concrete slots; eight slots per visit
-    // cover vector slack, paired tool graphs and transient compaction clones.
     let items = io.receipt().items_examined.checked_sub(before_items)
         .ok_or_else(|| Error::Invalid("preparation item accounting underflow".into()))?;
     let slot = [
@@ -4512,10 +4401,6 @@ impl ModelEventAdmission {
             calls: self.calls.iter().cloned().collect(),
             completed: self.completed,
         }
-    }
-
-    pub(crate) fn validate_next(&self, event: &ModelEvent, limits: Limits) -> Result<()> {
-        self.validate_next_with_io(event, limits, None)
     }
 
     pub(crate) fn validate_next_with_io(
@@ -4705,7 +4590,6 @@ mod tests {
             request: &crate::model::PreparedModelRequest,
         ) -> Result<crate::context::ModelTokenCount> {
             self.accounting_calls.fetch_add(1, Ordering::SeqCst);
-            // This synthetic provider defines a token as one UTF-8 byte plus framing.
             let message_tokens = request
                 .request()
                 .messages
@@ -4969,11 +4853,10 @@ mod tests {
             selected_context: None,
             max_steps: 1,
         };
-        executor.ensure_started(&journal, &input).await?;
-        let original = executor.prepared_response(&journal, &input, 0, &[]).await?;
+        StockExecution::ordinary(&executor).ensure_started(&journal, &input).await?;
+        let original = StockExecution::ordinary(&executor).prepared_response(&journal, &input, 0, &[]).await?;
         let counted = provider.accounting_calls.load(Ordering::SeqCst);
-        let recovered = executor
-            .clone()
+        let recovered = StockExecution::ordinary(&executor.clone())
             .prepared_response(&journal, &input, 0, &[])
             .await?;
         assert_eq!(original.bytes(), recovered.bytes());
@@ -5301,8 +5184,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    /// Emits the slip seen in production â€” `parameters` where the pinned schema says `arguments`
-    /// â€” then a well-formed call once it has been told what was wrong.
+    /// Emits the slip seen in production â€” `parameters` where the pinned schema says `arguments` â€” then a well-formed call once it has been told what was wrong.
     struct SlippingModel {
         calls: AtomicUsize,
         requests: Mutex<Vec<ModelRequest>>,
@@ -5495,9 +5377,9 @@ mod tests {
         };
         let journal = Journal::default();
         let previous = Journal::default();
-        base.ensure_started(&previous, &input).await?;
+        StockExecution::ordinary(&base).ensure_started(&previous, &input).await?;
         assert!(matches!(
-            executor.ensure_started(&previous, &input).await,
+            StockExecution::ordinary(&executor).ensure_started(&previous, &input).await,
             Err(Error::Conflict(_))
         ));
         assert!(matches!(
@@ -5556,8 +5438,6 @@ mod tests {
             &self,
             request: &crate::model::PreparedModelRequest,
         ) -> Result<crate::context::ModelTokenCount> {
-            // This recovery fixture's accounting unit is a canonical request
-            // byte. It does not model a production provider's tokenizer.
             Ok(crate::context::ModelTokenCount {
                 request_digest: request.manifest().request_digest,
                 fixed_tokens: u32::try_from(request.bytes().len())
@@ -5634,8 +5514,6 @@ mod tests {
             &self,
             request: &crate::model::PreparedModelRequest,
         ) -> Result<crate::context::ModelTokenCount> {
-            // This recovery fixture's accounting unit is a canonical request
-            // byte. It does not model a production provider's tokenizer.
             Ok(crate::context::ModelTokenCount {
                 request_digest: request.manifest().request_digest,
                 fixed_tokens: u32::try_from(request.bytes().len())
@@ -5736,7 +5614,6 @@ mod tests {
                 ModelContent::Text("x".repeat(4_097)),
                 4_096,
             ),
-            // A valid rendered source still needs to fit its staged file.
             (vec![message(128)], ModelContent::Text("summary".into()), 64),
         ] {
             let limits = Limits {
@@ -6146,13 +6023,12 @@ mod tests {
             selected_context: None,
             max_steps: 1,
         };
-        executor.ensure_started(&journal, &input).await?;
-        let original = executor.prepared_response(&journal, &input, 0, &[]).await?;
+        StockExecution::ordinary(&executor).ensure_started(&journal, &input).await?;
+        let original = StockExecution::ordinary(&executor).prepared_response(&journal, &input, 0, &[]).await?;
         assert_eq!(source.0.load(Ordering::SeqCst), 1);
         assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 0);
-        // Reattach between context publication and the first model admission.
         let reopened = executor.clone();
-        let recovered = reopened.prepared_response(&journal, &input, 0, &[]).await?;
+        let recovered = StockExecution::ordinary(&reopened).prepared_response(&journal, &input, 0, &[]).await?;
         assert_eq!(original.bytes(), recovered.bytes());
         assert_eq!(source.0.load(Ordering::SeqCst), 1);
         assert!(reopened.model_step(&journal, &input, 0, &[]).await.is_err());
@@ -6441,6 +6317,7 @@ mod tests {
                     .lock()
                     .map_err(|_| Error::Storage("test lock".into()))?[0],
                 Limits::default(),
+                None,
             )?
             .request()
             .max_output_tokens,
@@ -6463,7 +6340,6 @@ mod tests {
                 .len(),
             1
         );
-        // Missing admitted bytes fail closed; completed output is no substitute.
         journal
             .1
             .lock()
@@ -6488,6 +6364,7 @@ mod tests {
                 max_output_tokens: Some(4096),
             },
             Limits::default(),
+            None,
         )?;
         let journal = Arc::new(Journal::default());
         let root_file = journal
@@ -6516,13 +6393,12 @@ mod tests {
         executor.execute(input.clone(), journal.as_ref()).await?;
         executor.execute(input.clone(), journal.as_ref()).await?;
         let mut expected = root.request().clone();
-        // An inherited prefix carries history, while the child chooses its budget.
         expected.max_output_tokens = None;
         expected.messages.push(ModelMessage {
             role: ModelRole::User,
             content: input.input.clone(),
         });
-        let expected = crate::model::PreparedModelRequest::prepare(expected, Limits::default())?;
+        let expected = crate::model::PreparedModelRequest::prepare(expected, Limits::default(), None)?;
         assert_eq!(
             *provider
                 .0
@@ -6733,9 +6609,6 @@ mod tests {
                 ));
                 assert_eq!(model.calls.load(Ordering::SeqCst), 1);
                 assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
-                // A retained in-flight tool is uncertainty, even if approval is
-                // subsequently rejected. It cannot become a passive wait or a
-                // terminal result without provider settlement.
                 let reference =
                     stage_json(&journal, input.operation_id, "tool-start", &invocation).await?;
                 journal
@@ -6858,7 +6731,7 @@ mod tests {
             .ok_or_else(|| Error::NotFound("batch continuation".into()))?;
         assert_eq!(
             batch.bytes(),
-            crate::model::PreparedModelRequest::prepare(dispatched, Limits::default())?.bytes()
+            crate::model::PreparedModelRequest::prepare(dispatched, Limits::default(), None)?.bytes()
         );
         let order: Vec<_> = batch
             .request()
@@ -6872,7 +6745,6 @@ mod tests {
             })
             .collect();
         assert_eq!(order, ["call-1", "call-2"]);
-        // Reattach retained journal records and artifacts, without an OS restart.
         let records = journal
             .0
             .lock()
@@ -6944,7 +6816,6 @@ mod tests {
                 length
             );
         }
-        // A completed record with a missing later projection is not a usable boundary.
         let projection = records
             .iter()
             .find_map(|record| match &record.event {
@@ -7050,7 +6921,7 @@ mod tests {
             .ok_or_else(|| Error::NotFound("second model input".into()))?;
         assert_eq!(
             completed_prefix.bytes(),
-            crate::model::PreparedModelRequest::prepare(dispatched, Limits::default())?.bytes()
+            crate::model::PreparedModelRequest::prepare(dispatched, Limits::default(), None)?.bytes()
         );
         assert!(matches!(
             executor
@@ -7068,8 +6939,7 @@ mod tests {
             json!({"value": "changed"}),
         );
         assert!(matches!(
-            executor
-                .resolve_tool_call(
+            StockExecution::ordinary(&executor).resolve_tool_call(
                     &journal,
                     input.operation_id,
                     0,
@@ -7202,7 +7072,7 @@ mod tests {
             .map_err(|_| Error::Storage("journal lock poisoned".into()))?
             .get_mut(&request_key)
             .ok_or_else(|| Error::NotFound("recorded request".into()))?
-            .1 = b"{}".to_vec();
+            .1 = acyclic_stream::OwnedBytes::from_static(b"{}");
         assert!(executor.execute(input.clone(), &reopened).await.is_err());
         reopened
             .1
@@ -7420,9 +7290,6 @@ mod tests {
 
     #[tokio::test]
     async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Result<()> {
-        // Malformed arguments against a registered but ungranted tool must not be answered with a
-        // validation message: that message describes the tool's pinned input schema, so answering
-        // it would let a model map the contract of a tool it may not call.
         let model = Arc::new(SlippingModel {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
@@ -7452,7 +7319,6 @@ mod tests {
             tools,
         )
         .with_tool_authority(
-            // Registered, but this scope grants a different tool.
             RuntimeScope::new(
                 Capabilities::new(["tool:call:example.other"]),
                 Limits::default(),
@@ -7471,7 +7337,6 @@ mod tests {
             matches!(&outcome, Err(Error::Unauthorized(message)) if message.contains("example.echo")),
             "expected an unauthorized refusal, got {outcome:?}"
         );
-        // Nothing about the input contract leaked on the way out.
         let rendered = format!("{outcome:?}");
         assert!(
             !rendered.contains("additionalProperties") && !rendered.contains("failed validation"),
@@ -7492,8 +7357,6 @@ mod tests {
             output_schema: json!({"type": "object"}),
             projection_schema: crate::tool::json_projection_schema(json!({"type": "string"})),
         };
-        // Each retained payload has a valid digest and canonical encoding.
-        // Failures below concern the independently admitted schemas.
         for (canonical, projected, accepted) in [
             (
                 json!({"count": 2}),
@@ -7576,8 +7439,6 @@ mod tests {
 
     #[tokio::test]
     async fn stock_tool_validation_failure_replays_as_terminal_without_redispatch() -> Result<()> {
-        // The executor returns an object. Each case invalidates exactly one
-        // contract, and replay must retain that terminal failure.
         for (output_schema, projection_schema, expected) in [
             (
                 json!({"type":"string"}),
@@ -7719,8 +7580,6 @@ mod tests {
                 Box::pin(async { Err(Error::Unsupported("test observer".into())) })
             }
         }
-        // This observer checks executor calls, not budget semantics. The real
-        // CoordinatorTaskHost test covers the authoritative pinned ceiling.
         let host = Arc::new(DispatchObserver {
             claims: AtomicUsize::new(0),
             owned: std::sync::atomic::AtomicBool::new(true),
@@ -7964,8 +7823,6 @@ mod tests {
             ContextPipeline::default(),
             ToolRegistry::new(),
         );
-        // Exercise the address-width boundary on every platform. On WASM32,
-        // these are the default counts, even when the retained history is tiny.
         executor.limits.model_events_per_step = usize::MAX;
         executor.limits.tool_calls_per_step = usize::MAX;
         let journal = Journal::default();
@@ -8078,8 +7935,6 @@ mod tests {
             arguments: json!({"text":"x".repeat(256)}),
         };
         let adapter = Arc::new(FakeTool(AtomicUsize::new(0)));
-        // This generic adapter accepts the original scope without a TaskContext.
-        // The SDK's effective byte bound must independently stop journal access.
         crate::tool::ToolExecutor::authorize(adapter.as_ref(), Some(&wide), &invocation)?;
         crate::contract::validate_json_byte_bound(&invocation, wide.limits().file_bytes)?;
         let mut tools = ToolRegistry::new();
@@ -8114,8 +7969,7 @@ mod tests {
         let journal = ModelReadSpy::default();
         let mut messages = Vec::new();
         assert!(matches!(
-            executor
-                .settle_tool_call(&journal, OperationId::new(), 0, invocation, &mut messages)
+            StockExecution::ordinary(&executor).settle_tool_call(&journal, OperationId::new(), 0, invocation, &mut messages)
                 .await,
             Err(Error::Invalid(_))
         ));
@@ -8162,16 +8016,13 @@ mod tests {
         let journal = ModelReadSpy::default();
         let mut messages = Vec::new();
         assert!(matches!(
-            base.settle_tool_call(&journal, operation, 0, invocation.clone(), &mut messages)
+            StockExecution::ordinary(&base).settle_tool_call(&journal, operation, 0, invocation.clone(), &mut messages)
                 .await,
             Err(Error::Unauthorized(_))
         ));
-        // A real admitted context without a content binding cannot acquire a writer
-        // from the stock loop's generic tool grants.
         let contextual = base.with_task_context(&context, operation)?;
         assert!(matches!(
-            contextual
-                .settle_tool_call(&journal, operation, 0, invocation, &mut messages)
+            StockExecution::ordinary(&contextual).settle_tool_call(&journal, operation, 0, invocation, &mut messages)
                 .await,
             Err(Error::Unsupported(_))
         ));
@@ -8199,8 +8050,6 @@ mod tests {
                 &self,
                 request: &crate::model::PreparedModelRequest,
             ) -> Result<crate::context::ModelTokenCount> {
-                // This recovery fixture's accounting unit is a canonical request
-                // byte. It does not model a production provider's tokenizer.
                 Ok(crate::context::ModelTokenCount {
                     request_digest: request.manifest().request_digest,
                     fixed_tokens: u32::try_from(request.bytes().len())
@@ -8354,7 +8203,6 @@ mod tests {
             Err(Error::Invalid(_))
         ));
         assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
-        // Read grants alone cannot authenticate a claimed native configuration.
         assert!(matches!(
             verify_model_contents_scoped(
                 &journal,
@@ -8494,7 +8342,6 @@ mod tests {
         ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
             self.journal.interaction_outcome(id)
         }
-        // This spy exercises the real pre-reader scope barrier, not option authentication.
         fn verify_model_content<'a>(
             &'a self,
             content: &'a ModelContent,

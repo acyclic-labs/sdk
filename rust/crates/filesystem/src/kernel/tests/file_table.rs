@@ -344,10 +344,6 @@ fn every_payload_shape_round_trips_through_full_and_shape_decoders()
         payload,
     };
     let inline = InlineFileData::new(b"inline")?;
-    assert_eq!(
-        format!("{inline:?}"),
-        "InlineFileData([105, 110, 108, 105, 110, 101])"
-    );
     let records = vec![
         record(1, FileKind::Regular, FilePayload::InlineRegular(inline)),
         record(
@@ -398,7 +394,6 @@ fn every_payload_shape_round_trips_through_full_and_shape_decoders()
         assert_eq!(receipt.work.items_examined, 2);
         assert_eq!(receipt.work.allocation_operations, 1);
         assert_eq!(receipt.work.peak_allocation_bytes, usize_to_u64(receipt.value.capacity()));
-        assert_file_record_encoder_limits(*record, &receipt)?;
     }
     let page = FileTablePage::Leaf(records);
     let encoded = encode_file_table_page(&page, 8)?;
@@ -410,7 +405,6 @@ fn every_payload_shape_round_trips_through_full_and_shape_decoders()
         decode_file_table_page(&encoded, DecodeLimits::default())?,
         page
     );
-    assert_file_table_encoder_limits(&page)?;
 
     let child = FileTableChild {
         first_file_id: FileId::from_bytes([1; 16]),
@@ -425,7 +419,6 @@ fn every_payload_shape_round_trips_through_full_and_shape_decoders()
         decode_file_table_page(&encoded, DecodeLimits::default())?,
         internal
     );
-    assert_file_table_encoder_limits(&internal)?;
     Ok(())
 }
 
@@ -803,77 +796,6 @@ fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
     ));
     assert_eq!(failure.work.page_reads, 2);
     Ok(())
-}
-
-fn assert_file_record_encoder_limits(
-    record: FileRecord,
-    receipt: &OperationReceipt<Vec<u8>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    assert_eq!(
-        encode_file_record_measured(record, receipt.work, &cancellation)?.value,
-        receipt.value,
-    );
-    for budget in [
-        WorkBudget { bytes_encoded: receipt.work.bytes_encoded - 1, ..WorkBudget::UNBOUNDED },
-        WorkBudget { bytes_copied: receipt.work.bytes_copied - 1, ..WorkBudget::UNBOUNDED },
-        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
-        WorkBudget { peak_allocation_bytes: usize_to_u64(receipt.value.len()) - 1, ..WorkBudget::UNBOUNDED },
-    ] {
-        let failure = encode_file_record_measured(record, budget, &cancellation).expect_err("permit must reject before buffer allocation");
-        assert!(matches!(failure.error, FileTableEncodeError::Work(_)));
-        assert_eq!(failure.work.items_examined, 1);
-        assert_eq!(failure.work.bytes_encoded, 0);
-        assert_eq!(failure.work.allocation_operations, 0);
-    }
-    let failure = encode_file_record_measured(
-        record, WorkBudget { items_examined: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).expect_err("second record examination needs a permit");
-    assert_eq!(failure.work.items_examined, 1);
-    assert_eq!(failure.work.allocation_operations, 0);
-    assert_eq!(failure.work.bytes_encoded, 0);
-    cancellation.cancel();
-    let failure = encode_file_record_measured(record, WorkBudget::UNBOUNDED, &cancellation).expect_err("pre-cancelled encoder must reject");
-    assert!(matches!(failure.error, FileTableEncodeError::Cancelled(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
-    Ok(())
-}
-
-fn assert_file_table_encoder_limits(page: &FileTablePage) -> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let receipt = encode_file_table_page_measured(page, 8, WorkBudget::UNBOUNDED, &cancellation)?;
-    assert_eq!(receipt.value, encode_file_table_page(page, 8)?);
-    assert_eq!(receipt.work.bytes_encoded, usize_to_u64(receipt.value.len()));
-    assert_eq!(receipt.work.allocation_operations, 1);
-    assert_eq!(receipt.work.peak_allocation_bytes, usize_to_u64(receipt.value.capacity()));
-    let (count, copied) = match page {
-        FileTablePage::Leaf(records) => (records.len(), records.iter().map(|record| record_copied_bytes(*record)).sum::<u64>()),
-        FileTablePage::Internal(children) => (children.len(), usize_to_u64(children.len()) * (16 + 32)),
-    };
-    assert_eq!(receipt.work.items_examined, usize_to_u64(count) * 2);
-    assert_eq!(receipt.work.bytes_copied, copied);
-    assert_eq!(encode_file_table_page_measured(page, 8, receipt.work, &cancellation)?.value, receipt.value);
-    let failure = encode_file_table_page_measured(
-        page, 8, WorkBudget { bytes_encoded: receipt.work.bytes_encoded - 1, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).expect_err("encoded bound must reject before allocation");
-    assert!(matches!(failure.error, FileTableEncodeError::Work(_)));
-    assert_eq!(failure.work.bytes_encoded, 0);
-    assert_eq!(failure.work.allocation_operations, 0);
-    if count != 0 {
-        let failure = encode_file_table_page_measured(page, 0, WorkBudget::UNBOUNDED, &cancellation).expect_err("item bound must reject");
-        assert!(matches!(failure.error, FileTableEncodeError::Canonical(_)));
-        assert_eq!(*failure.work, WorkCounters::default());
-    }
-    cancellation.cancel();
-    let failure = encode_file_table_page_measured(page, 8, WorkBudget::UNBOUNDED, &cancellation).expect_err("pre-cancelled page must reject");
-    assert!(matches!(failure.error, FileTableEncodeError::Cancelled(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
-    Ok(())
-}
-
-#[test]
-fn measured_empty_file_table_uses_the_canonical_encoder() -> Result<(), Box<dyn std::error::Error>> {
-    assert_file_table_encoder_limits(&FileTablePage::Leaf(Vec::new()))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

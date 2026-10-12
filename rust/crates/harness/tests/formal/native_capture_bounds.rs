@@ -1,5 +1,4 @@
 //! Solver harness for the exact production capture-admission arithmetic.
-//! OS behavior, durable commits, schemas and path authority are outside this proof.
 
 #[path = "../../src/filesystem/native_capture_bounds.rs"]
 mod production;
@@ -17,8 +16,6 @@ fn accepted_capture_has_finite_control_and_complete_result_allowance() {
         assert!(timeout > 0 && control > 0 && control <= timeout);
         assert!(poll > 0 && poll <= timeout);
         assert!(output > 0 && result > 0);
-        // Express the same safety obligation independently by subtracting the
-        // metadata allowance, with subtraction checked before it is evaluated.
         assert!(result >= 2048);
         assert!(u64::from(output) <= u64::from(result - 2048) / 4);
     } else {

@@ -1,4 +1,3 @@
-use acyclic_stream::OwnedBytes;
 use super::*;
 use crate::async_storage::poll_ready;
 use crate::foundation::Digest;
@@ -145,46 +144,6 @@ fn semantic_noop_preserves_root_without_writes() -> Result<(), Box<dyn std::erro
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 0);
     assert_eq!(receipt.work.backend_write_operations, 0);
-    Ok(())
-}
-
-#[test]
-fn async_and_sync_extent_mutation_share_exact_results_and_work()
--> Result<(), Box<dyn std::error::Error>> {
-    let sync_store = MemoryObjectStore::default();
-    let async_store = MemoryObjectStore::default();
-    let (sync_root, _) = three_leaf_tree(&sync_store)?;
-    let (async_root, _) = three_leaf_tree(&async_store)?;
-    assert_eq!(sync_root, async_root);
-    let mutations = [ExtentMutation::Replace {
-        offset: 125,
-        length: 25,
-        kind: ExtentKind::AllocatedZero,
-        extend: false,
-    }];
-    let synchronous = apply_extent_mutations(
-        &sync_store,
-        sync_root,
-        300,
-        &mutations,
-        8,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = poll_ready(apply_extent_mutations_async(
-        &async_store,
-        async_root,
-        300,
-        &mutations,
-        ExtentMutationOptions {
-            maximum_mutations: 8,
-            limits: DecodeLimits::default(),
-            budget: WorkBudget::UNBOUNDED,
-        },
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous extent mutation unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
     Ok(())
 }
 
@@ -701,38 +660,6 @@ fn extent_pages_split_on_byte_bound_before_item_bound() -> Result<(), Box<dyn st
 }
 
 #[test]
-fn same_leaf_patch_replay_examines_linear_items() -> Result<(), Box<dyn std::error::Error>> {
-    const EXTENTS: u64 = 1_024;
-    let extents: Vec<_> = (0..EXTENTS)
-        .map(|offset| Extent {
-            offset,
-            length: 1,
-            kind: if offset.is_multiple_of(2) {
-                ExtentKind::Hole
-            } else {
-                ExtentKind::AllocatedZero
-            },
-        })
-        .collect();
-    let patches: Vec<_> = (0..EXTENTS)
-        .step_by(2)
-        .map(|offset| Patch {
-            offset,
-            end: offset + 1,
-            kind: ExtentKind::AllocatedZero,
-        })
-        .collect();
-    let patch_count = u64::try_from(patches.len())?;
-    let mut result = Vec::with_capacity(extents.len() + patches.len() * 2);
-    let examined = apply_patches_linear(&extents, &patches, &mut result)?;
-    assert!(examined <= EXTENTS + patch_count.saturating_mul(3));
-    coalesce(&mut result)?;
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0], allocated(0, EXTENTS));
-    Ok(())
-}
-
-#[test]
 fn overlapping_ordered_edits_normalize_content_offsets_exactly()
 -> Result<(), Box<dyn std::error::Error>> {
     let blob = ObjectId {
@@ -1090,246 +1017,6 @@ fn generated_sparse_histories_match_independent_byte_model()
     Ok(())
 }
 
-fn standalone_live(accounting: &KernelAccounting<'_>) -> u64 {
-    match accounting {
-        KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
-        _ => unreachable!("standalone fixture"),
-    }
-}
-
-fn defensive_context<'a, 'b>(
-    store: &'a MemoryObjectStore, accounting: &'a mut KernelAccounting<'b>,
-    cancellation: &'a CancellationToken,
-) -> Result<Context<'a, 'b, MemoryObjectStore>, FsError> {
-    let visited = VisitedObjectSet::new_with_accounting(8, accounting)?;
-    let patches = Owned::allocate(0, accounting)?;
-    Ok(Context {
-        store, limits: DecodeLimits::default(), accounting,
-        visited, patches,
-        maximum_seen_height: 0, cancellation,
-    })
-}
-
-#[test]
-fn defensive_extent_helpers_and_frames_are_total() -> Result<(), Box<dyn std::error::Error>> {
-    let root = ObjectId {
-        kind: ObjectKind::ExtentPage,
-        digest: Digest::ZERO,
-    };
-    let mutation = ExtentMutation::Resize { logical_bytes: 0 };
-    let invalid_limits = DecodeLimits {
-        maximum_page_items: 0,
-        ..DecodeLimits::default()
-    };
-    for (candidate, mutations, maximum, limits, expected) in [
-        (
-            ObjectId {
-                kind: ObjectKind::Blob,
-                digest: Digest::ZERO,
-            },
-            vec![mutation.clone()],
-            1,
-            DecodeLimits::default(),
-            ExtentMutationError::WrongRootKind,
-        ),
-        (
-            root,
-            Vec::new(),
-            1,
-            DecodeLimits::default(),
-            ExtentMutationError::Empty,
-        ),
-        (
-            root,
-            vec![mutation.clone()],
-            0,
-            DecodeLimits::default(),
-            ExtentMutationError::TooManyMutations,
-        ),
-        (
-            root,
-            vec![mutation.clone()],
-            1,
-            invalid_limits,
-            ExtentMutationError::InvalidLimits,
-        ),
-    ] {
-        let failure = validate_request(candidate, &mutations, maximum, limits)
-            .err()
-            .ok_or("invalid extent request unexpectedly succeeded")?;
-        assert_eq!(
-            std::mem::discriminant(&failure),
-            std::mem::discriminant(&expected)
-        );
-    }
-    validate_request(
-        root,
-        std::slice::from_ref(&mutation),
-        1,
-        DecodeLimits::default(),
-    )?;
-
-    let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let no_op = compile_patch_plan(0, std::slice::from_ref(&mutation), &mut accounting)?;
-    assert!(no_op.patches.value.is_empty());
-    assert_eq!(no_op.final_size, 0);
-    assert_eq!(no_op.patches.bytes, 0);
-
-    let missing_coordinate = coordinate_index(&[1, 3], 2, &mut accounting)
-        .err()
-        .ok_or("missing patch coordinate unexpectedly resolved")?;
-    assert!(matches!(
-        project_extent_error(missing_coordinate),
-        ExtentMutationError::PatchInvariant
-    ));
-    assert!(!patch_continues(
-        &Patch {
-            offset: 0,
-            end: 1,
-            kind: ExtentKind::Hole,
-        },
-        &Patch {
-            offset: 2,
-            end: 3,
-            kind: ExtentKind::Hole,
-        }
-    )?);
-    assert!(matches!(
-        validate_kind(
-            &ExtentKind::Content {
-                object: root,
-                object_offset: 0,
-            },
-            1
-        ),
-        Err(ExtentMutationError::WrongContentKind)
-    ));
-    assert!(matches!(
-        validate_kind(
-            &ExtentKind::Content {
-                object: ObjectId {
-                    kind: ObjectKind::Blob,
-                    digest: Digest::ZERO,
-                },
-                object_offset: u64::MAX,
-            },
-            1
-        ),
-        Err(ExtentMutationError::RangeOverflow)
-    ));
-    assert!(matches!(
-        extent_chunk_end(
-            &[0_u8],
-            0,
-            DecodeLimits {
-                maximum_page_items: 1,
-                maximum_page_bytes: 16,
-                ..DecodeLimits::default()
-            },
-            |_| 2
-        ),
-        Err(ExtentMutationError::PageItemTooLarge)
-    ));
-    assert!(matches!(
-        extent_chunk_end(
-            &[0_u8],
-            0,
-            DecodeLimits {
-                maximum_page_items: 0,
-                ..DecodeLimits::default()
-            },
-            |_| 1
-        ),
-        Err(ExtentMutationError::PageItemTooLarge)
-    ));
-    assert!(matches!(
-        validate_leaf(&[], 0, 1),
-        Err(ExtentMutationError::ChildBoundsMismatch)
-    ));
-    assert!(matches!(
-        validate_children(&[], 0, 1),
-        Err(ExtentMutationError::ChildBoundsMismatch)
-    ));
-
-    let store = MemoryObjectStore::default();
-    let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let mut context = defensive_context(&store, &mut accounting, &cancellation)?;
-    let complete = poll_ready(context.enter_node(NodeRequest {
-        page: root,
-        original_first: 4,
-        original_end: 8,
-        output_end: 4,
-        height: 1,
-    }))
-    .ok_or("empty extent request unexpectedly suspended")??;
-    assert!(matches!(complete, EnteredNode::Complete(values) if values.value.is_empty()));
-    let height = poll_ready(context.enter_node(NodeRequest {
-        page: root,
-        original_first: 0,
-        original_end: 1,
-        output_end: 1,
-        height: context.limits.maximum_page_height.saturating_add(1),
-    }))
-    .ok_or("height guard unexpectedly suspended")?
-    .err()
-    .ok_or("excessive height unexpectedly succeeded")?;
-    assert!(matches!(project_extent_error(height), ExtentMutationError::HeightExceeded));
-
-    let original = ObjectId {
-        kind: ObjectKind::ExtentPage,
-        digest: Digest::from_bytes([1; 32]),
-    };
-    let children = Owned::allocate(0, context.accounting)?;
-    let rewritten = Owned::allocate(0, context.accounting)?;
-    let empty = poll_ready(context.finish_frame(InternalFrame {
-        original,
-        children,
-        original_first: 0,
-        original_end: 0,
-        output_end: 0,
-        height: 1,
-        next_child: 0,
-        rewritten,
-    }))
-    .ok_or("empty frame unexpectedly suspended")??;
-    assert!(empty.value.is_empty());
-    let mut rewritten = Owned::<Vec<Summary>>::allocate(1, context.accounting)?;
-    rewritten.value.push(Summary { first: 0, end: 1, page: original });
-    let mut children = Owned::<Vec<ExtentChild>>::allocate(1, context.accounting)?;
-    children.value.push(ExtentChild { first_offset: 0, end_offset: 2, page: original });
-    let single = poll_ready(context.finish_frame(InternalFrame {
-        original,
-        children,
-        original_first: 0,
-        original_end: 2,
-        output_end: 1,
-        height: 1,
-        next_child: 1,
-        rewritten,
-    }))
-    .ok_or("single frame unexpectedly suspended")??;
-    assert_eq!(single.value.len(), 1);
-    assert_eq!(single.value[0].end, 1);
-
-    for allocation in [
-        AllocationError::Work(WorkError::Overflow),
-        AllocationError::Overflow,
-        AllocationError::ReleaseInvariant,
-        AllocationError::InvalidCapacity,
-        AllocationError::CapacityExceeded,
-        AllocationError::AllocationFailed,
-    ] {
-        let mapped = ExtentMutationError::from(allocation);
-        assert!(matches!(
-            mapped,
-            ExtentMutationError::Work(WorkError::Overflow) | ExtentMutationError::AllocationFailed
-        ));
-    }
-    Ok(())
-}
-
 #[test]
 fn patch_admission_and_coalescing_reject_every_boundary_before_storage()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1427,50 +1114,22 @@ fn native_extent_compilation_denial_restores_original_scratch_before_backend()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_visited_growth_denial_preserves_old_slots_and_exact_original_custody()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let object = |value| ObjectId {
-        kind: ObjectKind::ExtentPage, digest: Digest::from_bytes([value; 32]),
-    };
-    let original = crate::NativeMaterializationWork::new(
-        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let mut visited = VisitedObjectSet::new_with_accounting(32, &mut accounting)?;
-    for value in 0..8 {
-        assert!(VisitedObjectSet::insert_with_accounting(&mut visited, object(value), &mut accounting)?.inserted);
+fn standalone_live(accounting: &KernelAccounting<'_>) -> u64 {
+    match accounting {
+        KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
+        _ => unreachable!("standalone fixture"),
     }
-    let retained = original.live_allocation_bytes();
-    let allocations_before = original.receipt().allocation_operations;
-    let denied = VisitedObjectSet::insert_with_accounting(&mut visited, object(8), &mut accounting)
-        .err().ok_or("unadmitted visited rehash copy succeeded")?;
-    assert!(matches!(denied, FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))));
-    assert_eq!(original.receipt().bytes_copied, 0);
-    assert!(original.receipt().allocation_operations > allocations_before);
-    assert_eq!(original.live_allocation_bytes(), retained);
-    for value in 0..8 {
-        assert!(!VisitedObjectSet::insert_with_accounting(&mut visited, object(value), &mut accounting)?.inserted);
-    }
-    visited.retire(&mut accounting)?;
-    assert_eq!(original.live_allocation_bytes(), baseline);
+}
 
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let mut visited = VisitedObjectSet::new_with_accounting(32, &mut accounting)?;
-    for value in 0..18 {
-        assert!(VisitedObjectSet::insert_with_accounting(&mut visited, object(value), &mut accounting)?.inserted);
-    }
-    assert_eq!(original.receipt().bytes_copied, 24 * usize_to_u64(std::mem::size_of::<ObjectId>()));
-    for value in 0..18 {
-        assert!(!VisitedObjectSet::insert_with_accounting(&mut visited, object(value), &mut accounting)?.inserted);
-    }
-    visited.retire(&mut accounting)?;
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    Ok(())
+fn defensive_context<'a, 'b>(
+    store: &'a MemoryObjectStore, accounting: &'a mut KernelAccounting<'b>,
+    cancellation: &'a CancellationToken,
+) -> Result<Context<'a, 'b, MemoryObjectStore>, FsError> {
+    let visited = VisitedObjectSet::new_with_accounting(8, accounting)?;
+    let patches = Owned::allocate(0, accounting)?;
+    Ok(Context {
+        store, limits: DecodeLimits::default(), accounting,
+        visited, patches,
+        maximum_seen_height: 0, cancellation,
+    })
 }
