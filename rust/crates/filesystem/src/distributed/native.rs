@@ -1,25 +1,13 @@
 use super::*;
 
 impl<'a> AuthorityWork<'a> {
-    pub(super) fn operation(work: &AuthorityWork<'a>) -> Result<Self, AuthorityStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = work.original {
-            original.admit(WorkCounters::UNCHARGED)?;
-            work.cancellation
-                .check()
-                .map_err(|_| AuthorityStoreError::Cancelled)?;
-            return Ok(Self::native(original, work.cancellation));
-        }
-        Ok(Self::new(work.remaining()?, work.cancellation))
-    }
-
-    pub(super) fn operation_work(&self) -> Result<AuthorityWork<'a>, AuthorityStoreError> {
+    pub(super) fn operation(&self) -> Result<AuthorityWork<'a>, AuthorityStoreError> {
+        self.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
-            return Ok(AuthorityWork::native(original, self.cancellation));
+            return Ok(Self::native(original, self.cancellation));
         }
-        self.check()?;
-        Ok(AuthorityWork::new(self.remaining()?, self.cancellation))
+        Ok(Self::new(self.remaining()?, self.cancellation))
     }
 
     pub(super) fn absorb(&mut self, child: &AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
@@ -33,17 +21,6 @@ impl<'a> AuthorityWork<'a> {
             .checked_add(delta.peak_allocation_bytes)
             .ok_or(crate::WorkError::Overflow)?;
         self.charge(delta)
-    }
-
-    pub(super) fn is_native(&self) -> bool {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.original.is_some()
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            false
-        }
     }
 
     pub(super) fn record_completed(
@@ -211,7 +188,6 @@ impl<'a> AuthorityWork<'a> {
             }
             error => authority_error(error),
         };
-        let baseline = self.allocations.live_bytes();
         let mut accounting = KernelAccounting::borrowed_standalone(
             &mut self.allocations,
             &mut self.work,
@@ -222,44 +198,24 @@ impl<'a> AuthorityWork<'a> {
         if let Some(original) = self.original {
             accounting = KernelAccounting::native(original, self.cancellation);
         }
+        // Declaration order drops physical storage before its native allocation guard.
         let mut allocation = accounting
             .claim_owned(bytes, u64::from(bytes != 0))
             .map_err(allocation_error)?;
         let mut values = Vec::new();
-        if values.try_reserve_exact(capacity).is_err() {
-            drop(values);
-            accounting
-                .release_owned(&mut allocation, bytes)
-                .map_err(allocation_error)?;
-            return Err(AuthorityStoreError::RejectedStatic(
-                "fork allocation failed",
-            ));
-        }
+        values
+            .try_reserve_exact(capacity)
+            .map_err(|_| AuthorityStoreError::RejectedStatic("fork allocation failed"))?;
         let actual = values
             .capacity()
             .checked_mul(std::mem::size_of::<T>())
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(crate::WorkError::Overflow)?;
-        let result = accounting
+        accounting
             .reconcile_owned(&mut allocation, bytes, actual)
-            .map_err(allocation_error);
+            .map_err(allocation_error)?;
         drop(accounting);
-        let result = result.and_then(|()| self.check());
-        if let Err(error) = result {
-            drop(values);
-            #[cfg(not(target_arch = "wasm32"))]
-            if matches!(allocation, KernelOwnedAllocation::NativeOriginal(_)) {
-                drop(allocation);
-                return Err(error);
-            }
-            self.release(
-                self.allocations
-                    .live_bytes()
-                    .checked_sub(baseline)
-                    .ok_or(crate::WorkError::Overflow)?,
-            )?;
-            return Err(error);
-        }
+        self.check()?;
         match allocation {
             #[cfg(not(target_arch = "wasm32"))]
             KernelOwnedAllocation::NativeOriginal(allocation) => Ok((values, Some(allocation))),
@@ -540,26 +496,6 @@ impl<'a> AuthorityWork<'a> {
         Ok(delta)
     }
 
-    pub(super) fn push<T>(
-        &mut self,
-        values: &mut Vec<T>,
-        value: T,
-    ) -> Result<(), AuthorityStoreError> {
-        self.check()?;
-        if values.len() == values.capacity() {
-            return Err(AuthorityStoreError::RejectedStatic(
-                "fork request exceeded its admitted vector capacity",
-            ));
-        }
-        let delta = WorkCounters {
-            bytes_copied: std::mem::size_of::<T>() as u64,
-            ..WorkCounters::default()
-        };
-        self.admit(delta)?;
-        values.push(value);
-        self.charge(delta)
-    }
-
     pub(super) fn append_record<const N: usize>(
         &mut self,
         mutations: &mut Vec<acyclic_stream::CommitMutation>,
@@ -567,13 +503,14 @@ impl<'a> AuthorityWork<'a> {
         values: [acyclic_stream::OwnedBytes; N],
     ) -> Result<(), AuthorityStoreError> {
         let mut records = self.vec(N)?;
-        for value in values {
-            self.push(&mut records, value)?;
+        records.extend(values);
+        if mutations.len() == mutations.capacity() {
+            return Err(AuthorityStoreError::RejectedStatic(
+                "request exceeded its admitted vector capacity",
+            ));
         }
-        self.push(
-            mutations,
-            acyclic_stream::CommitMutation::Append { path, records },
-        )
+        mutations.push(acyclic_stream::CommitMutation::Append { path, records });
+        Ok(())
     }
 
     pub(super) fn decode_epoch(
@@ -611,30 +548,30 @@ impl<'a> AuthorityWork<'a> {
         step: crate::kernel::ReadAllocationStep,
         invalid: &'static str,
     ) -> Result<(), AuthorityStoreError> {
-        match step {
-            crate::kernel::ReadAllocationStep::BeforeCopy(count) => self.admit(WorkCounters {
-                bytes_copied: count,
+        use crate::kernel::ReadAllocationStep::{BeforeCopy, BeforeHash, Copied, Hashed};
+        let delta = match step {
+            BeforeCopy(bytes) | Copied(bytes) => WorkCounters {
+                bytes_copied: bytes,
                 ..WorkCounters::UNCHARGED
-            }),
-            crate::kernel::ReadAllocationStep::Copied(count) => {
-                self.record_completed(WorkCounters {
-                    bytes_copied: count,
-                    ..WorkCounters::UNCHARGED
-                })
+            },
+            BeforeHash(bytes) | Hashed(bytes) => WorkCounters {
+                bytes_hashed: bytes,
+                ..WorkCounters::UNCHARGED
+            },
+            _ => return Err(authority_corrupt(invalid, self)),
+        };
+        match step {
+            BeforeCopy(_) => self.admit(delta),
+            BeforeHash(_) => {
+                self.check()?;
+                self.admit(delta)
             }
-            crate::kernel::ReadAllocationStep::BeforeHash(count) => self.check().and_then(|()| {
-                self.admit(WorkCounters {
-                    bytes_hashed: count,
-                    ..WorkCounters::UNCHARGED
-                })
-            }),
-            crate::kernel::ReadAllocationStep::Hashed(count) => self
-                .record_completed(WorkCounters {
-                    bytes_hashed: count,
-                    ..WorkCounters::UNCHARGED
-                })
-                .and_then(|()| self.check()),
-            _ => Err(authority_corrupt(invalid, self)),
+            Copied(_) => self.record_completed(delta),
+            Hashed(_) => {
+                self.record_completed(delta)?;
+                self.check()
+            }
+            _ => unreachable!("validated decoder step"),
         }
     }
 
