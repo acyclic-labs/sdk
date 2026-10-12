@@ -148,8 +148,7 @@ async fn sealed_summary_preparation(
         })?;
     let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(
         storage.host.clone(), payload_volume, &issuer.verifier(), &signed, 2_097_152)?);
-    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(),
-        issuer.verifier(), signed.clone(), 2_097_152)?);
+    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(), &signed, 2_097_152, None)?);
     let schema = serde_json::json!({"type":"object"});
     let implementation = Arc::new(SummaryLeaseMachine {
         identity: MachineIdentity { name: "test.summary-preparation".into(), version: "1".into(),
@@ -640,12 +639,7 @@ async fn assert_summary_child_import(
         ]),
     );
     let scope = issuer.root_for_agent(seed.child_agent, "child", grants);
-    let reader = Arc::new(FilesystemContentVerifier::new(
-        storage.host.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        262_144,
-    )?);
+    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(), &scope, 262_144, None)?);
     let mut child = StreamAggregate::open(
         &storage.stream,
         seed.child.clone(),

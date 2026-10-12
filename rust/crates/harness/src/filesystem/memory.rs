@@ -15,7 +15,6 @@ use crate::{
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope},
     executor::{ExecutionJournal, TurnOutput},
     interaction::{InteractionOutcome, InteractionResponse},
-    model::{Model, ModelProvider},
     resources::{GenerationRef, ProviderRef},
     runtime::{ContentBindings, RuntimeScope},
     store::StreamAggregate,
@@ -581,7 +580,7 @@ impl ContentPublisher for MemoryContentPublisher {
             let io = super::PreparationIo::from_budget(budget, cancellation)
                 .map_err(acyclic_fs::OperationFailure::before_work)?;
             let result = async {
-                let persisted = self.files.stage_once_with_io(
+                let persisted = self.files.publish_once(
                     operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await?;
                 self.retain_with_io(&persisted, bytes, &io)?;
                 Ok(persisted)
@@ -606,7 +605,7 @@ impl ContentPublisher for MemoryContentPublisher {
         crate::NativeFutureBundle::new(work, || async move {
             let io = super::PreparationIo::from_native_work(work)?;
             let result: Result<FileRef> = async {
-                let persisted = self.files.stage_once_with_io(
+                let persisted = self.files.publish_once(
                     operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await?;
                 self.retain_with_io(&persisted, bytes, &io)?;
                 Ok(persisted)
@@ -624,7 +623,7 @@ impl ContentPublisher for MemoryContentPublisher {
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = super::PreparationIo::from_native_work(work)?;
-            let persisted = self.files.stage_at_with_io(operation_id, source, bytes, Some(&io), None, None).await?;
+            let persisted = self.files.replace(operation_id, source, bytes, Some(&io), None, None).await?;
             self.retain_with_io(&persisted, bytes, &io)?;
             let custody = io.into_native_custody(super::UploadRecord::logical_owned_bytes(&persisted)?)?;
             Ok((persisted, custody))
@@ -812,12 +811,7 @@ impl MemoryHarnessStorage {
                 action: Action::BindConversation { agent },
             })
             .await?;
-        let input = Arc::new(FilesystemContentVerifier::new(
-            Arc::clone(&host),
-            issuer.verifier(),
-            scope.clone(),
-            maximum_file_bytes,
-        )?);
+        let input = Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(), &scope, maximum_file_bytes, None)?);
         let journal = Arc::new(
             FilesystemExecutionJournal::new(
                 stream.clone(),
@@ -830,13 +824,7 @@ impl MemoryHarnessStorage {
             .with_input_verifier(input.clone()),
         );
         let publisher = Arc::new(MemoryContentPublisher {
-            files: FilesystemContentPublisher::new(
-                Arc::clone(&host),
-                volume.clone(),
-                &issuer.verifier(),
-                &scope,
-                maximum_file_bytes,
-            )?,
+            files: FilesystemContentPublisher::new(Arc::clone(&host), &volume, &issuer.verifier(), &scope, maximum_file_bytes, None)?,
             memory_store: memory_store.clone(),
         });
         Ok(Self {
@@ -1075,12 +1063,7 @@ impl MemoryHarnessStorage {
         &self,
         scope: &Scope,
     ) -> Result<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>> {
-        FilesystemContentVerifier::new(
-            self.host.clone(),
-            self.issuer.verifier(),
-            scope.clone(),
-            self.maximum_file_bytes,
-        )
+        FilesystemContentVerifier::new(self.host.clone(), &self.issuer.verifier(), &scope, self.maximum_file_bytes, None)
     }
 
     /// Resolves an addressable local interaction under a host-issued exact responder grant.

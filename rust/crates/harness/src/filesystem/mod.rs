@@ -113,7 +113,7 @@ pub use recursive::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use recursive::{
-    fork_preparation_request_with_native_work, recursive_fork_source_with_native_work,
+    recursive_fork_source_with_native_work,
     restore_recursive_fork_source_with_native_work,
 };
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -391,73 +391,38 @@ pub struct FilesystemContentVerifier<A, O> {
 }
 
 impl<A, O> FilesystemContentVerifier<A, O> {
-    /// Binds a verified caller scope and an upper bound for each admitted file.
+    /// Authenticates and copies the caller configuration with optional accounting.
     pub fn new(
-        host: Arc<FilesystemHost<A, O>>,
-        verifier: AuthorityVerifier,
-        scope: Scope,
-        maximum_bytes: u64,
+        host: Arc<FilesystemHost<A, O>>, verifier: &AuthorityVerifier,
+        scope: &Scope, maximum_bytes: u64, io: Option<&PreparationIo>,
     ) -> Result<Self> {
-        Self::new_with_io(host, verifier, scope, maximum_bytes, None)
-    }
-
-    pub(crate) fn new_with_io(
-        host: Arc<FilesystemHost<A, O>>,
-        verifier: AuthorityVerifier,
-        scope: Scope,
-        maximum_bytes: u64,
-        io: Option<&PreparationIo>,
-    ) -> Result<Self> {
-        Self::validate_configuration(&verifier, &scope, maximum_bytes, io)?;
-        Ok(Self {
-            host,
-            verifier,
-            scope,
-            maximum_bytes,
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_metadata: None,
-        })
-    }
-
-    /// Newly owned scalar/string payload only; the deployment/keystore Arc is borrowed host authority, not a second owned filesystem.
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        self.scope.logical_owned_bytes()?.checked_add(self.verifier.logical_owned_bytes()?)
-            .ok_or_else(|| Error::Invalid("content verifier ownership overflow".into()))
-    }
-
-    fn validate_configuration(
-        verifier: &AuthorityVerifier, scope: &Scope, maximum_bytes: u64,
-        io: Option<&PreparationIo>,
-    ) -> Result<()> {
         if maximum_bytes == 0 {
             return Err(fork_preparer_io::invalid(io, "content admission limit must be positive"));
         }
-        match io {
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+        verifier.verify_with_work(scope, &mut work)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let verifier = verifier.clone_with_work(&mut work)?;
+        let scope = scope.clone_with_work(&mut work)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
             Some(io) => {
-                let mut observer = io.history_io();
-                let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
-                verifier.verify_with_work(scope, &mut work)
+                io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+                Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
+                    .ok_or_else(|| fork_preparer_io::invalid(Some(io), "content verifier custody underflows"))?)?)
             }
-            None => verifier.verify(scope),
-        }
+            None => None,
+        };
+        Ok(Self { host, verifier, scope, maximum_bytes,
+            #[cfg(not(target_arch = "wasm32"))] _native_metadata })
     }
 
-    /// Authenticates borrowed configuration before copying its SDK metadata.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_with_native_work(
-        host: Arc<FilesystemHost<A, O>>, verifier: &AuthorityVerifier,
-        scope: &Scope, maximum_bytes: u64, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        let io = PreparationIo::from_native_work(work)?;
-        Self::validate_configuration(verifier, scope, maximum_bytes, Some(&io))?;
-        let (verifier, custody) = verifier.clone_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
-        let (scope, custody) = scope.clone_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
-        io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-        let retained = io.owned_bytes()?;
-        let _native_metadata = Some(io.into_native_custody(retained)?);
-        Ok(Self { host, verifier, scope, maximum_bytes, _native_metadata })
+    /// Owned configuration bytes.
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.scope.logical_owned_bytes()?.checked_add(self.verifier.logical_owned_bytes()?)
+            .ok_or_else(|| Error::Invalid("content verifier ownership overflow".into()))
     }
 
     /// Shares the already-funded verifier without copying configuration payloads.
@@ -5237,12 +5202,7 @@ mod tests {
             &volume,
             "messages",
         )?;
-        let delegated_reader = FilesystemContentVerifier::new(
-            host.clone(),
-            verifier.clone(),
-            delegated_scope.clone(),
-            16,
-        )?;
+        let delegated_reader = FilesystemContentVerifier::new(host.clone(), &verifier, &delegated_scope, 16, None)?;
         let (listed_generation, page) = delegated_reader
             .list_private_directory(&volume, "messages", "messages", None, None, 10)
             .await?;
@@ -5473,12 +5433,7 @@ mod tests {
                 &IdempotencyKey::new("attachment-list")?,
             )
             .await?;
-        let verifier = Arc::new(FilesystemContentVerifier::new(
-            Arc::new(host),
-            issuer.verifier(),
-            scope.clone(),
-            4_096,
-        )?);
+        let verifier = Arc::new(FilesystemContentVerifier::new(Arc::new(host), &issuer.verifier(), &scope, 4_096, None)?);
         let stream = StreamClient::new(Arc::new(MemoryStream::default()));
         let mut aggregate =
             StreamAggregate::open(&stream, authority, issuer.verifier(), SchemaRegistry::new())
