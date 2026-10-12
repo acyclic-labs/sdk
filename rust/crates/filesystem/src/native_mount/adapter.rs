@@ -5775,13 +5775,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let result = if let Some(original) = original.as_ref() {
             original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             match range {
-                Some(range) => observer.read_file_range_with_native_work(
+                Some(range) => observer.read_file_range(
                     namespace, range, original, &cancellation,
                 ).await.map(|read| {
                     let capacity = read.logical_owned_bytes();
                     crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity)
                 }),
-                None => observer.read_symbolic_link_with_native_work(
+                None => observer.read_symbolic_link(
                     namespace, original, &cancellation,
                 ).await,
             }.map_err(MountSourceError::Filesystem)
@@ -6472,14 +6472,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         self.runtime.block_on_measured(|| async {
             let output = {
                 use super::lazy::{mount_accept, mount_demand_error, mount_engine_error};
-                let (namespace, cancellation) = owned.carrier.with_work(|work| {
-                    work.check().map_err(mount_demand_error)?;
-                    self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-                    Ok::<_, MountSourceError>((
-                        self.namespace_path(path, work)?, work.cancellation().clone(),
-                    ))
-                })?;
-                let bytes = namespace.retained_bytes();
+                owned.carrier.with_work(|work| work.check().map_err(mount_demand_error))?;
+                self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
+                let cancellation = owned.carrier.cancellation();
+                let (namespace, _allocation) = self.namespace_path(path, owned.carrier)?;
+                let bytes = if _allocation.is_some() { 0 } else { namespace.retained_bytes() };
                 let mut input = NativeCarrierOwned { value: Some(namespace), carrier: &mut *owned.carrier, bytes };
                 let (namespace, carrier) = input.parts();
                 let observation = self.checkout.observe_owned_with_carrier(

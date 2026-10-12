@@ -677,6 +677,7 @@ impl MemoryHarnessStorage {
             Uuid::new_v4().to_string(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
+            &mut None,
         )?;
         let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
         host.create_volume(&volume).await?;
@@ -702,7 +703,7 @@ impl MemoryHarnessStorage {
         );
         let stream = Arc::new(MemoryStream::default());
         let mut aggregate = StreamAggregate::open(
-            &acyclic_stream::StreamClient::new(stream.clone()),
+            &stream,
             conversation.clone(),
             issuer.verifier(&mut None).expect("verifier copy"),
             SchemaRegistry::new(),
@@ -716,7 +717,7 @@ impl MemoryHarnessStorage {
                 scope: scope.clone(),
                 causal_parent: None,
                 action: Action::BindConversation { agent },
-            })
+            }, None, &mut None)
             .await?;
         let input = Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &scope, maximum_file_bytes, None)?);
         let journal = Arc::new(
@@ -841,8 +842,8 @@ impl MemoryHarnessStorage {
         display_name: &str,
     ) -> Result<FileRef> {
         self.publisher
-            .stage(operation_id, path, bytes, media_type, display_name)
-            .await
+            .stage(operation_id, path, bytes, media_type, display_name, None)?
+            .await.map(|(file, _hold)| file)
     }
 
     /// Reads a pinned owner-private version after verifying its descriptor.
@@ -855,7 +856,7 @@ impl MemoryHarnessStorage {
         {
             return Ok(bytes.into());
         }
-        self.content_verifier.read(file).await
+        self.content_verifier.read(file, self.maximum_file_bytes, None)?.await
     }
 
     /// Lazily discovers this agent's private files under its existing signed volume-read grant.
@@ -906,7 +907,7 @@ impl MemoryHarnessStorage {
 
     /// Resolves a pinned reference under an owner-issued signed read scope.
     pub async fn read_delegated(&self, scope: &Scope, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
-        self.delegated_reader(scope)?.read(file).await
+        self.delegated_reader(scope)?.read(file, self.maximum_file_bytes, None)?.await
     }
 
     /// Shares a private subtree with a named agent.

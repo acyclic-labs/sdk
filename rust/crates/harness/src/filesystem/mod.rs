@@ -378,11 +378,11 @@ impl<A, O> FilesystemContentVerifier<A, O> {
         }
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        verifier.verify_with_work(scope, &mut work)?;
+        verifier.verify(scope, &mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let verifier = verifier.clone_with_work(&mut work)?;
-        let scope = scope.clone_with_work(&mut work)?;
+        let verifier = verifier.copy(&mut work)?;
+        let scope = scope.copy(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
             Some(io) => {
@@ -607,7 +607,7 @@ where
                 reason: "directory verifier lacks original native metadata custody",
             });
         }
-        self.verifier.verify_with_native_work(&self.scope, work)?;
+        self.verifier.verify(&self.scope, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
         if volume.provider() != &self.host.provider {
             return Err(Error::NativeBoundary {
@@ -789,7 +789,7 @@ impl NativeFilesystemVerificationBinding {
         verifier: &AuthorityVerifier, scope: &Scope,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        verifier.verify_with_native_work(scope, work)?;
+        verifier.verify(scope, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         let mut observer = crate::store::history::native_work_io(work)
             .map_err(Error::from)?;
         let verifier = verifier.copy(&mut Some(&mut observer))?;
@@ -802,7 +802,7 @@ impl NativeFilesystemVerificationBinding {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "Filesystem verifier belongs to another original resource" });
         }
-        self.verifier.verify_with_native_work(&self.scope, work)
+        self.verifier.verify(&self.scope, &mut Some(&mut crate::store::history::native_work_io(work)?))
     }
 
     fn require_seed(&self, seed: &ForkSeed, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
@@ -1355,7 +1355,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                             if seed.summary.is_none() {
                                 return Err(interaction_host::interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid, "inherited file is not pinned to the selected private generation"));
                             }
-                            let selected = { let io = Some(&io); let descriptor = file.descriptor(); crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((file.volume()).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(file.path(), io)?, crate::filesystem::fork_preparer_io::clone_text(&version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text(file.display_name(), io)?, work)) }?;
+                            let selected = { let io = Some(io); let descriptor = file.descriptor(); crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((file.volume()).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(file.path(), io)?, crate::filesystem::fork_preparer_io::clone_text(&version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text(file.display_name(), io)?, work)) }?;
                             let original = self.host.read_pinned_io(file, self.maximum_inherited_bytes, Some(&io)).await?;
                             let final_bytes = self.host.read_pinned_io(&selected, self.maximum_inherited_bytes, Some(&io)).await?;
                             if original != final_bytes {
@@ -2126,7 +2126,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
                 reason: "parent project controller belongs to another original resource" });
         }
         self.verifier.verify_audience(&self.parent, &mut Some(&mut crate::store::history::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
-        self.verifier.verify_with_native_work(&self.scope, work)?;
+        self.verifier.verify(&self.scope, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         let io = PreparationIo::from_native_work(work)?;
         let prefix = match operation {
             VolumeOperation::Read => "volume:read:",
@@ -2257,7 +2257,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
     ) -> Result<Vec<ReferenceGrant>> {
         self.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
         if let Some(archive) = archive {
-            archive.verify(&self.verifier)?;
+            archive.verify(&self.verifier, &mut None)?;
             if archive.parent() != parent.authority() || archive.parent_revision() != parent.revision() {
                 return Err(Error::Conflict("inherited archive is not the original parent cut".into()));
             }
@@ -2282,7 +2282,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let io = self.require_with_native_work(capability::FORK_PUBLISH, VolumeOperation::Read, work)?;
         if let Some(archive) = archive {
             let mut observer = io.history_io();
-            archive.verify_with_work(&self.verifier, &mut Some(&mut observer))?;
+            archive.verify(&self.verifier, &mut Some(&mut observer))?;
             if archive.parent() != parent.authority() || archive.parent_revision() != parent.revision() {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "inherited archive is not the original parent cut" });
@@ -2384,32 +2384,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                     if manifest_bytes_total > maximum_bytes {
                         return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "inherited attachment manifest exceeds limit"));
                     }
-                    let items = match io {
-                        Some(io) => {
-                            #[cfg(not(target_arch = "wasm32"))]
-                            if let Some(work) = io.original_native_work() {
-                                let (items, custody) = resolver.load_manifest_with_native_work(manifest, *item_count, work)?.await?;
-                                io.absorb_native_custody(custody)?;
-                                items
-                            } else {
-                                let items = io.receive_content(resolver.load_manifest_measured(manifest, *item_count,
-                                    io.remaining()?, io.cancellation()).await)?;
-                                io.retain_owned(crate::conversation::manifest_owned_bytes(&items, items.capacity())?)?;
-                                items
-                            }
-                            #[cfg(target_arch = "wasm32")]
-                            {
-                                let items = io.receive_content(resolver.load_manifest_measured(manifest, *item_count,
-                                    io.remaining()?, io.cancellation()).await)?;
-                                io.retain_owned(crate::conversation::manifest_owned_bytes(&items, items.capacity())?)?;
-                                items
-                            }
-                        }
-                        None => {
-                            let bytes = resolver.read(manifest).await?;
-                            decode_attachment_manifest(manifest, &bytes, None, None)?
-                        }
-                    };
+                    let (items, _items_hold) = crate::conversation::load_manifest(resolver, manifest, *item_count, io).await?;
                     if items.len() != *item_count as usize {
                         return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "inherited attachment manifest count mismatch"));
                     }
@@ -2432,16 +2407,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         }
         if let Some(io) = io {
             for file in direct.values().chain(member.values().map(|(_, file)| file)) {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.original_native_work() {
-                    resolver.verify_with_native_work(file, maximum_bytes, work)?.await?;
-                } else {
-                    io.receive_content(resolver.verify_measured(file, maximum_bytes,
-                        io.remaining()?, io.cancellation()).await)?;
-                }
-                #[cfg(target_arch = "wasm32")]
-                io.receive_content(resolver.verify_measured(file, maximum_bytes,
-                    io.remaining()?, io.cancellation()).await)?;
+                resolver.verify(file, maximum_bytes, Some(io))?.await?;
             }
             io.claim(((attached_agents.len() + 1) * std::mem::size_of::<AgentId>()) as u64)?;
         }
@@ -2581,7 +2547,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 through_sequence, attached_agents: attached, message_digest,
             }
         } else {
-            InheritedConversationPrefix::select(self.parent.clone(), parent.revision(), through_sequence, attached_agents, history)?
+            InheritedConversationPrefix::select(self.parent.clone(), parent.revision(), through_sequence, attached_agents, history, &mut None)?
         };
         let (reference_grants, attachment_manifests) = Self::collect_inherited_reference_grants(
             history, child_agent, attached_agents, through_sequence, maximum_bytes,
@@ -2594,7 +2560,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "inherited context exceeds byte limit"));
         }
         let path = ".system/inherited-conversation/prefix.json";
-        let descriptor = FileDescriptor::from_bytes(&bytes, "application/vnd.acyclic.harness.inherited-conversation+json", io)?;
+        let descriptor = crate::executor::with_history_io(io, |work| FileDescriptor::from_bytes(&bytes, "application/vnd.acyclic.harness.inherited-conversation+json", work))?;
         let workspace = fork_preparer_io::content_workspace(&self.host.provider, child_private, io)?;
         let committed = if let Some(prior) = fork_preparer_io::operation_generation(self.host, &workspace, idempotency_key, io).await? {
             let original = fork_preparer_io::generation_ref(self.host, &prior, io)?;
