@@ -1035,7 +1035,7 @@ impl NativePreparationRoot {
         let (operation_directory, mut operation_custody) = work.path(operation_directory, None)?;
         custody.absorb(&mut operation_custody)?;
         let meter = work.clone();
-        acyclic_native_runtime::run_blocking_io_measured(move || {
+        acyclic_native_runtime::run_blocking_io(move || {
             let backend = acyclic_fs::NativeTreeMaterializationBackend::new(root, operation_directory, Some(custody), meter.clone(), false)?;
             backend.require_initial_empty()?;
             let expected_identity = acyclic_fs::NativeRootIdentity::from_bytes(
@@ -1049,7 +1049,7 @@ impl NativePreparationRoot {
             let (operation_directory, mut operation_custody) = meter.path(backend.operation_directory_path(), None)?;
             custody.absorb(&mut operation_custody)?;
             Ok::<_, Error>((Self { root, operation_directory, expected_identity, expected_preparation_identity }, custody))
-        }, work.runtime_meter_owner())
+        }, Some((work.runtime_meter_owner(), false)))
             .map_err(|error| Error::from(work.runtime_error(error)))?
             .await.map_err(|error| Error::from(work.runtime_error(error)))?
         })
@@ -2401,9 +2401,9 @@ async fn native_backend(
     let (operation_directory, mut operation_custody) = work.path(&allocation.operation_directory, None)?;
     custody.absorb(&mut operation_custody)?;
     let meter = work.clone();
-    let backend = acyclic_native_runtime::run_blocking_io_measured(move || {
+    let backend = acyclic_native_runtime::run_blocking_io(move || {
         acyclic_fs::NativeTreeMaterializationBackend::new(root, operation_directory, Some(custody), meter, false)
-    }, work.runtime_meter_owner())
+    }, Some((work.runtime_meter_owner(), false)))
         .map_err(|error| Error::from(work.runtime_error(error)))?
         .await.map_err(|error| Error::from(work.runtime_error(error)))??;
     if require_original && (backend.allocation_identity() != Some(allocation.expected_identity.to_bytes())

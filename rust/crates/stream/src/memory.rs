@@ -15,7 +15,7 @@ use tokio::sync::{RwLock, watch};
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::{
     NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
-    OwnedNativeByteReservation, OwnedNativeOperationReservation, ReadAllocation,
+    ReadAllocation,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
@@ -84,7 +84,7 @@ pub(crate) struct MemoryOutput<T> {
 
 struct MemoryByteReservation<'a> {
     #[cfg(not(target_arch = "wasm32"))]
-    reservation: Option<NativeByteReservation<'a>>,
+    reservation: Option<NativeByteReservation<&'a dyn NativeReadMeter>>,
     #[cfg(target_arch = "wasm32")]
     _observer: &'a MemoryObserver,
 }
@@ -768,10 +768,10 @@ impl MemoryStream {
             let key = request.idempotency_key.0.clone();
             let replay_entry = observer.adopt(std::mem::size_of::<(OwnedBytes, Arc<Replay>)>())?;
             let commit_entry = observer.adopt(std::mem::size_of::<(CommitId, Arc<Replay>)>())?;
-            let write_operation = OwnedNativeOperationReservation::new(
+            let write_operation = NativeOperationReservation::new(
                 Arc::clone(&meter), NativeOperationKind::Write, 1,
             )?;
-            let write_bytes = OwnedNativeByteReservation::new(
+            let write_bytes = NativeByteReservation::new(
                 Arc::clone(&meter), NativeOperationKind::Write, maximum,
             )?;
             // Bound request, state, and preallocated output visits.
@@ -804,10 +804,10 @@ impl MemoryStream {
         };
         let target = append.path.clone();
         let start = append.start;
-        let read_operation = OwnedNativeOperationReservation::new(
+        let read_operation = NativeOperationReservation::new(
             Arc::clone(&meter), NativeOperationKind::Read, 1,
         )?;
-        let read_bytes = OwnedNativeByteReservation::new(
+        let read_bytes = NativeByteReservation::new(
             Arc::clone(&meter), NativeOperationKind::Read, prepared.maximum,
         )?;
         // Bound lookup, output slots, and comparisons against two held conditions.
@@ -1382,8 +1382,8 @@ pub(crate) struct NativeMemoryPreparedCommit {
     observations: [PreparedPathObservation; 2],
     key: OwnedBytes,
     reservation: Option<PreparedCapacityReservation>,
-    write_operation: OwnedNativeOperationReservation,
-    write_bytes: OwnedNativeByteReservation,
+    write_operation: NativeOperationReservation<Arc<dyn NativeReadMeter>>,
+    write_bytes: NativeByteReservation<Arc<dyn NativeReadMeter>>,
     meter: Arc<dyn NativeReadMeter>,
     maximum: usize,
     replay_entry: MemoryAllocation,
@@ -1399,8 +1399,8 @@ struct NativeMemoryPreparedRecovery {
     target: StreamPath,
     start: u64,
     maximum: usize,
-    read_operation: OwnedNativeOperationReservation,
-    read_bytes: OwnedNativeByteReservation,
+    read_operation: NativeOperationReservation<Arc<dyn NativeReadMeter>>,
+    read_bytes: NativeByteReservation<Arc<dyn NativeReadMeter>>,
     meter: Arc<dyn NativeReadMeter>,
 }
 

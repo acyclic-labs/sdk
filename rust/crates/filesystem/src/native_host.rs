@@ -258,7 +258,7 @@ fn sync_held_descriptor_once(file: &impl std::os::windows::io::AsRawHandle) -> i
 fn charge_buffer<W: crate::demand::SourceDemandReadWork>(work: &mut W, bytes: u64, copied: u64, encoded: u64) -> Result<(), DemandError> {
     let delta = WorkCounters { bytes_copied: copied, bytes_encoded: encoded, ..WorkCounters::UNCHARGED };
     work.check()?;
-    work.preflight(delta)?;
+    work.admit(delta)?;
     work.allocate(bytes)?;
     work.record(delta)?;
     Ok(())
@@ -2759,7 +2759,7 @@ impl LinuxMetadataTarget {
                 let mut readback = vec![0_u8; length];
                 let result = (|| {
                     work.check()?;
-                    work.preflight(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
+                    work.admit(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
                     native_read_with_work(work)?;
                     // SAFETY: the output buffer is writable for its full length.
                     let read = unsafe { libc::getxattr(pinned.as_ptr(), name.as_ptr(),
@@ -4911,7 +4911,7 @@ impl HostRoot {
                 let staged = std::sync::Arc::new(
                     acyclic_native_runtime::run_blocking_io(move || {
                         StagedWindowsFile::create(parent)
-                    })
+                    }, None).expect("unmetered task construction cannot fail")
                     .await??,
                 );
                 copy_windows_file_worker(&source_root, &source, &staged, &sender).await?;
@@ -4922,7 +4922,7 @@ impl HostRoot {
                     let result = staged.publish(&name);
                     drop(staged);
                     result
-                })
+                }, None).expect("unmetered task construction cannot fail")
                 .await?
             })
             .await;
@@ -5160,7 +5160,7 @@ impl MacMetadataTarget {
                 let mut readback = vec![0_u8; length];
                 let result = (|| {
                     work.check()?;
-                    work.preflight(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
+                    work.admit(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
                     native_read_with_work(work)?;
                     // SAFETY: readback is writable for its whole length.
                     let read = unsafe { libc::fgetxattr(fd, name.as_ptr(),
@@ -6385,7 +6385,7 @@ async fn copy_windows_file_worker(
         let identity = crate::NativeRootIdentity::from_file(&source)?;
         let length = source.metadata()?.len();
         Ok::<_, io::Error>((source, identity, length))
-    })
+    }, None).expect("unmetered task construction cannot fail")
     .await??;
     if receiver.is_closed() {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"));
@@ -6402,7 +6402,7 @@ async fn copy_windows_file_worker(
                 open_windows_clone_source(&clone_source, &clone_source_path, Some(identity))?;
             let mut target = clone_target.open_writer(false)?;
             clone_windows_file_into(&mut source, &mut target, length)
-        })
+        }, None).expect("unmetered task construction cannot fail")
         .await??
         {
             return Ok(());
@@ -6413,11 +6413,11 @@ async fn copy_windows_file_worker(
     }
     let writer = std::sync::Arc::clone(staged);
     let destination =
-        acyclic_native_runtime::run_blocking_io(move || writer.open_writer(true)).await??;
+        acyclic_native_runtime::run_blocking_io(move || writer.open_writer(true), None).expect("unmetered task construction cannot fail").await??;
     // SAFETY: both handles were opened with FILE_FLAG_OVERLAPPED and are transferred once; no independent I/O is performed after this point.
-    let source = unsafe { NativeFile::from_overlapped_file_unchecked(source)? };
+    let source = unsafe { NativeFile::from_overlapped_file_unchecked(source, None).map_err(|(error, _)| error)? };
     // SAFETY: as above.
-    let destination = unsafe { NativeFile::from_overlapped_file_unchecked(destination)? };
+    let destination = unsafe { NativeFile::from_overlapped_file_unchecked(destination, None).map_err(|(error, _)| error)? };
     let mut offset = 0_u64;
     while offset < length {
         if receiver.is_closed() {
@@ -6828,7 +6828,7 @@ fn windows_copy_tail_measured<W: crate::demand::SourceDemandReadWork>(source: &F
     let mut consumed = 0usize;
     while consumed < buffer.len() {
         let length = buffer.len() - consumed;
-        work.preflight(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
+        work.admit(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
         native_read_with_work(work)?;
         let position = i64::try_from(offset.checked_add(consumed as u64).ok_or(crate::WorkError::Overflow)?).map_err(|_| crate::WorkError::Overflow)?;
         let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
@@ -7214,7 +7214,7 @@ fn native_device_control_measured<W: crate::demand::SourceDemandReadWork>(
     file: &File, code: u32, input: &[u8], output: &mut [u8], work: &mut W,
 ) -> Result<usize, DemandError> {
     work.with_native_read_meter(|meter| {
-        acyclic_native_runtime::device_control_in_place_measured(file, code, input, output, meter)
+        acyclic_native_runtime::device_control_in_place(file, code, input, output, Some((meter, acyclic_native_runtime::NativeOperationKind::Read)))
     }).map_err(|error| {
         work.with_original_leaf(|original| original.take_native_io_failure())
             .unwrap_or_else(|| crate::demand::native_demand_error(error))
@@ -7581,7 +7581,7 @@ mod macos_metadata_tests {
                 let executor_progressed = release_rx.recv_timeout(Duration::from_secs(2)).is_ok();
                 target.apply(FileMetadata::default())?;
                 Ok::<_, MacMetadataError>(executor_progressed)
-            })
+            }, None).expect("unmetered task construction cannot fail")
             .await
         });
         tokio::task::spawn_blocking(move || started_rx.recv_timeout(Duration::from_secs(2)))
@@ -8511,15 +8511,15 @@ mod windows_clone_tests {
         let path = Path::new("overlapped.bin");
         let file = root.create_overlapped_file(path)?;
         // SAFETY: HostRoot used FILE_FLAG_OVERLAPPED and this new handle is transferred directly, with no other I/O or completion-port owner.
-        let native = unsafe { NativeFile::from_overlapped_file_unchecked(file)? };
-        native.set_len_async(8).await?;
+        let native = unsafe { NativeFile::from_overlapped_file_unchecked(file, None).map_err(|(error, _)| error)? };
+        native.set_len_async(8, None).expect("unmetered unit construction cannot fail").await?;
         native
             .write_all_batch_async(vec![OwnedWrite {
                 offset: 2,
                 bytes: Bytes::from_static(b"abc"),
             }])
             .await?;
-        native.sync_async(Durability::Full).await?;
+        native.sync_async(Durability::Full, None).expect("unmetered unit construction cannot fail").await?;
         assert_eq!(
             std::fs::read(directory.path().join(path))?,
             b"\0\0abc\0\0\0"

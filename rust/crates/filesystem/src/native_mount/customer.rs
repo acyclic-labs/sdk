@@ -608,7 +608,7 @@ where
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async(crate::PublicationPermit::Unrestricted)
+            .sync_async(crate::PublicationPermit::Unrestricted, None).expect("unmetered unit construction cannot fail")
             .await
             .map_err(MountLifecycleError::Source)?;
         Ok(())
@@ -621,7 +621,7 @@ where
     ) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async(permit)
+            .sync_async(permit, None).expect("unmetered unit construction cannot fail")
             .await
             .map_err(MountLifecycleError::Source)
     }

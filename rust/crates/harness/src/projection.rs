@@ -394,20 +394,8 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
                 )));
             }
         };
-        // This projection explicitly selects native image intent without conversion.
-        let native_image = || -> Result<FileProjectionPolicy> {
-            projection_allocation(std::mem::size_of::<crate::model::NativeMediaPolicy>() as u64, io)?;
-            Ok(FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
-                intent: crate::model::NativeMediaIntent::Image {
-                    detail: crate::model::ImageDetail::Auto,
-                },
-                maximum_bytes: DEFAULT_PROJECTION_MAX_RESOLVED_BYTES,
-                maximum_work: maximum_render_bytes,
-                configuration: None,
-            })))
-        };
         let primary_policy = match message.content.descriptor().media_type() {
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => native_image()?,
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => projection_native_image(maximum_render_bytes, io)?,
             kind if kind.starts_with("text/")
                 && message.content.descriptor().byte_length() <= maximum_render_bytes =>
             {
@@ -415,11 +403,6 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             }
             _ => FileProjectionPolicy::Reference,
         };
-        if let ReferencedAttachments::Manifest { item_count, .. } = &message.attachments
-            && (*item_count as usize) > maximum_attachments
-        {
-            return Err(projection_invalid(io, "selected message exceeds attachment projection limit"));
-        }
         let attachments = resolve_projection_attachments(message, resolver, maximum_attachments, io).await?;
         let projected_count = attachments.as_slice().len().min(maximum_projected_attachments);
         let omitted_count = attachments.as_slice().len() - projected_count;
@@ -429,17 +412,7 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             file: crate::model::clone_file(&message.content, io)?,
             policy: primary_policy,
         });
-        for file in attachments.into_projected(projected_count, io)? {
-            let file = file?;
-            let policy = match file.descriptor().media_type() {
-                "image/png" | "image/jpeg" | "image/gif" | "image/webp" => native_image()?,
-                _ => FileProjectionPolicy::Reference,
-            };
-            parts.push(ModelContentPart::File {
-                file,
-                policy,
-            });
-        }
+        attachments.append_projected(projected_count, &mut parts, maximum_render_bytes, io)?;
         if omitted_count > 0 {
             let text = projection_omission_text(omitted_count, io)?;
             parts.push(ModelContentPart::Text { text });
@@ -772,87 +745,76 @@ impl ProjectionAttachments<'_> {
     }
 }
 
-enum ProjectionFileSource<'a> {
-    Borrowed(std::iter::Take<std::slice::Iter<'a, Attachment>>),
-    Owned(std::iter::Take<std::vec::IntoIter<Attachment>>),
-}
-
-struct ProjectionFiles<'a> {
-    source: ProjectionFileSource<'a>,
-    io: Option<&'a crate::executor::PreparationIo>,
-    move_files: bool,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _retired: Option<acyclic_fs::NativeAllocation>,
-}
-
-impl<'a> ProjectionAttachments<'a> {
-    fn into_projected(
-        self, count: usize, io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<ProjectionFiles<'a>> {
-        match self {
-            Self::Borrowed(items) => Ok(ProjectionFiles {
-                source: ProjectionFileSource::Borrowed(items.iter().take(count)),
-                io, move_files: false,
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                _retired: None,
-            }),
-            Self::Owned(items) => Ok(ProjectionFiles {
-                source: ProjectionFileSource::Owned(items.into_iter().take(count)),
-                io, move_files: io.is_none(),
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                _retired: None,
-            }),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::Native(value, guard) => {
-                let mut custody = guard;
-                let items = value;
-                let same_ledger = io.and_then(crate::executor::PreparationIo::original_native_work)
-                    .is_some_and(|work| work.shares_ledger(custody.work()));
-                if same_ledger {
-                    let io = io.expect("same-ledger output owner");
-                    let mut retained = 0_u64;
-                    for attachment in items.iter().take(count) {
-                        projection_step(Some(io), 1)?;
-                        retained = retained.checked_add(attachment.file.logical_owned_bytes()?)
-                            .ok_or_else(|| projection_invalid(Some(io), "projected file ownership overflows"))?;
-                    }
-                    let output = custody.split_off(retained)
-                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    io.absorb_native_custody(output)?;
+impl ProjectionAttachments<'_> {
+    fn append_projected(
+        self, count: usize, parts: &mut Vec<ModelContentPart>, maximum_render_bytes: u64,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let mut append = |file: FileRef| -> Result<()> {
+            let policy = match file.descriptor().media_type() {
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp" =>
+                    projection_native_image(maximum_render_bytes, io)?,
+                _ => FileProjectionPolicy::Reference,
+            };
+            parts.push(ModelContentPart::File { file, policy });
+            Ok(())
+        };
+        // Declare custody first so attachment storage drops before its guard.
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut custody = None;
+        let items = match self {
+            Self::Borrowed(items) => {
+                for attachment in items.iter().take(count) {
+                    projection_step(io, 1)?;
+                    validate_projection_attachment(attachment, io)?;
+                    append(crate::model::clone_file(&attachment.file, io)?)?;
                 }
-                Ok(ProjectionFiles {
-                    source: ProjectionFileSource::Owned(items.into_iter().take(count)),
-                    io, move_files: same_ledger, _retired: Some(custody),
-                })
+                return Ok(());
+            }
+            Self::Owned(items) => items,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::Native(items, guard) => { custody = Some(guard); items }
+        };
+        #[allow(unused_mut)]
+        let mut move_files = io.is_none();
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(custody) = custody.as_mut() {
+            move_files = io.and_then(crate::executor::PreparationIo::original_native_work)
+                .is_some_and(|work| work.shares_ledger(custody.work()));
+            if move_files {
+                let io = io.expect("same-ledger output owner");
+                let mut retained = 0_u64;
+                for attachment in items.iter().take(count) {
+                    projection_step(Some(io), 1)?;
+                    retained = retained.checked_add(attachment.file.logical_owned_bytes()?)
+                        .ok_or_else(|| projection_invalid(Some(io), "projected file ownership overflows"))?;
+                }
+                let output = custody.split_off(retained)
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                io.absorb_native_custody(output)?;
             }
         }
+        for attachment in items.into_iter().take(count) {
+            projection_step(io, 1)?;
+            validate_projection_attachment(&attachment, io)?;
+            let file = if move_files { attachment.file }
+                else { crate::model::clone_file(&attachment.file, io)? };
+            append(file)?;
+        }
+        Ok(())
     }
 }
 
-impl Iterator for ProjectionFiles<'_> {
-    type Item = Result<FileRef>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match &mut self.source {
-            ProjectionFileSource::Borrowed(items) => {
-                let attachment = items.next()?;
-                Some((|| {
-                    projection_step(self.io, 1)?;
-                    validate_projection_attachment(attachment, self.io)?;
-                    crate::model::clone_file(&attachment.file, self.io)
-                })())
-            }
-            ProjectionFileSource::Owned(items) => {
-                let attachment = items.next()?;
-                Some((|| {
-                    projection_step(self.io, 1)?;
-                    validate_projection_attachment(&attachment, self.io)?;
-                    if self.move_files { Ok(attachment.file) }
-                    else { crate::model::clone_file(&attachment.file, self.io) }
-                })())
-            }
-        }
-    }
+fn projection_native_image(
+    maximum_work: u64, io: Option<&crate::executor::PreparationIo>,
+) -> Result<FileProjectionPolicy> {
+    projection_allocation(std::mem::size_of::<crate::model::NativeMediaPolicy>() as u64, io)?;
+    Ok(FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
+        intent: crate::model::NativeMediaIntent::Image { detail: crate::model::ImageDetail::Auto },
+        maximum_bytes: DEFAULT_PROJECTION_MAX_RESOLVED_BYTES,
+        maximum_work,
+        configuration: None,
+    })))
 }
 
 async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized>(

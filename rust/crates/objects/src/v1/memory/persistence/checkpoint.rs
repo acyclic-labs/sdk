@@ -80,13 +80,13 @@ impl Journal {
                 self.checkpoint_fault(3).map_err(|_| Error::from(Unavailable))?;
                 if let Err(error) = self.root.replace_journal(|| {
                     match &publication.meter {
-                        Some(meter) => acyclic_native_runtime::durable_rename_measured(
+                        Some(meter) => acyclic_native_runtime::durable_rename(
                             &temporary.path, &destination.path,
-                            acyclic_native_runtime::RenameMode::Replace, meter,
+                            acyclic_native_runtime::RenameMode::Replace, Some(meter),
                         ),
                         None => acyclic_native_runtime::durable_rename(
                             &temporary.path, &destination.path,
-                            acyclic_native_runtime::RenameMode::Replace,
+                            acyclic_native_runtime::RenameMode::Replace, None,
                         ),
                     }
                 }) {

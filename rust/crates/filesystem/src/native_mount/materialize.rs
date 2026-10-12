@@ -1441,8 +1441,8 @@ async fn restore_io<T: Send + 'static>(
         let _restore_lock = lock;
         operation(&mut NativeSourceWork::new(&work))
     };
-    let task = acyclic_native_runtime::run_blocking_io_measured(
-        crate::obs::in_context(context, operation), observer,
+    let task = acyclic_native_runtime::run_blocking_io(
+        crate::obs::in_context(context, operation), Some((observer, false)),
     ).map_err(|error| materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(error)))?;
     task.await.map_err(|error| {
         materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(error))
@@ -1594,7 +1594,7 @@ fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::NativeMateri
         let digits = |value: u64| if value == 0 { 1 } else { value.ilog10() as usize + 1 };
         let bytes = ".acyclic-restore-".len() + digits(u64::from(process)) + 1 + digits(sequence);
         let delta = WorkCounters { bytes_encoded: bytes as u64, ..WorkCounters::UNCHARGED };
-        work.preflight(delta).map_err(restore_demand_error)?;
+        work.admit(delta).map_err(restore_demand_error)?;
         let allocation = allocation_work.claim(bytes as u64).map_err(materialize_native_error)?;
         let mut name = String::with_capacity(bytes);
         write!(name, ".acyclic-restore-{process}-{sequence}").map_err(|_| MaterializeError::InvalidPath)?;
@@ -1648,7 +1648,7 @@ fn restore_artifact_name(prefix: &str, relative: &Path, work: &mut impl crate::d
     }
     let bytes = prefix.len().checked_add(64).ok_or(WorkError::Overflow)?;
     let delta = WorkCounters { bytes_encoded: bytes as u64, ..WorkCounters::UNCHARGED };
-    work.preflight(delta).map_err(restore_demand_error)?;
+    work.admit(delta).map_err(restore_demand_error)?;
     work.allocate(bytes as u64).map_err(restore_demand_error)?;
     let mut name = String::with_capacity(bytes);
     if write!(name, "{prefix}{}", hasher.finalize().to_hex()).is_err() {
@@ -1715,7 +1715,7 @@ fn create_restore_witness(parent: &HostRoot, name: &Path, contents: &[u8], work:
     ).map_err(restore_demand_error)?;
     let mut remaining = contents;
     while !remaining.is_empty() {
-        work.preflight(WorkCounters { output_bytes: remaining.len() as u64, backend_write_operations: 1, ..WorkCounters::UNCHARGED })
+        work.admit(WorkCounters { output_bytes: remaining.len() as u64, backend_write_operations: 1, ..WorkCounters::UNCHARGED })
             .map_err(restore_demand_error)?;
         work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
         match file.write(remaining) {
@@ -1746,7 +1746,7 @@ fn validate_restore_witness(parent: &HostRoot, name: &Path, expected: &[u8], wor
     let bound = expected.len().checked_add(1).filter(|bound| *bound <= contents.len()).ok_or(MaterializeError::InvalidOptions)?;
     let mut read = 0;
     while read < bound {
-        work.preflight(WorkCounters { source_bytes_read: (bound - read) as u64, backend_read_operations: 1, ..WorkCounters::UNCHARGED })
+        work.admit(WorkCounters { source_bytes_read: (bound - read) as u64, backend_read_operations: 1, ..WorkCounters::UNCHARGED })
             .map_err(restore_demand_error)?;
         work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
         match file.read(&mut contents[read..bound]) {
@@ -2005,13 +2005,13 @@ where
                 {
                     generation_action(before_effect, receipt, NativeMaterializationActionPhase::Before).await?;
                     let meter = receipt.native_meter();
-                    let control = receipt.runtime_result(file.control_bounded_async(mark_sparse_measured, meter))?;
+                    let control = receipt.runtime_result(file.control_async(|file, meter| mark_sparse_measured(file, meter.expect("metered control")), Some(meter)))?;
                     receipt.runtime_result(control.await)?;
                     generation_action(before_effect, receipt, NativeMaterializationActionPhase::Completed).await?;
                 }
                 generation_action(before_effect, receipt, NativeMaterializationActionPhase::Before).await?;
                 let meter = receipt.native_meter();
-                let resize = receipt.runtime_result(file.set_len_bounded_async(logical_bytes, meter))?;
+                let resize = receipt.runtime_result(file.set_len_async(logical_bytes, Some(meter)))?;
                 receipt.runtime_result(resize.await)?;
                 generation_action(before_effect, receipt, NativeMaterializationActionPhase::Completed).await?;
                 authenticated_metadata = Some(materialize_sparse_file(
@@ -2031,7 +2031,7 @@ where
                     let file = receipt.run(|work| host_root.open_file_positional_wide_with_work(&host_path.units, work))?.into_std();
                     let meter = receipt.native_meter();
                     let file = receipt.runtime_result(
-                        acyclic_native_runtime::NativeFile::from_file_measured_owned(file, meter)
+                        acyclic_native_runtime::NativeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
                             .map_err(|(error, file)| { drop(file); error }),
                     )?;
                     sync_generation_file(&file, receipt, before_effect).await?;
@@ -2114,7 +2114,7 @@ where
     let length = bytes.len() as u64;
     let custody = receipt.take(owned_bytes)?;
     let meter = receipt.native_meter();
-    let write = receipt.runtime_result(file.write_bounded_async_with_custody(offset, bytes, meter, custody))?;
+    let write = receipt.runtime_result(file.write_async(offset, bytes, meter, custody))?;
     receipt.runtime_result(write.await)?;
     generation_action(before_effect, receipt, NativeMaterializationActionPhase::Completed).await?;
     Ok(length)
@@ -2131,7 +2131,7 @@ where
 {
     generation_action(before_effect, receipt, NativeMaterializationActionPhase::Before).await?;
     let meter = receipt.native_meter();
-    let sync = receipt.runtime_result(file.sync_bounded_async(acyclic_native_runtime::Durability::Full, meter))?;
+    let sync = receipt.runtime_result(file.sync_async(acyclic_native_runtime::Durability::Full, Some(meter)))?;
     receipt.runtime_result(sync.await)?;
     generation_action(before_effect, receipt, NativeMaterializationActionPhase::Completed).await
 }
@@ -2139,9 +2139,7 @@ where
 #[cfg(windows)]
 fn mark_sparse_measured(file: &File, meter: &dyn acyclic_native_runtime::NativeReadMeter) -> std::io::Result<()> {
     let mut output = [];
-    acyclic_native_runtime::device_control_in_place_measured_mutation(
-        file, windows::Win32::System::Ioctl::FSCTL_SET_SPARSE, &[], &mut output, meter,
-    )?;
+    acyclic_native_runtime::device_control_in_place(file, windows::Win32::System::Ioctl::FSCTL_SET_SPARSE, &[], &mut output, Some((meter, acyclic_native_runtime::NativeOperationKind::Write)))?;
     Ok(())
 }
 
@@ -2207,9 +2205,9 @@ where
                     {
                         generation_action(before_effect, receipt, NativeMaterializationActionPhase::Before).await?;
                         let meter = receipt.native_meter();
-                        let control = receipt.runtime_result(file.control_bounded_async(move |handle, meter| {
+                        let control = receipt.runtime_result(file.control_async(move |handle, meter| { let meter = meter.expect("metered control");
                             crate::native_host::punch_hole_measured(handle, span.offset, span.length, meter)
-                        }, meter))?;
+                        }, Some(meter)))?;
                         receipt.runtime_result(control.await)?;
                         generation_action(before_effect, receipt, NativeMaterializationActionPhase::Completed).await?;
                     }
@@ -2404,11 +2402,11 @@ async fn generation_blocking<T: Send + 'static>(
 ) -> Result<T, GenerationFailure> {
     let observer = receipt.native_meter();
     let original = receipt.custody.work().clone();
-    let task = receipt.runtime_result(acyclic_native_runtime::run_blocking_io_measured(
+    let task = receipt.runtime_result(acyclic_native_runtime::run_blocking_io(
         move || {
             operation(&mut NativeSourceWork::from_native_materialization_work(&original))
         },
-        observer,
+        Some((observer, false)),
     ))?;
     let result = receipt.runtime_result(task.await)?;
     result.map_err(|error| GenerationFailure::new(materialize_demand_error(error), receipt.work()))
@@ -2583,14 +2581,14 @@ fn create_file(
         // SAFETY: the measured host constructor opens this new, held-root-relative
         // handle overlapped, without a completion-port association or other I/O.
         let native = unsafe {
-            acyclic_native_runtime::NativeFile::from_overlapped_file_measured_owned_unchecked(file, meter)
+            acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
         };
         receipt.runtime_result(native.map_err(|(error, file)| { drop(file); error }))
     }
     #[cfg(unix)]
     {
         receipt.runtime_result(
-            acyclic_native_runtime::NativeFile::from_file_measured_owned(file, meter)
+            acyclic_native_runtime::NativeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
                 .map_err(|(error, file)| { drop(file); error }),
         )
     }
@@ -2656,10 +2654,10 @@ mod windows_name_tests {
         let host_path = GenerationHostPath::from_namespace(&namespace, &mut receipt)?;
         let native = create_file(&root, &host_path, &mut receipt)?;
         let meter = receipt.native_meter();
-        let control = receipt.runtime_result(native.control_bounded_async(mark_sparse_measured, meter))?;
+        let control = receipt.runtime_result(native.control_async(|file, meter| mark_sparse_measured(file, meter.expect("metered control")), Some(meter)))?;
         receipt.runtime_result(control.await)?;
         let meter = receipt.native_meter();
-        let resize = receipt.runtime_result(native.set_len_bounded_async(1024 * 1024, meter))?;
+        let resize = receipt.runtime_result(native.set_len_async(1024 * 1024, Some(meter)))?;
         receipt.runtime_result(resize.await)?;
         let mut ordinary_control = None::<&mut fn(NativeMaterializationActionPhase) -> std::future::Ready<Result<(), MaterializeError>>>;
         write_generation_bytes(&native, 1024 * 1024 - 4, acyclic_stream::OwnedBytes::from_static(b"tail"), 0, &mut receipt, &mut ordinary_control).await.map_err(|failure| failure.0)?;

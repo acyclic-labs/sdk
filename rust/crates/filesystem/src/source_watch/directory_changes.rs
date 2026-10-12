@@ -168,7 +168,7 @@ fn close_owned_measured<W: SourceDemandReadWork>(
 }
 
 fn create_reader<W: SourceDemandReadWork>(reader: &Arc<Shared>, work: &mut W) -> Result<OwnedHandle, DemandError> {
-    work.preflight(WorkCounters { backend_read_operations: 1, backend_write_operations: 1, ..WorkCounters::default() })?;
+    work.admit(WorkCounters { backend_read_operations: 1, backend_write_operations: 1, ..WorkCounters::default() })?;
     work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
     let parameter = Arc::into_raw(Arc::clone(reader));
     // SAFETY: success transfers this real Shared to the existing reader.
@@ -219,7 +219,7 @@ impl PlatformWatch {
         root: std::os::windows::io::BorrowedHandle<'_>, delivery: Arc<Delivery>,
         pin_name: bool, complete: Option<bool>, recursive: bool, work: &mut W,
     ) -> Result<Self, DemandError> {
-        work.preflight(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
+        work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
         let carrier = delivery.prepare_startup_failure(work)?;
         let original_budget = work.with_original_leaf(|work| work.budget);
         let native_original = work.is_native_original();
@@ -382,7 +382,7 @@ impl PlatformWatch {
             + u64::from(self.shared.directory.is_open()) + u64::from(self.shared.completed.is_open());
         if wait.is_some() { return Err(DemandError::NativeWorkUnavailable); }
         if !retiring {
-            work.preflight(WorkCounters {
+            work.admit(WorkCounters {
                 backend_write_operations: required_writes, backend_read_operations: required_reads,
                 ..WorkCounters::default()
             })?;
@@ -583,7 +583,7 @@ impl PlatformWatch {
         let original_budget = work.with_original_leaf(|work| work.budget);
         let result = (|| {
             if reads.pending {
-                work.preflight(WorkCounters {
+                work.admit(WorkCounters {
                     backend_write_operations: 1, backend_read_operations: 1,
                     source_bytes_read: size_of::<[u64; BUFFER_WORDS]>() as u64,
                     ..WorkCounters::default()
@@ -934,7 +934,7 @@ impl Shared {
     ) -> Result<bool, DemandError> {
         if !reads.pending { return Ok(true); }
         if !mandatory {
-            work.preflight(WorkCounters {
+            work.admit(WorkCounters {
                 source_bytes_read: size_of::<[u64; BUFFER_WORDS]>() as u64,
                 ..WorkCounters::default()
             })?;
@@ -993,7 +993,7 @@ impl Shared {
             let budget = work.with_original_leaf(|work| work.budget);
             if !self.original_cleanup { reserve_cleanup(work, 1, 1)?; }
             let issued = (|| {
-                work.preflight(WorkCounters {
+                work.admit(WorkCounters {
                     source_bytes_read: size_of::<[u64; BUFFER_WORDS]>() as u64,
                     ..WorkCounters::default()
                 })?;
