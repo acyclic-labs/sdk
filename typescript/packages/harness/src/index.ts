@@ -13,7 +13,7 @@ import {
 import {
   ProtocolIdentitySchema,
 } from "../generated/proto/protocol/v1/protocol_pb.js";
-import { HarnessBuilder } from "./runtime.js";
+import { HarnessBuilder } from "./harness-builder.js";
 import type { ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, FileRef, Limits, VolumeRef } from "./conversation.js";
 import type { ToolJsonSchema } from "./model.js";
 import type { InteractionId } from "./interaction.js";
@@ -34,7 +34,8 @@ export * from "./fork.js";
 export * from "./project.js";
 export * from "./interaction.js";
 export * from "./extension.js";
-export * from "./client.js";
+export { type ReplayCursor, type ClientEvent, type Delivery, type OfflinePayload, type ClientCommand, type Connection, type Transport, type ProjectionRecovery, type ClientAdmissionLimits, ProjectionStore, HarnessClient, ReplayError, TerminalAdmissionError } from "./client.js";
+export { type OutboxStore, type OutboxPage, type CursorStore, type AtomicClientStateStore, type ClientCheckpoint, ClientCheckpointConflict, type ClientRecoveryRecord, MemoryOutbox, MemoryCursorStore, type IndexedDbClientStoreOptions, IndexedDbClientStore } from "./client-store.js";
 export * from "./client-views.js";
 export * from "./client-demand.js";
 export { RequestScheduler, RequestCapacityError, type RequestLimits } from "./client-requests.js";
@@ -42,7 +43,14 @@ export * from "./client-transport.js";
 export type { ClientSnapshot } from "./client-snapshot.js";
 export * from "./pagination.js";
 export * from "./wire-transport.js";
-export * from "./runtime.js";
+export * from "./model.js";
+export { type BatchId, type GroupId, type InputKey, type Outcome, AdmissionUncertainError, type CancelReceipt, type Admission, type Rejection, type TaskEvent, type DurableTaskDriver, type TaskDefinitionOptions, type RuntimeSchema, defineRuntimeSchema, type ResumableTransition, type ResumableTask, TaskDefinition, type TaskRef, type EffectStatus, type TaskMessage, type HostTaskAttachment, type HostBatchReplay, type HarnessRuntimeSpawner, type TaskChildrenPage, type HarnessRuntimeState, type HarnessExecutionProvider, Task } from "./task.js";
+export { type BatchAdmissionRequest, type Batch, type GroupEntry, type BatchCancellationStatus, type BatchCancellationReport, type GroupOutcome, TaskGroup, GroupError } from "./task-group.js";
+export { TaskContext, ToolContext } from "./task-context.js";
+export { type InteractionHandler, type PolicyDigest, type ComponentIdentity, type PolicyIdentity, policyIdentity, type Policy, type Interaction, type TypedInteractionInput, type Answer, ToolApprovalError, type Invocation, type EffectiveScope, type PolicyDecision, ExecutionScope } from "./execution-scope.js";
+export { type ContentBindings, type PrivateDirectoryPage, type PrivateDirectoryBindings, type ContentReader, type ContentMountResolver, composeContentBindings, type InheritedModelPrefix } from "./content.js";
+export { HarnessBuilder } from "./harness-builder.js";
+export { IndeterminateModelTurnError, TerminalModelTurnError, type RunReceipt, type RunOutput, type SelectedAgentInput, AgentHarness, TaskRunError } from "./agent-harness.js";
 export * from "./openai.js";
 export * from "./projection.js";
 export * from "./memory-conversation.js";
@@ -64,8 +72,8 @@ export interface IdentityKindMap {
   readonly session: SessionId;
   readonly turn: TurnId;
   readonly task: TaskId;
-  readonly group: import("./runtime.js").GroupId;
-  readonly batch: import("./runtime.js").BatchId;
+  readonly group: import("./task.js").GroupId;
+  readonly batch: import("./task.js").BatchId;
   readonly operation: OperationId;
   readonly effect: EffectId;
   readonly interaction: InteractionId;
@@ -218,24 +226,14 @@ export class Harness {
     return { version: protocol.version, descriptorDigest: protocol.descriptor_digest };
   }
 
-  /** Issues an explicit root grant from this host. */
-  issueScope(id: string, capabilities: readonly string[]): Scope {
-    return this.#core.issueScope(id, capabilities) as Scope;
+  /** Issues a host grant, optionally bound to an acting agent. */
+  issueScope(id: string, capabilities: readonly string[], agent?: AgentId): Scope {
+    return this.#core.issueScope(id, capabilities, agent) as Scope;
   }
 
-  /** Issues a signed, owner-bound scope for private file writes. */
-  issueScopeForAgent(agent: AgentId, id: string, capabilities: readonly string[]): Scope {
-    return this.#core.issueScopeForAgent(agent, id, capabilities) as Scope;
-  }
-
-  /** Resolves runtime-to-invocation policy layers; grants intersect and deny wins. */
-  issueScopeWithPolicies(id: string, layers: readonly PolicyLayer[]): Scope {
-    return this.#core.issueScopeWithPolicies(id, layers) as Scope;
-  }
-
-  /** Resolves hierarchy policy for one signed acting-agent identity. */
-  issueScopeWithPoliciesForAgent(agent: AgentId, id: string, layers: readonly PolicyLayer[]): Scope {
-    return this.#core.issueScopeWithPoliciesForAgent(agent, id, layers) as Scope;
+  /** Resolves policy layers and issues their effective grant for an optional agent. */
+  issueScopeWithPolicies(id: string, layers: readonly PolicyLayer[], agent?: AgentId): Scope {
+    return this.#core.issueScopeWithPolicies(id, layers, agent) as Scope;
   }
 
   /** Creates a child grant that cannot widen its parent. */
@@ -338,17 +336,12 @@ export class Harness {
   conversation(): ConversationState {
     const messages: ConversationMessage[] = [];
     let cursor = 0n;
-    let expectedRevision: bigint | undefined;
-    let expectedTotal: bigint | undefined;
-    let expectedAgent: AgentId | null | undefined;
+    let first: Pick<ConversationPage, "event_revision" | "total_messages" | "agent"> | undefined;
     while (true) {
       const page = this.conversationPage(cursor);
-      if (expectedRevision === undefined) {
-        expectedRevision = page.event_revision;
-        expectedTotal = page.total_messages;
-        expectedAgent = page.agent;
-      } else if (page.event_revision !== expectedRevision || page.total_messages !== expectedTotal
-        || page.agent !== expectedAgent) {
+      first ??= { event_revision: page.event_revision, total_messages: page.total_messages, agent: page.agent };
+      if (page.event_revision !== first.event_revision || page.total_messages !== first.total_messages
+        || page.agent !== first.agent) {
         throw new TypeError("conversation changed while hydrating pages");
       }
       if (page.messages.length > HARNESS_CONVERSATION_PAGE_MAXIMUM
@@ -364,7 +357,7 @@ export class Harness {
       }
       if (page.next_sequence === null) {
         if (cursor !== page.total_messages) throw new TypeError("conversation page ended before its declared tail");
-        return { agent: expectedAgent ?? null, messages };
+        return { agent: first.agent, messages };
       }
       if (page.next_sequence !== cursor || page.messages.length === 0) {
         throw new TypeError("conversation page cursor did not advance");

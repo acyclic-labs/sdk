@@ -17,7 +17,7 @@ async fn conditional_remove_preserves_typed_stale_identity() -> Result<(), Box<d
     }
     let mut remove = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
     assert!(matches!(
-        remove.remove_if("/file.txt", stale).await,
+        unbounded!(remove, remove_if("/file.txt", stale)),
         Err(WorkspaceError::StaleIdentity)
     ));
     assert_eq!(

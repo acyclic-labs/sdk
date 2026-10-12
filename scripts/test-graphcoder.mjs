@@ -623,7 +623,7 @@ if (scenarioDirectory) {
     const overlappingHash = digest(negative.native_publication.conflicting_edit_path);
     const refusedOverwrite = await negativeActive.commandJson(`/publication-apply ${negative.native_publication_request}`, "publication");
     assert.equal(refusedOverwrite.status, "failed");
-    assert.ok(refusedOverwrite.failure?.work, "conflict carries the SDK's actual measured failure receipt");
+    assert.ok(refusedOverwrite.failure && refusedOverwrite.work, "conflict carries the SDK's actual measured failure receipt");
     assert.equal(digest(negative.native_publication.conflicting_edit_path), overlappingHash,
       "approval cannot overwrite an overlapping real native edit after preparation");
     await negativeActive.quit();
@@ -733,12 +733,12 @@ if (scenarioDirectory) {
     run(["--prepare-scenario", cancellationDirectory], "", true, 120_000);
     const cancellation = load(join(cancellationDirectory, "native-scenario.json"));
     assert.deepEqual(cancellation.missing_prerequisites, []);
-    const cancellationLedger = invocationLedgerPath(cancellation, load(cancellation.config), "cancel-preparation");
+    const cancellationLedger = invocationLedgerPath(cancellation, load(cancellation.config));
     const originalCalls = readFileSync(cancellationLedger);
     const cancelledPreparation = cancellation.preparations.find(value => value.label === "cross_source");
     const cancelledRequest = load(cancelledPreparation.request);
     const caller = cancelledRequest.parent, lease = cancelledRequest.caller_lease;
-    const sourcePath = input("cancel-preparation-source", {
+    const sourcePath = input({
       caller, lease, volume: cancellation.files.left_scratch.volume, path: cancellation.files.left_scratch.path,
     });
     active = new InstalledSession(cancellation.config);
@@ -757,7 +757,7 @@ if (scenarioDirectory) {
     await active.command(`/reconcile ${cancelledRequest.request.child.operation_id}`, /retained=None/);
     assert.deepEqual(await active.commandJson(`/read-path ${sourcePath}`, "file"), originalSource);
     await active.quit();
-    const refusedPublication = input("cancelled-preparation-publish", {
+    const refusedPublication = input({
       caller, lease, preparation: cancelledPreparation.task,
     });
     run(["--session", cancellation.config, "--headless"], `/publish-fork ${refusedPublication}\n`, false, 15_000);

@@ -1,14 +1,14 @@
 //! Span helpers for `docs/observability.md`.
 
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) use acyclic_native_runtime::obs::OperationSpan;
+#[cfg(not(target_arch = "wasm32"))]
 use std::{
     pin::Pin,
     task::{Context, Poll},
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use tracing::{Span, field::Empty};
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use acyclic_native_runtime::obs::OperationSpan;
 /// wasm32 records nothing.
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone, Copy)]
@@ -105,20 +105,20 @@ impl From<futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>
 #[cfg(not(target_arch = "wasm32"))]
 impl BodyStream {
     pub(crate) fn from_native_boxed<S>(
-        body: std::pin::Pin<Box<S>>, allocation: acyclic_native_runtime::ReadAllocation,
+        body: std::pin::Pin<Box<S>>,
+        allocation: acyclic_native_runtime::ReadAllocation,
     ) -> Self
-    where S: futures::Stream<Item = Result<bytes::Bytes, crate::Error>> + Send + 'static {
-        Self {
-            inner: Scoped::new(
-                BodyState {
-                    body,
-                    lifetime: Lifetime(None),
-                    context: Some(Span::none()),
-                    _allocation: Some(allocation),
-                },
-                tracing::dispatcher::get_default(Clone::clone),
-            ),
-        }
+    where
+        S: futures::Stream<Item = Result<bytes::Bytes, crate::Error>> + Send + 'static,
+    {
+        let body: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>> = body;
+        let mut stream = Self::from(body);
+        stream
+            .inner
+            .inner_mut()
+            .expect("new body retains its producer")
+            ._allocation = Some(allocation);
+        stream
     }
 }
 impl futures::Stream for BodyStream {
@@ -261,14 +261,17 @@ pub(crate) fn download(
     future: impl Future<Output = Result<crate::v1::Download, crate::Error>>,
 ) -> impl Future<Output = Result<crate::v1::Download, crate::Error>> {
     let mut lifetime = Lifetime(Some(span.clone()));
-    let context = span.caller.as_ref().unwrap_or(&span).clone();
+    let context = span.context().clone();
     span.scope(async move {
         let mut future = std::pin::pin!(future);
         let result =
             futures::future::poll_fn(|cx| lifetime.scoped(|| future.as_mut().poll(cx))).await;
         match result {
             Ok(mut download) => {
-                download.body.inner.set_dispatch(tracing::dispatcher::get_default(Clone::clone));
+                download
+                    .body
+                    .inner
+                    .set_dispatch(tracing::dispatcher::get_default(Clone::clone));
                 if let Some(body) = download.body.inner.inner_mut() {
                     body.lifetime = lifetime;
                     body.context = Some(context);
@@ -296,7 +299,7 @@ pub(crate) fn scoped<R: Outcome>(span: &OperationSpan, body: impl FnOnce() -> R)
 
 /// Opens an owned operation span; WASM does not evaluate fields.
 macro_rules! span {
-    ($level:ident, $name:literal $(, $($field:tt)+)?) => {{
+    ($level:ident, $name:expr $(, $($field:tt)+)?) => {{
         #[cfg(not(target_arch = "wasm32"))]
         let span = crate::obs::OperationSpan::new(::tracing::span!(
             ::tracing::Level::$level,
@@ -332,7 +335,7 @@ pub(crate) use record;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use acyclic_grpc_observability::test_support::Capture;
+    use acyclic_grpc_observability::tests::Capture;
     use tracing_subscriber::layer::SubscriberExt;
 
     #[tokio::test]

@@ -1,5 +1,5 @@
-use crate::async_storage::AsyncObjectStore;
 use super::*;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{
     BlobBuildOptions, BlobNode, ExtentKind, ExtentMutationError, ExtentPage, FileMetadata,
@@ -63,7 +63,19 @@ async fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    AsyncObjectStore::put(store, object, OwnedBytes::from(bytes), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            object,
+            OwnedBytes::from(bytes),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object)
 }
 
@@ -273,13 +285,43 @@ async fn append_blob_bytes(
     root: ObjectId,
     output: &mut Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let encoded = AsyncObjectStore::read(store, root, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value;
-    let page = decode_blob_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let encoded = {
+        let __object_args = (
+            root,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?.value;
+    let page = decode_blob_page(&encoded, DecodeLimits::default(), &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
     match page.node {
         BlobNode::Leaf(chunks) => {
             for chunk in chunks {
-                let bytes =
-                    AsyncObjectStore::read(store, chunk.chunk, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value;
+                let bytes = {
+                    let __object_args = (
+                        chunk.chunk,
+                        u64::MAX,
+                        WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new(),
+                    );
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                    let __object_result = AsyncObjectStore::read(
+                        store,
+                        __object_args.0,
+                        __object_args.1,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_work.receipt(__object_result)
+                }?.value;
                 output.extend_from_slice(&bytes);
             }
         }
@@ -297,8 +339,22 @@ async fn collect_extents(
     root: ObjectId,
     output: &mut Vec<crate::kernel::Extent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let encoded = AsyncObjectStore::read(store, root, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value;
-    match decode_extent_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
+    let encoded = {
+        let __object_args = (
+            root,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?.value;
+    match decode_extent_page(&encoded, DecodeLimits::default(), &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })? {
         ExtentPage::Leaf(extents) => output.extend(extents),
         ExtentPage::Internal(children) => {
             for child in children {
@@ -353,8 +409,22 @@ async fn collect_file_table_records(
     root: ObjectId,
     records: &mut BTreeMap<FileId, FileRecord>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let encoded = AsyncObjectStore::read(store, root, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value;
-    match decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
+    let encoded = {
+        let __object_args = (
+            root,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?.value;
+    match decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })? {
         FileTablePage::Leaf(values) => {
             for record in values {
                 if records.insert(record.file_id, record).is_some() {
@@ -2411,29 +2481,91 @@ impl AsyncObjectStore for NoGenerationCalls {
     -> Result<Option<crate::async_storage::DecodedCacheValue>, crate::storage::ObjectStoreError> {
         panic!("denied generation entered provider cache");
     }
-    async fn put(&self, _: ObjectId, _: OwnedBytes, _: WorkBudget, _: &CancellationToken) -> crate::storage::ObjectResult<()> {
+    async fn put(&self, _: ObjectId, _: OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let _ = context.work.remaining(context.budget)?;
+        let _ = context.cancellation;
+        let result = async {
         panic!("denied generation entered ordinary write");
     }
-    async fn read(&self, _: ObjectId, _: u64, _: WorkBudget, _: &CancellationToken) -> crate::storage::ObjectResult<crate::storage::ObjectRead> {
-        panic!("denied generation entered ordinary read");
+        .await;
+        context.accept(result)
     }
-    async fn read_many(&self, _: &[crate::storage::ObjectReadRequest], _: WorkBudget, _: &CancellationToken) -> crate::storage::ObjectResult<Vec<crate::storage::ObjectRead>> {
-        panic!("denied generation entered ordinary batch");
-    }
-    async fn contains(&self, _: ObjectId, _: WorkBudget, _: &CancellationToken) -> crate::storage::ObjectResult<bool> {
-        panic!("denied generation entered ordinary probe");
-    }
-    async fn read_with_native_work(&self, _: ObjectId, _: u64, _: &crate::NativeMaterializationWork, _: &CancellationToken)
-    -> Result<crate::storage::ObjectRead, crate::storage::ObjectStoreError> {
+    async fn read(&self, _: ObjectId, _: u64,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(_) = context.original {
+            let _ = context.cancellation;
+            return async {
         panic!("denied generation entered original read");
     }
-    async fn read_many_with_native_work(&self, _: &[crate::storage::ObjectReadRequest], _: &crate::NativeMaterializationWork, _: &CancellationToken)
-    -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), crate::storage::ObjectStoreError> {
+            .await;
+        }
+        let _ = context.read_budget()?;
+        let _ = context.cancellation;
+        let result = async {
+        panic!("denied generation entered ordinary read");
+    }
+        .await;
+        context.accept(result)
+    }
+    async fn read_many(&self, _: &[crate::storage::ObjectReadRequest],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(_) = context.original {
+            let _ = context.cancellation;
+            return async {
         panic!("denied generation entered original batch");
     }
-    async fn put_hashed_with_native_work(&self, _: crate::storage::HashedObject, _: &crate::NativeMaterializationWork, _: &CancellationToken)
-    -> Result<(), crate::storage::ObjectStoreError> {
+            .await
+            .map(|(values, allocation)| (values, Some(allocation)));
+        }
+        let _ = context.work.remaining(context.budget)?;
+        let _ = context.cancellation;
+        let result = async {
+        panic!("denied generation entered ordinary batch");
+    }
+        .await;
+        context.accept(result).map(|values| (values, None))
+    }
+    async fn contains(&self, _: ObjectId,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let _ = context.work.remaining(context.budget)?;
+        let _ = context.cancellation;
+        let result = async {
+        panic!("denied generation entered ordinary probe");
+    }
+        .await;
+        context.accept(result)
+    }
+
+    async fn put_hashed(
+        &self,
+        _: crate::storage::HashedObject,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(_) = context.original {
+            let _ = context.cancellation;
+            return async {
         panic!("denied generation entered original write");
+    }
+            .await;
+        }
+        let (id, bytes) = _.into_parts();
+        self.put(id, bytes, context).await
     }
 }
 

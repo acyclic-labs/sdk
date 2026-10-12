@@ -818,7 +818,11 @@ fn native_fixture_value(
         data.resize(bytes, 0);
     }
     OwnedBytes::from_vec_with_guard(data, allocation, meter.clone())
-        .map_err(|failure| failure.into_error())
+        .map_err(|failure| match failure.into_error() {
+            acyclic_stream::PreparedOwnedBytesError::Admission(error) => error,
+            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => std::io::Error::new(
+                std::io::ErrorKind::InvalidData, "fixture buffer is not fully initialized"),
+        })
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

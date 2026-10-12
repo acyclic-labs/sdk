@@ -242,13 +242,17 @@ impl AllocationLedger {
         Ok(())
     }
 
-    pub(crate) const fn live_bytes(self) -> u64 {
+    /// Returns currently retained logical bytes.
+    pub const fn live_bytes(self) -> u64 {
         self.live_bytes
     }
 }
 
-pub(crate) enum KernelOwnedAllocation {
+/// Retains the allocation backing a value returned by a kernel operation.
+pub enum KernelOwnedAllocation {
+    /// Backing tracked by the standalone accounting context.
     Standalone,
+    /// Backing retained on the original native invocation ledger.
     #[cfg(not(target_arch = "wasm32"))]
     NativeOriginal(crate::NativeAllocation),
 }
@@ -301,7 +305,8 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
-    pub(crate) fn borrowed_standalone(
+    /// Borrows the caller's accounting state.
+    pub fn borrowed_standalone(
         allocations: &'a mut AllocationLedger,
         work: &'a mut WorkCounters,
         budget: WorkBudget,
@@ -339,7 +344,8 @@ impl<'a> KernelAccounting<'a> {
         operation(self)
     }
 
-    pub(crate) fn standalone_parts(
+    /// Borrows standalone allocation and work state.
+    pub fn standalone_parts(
         &mut self,
     ) -> Option<(&mut AllocationLedger, &mut WorkCounters, WorkBudget, &crate::CancellationToken)> {
         match self {
@@ -354,7 +360,8 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
-    pub(crate) fn claim_owned(
+    /// Claims owned storage before allocation.
+    pub fn claim_owned(
         &mut self, bytes: u64, operations: u64,
     ) -> Result<KernelOwnedAllocation, crate::FsError> {
         self.check()?;
@@ -448,7 +455,8 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
-    pub(crate) fn release_owned(
+    /// Releases previously claimed owned storage.
+    pub fn release_owned(
         &mut self, allocation: &mut KernelOwnedAllocation, bytes: u64,
     ) -> Result<(), crate::FsError> {
         match (self, allocation) {
@@ -494,7 +502,8 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
-    pub(crate) fn charge(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
+    /// Records and checks bounded work.
+    pub fn charge(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
         self.check()?;
         match self {
             Self::Standalone { work, budget, .. } => {
@@ -508,7 +517,8 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
-    pub(crate) fn admit(&self, delta: WorkCounters) -> Result<(), crate::FsError> {
+    /// Checks work before performing it.
+    pub fn admit(&self, delta: WorkCounters) -> Result<(), crate::FsError> {
         self.check()?;
         match self {
             Self::Standalone { work, budget, .. } => work.admit(&delta, budget).map_err(Into::into),
@@ -518,7 +528,8 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
-    pub(crate) fn remaining(&self) -> Result<WorkBudget, crate::FsError> {
+    /// Returns the remaining bounded allowances.
+    pub fn remaining(&self) -> Result<WorkBudget, crate::FsError> {
         self.check()?;
         match self {
             Self::Standalone { work, allocations, budget, .. } => {

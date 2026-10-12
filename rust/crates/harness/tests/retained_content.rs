@@ -46,7 +46,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         Fs::local(options.clone())
             .await
             .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?,
-        provider.clone(),
+        &provider, None,
     )?;
     host.create_volume(&volume).await?;
     let admitted = host
@@ -59,7 +59,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("admitted-content")?,
-        )
+         None, None)
         .await?;
     let orphan = host
         .put_content(
@@ -71,23 +71,23 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("unpublished-content")?,
-        )
+         None, None)
         .await?;
     let attached = AgentId::from_bytes([33; 16]);
     let attached_scope = issuer.issue("unrelated-reader", &Capabilities::new([
-            admitted.read_capability()?,
+            admitted.read_capability(&mut None)?,
             volume.directory_read_capability("messages")?,
         ]), Some(attached), None, &mut None).expect("scope proof");
     let attached_read =
         ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &attached_scope, &admitted)?;
     assert_eq!(
-        host.read_content(&admitted, &attached_read, 64)
+        host.read_content(&admitted, &attached_read, 64, None)
             .await?
             .as_ref(),
         b"first"
     );
     assert!(
-        host.read_content(&orphan, &attached_read, 64)
+        host.read_content(&orphan, &attached_read, 64, None)
             .await
             .is_err()
     );
@@ -133,7 +133,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         "current.txt",
         64,
         &IdempotencyKey::new("advanced-head")?,
-    )
+     None, None)
     .await?;
     let retried = host
         .put_content(
@@ -145,7 +145,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("admitted-content")?,
-        )
+         None, None)
         .await?;
     assert_eq!(retried, admitted);
     assert!(
@@ -158,7 +158,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("admitted-content")?,
-        )
+         None, None)
         .await
         .is_err()
     );
@@ -170,25 +170,25 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
     fs.collect_local_garbage(None, &CancellationToken::new())
         .await
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
-    let reopened = FilesystemHost::new(fs, provider)?;
+    let reopened = FilesystemHost::new(fs, &provider, None)?;
     assert_eq!(
-        reopened.read_content(&admitted, &read, 64).await?.as_ref(),
+        reopened.read_content(&admitted, &read, 64, None).await?.as_ref(),
         b"first"
     );
     assert_eq!(
-        reopened.read_content(&orphan, &read, 64).await?.as_ref(),
+        reopened.read_content(&orphan, &read, 64, None).await?.as_ref(),
         b"second"
     );
     assert_eq!(
         reopened
-            .read_content(&admitted, &attached_read, 64)
+            .read_content(&admitted, &attached_read, 64, None)
             .await?
             .as_ref(),
         b"first"
     );
     assert!(
         reopened
-            .read_content(&orphan, &attached_read, 64)
+            .read_content(&orphan, &attached_read, 64, None)
             .await
             .is_err()
     );

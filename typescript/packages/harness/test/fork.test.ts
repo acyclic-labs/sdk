@@ -165,7 +165,7 @@ test("parent publication reconciles one exact child after a lost acknowledgement
   const advanced = await Harness.builder(contracts).parentSnapshot({ ...snapshot, parent: prepared.request.parent, revision: prepared.request.parent_revision + 1n }).forkPublisher(publisher).grant("fork:publish").build();
   expect(await advanced.reconcileSpawn(prepared)).toEqual(seed);
   expect(publications).toBe(1);
-  const narrowed = await runtime.scoped(ExecutionScope.create().onlyGrants("fork:publish"));
+  const narrowed = await runtime.scoped(new ExecutionScope().onlyGrants("fork:publish"));
   expect(narrowed.components.forkPublisher).toBeUndefined();
   await expect(narrowed.reconcileSpawn(prepared)).rejects.toThrow();
   await expect(runtime.spawnFromReport({ ...prepared, request: { ...prepared.request,
@@ -254,8 +254,8 @@ test("required capture failure never publishes a child; optional failures remain
   const invalidOmission = { ...seed, omissions: [{ ...seed.omissions[0]!, outcome: { kind: "indeterminate" as const, value: "not-an-operation" as OperationId } }] };
   expect(() => contracts.validate("fork_seed", invalidOmission)).toThrow();
   expect(() => contracts.validate("fork_seed", { ...seed, resources: [...seed.resources, seed.resources[0]!] })).toThrow();
-  await expect(contracts.validate("resource_ref", { kind: "artifact", provider: filesystem, key: [1], version: null }))
-    .resolves.toBeDefined();
+  expect(contracts.validate("resource_ref", { kind: "artifact", provider: filesystem, key: [1], version: null }))
+    .toBeDefined();
 });
 
 test("project capture cannot retain the parent's project volume", () => {

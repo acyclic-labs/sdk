@@ -1,0 +1,211 @@
+use super::*;
+
+impl<A, O, D, S> LazyWorkspace<A, O, D, S>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+{
+    /// Exactifies only the selected subtree and prepares its authenticated view.
+    pub async fn prepare_native_working_set(
+        &self,
+        subdirectory: &str,
+        options: &crate::MaterializeOptions,
+        capture_budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+        permit: PublicationPermit,
+    ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
+        let original = NativeMaterializationWork::new(capture_budget, cancellation)
+            .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?;
+        let work = &original;
+        if !options.destination.is_absolute() {
+            return Err(MountLifecycleError::NativePolicy(
+                "native working-set root must be absolute",
+            ));
+        }
+        options::in_native_heap(work, || async move {
+            let exact = self
+                .exactify(
+                    subdirectory,
+                    permit,
+                    &mut KernelAccounting::native(work, work.cancellation()),
+                )
+                .await?;
+            let mut mount = (
+                MountOptions::read_write().publication(MountPublication::Manual),
+                work.claim(0, 0, crate::WorkCounters::default())?,
+            );
+            if subdirectory != "/" {
+                let (text, mut custody) = work.display(&subdirectory)?;
+                mount.0 = mount.0.subdirectory(text);
+                mount.1.absorb(&mut custody)?;
+            }
+            mount.0 = mount.0.native_context(work, None, None);
+            exact
+                .prepare_native_working_set(&mount.0, options, capture_budget, cancellation)
+                .await
+        })
+        .await
+    }
+
+    pub(super) async fn prepare_authored_mount_source(
+        &self,
+        options: &MountOptions,
+        work: &NativeMaterializationWork,
+    ) -> Result<
+        (
+            Arc<CheckoutMountSource<A, O>>,
+            VolumeId,
+            (String, crate::kernel::allocation::KernelOwnedAllocation),
+        ),
+        MountLifecycleError,
+    > {
+        if options
+            .native_original
+            .as_ref()
+            .is_some_and(|binding| !work.shares_allocation_context(binding))
+        {
+            return Err(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            )
+            .into());
+        }
+        let cancellation = work.cancellation();
+        let config = self.workspace().volume_config();
+        let mut accounting =
+            crate::kernel::allocation::KernelAccounting::native(work, cancellation);
+        let root = crate::workspace::customer_path_with_accounting(
+            &options.subdirectory,
+            config,
+            &mut accounting,
+            cancellation,
+        )?;
+        let root_text = root
+            .0
+            .unicode_text_with_accounting(&mut accounting, cancellation)
+            .map_err(WorkspaceError::from)?;
+        let selected = self.lookup(&root_text.0, &mut accounting).await?;
+        let selected_custody = selected.1;
+        let selected = selected.0;
+        if selected.stat().kind != SourceNodeKind::Directory {
+            return Err(WorkspaceError::NotDirectory.into());
+        }
+        if let LazyLookup::Source { node, .. } = &selected {
+            let expected_source = self.source_file_id(&node.file_identity, &mut accounting)?;
+            work.charge(crate::WorkCounters {
+                bytes_hashed: (b"acyclic-fs-lazy-mount-root-v1\0".len()
+                    + 16
+                    + root_text.0.len()
+                    + node.version.0.len()) as u64,
+                ..crate::WorkCounters::default()
+            })?;
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"acyclic-fs-lazy-mount-root-v1\0");
+            hasher.update(&self.workspace().id().into_bytes());
+            hasher.update(root_text.0.as_bytes());
+            hasher.update(&node.version.0);
+            let mut key = [0; 16];
+            key.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+            self.promote_exact(
+                &root_text.0,
+                expected_source,
+                0,
+                IdempotencyKey::from_bytes(key),
+                &mut accounting,
+            )
+            .await?;
+        }
+        drop(selected);
+        drop(selected_custody);
+        let mode = if options.writable {
+            CheckoutMode::tracking_transaction()
+        } else {
+            CheckoutMode::read_only_pinned()
+        };
+        let checkout = self
+            .workspace()
+            .checkout(GenerationSelector::Head, mode, work, cancellation)
+            .await?;
+        let source = options::checkout_source(checkout, root, options, work)?;
+        Ok((source, self.workspace().id().volume_id(), root_text))
+    }
+
+    /// Mounts the actual sparse source without scanning unresolved descendants.
+    pub async fn mount(
+        &self,
+        destination: impl AsRef<Path>,
+        options: MountOptions,
+    ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
+        let work = options.work(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )?;
+        let work = &work;
+        let destination = work.path(destination.as_ref(), None)?;
+        let destination_custody = destination.1;
+        let destination = destination.0;
+        let options_bytes = match &options.subdirectory {
+            std::borrow::Cow::Borrowed(_) => 0,
+            std::borrow::Cow::Owned(text) => text.capacity() as u64,
+        };
+        let _options_custody = work.claim(options_bytes, 0, crate::WorkCounters::default())?;
+        if options.writable && options.publication == MountPublication::PerMutation {
+            return Err(MountSourceError::NativeUnsupported.into());
+        }
+        let (authored, volume_id, root_text) =
+            self.prepare_authored_mount_source(&options, work).await?;
+        let root_custody = match root_text.1 {
+            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) => custody,
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
+                return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+            }
+        };
+        let root_text = root_text.0;
+        let session_destination = work.path(&destination, None)?;
+        let lazy = self
+            .clone()
+            .into_arc(&mut KernelAccounting::native(work, work.cancellation()))?;
+        let mut source_allocation = work.claim(
+            std::mem::size_of::<LazyMountSource<A, O, D, S>>() as u64,
+            1,
+            crate::WorkCounters::default(),
+        )?;
+        let prepared =
+            super::super::prepare_native_mount_start(work).map_err(NativeMountError::from)?;
+        let request = NativeMountRequest {
+            mount_id: MountId::new(),
+            volume_id,
+            destination: session_destination.0,
+            writable: options.writable,
+        };
+        let source = Arc::new(
+            match LazyMountSource::new(
+                lazy,
+                authored,
+                root_text,
+                super::super::adapter::NativeDemandCarrier::Native(work),
+                Some((root_custody, &mut source_allocation)),
+            ) {
+                Ok(source) => source,
+                Err(error) => {
+                    return Err(prepared
+                        .retain_source_startup_failure(request, session_destination.1, error)
+                        .into());
+                }
+            },
+        );
+        let session = prepared.start(
+            request,
+            source.clone() as Arc<dyn MountFilesystem>,
+            work,
+            Some(session_destination.1),
+        )?;
+        Ok(LazyMount {
+            source,
+            session: Mutex::new(Some(session)),
+            destination,
+            _destination_custody: destination_custody,
+        })
+    }
+}

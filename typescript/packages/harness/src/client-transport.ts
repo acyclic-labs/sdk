@@ -1,18 +1,15 @@
 import type { ClientCommand, Connection, ReplayCursor, Transport } from "./client.js";
 import { RequestScheduler, requestAborted } from "./client-requests.js";
 
-/** Reserve retained commands, cursors and buffers before work; the transport bounds inbound frames. */
-export interface TransportReservations {
-  connect(cursors: ReadonlyMap<string, ReplayCursor>): number;
-  send(command: ClientCommand): number;
-}
-
 /** Share finite request admission with hydration; preserve transport correlation and replay. */
 export class ScheduledTransport<Event> implements Transport<Event> {
-  constructor(readonly transport: Transport<Event>, readonly scheduler: RequestScheduler,
-    readonly reservations: TransportReservations,
+  constructor(private readonly transport: Transport<Event>, private readonly scheduler: RequestScheduler,
+    private readonly reservations: {
+      connect(cursors: ReadonlyMap<string, ReplayCursor>): number;
+      send(command: ClientCommand): number;
+    },
     /** Report late cancelled connection cleanup failures to the host. */
-    readonly onCleanupError: (error: unknown) => void = error => { queueMicrotask(() => { throw error; }); }) {}
+    private readonly onCleanupError: (error: unknown) => void = error => { queueMicrotask(() => { throw error; }); }) {}
 
   async connect(cursors: ReadonlyMap<string, ReplayCursor>, signal?: AbortSignal): Promise<Connection<Event>> {
     const controller = new AbortController();
@@ -51,21 +48,16 @@ export class ScheduledTransport<Event> implements Transport<Event> {
       await closeOwned();
       throw error;
     }
-    // Transfer cleanup ownership only after the cancellation-safe handoff.
-    owned = undefined;
-    let closing: Promise<void> | undefined;
     return {
       [Symbol.asyncIterator]: () => connection[Symbol.asyncIterator](),
       send: async command => {
-        if (closing !== undefined) return Promise.reject(new Error("connection closed; operation outcome may be indeterminate"));
+        if (cleanup !== undefined) return Promise.reject(new Error("connection closed; operation outcome may be indeterminate"));
         return this.scheduler.schedule(this.reservations.send(command), () => connection.send(command), controller.signal);
       },
       close: () => {
-        if (closing !== undefined) return closing;
-        closing = Promise.resolve().then(() => connection.close());
         signal?.removeEventListener("abort", cancel);
         controller.abort();
-        return closing;
+        return closeOwned();
       },
     };
   }

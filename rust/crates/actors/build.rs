@@ -1,7 +1,6 @@
-//! Build the Actors descriptor and transport directly from the Rust contract.
-
+//! Build Actors from the semantic contract.
 pub(crate) use contract::{
-    ContractError, validate_create, validate_update, validate_add_subscription, validate_delete,
+    ContractError, validate_add_subscription, validate_create, validate_delete, validate_update,
 };
 
 #[allow(
@@ -48,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=src/contract.rs");
     println!("cargo:rerun-if-changed=src/contract_definitions.rs");
-    println!("cargo:rerun-if-changed=src/domain.rs");
+    println!("cargo:rerun-if-changed=src/domain");
     println!("cargo:rerun-if-changed=src/codegen.rs");
     let out_dir =
         std::env::var_os("OUT_DIR").ok_or_else(|| std::io::Error::other("OUT_DIR is not set"))?;

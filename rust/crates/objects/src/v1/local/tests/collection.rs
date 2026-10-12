@@ -46,7 +46,13 @@ async fn collection_retains_replacement_and_original_retry_receipt_across_reopen
     drop(provider);
     let provider = create(root.path()).await?;
     assert_eq!(provider.put(put("value"), before_body).await?, original);
-    assert_eq!(provider.get(get("value"), 65_537).await?.into_body(), after_body);
+    assert_eq!(
+        provider
+            .get(get(bucket(), "value"), 65_537)
+            .await?
+            .into_body(),
+        after_body
+    );
     Ok(())
 }
 
@@ -91,7 +97,11 @@ async fn staged_parts_remain_private_and_retained_until_abort()
         [part]
     );
     assert_eq!(
-        provider.get(get("staged"), 10).await.err().map(|e| e.code),
+        provider
+            .get(get(bucket(), "staged"), 10)
+            .await
+            .err()
+            .map(|e| e.code),
         Some(wire::ErrorCode::NotFound)
     );
     provider
@@ -106,7 +116,11 @@ async fn staged_parts_remain_private_and_retained_until_abort()
     drop(provider);
     let provider = create(root.path()).await?;
     assert_eq!(
-        provider.get(get("staged"), 10).await.err().map(|e| e.code),
+        provider
+            .get(get(bucket(), "staged"), 10)
+            .await
+            .err()
+            .map(|e| e.code),
         Some(wire::ErrorCode::NotFound)
     );
     Ok(())
@@ -197,7 +211,19 @@ async fn dominant_inline_bytes_trigger_owned_maintenance_after_reopen()
     assert_eq!(provider.put(put("first"), body.clone()).await?, first);
     drop(provider);
     let provider = create(root.path()).await?;
-    assert_eq!(provider.get(get("first"), 1024).await?.into_body(), body);
-    assert_eq!(provider.get(get("second"), 1024).await?.into_body(), body);
+    assert_eq!(
+        provider
+            .get(get(bucket(), "first"), 1024)
+            .await?
+            .into_body(),
+        body
+    );
+    assert_eq!(
+        provider
+            .get(get(bucket(), "second"), 1024)
+            .await?
+            .into_body(),
+        body
+    );
     Ok(())
 }

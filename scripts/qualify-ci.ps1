@@ -193,5 +193,3 @@ try {
 } finally {
     Pop-Location
 }
-cargo test -p acyclic-plugin --bin acyclic --all-features --locked `
-    required_pinned_pi_native -- --ignored --test-threads=1

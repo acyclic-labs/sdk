@@ -73,7 +73,7 @@ fn snapshot(
     operation: Option<(OperationId, OperationOutcome)>,
 ) -> TrustedSnapshot {
     let content =
-        FileDescriptor::from_bytes(&serde_json::to_vec(&value).unwrap(), "application/json")
+        FileDescriptor::from_bytes(&serde_json::to_vec(&value).unwrap(), "application/json", &mut None)
             .unwrap();
     TrustedSnapshot {
         key,
@@ -150,7 +150,7 @@ impl Domain for HarnessViews {
                 Projection::Message(Some(message)),
                 Assumption::MessageAbsent,
             ) => {
-                message.validate().map_err(|_| Error::Conflict)?;
+                message.validate(&mut None).map_err(|_| Error::Conflict)?;
                 if message.kind != MessageKind::User {
                     return Err(Error::Conflict);
                 }
@@ -170,7 +170,7 @@ impl Domain for HarnessViews {
                 Projection::Message(Some(message)),
                 Assumption::ToolCall { call, call_id },
             ) => {
-                message.validate().map_err(|_| Error::Conflict)?;
+                message.validate(&mut None).map_err(|_| Error::Conflict)?;
                 if message.kind != MessageKind::ToolResult
                     || message.reply_to != Some(*call)
                     || message.tool_call_id.as_ref() != Some(call_id)
@@ -186,7 +186,7 @@ impl Domain for HarnessViews {
                 Projection::Continuation { call, result },
                 Assumption::Continuation { call: expected },
             ) => {
-                result.validate().map_err(|_| Error::Conflict)?;
+                result.validate(&mut None).map_err(|_| Error::Conflict)?;
                 if call != expected {
                     return Err(Error::Conflict);
                 }
@@ -217,7 +217,7 @@ impl Domain for HarnessViews {
         evidence
             .basis
             .content
-            .verify(&encoded)
+            .verify(&encoded, &mut None)
             .map_err(|_| Error::Conflict)?;
         if let Some(old) = current
             && (old.basis.authority != evidence.basis.authority
@@ -261,17 +261,19 @@ impl Domain for HarnessViews {
 fn file(label: &str, bytes: &[u8]) -> FileRef {
     let volume = VolumeRef::new(
         ProviderRef::new("example".into(), "filesystem".into(), "2".into(), &mut None).unwrap(),
-        "project",
+        "project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
+        &mut None,
     )
     .unwrap();
     FileRef::new(
         volume,
-        label,
-        "generation-1",
-        FileDescriptor::from_bytes(bytes, "text/plain").unwrap(),
-        label,
+        label.into(),
+        "generation-1".into(),
+        FileDescriptor::from_bytes(bytes, "text/plain", &mut None).unwrap(),
+        label.into(),
+        &mut None,
     )
     .unwrap()
 }
@@ -732,21 +734,23 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
     let predict = |source: &FileRef, bytes: &[u8]| {
         FileRef::new(
             source.volume().clone(),
-            source.path(),
-            "predicted",
-            FileDescriptor::from_bytes(bytes, "text/plain")?,
-            source.display_name(),
+            source.path().into(),
+            "predicted".into(),
+            FileDescriptor::from_bytes(bytes, "text/plain", &mut None)?,
+            source.display_name().into(),
+            &mut None,
         )
     };
     let filesystem = acyclic_fs::Fs::memory();
     let provider = ProviderRef::new("client-edit".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(filesystem.clone(), provider.clone())?;
+    let host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
     let owner = AgentId::from_bytes([3; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
-        "project",
+        "project".into(),
         VolumeClass::Project,
         VolumeOwner::Agent(owner),
+        &mut None,
     )?;
     host.create_volume(&volume).await?;
     let authority = Authority {
@@ -755,11 +759,11 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
     };
     let issuer = AuthorityIssuer::new("client-edit", [4; 32], authority.clone());
     let scope = issuer.issue("owner", &Capabilities::new([
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(owner), None, &mut None).expect("scope proof");
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
     let source = host
         .put_content(
             &volume,
@@ -770,9 +774,9 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
             "test.txt",
             64,
             &IdempotencyKey::new("source")?,
-        )
+         None, None)
         .await?;
-    let workspace = workspace_ref(provider.clone(), &volume.storage_name()?)?;
+    let workspace = workspace_ref(provider.clone(), &volume.storage_name(&mut None)?)?;
     let before = host.resolve(&workspace).await?.generation;
     let mut client = Client::new(
         HarnessViews { recovery: None },
@@ -808,7 +812,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
     ));
     assert_eq!(host.resolve(&workspace).await?.generation, before);
     assert_eq!(
-        host.read_content(&source, &read, 64).await?.as_ref(),
+        host.read_content(&source, &read, 64, None).await?.as_ref(),
         b"one two"
     );
     client
@@ -848,7 +852,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
         Provenance::Authoritative(_)
     ));
     assert_eq!(
-        host.read_content(&edited, &read, 64).await?.as_ref(),
+        host.read_content(&edited, &read, 64, None).await?.as_ref(),
         b"one three"
     );
     let stale = client
@@ -872,10 +876,10 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
             "test.txt",
             64,
             &IdempotencyKey::new("user")?,
-        )
+         None, None)
         .await?;
     let head = host.resolve(&workspace).await?.generation;
-    let host = FilesystemHost::new(filesystem, provider)?;
+    let host = FilesystemHost::new(filesystem, &provider, None)?;
     assert_eq!(
         host.edit_text(&source, &read, &write, &replacement, 64, &key)
             .await?,
@@ -924,7 +928,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
     );
     assert_eq!(host.resolve(&workspace).await?.generation, head);
     assert_eq!(
-        host.read_content(&user, &read, 64).await?.as_ref(),
+        host.read_content(&user, &read, 64, None).await?.as_ref(),
         b"user edit"
     );
     Ok(())

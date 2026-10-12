@@ -80,25 +80,16 @@ impl<P: StreamProvider> Transport<P> {
 impl<P: StreamProvider> McpToolTransport for Transport<P> {
     fn call<'a>(
         &'a self,
-        _: OperationId,
-        _: &'a str,
-        _: Value,
-    ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
-        Box::pin(async { Err(Error::Unauthorized("admitted task context required".into())) })
-    }
-    fn reconcile<'a>(
-        &'a self,
-        _: OperationId,
-    ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
-        Box::pin(async { Err(Error::Unauthorized("admitted task context required".into())) })
-    }
-    fn call_with_context<'a>(
-        &'a self,
-        context: ToolContext,
+        operation: OperationId,
         name: &'a str,
         arguments: Value,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
         Box::pin(async move {
+            let context = context.ok_or_else(|| Error::Unauthorized("admitted task context required".into()))?;
+            if context.operation_id() != operation {
+                return Err(Error::Unauthorized("admitted operation changed".into()));
+            }
             self.authorize(&context)?;
             let descriptor = self.descriptor()?;
             if descriptor.method != McpStdioMethod::CallTool
@@ -114,29 +105,30 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
                 binding
                     .recovery
                     .effects
-                    .run_task_effect(
-                        &binding.recovery.owner,
-                        binding.command,
-                        binding.plan.clone(),
-                    )
-                    .await?,
+                    .run_task_effect(&binding.recovery.owner, binding.command, &binding.plan, None)
+                    .await.map(|result| result.0)?,
             )
             .await
         })
     }
-    fn reconcile_with_context<'a>(
+    fn reconcile<'a>(
         &'a self,
-        context: ToolContext,
+        operation: OperationId,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
         Box::pin(async move {
+            let context = context.ok_or_else(|| Error::Unauthorized("admitted task context required".into()))?;
+            if context.operation_id() != operation {
+                return Err(Error::Unauthorized("admitted operation changed".into()));
+            }
             self.authorize(&context)?;
             self.reconciliations.fetch_add(1, Ordering::SeqCst);
             let binding = &self.approved;
             match binding
                 .recovery
                 .effects
-                .reconcile_task_effect(&binding.recovery.owner, binding.command, &binding.plan)
-                .await
+                .reconcile_task_effect(&binding.recovery.owner, binding.command, &binding.plan, None)
+                .await.map(|result| result.0)
             {
                 Ok(status @ (EffectStatus::Succeeded { .. } | EffectStatus::Failed { .. })) => {
                     self.result(status).await.map(Some)
@@ -206,11 +198,11 @@ pub(super) async fn run<P: StreamProvider>(
     let mut tools = ToolRegistry::default();
     catalog().install(&mut tools, None, &bound, &projection, 1, 8192)?;
     let definition = tools
-        .get("mcp.example.echo")
+        .get("mcp.example.echo", None, None)?
         .ok_or_else(|| Error::NotFound("native MCP tool".into()))?
         .definition
         .clone();
-    let context = ToolContext::new(task, operation, operation.to_string())?;
+    let context = ToolContext::new(std::sync::Arc::new(task), operation, &(operation.to_string()), None)?;
     if !replay {
         let mut changed = arguments.clone();
         *changed
@@ -218,7 +210,7 @@ pub(super) async fn run<P: StreamProvider>(
             .ok_or_else(|| Error::Invalid("approved text missing".into()))? = json!("unapproved");
         if !matches!(
             transport
-                .call_with_context(context.clone(), "echo", changed)
+                .call(context.operation_id(), "echo", changed, Some(context.clone()))
                 .await,
             Err(Error::Unauthorized(_))
         ) {
@@ -230,14 +222,20 @@ pub(super) async fn run<P: StreamProvider>(
     let runner = DurableToolRunner::new(&tools, journal.clone(), None)?;
     for _ in 0..if interrupted && !replay { 1 } else { 2 } {
         let result = runner
-            .run_with_context(
+            .run(
                 task_id,
-                operation,
-                definition.clone(),
-                arguments.clone(),
-                context.clone(),
-            )
-            .await?;
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: operation,
+                    call_id: operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: arguments.clone(),
+                },
+                &context,
+                None,
+                false,
+            )?
+            .await?.0;
         verify_result(result, &arguments, operation, completed)?;
     }
     verify_journal(journal.as_ref(), operation, completed).await?;
@@ -268,7 +266,7 @@ async fn verify_journal(
         let after = records
             .last()
             .map_or(0, |record: &ExecutionRecord| record.sequence);
-        let batch = journal.replay(operation, after, 4).await?;
+        let batch = journal.replay(operation, after, 4, None)?.await?;
         if batch.is_empty() {
             break;
         }

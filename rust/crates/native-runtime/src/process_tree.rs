@@ -253,25 +253,38 @@ impl ProcessTree {
     /// Minimum delay between unfinished physical termination observations.
     pub const TERMINATION_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
-    pub(crate) fn spawn(command: &mut Command) -> io::Result<Self> {
+    /// Starts a child in an owned operating-system process tree.
+    pub fn spawn(command: &mut Command) -> io::Result<Self> {
         let mut custody = None;
         if let Err(admission) = Self::spawn_controlled(command, None, &mut custody) {
-            if let Some(tree) = custody.as_mut() { tree.terminate(None)?; }
+            if let Some(tree) = custody.as_mut() {
+                tree.terminate(None)?;
+            }
             return Err(admission);
         }
         custody.ok_or_else(|| io::ErrorKind::NotFound.into())
     }
 
-    pub(crate) fn spawn_controlled(
-        command: &mut Command, meter: Option<&dyn crate::NativeReadMeter>,
+    /// Starts a child while retaining admitted custody and the original meter.
+    pub fn spawn_controlled(
+        command: &mut Command,
+        meter: Option<&dyn crate::NativeReadMeter>,
         custody: &mut Option<Self>,
     ) -> io::Result<()> {
-        if custody.is_some() { return Err(io::ErrorKind::AlreadyExists.into()); }
+        if custody.is_some() {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
         if let Some(meter) = meter {
             meter.examine(1, 0)?;
-            for _ in command.get_args() { meter.examine(1, 0)?; }
-            for _ in command.get_envs() { meter.examine(1, 0)?; }
-            if command.get_current_dir().is_some() { meter.examine(1, 0)?; }
+            for _ in command.get_args() {
+                meter.examine(1, 0)?;
+            }
+            for _ in command.get_envs() {
+                meter.examine(1, 0)?;
+            }
+            if command.get_current_dir().is_some() {
+                meter.examine(1, 0)?;
+            }
         }
         let operation = obs::span!(
             INFO,
@@ -1411,11 +1424,20 @@ mod tests {
         let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, 0);
         meter.operation_denial = Some(crate::NativeOperationKind::Read);
         let mut custody = None;
-        assert!(crate::spawn_process_tree_with_meter_custody(
-            &mut command("exit-code", temporary.path()), &meter, &mut custody).is_err());
+        assert!(
+            ProcessTree::spawn_controlled(
+                &mut command("exit-code", temporary.path()),
+                Some(&meter),
+                &mut custody
+            )
+            .is_err()
+        );
         let mut tree = custody.take().expect("suspended child remains owned");
         assert!(!tree.is_reaped());
-        assert_eq!(tree.wait(Duration::from_secs(5)).unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            tree.wait(Duration::from_secs(5)).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
         tree.terminate(None)?;
         assert!(tree.is_reaped());
         Ok(())

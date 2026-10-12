@@ -202,11 +202,8 @@ impl VolumeRef {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             inspect_native_metadata(native, 0)?;
-            provider.validate(work)?;
         }
-        if let Some(reason) = provider.validation_error() {
-            return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, reason));
-        }
+        provider.validate(work)?;
         validate_label(id, work)?;
         match owner {
             VolumeOwner::Project(id) | VolumeOwner::Session(id) => {
@@ -253,7 +250,7 @@ impl VolumeRef {
 
     /// Exact capability for one operation on this volume.
     pub fn capability(&self, operation: VolumeOperation, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
-        content_label(operation.capability_prefix(), crate::contract::canonical_json_digest_with_work(self, u64::MAX, work)?, work)
+        content_label(operation.capability_prefix(), crate::contract::canonical_json_digest(self, u64::MAX, work)?, work)
     }
 
     /// Copies identity fields under the optional work observer.
@@ -290,12 +287,12 @@ impl VolumeRef {
         if is_internal_path(prefix) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "internal storage paths cannot be delegated"));
         }
-        content_label("directory:read:", crate::contract::canonical_json_digest_with_work(&(self, prefix), u64::MAX, work)?, work)
+        content_label("directory:read:", crate::contract::canonical_json_digest(&(self, prefix), u64::MAX, work)?, work)
     }
 
     /// Collision-resistant physical namespace for Filesystem adapters.
     pub fn storage_name(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
-        content_label("harness-", crate::contract::canonical_json_digest_with_work(self, u64::MAX, work)?, work)
+        content_label("harness-", crate::contract::canonical_json_digest(self, u64::MAX, work)?, work)
     }
 
 }
@@ -309,7 +306,7 @@ fn label_bytes(prefix: &str, digest: [u8; 32]) -> ([u8; 80], usize) {
     (label, length)
 }
 
-fn content_label(prefix: &str, digest: [u8; 32], work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
+pub(crate) fn content_label(prefix: &str, digest: [u8; 32], work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
     let (label, length) = label_bytes(prefix, digest);
     let text = std::str::from_utf8(&label[..length]).expect("ASCII identity label");
     match work.as_deref_mut() { Some(io) => io.clone_text(text), None => Ok(text.to_owned()) }
@@ -368,11 +365,11 @@ impl ContentGrant {
         }
         verifier.verify(scope, &mut None)?;
         if contains_content_label(scope, VolumeOperation::Read.capability_prefix(),
-            crate::contract::canonical_json_digest_with_work(file.volume(), u64::MAX, &mut None)?) {
+            crate::contract::canonical_json_digest(file.volume(), u64::MAX, &mut None)?) {
             return Ok(Self { volume: file.volume.clone(), operation: VolumeOperation::Read,
                 exact_file: None, directory_prefix: None });
         }
-        if contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file)?) {
+        if contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file, u64::MAX, &mut None)?) {
             let FileRef { volume, path, version, descriptor, display_name } = file.clone();
             return Ok(Self { volume, operation: VolumeOperation::Read,
                 exact_file: Some((path, version, descriptor, display_name)), directory_prefix: None });
@@ -422,7 +419,7 @@ impl ContentGrant {
         verifier.verify(scope, work)?;
         if operation == VolumeOperation::Write { volume.require_writer(scope.agent(), work)?; }
         volume.validate(work)?;
-        let digest = crate::contract::canonical_json_digest_with_work(volume, maximum_bytes, work)?;
+        let digest = crate::contract::canonical_json_digest(volume, maximum_bytes, work)?;
         if !contains_content_label(scope, operation.capability_prefix(), digest) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Unauthorized,
                 "volume operation is not granted"));
@@ -438,8 +435,8 @@ impl ContentGrant {
         if !prefix.is_empty() { validate_content_path(prefix, work)?; }
         if is_internal_path(prefix) { return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "internal storage paths cannot be delegated")); }
         if scope.agent().is_none()
-            || !(contains_content_label(scope, "directory:read:", crate::contract::canonical_json_digest_with_work(&(volume, prefix), u64::MAX, work)?)
-                || contains_content_label(scope, VolumeOperation::Read.capability_prefix(), crate::contract::canonical_json_digest_with_work(volume, u64::MAX, work)?)) {
+            || !(contains_content_label(scope, "directory:read:", crate::contract::canonical_json_digest(&(volume, prefix), u64::MAX, work)?)
+                || contains_content_label(scope, VolumeOperation::Read.capability_prefix(), crate::contract::canonical_json_digest(volume, u64::MAX, work)?)) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Unauthorized,
                 "private directory read is not granted"));
         }
@@ -457,7 +454,7 @@ impl ContentGrant {
             return Err(Error::Unauthorized("internal storage file is not public content".into()));
         }
         verifier.verify(scope, &mut None)?;
-        if !contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file)?) {
+        if !contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file, u64::MAX, &mut None)?) {
             return Err(Error::Unauthorized("exact file read is not granted".into()));
         }
         let FileRef { volume, path, version, descriptor, display_name } = file.clone();
@@ -686,8 +683,13 @@ impl FileRef {
                 Some(&["volume", "path", "version", "descriptor", "display_name"]), work)?;
             let mut volume = native_owned_wire_object(native_owned_wire_field(&mut file, "volume", work)?,
                 Some(&["provider", "id", "class", "owner"]), work)?;
-            let provider = ProviderRef::from_owned_value_with_work(
-                native_owned_wire_field(&mut volume, "provider", work)?, work)?;
+            let mut provider = native_owned_wire_object(
+                native_owned_wire_field(&mut volume, "provider", work)?,
+                Some(&["namespace", "family", "version"]), work)?;
+            let provider = ProviderRef::new(
+                native_owned_wire_text(native_owned_wire_field(&mut provider, "namespace", work)?, work)?,
+                native_owned_wire_text(native_owned_wire_field(&mut provider, "family", work)?, work)?,
+                native_owned_wire_text(native_owned_wire_field(&mut provider, "version", work)?, work)?, work)?;
             let id = native_owned_wire_text(native_owned_wire_field(&mut volume, "id", work)?, work)?;
             let class = native_owned_volume_class(native_owned_wire_field(&mut volume, "class", work)?, work)?;
             let mut owner = native_owned_wire_object(native_owned_wire_field(&mut volume, "owner", work)?,
@@ -791,9 +793,9 @@ impl FileRef {
     }
 
     /// Owner-issued capability for reading precisely this immutable version.
-    pub fn read_capability(&self) -> Result<String> {
-        self.validate(&mut None)?;
-        content_label("file:read:", crate::contract::canonical_json_digest(self)?, &mut None)
+    pub fn read_capability(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
+        self.validate(work)?;
+        content_label("file:read:", crate::contract::canonical_json_digest(self, crate::store::default_projection_read_limits().maximum_bytes, work)?, work)
     }
 }
 
@@ -2438,7 +2440,7 @@ impl ConversationState {
             if self.native_custody.archive.is_none()
                 && let Some(prefix) = &self.archived_prefix
             {
-                let bytes = crate::core::source_inventory(prefix)?;
+                let bytes = prefix.checkpoint.logical_owned_bytes()?;
                 io.admit_owned(bytes)?;
                 io.retain_owned(bytes)?;
                 self.native_custody.archive = Some(io.take_native_custody(bytes)?);
@@ -2555,7 +2557,7 @@ fn advance_history_digest(
     previous: [u8; 32], message: &ConversationMessage, maximum_encoded_bytes: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
-    let digest = crate::contract::canonical_json_digest_with_work(
+    let digest = crate::contract::canonical_json_digest(
         message, maximum_encoded_bytes, work)?;
     if let Some(work) = work.as_deref_mut() {
         work.hashed_bytes(b"harness:conversation-prefix:v3\0".len() as u64 + 64)?;
@@ -2659,7 +2661,9 @@ mod tests {
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(native_conversation_budget(), &cancellation)
             .expect("original validation ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("original validation observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("original validation observer"),
+        );
         source.path = "../escape".into();
         assert!(matches!(source.validate(&mut Some(&mut io)),
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
@@ -2673,7 +2677,9 @@ mod tests {
         let mut allowance = native_conversation_budget();
         allowance.bytes_hashed = 0;
         let denied = NativeMaterializationWork::new(allowance, &cancellation).expect("hash denial ledger");
-        let mut denied_io = crate::store::history::native_work_io(&denied).expect("hash denial observer");
+        let mut denied_io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&denied).expect("hash denial observer"),
+        );
         assert!(matches!(source.descriptor().verify(b"hello", &mut Some(&mut denied_io)),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
                 WorkError::BudgetExceeded { counter: "bytes_hashed", .. }), .. })));
@@ -2691,12 +2697,14 @@ mod tests {
         let mut budget = native_conversation_budget();
         budget.bytes_copied = 4 + source.volume().provider().namespace().len() as u64;
         let native = NativeMaterializationWork::new(budget, &cancellation).expect("partial clone ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("partial clone observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("partial clone observer"),
+        );
         let held = io.clone_text("held")?;
         assert!(matches!(source.copy(&mut Some(&mut io)),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
                 WorkError::BudgetExceeded { counter: "bytes_copied", .. }), .. })));
-        let guard = io.into_custody();
+        let guard = io.into_custody()?;
         assert_eq!(guard.bytes(), held.capacity() as u64, "failed file fields are physically retired");
         drop(held);
         drop(guard);
@@ -2718,12 +2726,14 @@ mod tests {
         let first_token = CancellationToken::new();
         let budget = native_conversation_budget();
         let first = NativeMaterializationWork::new(budget, &first_token).expect("snapshot copy ledger");
-        let mut io = crate::store::history::native_work_io(&first).expect("snapshot copy observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&first).expect("snapshot copy observer"),
+        );
         let (held, produced) = source.copy(&mut Some(&mut io), None)?;
         assert_eq!(held, source);
         assert_eq!(held.native_unclaimed_message_buffer_bytes()?, 0);
         assert_eq!(held.native_unclaimed_cache_bytes()?, 0);
-        let deep = io.into_custody();
+        let deep = io.into_custody()?;
         assert_eq!(deep.bytes(), produced, "only observer-owned deep payload is reported");
         let original_receipt = first.receipt();
         first_token.cancel();
@@ -2733,7 +2743,9 @@ mod tests {
         };
         let second_token = CancellationToken::new();
         let second = NativeMaterializationWork::new(budget, &second_token).expect("independent suffix ledger");
-        let mut io = crate::store::history::native_work_io(&second).expect("suffix observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&second).expect("suffix observer"),
+        );
         let mut components = Vec::with_capacity(2);
         let mut retain = |sequence, bytes, work: &mut Option<&mut dyn HistoryIo>| -> Result<()> {
             assert!(components.len() < components.capacity());
@@ -2745,7 +2757,7 @@ mod tests {
             &selection, &mut Some(&mut io), Some(&mut retain))?;
         drop(retain);
         assert_eq!(produced, 0);
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         assert_eq!(components.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>(), [3, 4]);
         assert!(components.iter().all(|(_, guard)| guard.work().shares_ledger(&second)));
         assert_eq!(first.receipt(), original_receipt, "cancelled source ledger is neither rebound nor absorbed");
@@ -2795,14 +2807,18 @@ mod tests {
         let mut state = ConversationState::default();
         state.bind(agent)?;
         for sequence in 1..=4 {
-            let mut io = crate::store::history::native_work_io(&funded).expect("original observer");
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(&funded).expect("original observer"),
+            );
             state.append(message(&content, sequence), &mut Some(&mut io))?;
         }
         let head = state.history_digest();
         let mut denied_budget = budget;
         denied_budget.bytes_hashed = 0;
         let denied = NativeMaterializationWork::new(denied_budget, &cancellation).expect("hash denial ledger");
-        let mut io = crate::store::history::native_work_io(&denied).expect("hash denial observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&denied).expect("hash denial observer"),
+        );
         assert!(matches!(state.append(message(&content, 5), &mut Some(&mut io)),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
                 WorkError::BudgetExceeded { counter: "bytes_hashed", .. }), .. })));
@@ -2811,14 +2827,18 @@ mod tests {
         assert_eq!(state.history_digest(), head);
         assert_eq!(state.messages.len(), 4);
         let probe = NativeMaterializationWork::new(budget, &cancellation).expect("original hash control");
-        let mut probe_io = crate::store::history::native_work_io(&probe).expect("original hash observer");
+        let mut probe_io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&probe).expect("original hash observer"),
+        );
         advance_history_digest(head, &message(&content, 5),
             acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut probe_io))?;
         denied_budget = budget;
         denied_budget.allocation_operations = probe.receipt().allocation_operations;
         drop(probe_io);
         let denied = NativeMaterializationWork::new(denied_budget, &cancellation).expect("growth denial ledger");
-        let mut io = crate::store::history::native_work_io(&denied).expect("growth denial observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&denied).expect("growth denial observer"),
+        );
         assert!(matches!(state.append(message(&content, 5), &mut Some(&mut io)),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
                 WorkError::BudgetExceeded { counter: "allocation_operations", .. }), .. })));
@@ -2871,7 +2891,9 @@ mod tests {
         let cancellation = CancellationToken::new();
         let wire: ConversationStateWire = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let mut work = HistoryWork::new(budget, &cancellation);
+        let mut work = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_budget(budget, &cancellation)?,
+        );
         let rebuilt = ConversationState::from_wire(
             wire, bytes.len() as u64, &mut Some(&mut work));
         let receipt = work.finish(rebuilt).map_err(|failure| failure.error)?;
@@ -2879,7 +2901,9 @@ mod tests {
         assert!(receipt.work.bytes_encoded > 0);
         let mut denied = budget;
         denied.bytes_hashed = 0;
-        let mut work = HistoryWork::new(denied, &cancellation);
+        let mut work = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_budget(denied, &cancellation)?,
+        );
         let wire = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Storage(error.to_string()))?;
         let result = ConversationState::from_wire(
@@ -2889,7 +2913,9 @@ mod tests {
         assert!(failed.work.bytes_encoded > 0);
         assert_eq!(failed.work.output_bytes, 0);
         cancellation.cancel();
-        let mut work = HistoryWork::new(budget, &cancellation);
+        let mut work = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_budget(budget, &cancellation)?,
+        );
         let wire = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Storage(error.to_string()))?;
         let result = ConversationState::from_wire(
@@ -2963,7 +2989,7 @@ mod tests {
             10_000,
             &[],
             &state,
-        )?;
+         &mut None)?;
         for _ in 0..32 {
             assert_eq!(
                 crate::fork::InheritedConversationPrefix::select(
@@ -2972,7 +2998,7 @@ mod tests {
                     10_000,
                     &[],
                     &state
-                )?,
+                , &mut None)?,
                 pinned
             );
         }
@@ -3232,7 +3258,7 @@ mod tests {
             ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &internal),
             Err(Error::Unauthorized(_))
         ));
-        let internal_exact = issuer.issue("internal-exact", &crate::Capabilities::new([internal.read_capability()?]), Some(owner), None, &mut None).expect("scope proof");
+        let internal_exact = issuer.issue("internal-exact", &crate::Capabilities::new([internal.read_capability(&mut None)?]), Some(owner), None, &mut None).expect("scope proof");
         assert!(matches!(
             ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &internal_exact, &internal),
             Err(Error::Unauthorized(_))
@@ -3563,7 +3589,7 @@ mod tests {
                 id: AgentId::from_bytes([1; 16]).to_string(),
             },
         );
-        let scope = issuer.issue("exact-member", &crate::Capabilities::new([member.read_capability()?]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
+        let scope = issuer.issue("exact-member", &crate::Capabilities::new([member.read_capability(&mut None)?]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
         let grant = ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &member)?;
         let lazy = CompositeContentVerifier::new(vec![(manifest.volume().clone(), first)],
             Some(Arc::new(StaticMount {

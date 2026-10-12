@@ -2,7 +2,7 @@ use super::*;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::{FileKind, NameEncoding, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectKind, };
+use crate::storage::ObjectKind;
 use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
@@ -24,11 +24,17 @@ fn entry(value: &str, byte: u8) -> Result<TreeEntry, Box<dyn std::error::Error>>
 
 async fn put(store: &MemoryObjectStore, page: &TreePage) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = tree_page_id(page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        id,
+    {
+        let __object_args = (
+            id,
         OwnedBytes::from(encode_tree_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(id)
 }
 
@@ -353,27 +359,108 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
         reached: AtomicUsize,
     }
     impl AsyncObjectStore for PanickingRead {
-        async fn put(&self, id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &CancellationToken)
-        -> ObjectResult<()> {
-            AsyncObjectStore::put(&self.inner, id, bytes, budget, cancellation).await
+        async fn put(&self, id: ObjectId, bytes: OwnedBytes,
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<(), crate::ObjectStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let cancellation = context.cancellation;
+            let result = async {
+                {
+                    let __object_args = (id, bytes, budget, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                    let __object_result = AsyncObjectStore::put(&self.inner,
+                        __object_args.0,
+                        __object_args.1,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result)
         }
-        async fn read(&self, _id: ObjectId, _maximum: u64, _budget: WorkBudget, _cancellation: &CancellationToken)
-        -> ObjectResult<ObjectRead> {
+        async fn read(&self, _id: ObjectId, _maximum: u64,
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let _budget = context.read_budget()?;
+            let _cancellation = context.cancellation;
+            let result = async {
             self.reached.fetch_add(1, Ordering::SeqCst);
             panic!("provider unwinds without returning its private work");
         }
-        async fn read_many(&self, requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &CancellationToken)
-        -> ObjectResult<Vec<ObjectRead>> {
-            AsyncObjectStore::read_many(&self.inner, requests, budget, cancellation).await
+            .await;
+            context.accept(result)
         }
-        async fn contains(&self, id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken)
-        -> ObjectResult<bool> {
-            AsyncObjectStore::contains(&self.inner, id, budget, cancellation).await
+        async fn read_many(&self, requests: &[ObjectReadRequest],
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>
+        {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let cancellation = context.cancellation;
+            let result = async {
+                {
+                    let __object_args = (requests, budget, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = AsyncObjectStore::read_many(&self.inner,
+                        __object_args.0,
+                        &mut __object_work,
+                    )
+                    .await
+                    .map(|(values, _allocation)| values);
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result).map(|values| (values, None))
+        }
+        async fn contains(&self, id: ObjectId,
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<bool, crate::ObjectStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let cancellation = context.cancellation;
+            let result = async {
+                {
+                    let __object_args = (id, budget, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = AsyncObjectStore::contains(
+                        &self.inner,
+                        __object_args.0,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result)
         }
     }
     let inner = MemoryObjectStore::default();
     let root = tree(&inner).await?;
-    let store = PanickingRead { inner, reached: AtomicUsize::new(0) };
+    let store = PanickingRead {
+        inner,
+        reached: AtomicUsize::new(0),
+    };
     let cancellation = CancellationToken::new();
     let owner = crate::kernel::ProofDataCustody::default();
     let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
@@ -381,13 +468,20 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
             &store, root, None, 2, DecodeLimits::default(), WorkBudget::UNBOUNDED,
             &cancellation, Some(&owner),
         )).await
-    })).await;
+    }))
+    .await;
     assert!(result.is_err());
     assert_eq!(store.reached.load(Ordering::SeqCst), 1);
     let known = owner.pending_data_work();
     assert_eq!(known.page_reads, 1);
-    assert_eq!(known.allocation_operations, 4, "owned output, visited/frontier buffers, and actual read-future frame");
-    assert_eq!(known.backend_read_operations, 0, "no provider receipt was returned");
+    assert_eq!(
+        known.allocation_operations, 4,
+        "owned output, visited/frontier buffers, and actual read-future frame"
+    );
+    assert_eq!(
+        known.backend_read_operations, 0,
+        "no provider receipt was returned"
+    );
     assert_eq!(known.object_bytes_read, 0);
     assert_eq!(known.bytes_copied, 0);
     assert_eq!(owner.operation_cache_bytes(), 0);

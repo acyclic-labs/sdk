@@ -226,10 +226,10 @@ where
                     })
                 }
                 JoinOutcome::NoChanges(generation) => Ok(ProjectJoinOutcome::NoChanges(
-                    self.binding.host.generation_ref(generation)?,
+                    self.binding.host.generation_ref_id(generation.id())?,
                 )),
                 JoinOutcome::StaleTarget(generation) => Ok(ProjectJoinOutcome::StaleTarget(
-                    self.binding.host.generation_ref(generation)?,
+                    self.binding.host.generation_ref_id(generation.id())?,
                 )),
                 JoinOutcome::Conflicted {
                     conflicts,
@@ -273,7 +273,7 @@ pub(super) fn encode_conflict(conflict: &MergeConflict) -> Vec<u8> {
 }
 
 pub(super) fn decode_conflict(key: &[u8], io: Option<&super::PreparationIo>) -> Result<MergeConflict> {
-    let invalid = |message| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, message);
+    let invalid = |message| stock_boundary(io, crate::wire::ErrorCode::Invalid, message);
     if let Some(io) = io { io.retain_owned(std::mem::size_of::<MergeConflict>() as u64)?; }
     let (tag, rest) = key.split_first().ok_or_else(|| invalid("empty conflict key"))?;
     let id_bytes: [u8; 16] = rest.get(..16).ok_or_else(|| invalid("short conflict key"))?
@@ -292,7 +292,7 @@ pub(super) fn decode_conflict(key: &[u8], io: Option<&super::PreparationIo>) -> 
                 io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
                 io.preflight(copying)?;
             }
-            let mut copied = super::fork_preparer_io::vector(name.len(), io)?;
+            let mut copied = crate::model::vec_with_capacity(name.len(), io)?;
             copied.extend_from_slice(name);
             if let Some(io) = io { io.charge(copying)?; }
             let name = LogicalName::new(encoding, copied, u32::MAX).map_err(|error| {
@@ -371,3 +371,5 @@ mod tests {
         Ok(())
     }
 }
+
+use crate::executor::{stock_boundary};

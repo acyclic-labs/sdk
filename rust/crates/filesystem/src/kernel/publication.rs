@@ -4,13 +4,13 @@ use super::{
     CanonicalDecodeError, ClosureError, ClosureLimits, GenerationProof, codec::Decoder,
     volume_authority_id,
 };
-use acyclic_stream::ProviderTask;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, Digest, Epoch, Head, OperationId, ProposedCommit, VolumeId, usize_to_u64,
 };
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{AppendOutcome, AuthorityStoreError, GuardedAppend, ObjectId, ObjectKind, PublicationPermit};
+use acyclic_stream::ProviderTask;
 use bytes::Bytes;
 use thiserror::Error;
 
@@ -39,12 +39,6 @@ enum PublicationProofGuard {
 struct PublicationOutput {
     receipt: PublicationReceipt,
     guard: PublicationProofGuard,
-}
-
-struct PublicationAppend {
-    outcome: AppendOutcome,
-    #[cfg(not(target_arch = "wasm32"))]
-    allocation: Option<crate::NativeAllocation>,
 }
 
 struct ProvenPublication {
@@ -109,7 +103,9 @@ impl<'a> PublicationAccounting<'a> {
                 Ok(remaining)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native(_) => unreachable!("original callers pass the native meter, never a reconstructed budget"),
+            Self::Native(_) => {
+                unreachable!("original callers pass the native meter, never a reconstructed budget")
+            }
         }
     }
 
@@ -322,7 +318,9 @@ pub(crate) fn decode_publication_evidence_with_accounting<'a>(
     maximum_payload_bytes: u64,
     accounting: &mut super::allocation::KernelAccounting<'_>,
 ) -> Result<BorrowedPublicationEvidence<'a>, crate::FsError> {
-    super::file_read::decode_owned(accounting, |observe| decode_publication_evidence(bytes, maximum_payload_bytes, observe))
+    super::file_read::decode_owned(accounting, |observe| {
+        decode_publication_evidence(bytes, maximum_payload_bytes, observe)
+    })
         .map(|(value, _guard)| value)
 }
 
@@ -439,18 +437,14 @@ where
         }
     };
     let mut dispatch = |request: GuardedAppend, allowance: Option<WorkBudget>| {
-        let future = authority.compare_and_append_guarded(
-            request, allowance.expect("the ordinary engine supplies its remaining budget"), cancellation,
-        );
+        let future =async move { let __authority_args = (request, allowance.expect("the ordinary engine supplies its remaining budget"), cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) };
         async move {
-            future.await.map(|receipt| (
-                PublicationAppend {
-                    outcome: receipt.value,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    allocation: None,
-                },
+            future.await.map(|receipt| {
+                    (
+                receipt.value,
                 Some(receipt.work),
-            )).map_err(|failure| PublicationStepFailure {
+            )
+                }).map_err(|failure| PublicationStepFailure {
                 cause: E::from(crate::FsError::Authority(failure.error)), work: Some(*failure.work),
             })
         }
@@ -513,16 +507,16 @@ where
     let mut dispatch = move |request: GuardedAppend, _: Option<WorkBudget>| {
         let mut owner = owned_owner.clone();
         async move {
-            let (outcome, allocation) = authority.compare_and_append_guarded_with_native_owner(
-                request, original, cancellation, &mut owner,
-            ).await.map_err(|error| PublicationStepFailure {
+            let outcome =(async { let __authority_args = (request, original, cancellation, &mut owner,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.3).clone()))).await.map_err(|error| error.into_error(NativePublicationOwnerFailure::Authority)); __authority_result }.await).map_err(|error| PublicationStepFailure {
                 cause: match error {
                     NativePublicationOwnerFailure::Owner(error) => error,
-                    NativePublicationOwnerFailure::Authority(error) => E::from(native_authority_error(error)),
-                },
+                    NativePublicationOwnerFailure::Authority(error) => {
+                            E::from(native_authority_error(error))
+                        }
+                    },
                 work: None,
             })?;
-            Ok((PublicationAppend { outcome, allocation: Some(allocation) }, None))
+            Ok((outcome, None))
         }
     };
     let mut seal = |_| {
@@ -535,7 +529,9 @@ where
         if let Some(prepare) = prepare_roots.as_mut() {
             match guard {
                 PublicationProofGuard::Native(guard) => prepare(root, guard, original)?,
-                PublicationProofGuard::Standalone(_) => unreachable!("native preparation owns a native proof"),
+                PublicationProofGuard::Standalone(_) => {
+                    unreachable!("native preparation owns a native proof")
+                }
             }
         }
         Ok(())
@@ -546,7 +542,9 @@ where
     ).await?;
     match output.guard {
         PublicationProofGuard::Native(guard) => Ok((output.receipt, guard)),
-        PublicationProofGuard::Standalone(_) => unreachable!("original proof retains its original guard"),
+        PublicationProofGuard::Standalone(_) => {
+            unreachable!("original proof retains its original guard")
+        }
     }
 }
 
@@ -568,7 +566,8 @@ where
     F: FnMut(Option<WorkBudget>) -> Fut + ProviderTask,
     Fut: Future<Output = Result<Option<WorkCounters>, PublicationStepFailure<E>>> + ProviderTask,
     G: FnMut(GuardedAppend, Option<WorkBudget>) -> Dispatch + acyclic_stream::ProviderTask,
-    Dispatch: Future<Output = Result<(PublicationAppend, Option<WorkCounters>), PublicationStepFailure<E>>> + acyclic_stream::ProviderTask,
+    Dispatch: Future<Output = Result<(AppendOutcome, Option<WorkCounters>), PublicationStepFailure<E>>,
+        > + acyclic_stream::ProviderTask,
     R: FnMut(&super::GenerationRoot, &mut PublicationProofGuard, &mut PublicationAccounting<'_>) -> Result<(), E>,
 {
     let expected_authority = volume_authority_id(request.volume_id);
@@ -610,7 +609,9 @@ where
     // Field order keeps the concrete proof data physically ahead of its guard.
     let mut output = ProvenPublication { proof, guard };
     match &output.guard {
-        PublicationProofGuard::Standalone(guard) => accounting.retain(guard.retained_bytes()).map_err(E::from)?,
+        PublicationProofGuard::Standalone(guard) => {
+            accounting.retain(guard.retained_bytes()).map_err(E::from)?
+        }
         #[cfg(not(target_arch = "wasm32"))]
         PublicationProofGuard::Native(_) => {}
     }
@@ -651,42 +652,39 @@ where
     let scope = crate::PublicationScope::Closure { objects: &output.proof.objects, proven_at };
     let _publication_hold = match accounting {
         PublicationAccounting::Standalone { .. } => {
-            let result = objects.flush_before_publish(scope, accounting.remaining().map_err(E::from)?, cancellation).await
-                .map(|receipt| (receipt.value, Some(receipt.work)))
+            let result = {
+                let __object_args = (
+                    scope,
+                    accounting.remaining().map_err(E::from)?,
+                    cancellation,
+                );
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = objects
+                    .flush_before_publish(__object_args.0, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+            .map(|receipt| (receipt.value, Some(receipt.work)))
                 .map_err(|failure| PublicationStepFailure {
                     cause: E::from(crate::FsError::Object(failure.error)), work: Some(*failure.work),
                 });
             accounting.accept_step(result)?
         }
         #[cfg(not(target_arch = "wasm32"))]
-        PublicationAccounting::Native(original) => objects.flush_before_publish_with_native_work(
-            scope, original, cancellation,
-        ).await.map_err(native_object_error).map_err(E::from)?,
+        PublicationAccounting::Native(original) => {
+            let __object_args = (scope, original, cancellation);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+            let __object_result = objects
+                .flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_result
+        }
+        .map_err(native_object_error).map_err(E::from)?,
     };
     let append = crate::GuardedAppend {
         authority_id: request.authority_id, epoch: request.epoch, expected: request.expected,
         commit, permit: intent.permit,
     };
-    // PR237's genuine provider custody hook is retained on this sole engine,
-    // with the exact authenticated closure and durability hold still standing.
-    match accounting {
-        PublicationAccounting::Standalone { .. } => {
-            let result = objects.prepare_generation_publication(
-                &request, &output.proof, &append,
-                crate::PublicationScope::Closure { objects: &output.proof.objects, proven_at },
-                accounting.remaining().map_err(E::from)?, cancellation,
-            ).await.map(|receipt| ((), Some(receipt.work))).map_err(|failure| PublicationStepFailure {
-                cause: E::from(crate::FsError::Object(failure.error)), work: Some(*failure.work),
-            });
-            accounting.accept_step(result)?;
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        PublicationAccounting::Native(original) => objects.prepare_generation_publication_with_native_work(
-            &request, &output.proof, &append,
-            crate::PublicationScope::Closure { objects: &output.proof.objects, proven_at },
-            original, cancellation,
-        ).await.map_err(native_object_error).map_err(E::from)?,
-    }
     if matches!(accounting, PublicationAccounting::Standalone { .. }) {
         let checked = before_publication(Some(accounting.remaining().map_err(E::from)?)).await;
         accounting.accept_step(checked.map(|work| ((), work)))?;
@@ -698,16 +696,7 @@ where
         PublicationAccounting::Native(_) => None,
     };
     let appended = accounting.accept_step(dispatch(append, allowance).await)?;
-    #[cfg(not(target_arch = "wasm32"))]
-    let mut appended = appended;
-    #[cfg(not(target_arch = "wasm32"))]
-    if let PublicationProofGuard::Native(proof_guard) = &mut output.guard {
-        let allocation = appended.allocation.as_mut().ok_or_else(|| E::from(crate::FsError::NativeKernel(
-            crate::NativeTreeMaterializationError::InvalidLayout,
-        )))?;
-        proof_guard.absorb(allocation).map_err(crate::FsError::from).map_err(E::from)?;
-    }
-    Ok(output.finish(appended.outcome, accounting.work()))
+    Ok(output.finish(appended, accounting.work()))
 }
 
 fn publication_error(error: crate::FsError) -> PublicationError {
@@ -747,12 +736,14 @@ pub(crate) fn permit_context_with_accounting(
     accounting.check()?;
     let permit_hash_bytes = match permit {
         PublicationPermit::Unrestricted => 0,
-        PublicationPermit::Lease { .. } =>
+        PublicationPermit::Lease { .. } => {
             usize_to_u64(b"acyclic-fs-publication-lease-v1\0".len()) + 1 + 16 + 16 + 16 + 8
-                + if context.is_some() { 32 } else { 0 },
-        PublicationPermit::Reservation { .. } =>
+                + if context.is_some() { 32 } else { 0 }
+        }
+        PublicationPermit::Reservation { .. } => {
             usize_to_u64(b"acyclic-fs-publication-reservation-v1\0".len()) + 1 + 16 + 8 + 8 + 8 + 32
-                + if context.is_some() { 32 } else { 0 },
+                + if context.is_some() { 32 } else { 0 }
+    }
     };
     let hashing = WorkCounters { bytes_hashed: permit_hash_bytes, ..WorkCounters::UNCHARGED };
     accounting.admit(hashing)?;
@@ -980,7 +971,8 @@ const fn publication_payload_length() -> usize {
 }
 
 fn publication_payload_length_with_evidence(evidence: Option<&[u8]>) -> Result<usize, crate::FsError> {
-    let Some(evidence) = evidence else { return Ok(publication_payload_length()) };
+    let Some(evidence) = evidence else { return Ok(publication_payload_length());
+    };
     if evidence.is_empty() {
         return Err(CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("empty original publication evidence")).into());
     }
@@ -1056,7 +1048,9 @@ fn write_fingerprint_input(
     bytes: &mut Vec<u8>, request: &PublishGenerationRequest,
     operation_context: Option<Digest>, payload: &[u8],
 ) {
-    feed_fingerprint_input(request, operation_context, payload, |part| bytes.extend_from_slice(part));
+    feed_fingerprint_input(request, operation_context, payload, |part| {
+        bytes.extend_from_slice(part)
+    });
 }
 
 fn feed_fingerprint_input(

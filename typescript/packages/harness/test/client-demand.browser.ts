@@ -177,7 +177,7 @@ try {
   assert(handoffResult.name === "AbortError" && closed === 1, "cancelled browser connection lost cleanup");
   class CompletionScheduler extends RequestScheduler {
     after: (() => void) | undefined;
-    override schedule<Value>(bytes: number, work: (signal: AbortSignal, bytes: number) => Promise<Value>,
+    override schedule<Value>(bytes: number, work: (signal: AbortSignal) => Promise<Value>,
       signal?: AbortSignal, capture?: () => void): Promise<Value> {
       const promise = super.schedule(bytes, work, signal, capture);
       void promise.then(() => this.after?.(), () => {});

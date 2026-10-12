@@ -56,25 +56,28 @@ impl ExecutionJournal for FaultJournal {
         op: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
-        self.inner.replay(op, after, maximum)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        self.inner.replay(op, after, maximum, io)
     }
     fn append<'a>(
         &'a self,
         op: OperationId,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.inner.append(op, key, event)
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
+        self.inner.append(op, key, event, io)
     }
     fn append_if_tail<'a>(
         &'a self,
         op: OperationId,
         tail: u64,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async move {
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, bool>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             let boundary = match event {
                 ExecutionEvent::ToolStarted { .. } => {
                     matches!(self.fault, Fault::ClaimBefore | Fault::ClaimAfter)
@@ -88,7 +91,7 @@ impl ExecutionJournal for FaultJournal {
             if inject && matches!(self.fault, Fault::ClaimBefore | Fault::TerminalBefore) {
                 return Err(Error::Indeterminate(op));
             }
-            let committed = self.inner.append_if_tail(op, tail, key, event).await?;
+            let committed = self.inner.append_if_tail(op, tail, key, event, io)?.await?;
             if inject {
                 return Err(Error::Indeterminate(op));
             }
@@ -98,11 +101,12 @@ impl ExecutionJournal for FaultJournal {
     fn stage<'a>(
         &'a self,
         op: OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media: &'static str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, FileRef>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             if self.fault == Fault::ResultStage
                 && key.starts_with("tool:result:")
                 && !self.fired.swap(true, Ordering::SeqCst)
@@ -111,11 +115,13 @@ impl ExecutionJournal for FaultJournal {
                     "injected after remote result before local stage".into(),
                 ));
             }
-            self.inner.stage(op, key, bytes, media).await
+            self.inner.stage(op, key, bytes, media, io)?.await
         })
     }
-    fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        self.inner.load(file)
+    fn load<'a>(&'a self, file: &'a FileRef,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.inner.load(file, io)
     }
     fn open_interaction<'a>(
         &'a self,
@@ -179,35 +185,26 @@ fn verify_transport_context(context: &ToolContext) -> Result<()> {
 }
 
 impl McpToolTransport for ScopedHttp {
-    fn call<'a>(
-        &'a self,
-        _: OperationId,
-        _: &'a str,
-        _: Value,
-    ) -> BoxFuture<'a, Result<McpToolResult>> {
-        Box::pin(async { Err(Error::Unsupported("durable task context required".into())) })
-    }
-    fn reconcile<'a>(&'a self, _: OperationId) -> BoxFuture<'a, Result<Option<McpToolResult>>> {
-        Box::pin(async { Err(Error::Unsupported("durable task context required".into())) })
-    }
-    fn call_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        name: &'a str,
-        arguments: Value,
-    ) -> BoxFuture<'a, Result<McpToolResult>> {
+    fn call<'a>(&'a self, operation: OperationId, name: &'a str, arguments: Value,
+        context: Option<ToolContext>) -> BoxFuture<'a, Result<McpToolResult>> {
         Box::pin(async move {
+            let context = context.ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
+            if context.operation_id() != operation {
+                return Err(Error::Unauthorized("durable MCP operation changed".into()));
+            }
             verify_transport_context(&context)?;
-            self.0.call(context.operation_id(), name, arguments).await
+            self.0.call(operation, name, arguments, Some(context)).await
         })
     }
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-    ) -> BoxFuture<'a, Result<Option<McpToolResult>>> {
+    fn reconcile<'a>(&'a self, operation: OperationId, context: Option<ToolContext>)
+        -> BoxFuture<'a, Result<Option<McpToolResult>>> {
         Box::pin(async move {
+            let context = context.ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
+            if context.operation_id() != operation {
+                return Err(Error::Unauthorized("durable MCP operation changed".into()));
+            }
             verify_transport_context(&context)?;
-            self.0.reconcile(context.operation_id()).await
+            self.0.reconcile(operation, Some(context)).await
         })
     }
 }
@@ -247,7 +244,7 @@ async fn bind_conversation(
             id: "mcp-fault".into(),
         },
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     aggregate
         .execute(Command {
@@ -264,12 +261,12 @@ async fn bind_conversation(
 
 async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, AuthorityIssuer, Scope)> {
     let provider = ProviderRef::new("mcp-fault".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(
+    let host = FilesystemHost::new(
         Fs::local(LocalOptions::new(root.join("fs")))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-        provider.clone(),
-    )?);
+        &provider, None,
+    )?;
     let agent = AgentId::from_bytes([41; 16]);
     let private = VolumeRef::new(
         provider,
@@ -465,7 +462,7 @@ async fn phase(
         )
         .await?;
     let definition = tools
-        .get("mcp.fixture.echo")
+        .get("mcp.fixture.echo", None, None)?
         .ok_or_else(|| Error::NotFound("fixture tool".into()))?
         .definition
         .clone();
@@ -476,7 +473,7 @@ async fn phase(
     let mut bindings = Bindings::local();
     bindings.scope = scope.clone();
     bindings.state = Some(Arc::new(AdmittedTask(scope)));
-    let runtime = bindings.build()?;
+    let runtime = bindings.build(None)?;
     let task = TaskId::from_bytes([42; 16]);
     let op = OperationId::from_bytes([43; 16]);
     let context = runtime
@@ -484,14 +481,20 @@ async fn phase(
         .await?;
     let runner = DurableToolRunner::new(&tools, journal, None)?;
     runner
-        .run_with_context(
+        .run(
             task,
-            op,
-            definition,
-            json!({}),
-            ToolContext::new(context, op, op.to_string())?,
-        )
-        .await
+            &definition,
+            &acyclic_harness::tool::ToolInvocation {
+                operation_id: op,
+                call_id: op.to_string(),
+                name: definition.name.clone(),
+                arguments: json!({}),
+            },
+            &ToolContext::new(std::sync::Arc::new(context), op, &(op.to_string()), None)?,
+            None,
+            false,
+        )?
+        .await.map(|result| result.0)
 }
 
 #[tokio::test]

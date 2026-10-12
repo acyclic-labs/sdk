@@ -1,13 +1,16 @@
 //! Durable logical Objects v1, backed by private state deltas and immutable bodies.
 pub use super::memory::persistence::LocalOpenError;
 use super::{Error, MemoryObjects, Object, ObjectsProvider, wire};
+use super::{
+    NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture,
+    ObjectsNativeRequest, ObjectsPutReceipt,
+};
+use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 use acyclic_stream::OwnedBytes;
 use futures::executor::block_on;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
-use super::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt};
 
 fn spawn_native_read<F>(
     future: F,
@@ -27,15 +30,17 @@ where
     Ok(tokio::spawn(future))
 }
 
-use crate::{LocalObjectsLimits, LocalObjectsGarbageCollection};
+use crate::{LocalObjectsGarbageCollection, LocalObjectsLimits};
 
 fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     meter: Option<Arc<dyn NativeReadMeter>>,
 ) -> Result<acyclic_native_runtime::NativeCompletion<T>, NativeObjectsError> {
     let span = tracing::Span::current();
-    Ok(acyclic_native_runtime::run_blocking_io(move || span.in_scope(work),
-        meter.map(|meter| (meter, false)))?)
+    Ok(acyclic_native_runtime::run_blocking_io(
+        move || span.in_scope(work),
+        meter.map(|meter| (meter, false)),
+    )?)
 }
 
 /// One owned logical store. Clones share admission, retry receipts and ownership.
@@ -52,12 +57,16 @@ impl LocalObjects {
         anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
     ) -> Result<Self, LocalOpenError> {
         let root = root.as_ref().to_path_buf();
-        blocking(move || {
-            super::memory::persistence::open(root, options, anchor).map(|core| Self {
-                core,
-                body_io: Arc::new(RwLock::new(())),
-            })
-        }, None).map_err(|_| LocalOpenError::Unavailable)?
+        blocking(
+            move || {
+                super::memory::persistence::open(root, options, anchor).map(|core| Self {
+                    core,
+                    body_io: Arc::new(RwLock::new(())),
+                })
+            },
+            None,
+        )
+        .map_err(|_| LocalOpenError::Unavailable)?
         .await
         .map_err(|_| LocalOpenError::Unavailable)?
     }
@@ -65,7 +74,8 @@ impl LocalObjects {
         &self,
         action: impl FnOnce(&MemoryObjects) -> Result<T, Error> + Send + 'static,
     ) -> Result<T, Error> {
-        self.mutate_with_meter(None, move |core| action(core).map_err(Into::into)).await
+        self.mutate_with_meter(None, move |core| action(core).map_err(Into::into))
+            .await
             .map_err(|error| match error.into_cause() {
                 NativeObjectsCause::Service(error) => error,
                 _ => wire::ErrorCode::Unavailable.into(),
@@ -77,27 +87,41 @@ impl LocalObjects {
         meter: Option<Arc<dyn NativeReadMeter>>,
         action: impl FnOnce(&MemoryObjects) -> Result<T, NativeObjectsError> + Send + 'static,
     ) -> Result<T, NativeObjectsError> {
-        if let Some(meter) = &meter { meter.check()?; }
+        if let Some(meter) = &meter {
+            meter.check()?;
+        }
         if self.core.local_maintenance_due()? {
             let lease = Arc::clone(&self.body_io).write_owned().await;
             let core = self.core.clone();
             let worker_meter = meter.clone();
-            blocking(move || {
-                let _lease = lease;
-                let native = worker_meter.is_some();
-                core.compact_local_if_due(worker_meter).map_err(|error| {
-                    if native { error } else { Error::from(wire::ErrorCode::Unavailable).into() }
-                })
-            }, meter.clone())?.await
-                .map_err(|_| Error::from(wire::ErrorCode::Unavailable))??;
+            blocking(
+                move || {
+                    let _lease = lease;
+                    let native = worker_meter.is_some();
+                    core.compact_local_if_due(worker_meter).map_err(|error| {
+                        if native {
+                            error
+                        } else {
+                            Error::from(wire::ErrorCode::Unavailable).into()
+                        }
+                    })
+                },
+                meter.clone(),
+            )?
+            .await
+            .map_err(|_| Error::from(wire::ErrorCode::Unavailable))??;
         }
         let core = self.core.clone();
         let lease = Arc::clone(&self.body_io).read_owned().await;
-        blocking(move || {
-            let _lease = lease;
-            action(&core)
-        }, meter)?.await
-            .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
+        blocking(
+            move || {
+                let _lease = lease;
+                action(&core)
+            },
+            meter,
+        )?
+        .await
+        .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
     }
 
     /// Authenticates retained bodies and reclaims unreachable private segments.
@@ -110,10 +134,14 @@ impl LocalObjects {
         }
         let lease = self.body_io.clone().write_owned().await;
         let core = self.core.clone();
-        blocking(move || {
-            let _lease = lease;
-            core.collect_local_garbage(maximum_candidates)
-        }, None).map_err(|_| LocalOpenError::Unavailable)?
+        blocking(
+            move || {
+                let _lease = lease;
+                core.collect_local_garbage(maximum_candidates)
+            },
+            None,
+        )
+        .map_err(|_| LocalOpenError::Unavailable)?
         .await
         .map_err(|_| LocalOpenError::Unavailable)?
     }
@@ -148,7 +176,8 @@ impl ObjectsProvider for LocalObjects {
             let worker_meter = Arc::clone(&meter);
             self.mutate_with_meter(Some(meter), move |core| {
                 block_on(core.put_batch_native(input, worker_meter)?)
-            }).await
+            })
+            .await
         })
     }
     async fn get_batch(
@@ -166,7 +195,11 @@ impl ObjectsProvider for LocalObjects {
             core.get_batch(requests).await
         }))
         .await
-        .unwrap_or_else(|_| (0..count).map(|_| Err(wire::ErrorCode::Unavailable.into())).collect())
+        .unwrap_or_else(|_| {
+            (0..count)
+                .map(|_| Err(wire::ErrorCode::Unavailable.into()))
+                .collect()
+        })
     }
 
     fn get_batch_native(
@@ -183,13 +216,17 @@ impl ObjectsProvider for LocalObjects {
             let core = self.core.clone();
             let body_io = Arc::clone(&self.body_io);
             let task_meter = Arc::clone(&meter);
-            spawn_native_read(async move {
-                let input = input;
-                // Detached work retains the original input custody and store root.
-                let _lease = body_io.read_owned().await;
-                core.get_batch_native(input, task_meter)?.await
-            }, &meter)?.await
-                .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
+            spawn_native_read(
+                async move {
+                    let input = input;
+                    // Detached work retains the original input custody and store root.
+                    let _lease = body_io.read_owned().await;
+                    core.get_batch_native(input, task_meter)?.await
+                },
+                &meter,
+            )?
+            .await
+            .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
         })
     }
 
@@ -227,7 +264,8 @@ impl ObjectsProvider for LocalObjects {
             let worker_meter = Arc::clone(&meter);
             self.mutate_with_meter(Some(meter), move |core| {
                 block_on(core.put_native(input, worker_meter)?)
-            }).await
+            })
+            .await
         })
     }
     async fn get(
@@ -258,13 +296,17 @@ impl ObjectsProvider for LocalObjects {
             let core = self.core.clone();
             let body_io = Arc::clone(&self.body_io);
             let task_meter = Arc::clone(&meter);
-            spawn_native_read(async move {
-                // Detached work retains the original input custody and store root.
-                let input = input;
-                let _lease = body_io.read_owned().await;
-                core.get_native(input, maximum_bytes, task_meter)?.await
-            }, &meter)?.await
-                .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
+            spawn_native_read(
+                async move {
+                    // Detached work retains the original input custody and store root.
+                    let input = input;
+                    let _lease = body_io.read_owned().await;
+                    core.get_native(input, maximum_bytes, task_meter)?.await
+                },
+                &meter,
+            )?
+            .await
+            .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
         })
     }
     async fn head(
@@ -322,7 +364,6 @@ impl ObjectsProvider for LocalObjects {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,7 +419,7 @@ mod tests {
             first
         );
         assert_eq!(
-            provider.get(get("value"), 5).await?.into_body(),
+            provider.get(get(bucket(), "value"), 5).await?.into_body(),
             OwnedBytes::from_static(b"after")
         );
         assert_eq!(
@@ -401,9 +442,9 @@ mod tests {
         assert!(results.iter().all(Result::is_ok));
         let reads = provider
             .get_batch(vec![
-                (get("third"), 5),
-                (get("missing"), 10),
-                (get("second"), 3),
+                (get(bucket(), "third"), 5),
+                (get(bucket(), "missing"), 10),
+                (get(bucket(), "second"), 3),
             ])
             .await;
         assert_eq!(
@@ -412,7 +453,8 @@ mod tests {
                 .ok_or("missing result")?
                 .as_ref()
                 .map_err(|error| *error)?
-                .body().clone(),
+                .body()
+                .clone(),
             OwnedBytes::from_static(b"three")
         );
         assert_eq!(
@@ -430,7 +472,8 @@ mod tests {
                 .ok_or("missing result")?
                 .as_ref()
                 .map_err(|error| *error)?
-                .body().clone(),
+                .body()
+                .clone(),
             OwnedBytes::from_static(b"two")
         );
         Ok(())

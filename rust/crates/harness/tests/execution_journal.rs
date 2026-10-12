@@ -6,7 +6,7 @@
     reason = "ordered journal scenarios index the entries they appended"
 )]
 
-use acyclic_fs::Fs;
+use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_harness::filesystem::{
     FilesystemExecutionJournal, FilesystemHost, FilesystemInteractionHost,
 };
@@ -18,7 +18,7 @@ use acyclic_harness::{
         ContentGrant, FileDescriptor, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner,
         VolumeRef,
     },
-    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry},
+    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope},
     durable_tool::DurableToolRunner,
     executor::{
         ExecutionEvent, ExecutionJournal, ExecutionRecord, Executor, StockExecutor,
@@ -26,8 +26,8 @@ use acyclic_harness::{
     },
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     model::{
-        FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent,
-        ModelMessage, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
+        FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
+        ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
     },
     resources::ProviderRef,
     runtime::{Bindings, RuntimeScope, TaskAdmissionRecord, TaskStateProvider, ToolContext},
@@ -37,7 +37,7 @@ use acyclic_harness::{
         ToolResult,
     },
 };
-use acyclic_stream::{MemoryStream};
+use acyclic_stream::MemoryStream;
 use futures::{
     future::BoxFuture,
     stream::{self, BoxStream},
@@ -47,6 +47,73 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
+
+async fn filesystem(
+    name: &str,
+    owner: &str,
+    agent: AgentId,
+    key: u8,
+) -> Result<(
+    Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
+    VolumeRef,
+    AuthorityIssuer,
+)> {
+    let provider = ProviderRef::new(name.into(), "filesystem".into(), "2".into(), &mut None)?;
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let private = VolumeRef::new(
+        provider,
+        "scratch".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    host.create_volume(&private).await?;
+    let issuer = AuthorityIssuer::new(
+        name,
+        [key; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: owner.into(),
+        },
+    );
+    Ok((host, private, issuer))
+}
+
+fn scope(
+    issuer: &AuthorityIssuer,
+    private: &VolumeRef,
+    agent: AgentId,
+    extra: &[String],
+) -> Result<Scope> {
+    let capabilities = Capabilities::new(
+        [
+            private.capability(VolumeOperation::Read, &mut None)?,
+            private.capability(VolumeOperation::Write, &mut None)?,
+        ]
+        .into_iter()
+        .chain(extra.iter().cloned()),
+    );
+    issuer.issue("agent", &capabilities, Some(agent), None, &mut None)
+}
+
+fn journal(
+    stream: Arc<MemoryStream>,
+    host: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
+    private: &VolumeRef,
+    issuer: &AuthorityIssuer,
+    scope: &Scope,
+) -> Result<FilesystemExecutionJournal<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>> {
+    FilesystemExecutionJournal::new(
+        stream,
+        host,
+        private,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &SchemaRegistry::new(),
+        scope,
+        4_096,
+        None,
+    )
+}
 
 struct TextModel(AtomicUsize);
 
@@ -63,17 +130,36 @@ async fn bind_conversation(
             id: id.into(),
         },
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(),
+        None,
+        acyclic_harness::store::default_projection_read_limits(),
+        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+        None,
+        &mut None,
+    )
     .await?;
     aggregate
-        .execute(Command {
-            operation_id: OperationId::from_bytes([30; 16]),
-            idempotency_key: IdempotencyKey::new(format!("bind:{id}"))?,
-            expected_revision: 0,
-            scope: issuer.issue("owner", &Capabilities::new(["conversation:bind"]), None, None, &mut None).expect("scope proof"),
-            causal_parent: None,
-            action: Action::BindConversation { agent },
-        }, #[cfg(feature = "filesystem")] None, &mut None)
+        .execute(
+            Command {
+                operation_id: OperationId::from_bytes([30; 16]),
+                idempotency_key: IdempotencyKey::new(format!("bind:{id}"))?,
+                expected_revision: 0,
+                scope: issuer
+                    .issue(
+                        "owner",
+                        &Capabilities::new(["conversation:bind"]),
+                        None,
+                        None,
+                        &mut None,
+                    )
+                    .expect("scope proof"),
+                causal_parent: None,
+                action: Action::BindConversation { agent },
+            },
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
         .await?;
     Ok(())
 }
@@ -109,34 +195,37 @@ impl ExecutionJournal for TerminalCasLoser {
         operation: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
-        self.inner.replay(operation, after, maximum)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        self.inner.replay(operation, after, maximum, io)
     }
 
     fn append<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.inner.append(operation, key, event)
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
+        self.inner.append(operation, key, event, io)
     }
 
     fn append_if_tail<'a>(
         &'a self,
         operation: OperationId,
         tail: u64,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async move {
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, bool>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             let terminal = matches!(
                 &event,
                 ExecutionEvent::ToolCompleted { .. } | ExecutionEvent::ToolFailed { .. }
             );
             let committed = self
                 .inner
-                .append_if_tail(operation, tail, key, event)
+                .append_if_tail(operation, tail, key, event, io)?
                 .await?;
             if terminal && committed && self.losses.fetch_add(1, Ordering::SeqCst) < 2 {
                 return Ok(false);
@@ -148,15 +237,18 @@ impl ExecutionJournal for TerminalCasLoser {
     fn stage<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media_type: &'static str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        self.inner.stage(operation, key, bytes, media_type)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, FileRef>> {
+        self.inner.stage(operation, key, bytes, media_type, io)
     }
 
-    fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        self.inner.load(file)
+    fn load<'a>(&'a self, file: &'a FileRef,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.inner.load(file, io)
     }
 
     fn open_interaction<'a>(
@@ -199,9 +291,10 @@ impl ExecutionJournal for CompletedDescriptorSpy {
         operation: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
-        Box::pin(async move {
-            let mut records = self.inner.replay(operation, after, maximum).await?;
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
+            let mut records = self.inner.replay(operation, after, maximum, io)?.await?;
             for record in &mut records {
                 let reference = match (&mut record.event, self.target) {
                     (
@@ -220,13 +313,14 @@ impl ExecutionJournal for CompletedDescriptorSpy {
                 *reference = FileRef::new(
                     reference.volume().clone(),
                     reference.path(),
-                    reference.version(),
+                    reference.version().into(),
                     FileDescriptor::new(
                         *reference.descriptor().sha256(),
                         self.oversized_bytes,
                         reference.descriptor().media_type(),
                     )?,
                     reference.display_name(),
+                    &mut None,
                 )?;
             }
             Ok(records)
@@ -235,21 +329,27 @@ impl ExecutionJournal for CompletedDescriptorSpy {
     fn append<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.inner.append(operation, key, event)
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
+        self.inner.append(operation, key, event, io)
     }
     fn stage<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media: &'static str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        self.inner.stage(operation, key, bytes, media)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, FileRef>> {
+        self.inner.stage(operation, key, bytes, media, io)
     }
-    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
+    fn load<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         if self.completed.iter().any(|original| {
             original.volume() == reference.volume()
                 && original.path() == reference.path()
@@ -263,7 +363,7 @@ impl ExecutionJournal for CompletedDescriptorSpy {
         {
             self.invocation_reads.fetch_add(1, Ordering::SeqCst);
         }
-        self.inner.load(reference)
+        self.inner.load(reference, io)
     }
     fn open_interaction<'a>(
         &'a self,
@@ -311,18 +411,15 @@ impl ToolExecutor for NoopTool {
         Box::pin(async { Ok(None) })
     }
 }
-impl ToolProjection for NoopTool {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult,
-        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
-        self.supports_native_projection(work)?;
-        Ok((serde_json::json!({"kind":"json","value":result.value}), None))
-    }
-}
 
 struct FixedProjection(Value);
 impl ToolProjection for FixedProjection {
-    fn project(&self, _: &ToolInvocation, _: &ToolResult,
-        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+    fn project(
+        &self,
+        _: &ToolInvocation,
+        _: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_harness::NativeCustody)> {
         self.supports_native_projection(work)?;
         Ok((self.0.clone(), None))
     }
@@ -345,8 +442,6 @@ impl ModelProvider for CapturingModel {
             metadata: Value::Null,
         })]))
     }
-
-
 }
 
 impl ModelProvider for TextModel {
@@ -365,62 +460,25 @@ impl ModelProvider for TextModel {
             }),
         ]))
     }
-
-
 }
 
 #[tokio::test]
 async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
-    let provider = ProviderRef::new("tool-claim-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([55; 16]);
-    let private = VolumeRef::new(
-        provider,
-        "scratch",
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
-    )?;
-    host.create_volume(&private).await?;
-    let issuer = AuthorityIssuer::new(
-        "tool-claim-e2e",
-        [55; 32],
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: "tool-claim-owner".into(),
-        },
-    );
-    let scope = issuer.issue("agent", &Capabilities::new([
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-        ]), Some(agent), None, &mut None).expect("scope proof");
+    let (host, private, issuer) =
+        filesystem("tool-claim-e2e", "tool-claim-owner", agent, 55).await?;
+    let scope = scope(&issuer, &private, agent, &[])?;
     let stream = Arc::new(MemoryStream::default());
-    let journal_a = FilesystemExecutionJournal::new(
-        stream.clone(),
-        host.clone(),
-        &private,
-        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
-        &scope,
-        4_096, None,
-    )?;
-    let journal_b =
-        FilesystemExecutionJournal::new(stream, host, &private, &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(), &scope, 4_096, None)?;
+    let journal_a = journal(stream.clone(), host.clone(), &private, &issuer, &scope)?;
+    let journal_b = journal(stream, host, &private, &issuer, &scope)?;
     let operation = OperationId::from_bytes([56; 16]);
     journal_a
-        .append(
-            operation,
-            "tool:started".into(),
-            ExecutionEvent::Started {
+        .append(operation, &"tool:started", &ExecutionEvent::Started {
                 request_digest: [57; 32],
-            },
-        )
+            }, None)?
         .await?;
     let invocation = journal_a
-        .stage(
-            operation,
-            "tool:invocation".into(),
-            b"{}".to_vec(),
-            "application/json",
-        )
+        .stage(operation, "tool:invocation", b"{}", "application/json", None)?
         .await?;
     let event = ExecutionEvent::ToolStarted {
         step: 0,
@@ -428,60 +486,41 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
         invocation,
     };
     let (first, second) = tokio::join!(
-        journal_a.append_if_tail(operation, 1, "claim-a".into(), event.clone()),
-        journal_b.append_if_tail(operation, 1, "claim-b".into(), event),
+        journal_a.append_if_tail(operation, 1, &"claim-a", &event, None),
+        journal_b.append_if_tail(operation, 1, &"claim-b", &event, None),
     );
     assert_ne!(first?, second?);
-    assert_eq!(journal_a.replay(operation, 0, 64).await?.len(), 2);
+    assert_eq!(journal_a.replay(operation, 0, 64, None)?.await?.len(), 2);
     let (first_terminal, second_terminal) = tokio::join!(
-        journal_a.append_if_tail(
-            operation,
-            2,
-            "terminal-a".into(),
-            ExecutionEvent::ToolFailed {
+        journal_a.append_if_tail(operation, 2, &"terminal-a", &ExecutionEvent::ToolFailed {
                 step: 0,
                 call_id: operation.to_string(),
                 reason: ToolFailureKind::ExecutorRejected
-            }
-        ),
-        journal_b.append_if_tail(
-            operation,
-            2,
-            "terminal-b".into(),
-            ExecutionEvent::ToolFailed {
+            }, None),
+        journal_b.append_if_tail(operation, 2, &"terminal-b", &ExecutionEvent::ToolFailed {
                 step: 0,
                 call_id: operation.to_string(),
                 reason: ToolFailureKind::InvalidOutput
-            }
-        ),
+            }, None),
     );
     assert_ne!(first_terminal?, second_terminal?);
-    assert_eq!(journal_a.replay(operation, 0, 64).await?.len(), 3);
+    assert_eq!(journal_a.replay(operation, 0, 64, None)?.await?.len(), 3);
     let paged = OperationId::from_bytes([57; 16]);
     let invalid_request = journal_a
-        .stage(
-            paged,
-            "invalid-request".into(),
-            b"null".to_vec(),
-            "application/json",
-        )
+        .stage(paged, "invalid-request", b"null", "application/json", None)?
         .await?;
     assert!(
         journal_a
-            .append(
-                paged,
-                "invalid-model-start".into(),
-                ExecutionEvent::ModelStarted {
+            .append(paged, &"invalid-model-start", &ExecutionEvent::ModelStarted {
                     step: 0,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest: *blake3::hash(b"null").as_bytes(),
                     request: invalid_request,
-                }
-            )
+                }, None)?
             .await
             .is_err()
     );
-    assert!(journal_a.replay(paged, 0, 64).await?.is_empty());
+    assert!(journal_a.replay(paged, 0, 64, None)?.await?.is_empty());
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
             model: Model::new("fixture".into(), "paged".into(), "1".into(), Value::Null)?,
@@ -497,126 +536,80 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     )?;
     let request_digest = prepared.request_digest();
     let paged_request = journal_a
-        .stage(
-            paged,
-            "paged-request".into(),
-            prepared.bytes().to_vec(),
-            "application/json",
-        )
+        .stage(paged, "paged-request", &prepared.bytes(), "application/json", None)?
         .await?;
     assert!(
         journal_a
-            .append(
-                paged,
-                "model-without-execution".into(),
-                ExecutionEvent::ModelStarted {
+            .append(paged, &"model-without-execution", &ExecutionEvent::ModelStarted {
                     step: 0,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest,
                     request: paged_request.clone(),
-                }
-            )
+                }, None)?
             .await
             .is_err()
     );
-    assert!(journal_a.replay(paged, 0, 64).await?.is_empty());
+    assert!(journal_a.replay(paged, 0, 64, None)?.await?.is_empty());
     journal_a
-        .append(
-            paged,
-            "paged-execution-start".into(),
-            ExecutionEvent::Started {
+        .append(paged, &"paged-execution-start", &ExecutionEvent::Started {
                 request_digest: [57; 32],
-            },
-        )
+            }, None)?
         .await?;
     for step in 0..70 {
         journal_a
-            .append(
-                paged,
-                format!("paged-{step}"),
-                ExecutionEvent::ModelStarted {
+            .append(paged, &format!("paged-{step}"), &ExecutionEvent::ModelStarted {
                     step,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest,
                     request: paged_request.clone(),
-                },
-            )
+                }, None)?
             .await?;
     }
-    let first_page = journal_b.replay(paged, 0, 64).await?;
-    let second_page = journal_b.replay(paged, 64, 64).await?;
+    let first_page = journal_b.replay(paged, 0, 64, None)?.await?;
+    let second_page = journal_b.replay(paged, 64, 64, None)?.await?;
     assert_eq!(first_page.len(), 64);
     assert_eq!(second_page.len(), 7);
     assert_eq!(first_page[63].sequence, 64);
     assert_eq!(second_page[0].sequence, 65);
-    assert_eq!(journal_b.replay(paged, 0, 65).await?.len(), 64);
-    assert!(journal_b.replay(paged, 0, 0).await.is_err());
+    assert_eq!(journal_b.replay(paged, 0, 65, None)?.await?.len(), 64);
+    assert!(journal_b.replay(paged, 0, 0, None)?.await.is_err());
     journal_b
-        .append(
-            paged,
-            "paged-0".into(),
-            ExecutionEvent::ModelStarted {
+        .append(paged, &"paged-0", &ExecutionEvent::ModelStarted {
                 step: 0,
                 purpose: acyclic_harness::executor::ModelPurpose::Response,
                 request_digest,
                 request: paged_request.clone(),
-            },
-        )
+            }, None)?
         .await?;
-    assert!(journal_b.replay(paged, 71, 64).await?.is_empty());
+    assert!(journal_b.replay(paged, 71, 64, None)?.await?.is_empty());
     let mut cursor = acyclic_harness::executor::ExecutionReplay::new(paged);
     while cursor.next_page(&journal_b, None).await?.is_some() {}
     assert_eq!(cursor.tail(), 71);
     assert!(
         journal_a
-            .append_if_tail(
-                paged,
-                cursor.tail(),
-                "paged-cas-70".into(),
-                ExecutionEvent::ModelStarted {
+            .append_if_tail(paged, cursor.tail(), &"paged-cas-70", &ExecutionEvent::ModelStarted {
                     step: 70,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest,
                     request: paged_request.clone(),
-                },
-            )
+                }, None)?
             .await?
     );
-    assert_eq!(journal_b.replay(paged, 71, 64).await?.len(), 1);
+    assert_eq!(journal_b.replay(paged, 71, 64, None)?.await?.len(), 1);
     Ok(())
 }
 
 #[tokio::test]
 async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
-    let provider = ProviderRef::new("tool-owner-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([58; 16]);
-    let private = VolumeRef::new(
-        provider,
-        "scratch",
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
-    )?;
-    host.create_volume(&private).await?;
-    let issuer = AuthorityIssuer::new(
-        "tool-owner-e2e",
-        [58; 32],
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: "tool-owner".into(),
-        },
-    );
-    let scope = issuer.issue("agent", &Capabilities::new([
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-        ]), Some(agent), None, &mut None).expect("scope proof");
-    let journal = Arc::new(FilesystemExecutionJournal::new(
+    let (host, private, issuer) = filesystem("tool-owner-e2e", "tool-owner", agent, 58).await?;
+    let scope = scope(&issuer, &private, agent, &[])?;
+    let journal = Arc::new(journal(
         Arc::new(MemoryStream::default()),
         host,
         &private,
-        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+        &issuer,
         &scope,
-        4_096, None,
     )?);
     let definition = ToolDefinition {
         name: "example.noop".into(),
@@ -633,11 +626,11 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         reconciliations: reconciliations.clone(),
     });
     let mut registry = ToolRegistry::default();
-    registry.register(Tool {
+    registry.register((Tool {
         definition: definition.clone(),
         executor: counted.clone(),
-        projection: Arc::new(NoopTool),
-    })?;
+        projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
+    }, None), &mut None, None)?;
     let invalid_output = ToolDefinition {
         name: "example.invalid-output".into(),
         revision: "1".into(),
@@ -646,11 +639,11 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         output_schema: json!({"type":"string"}),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({})),
     };
-    registry.register(Tool {
+    registry.register((Tool {
         definition: invalid_output.clone(),
         executor: counted.clone(),
-        projection: Arc::new(NoopTool),
-    })?;
+        projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
+    }, None), &mut None, None)?;
     let invalid_projection = ToolDefinition {
         name: "example.invalid-projection".into(),
         revision: "1".into(),
@@ -659,11 +652,11 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         output_schema: json!({}),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"string"})),
     };
-    registry.register(Tool {
+    registry.register((Tool {
         definition: invalid_projection.clone(),
         executor: counted,
-        projection: Arc::new(NoopTool),
-    })?;
+        projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
+    }, None), &mut None, None)?;
     let large_definition = ToolDefinition {
         name: "example.large-projection".into(),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"string"})),
@@ -672,14 +665,14 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     let large_executions = Arc::new(AtomicUsize::new(0));
     let large_reconciliations = Arc::new(AtomicUsize::new(0));
     let large_projection = json!({"kind":"json","value":"x".repeat(500)});
-    registry.register(Tool {
+    registry.register((Tool {
         definition: large_definition.clone(),
         executor: Arc::new(CountingNoopTool {
             executions: large_executions.clone(),
             reconciliations: large_reconciliations.clone(),
         }),
         projection: Arc::new(FixedProjection(large_projection.clone())),
-    })?;
+    }, None), &mut None, None)?;
     let limits = Limits {
         file_bytes: 256,
         render_bytes: 1_024,
@@ -714,31 +707,27 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         .durable_context(other_task, OperationId::from_bytes([64; 16]))
         .await?;
     let projection_context = first_context.clone();
-    assert!(matches!(
-        runner
-            .run_with_context(
-                first_task,
-                operation,
-                definition.clone(),
-                json!({}),
-                ToolContext::new(first_context.clone(), operation, operation.to_string())?
-            )
-            .await?,
-        Outcome::Succeeded(Value::Null)
-    ));
-    assert!(matches!(
-        runner
-            .run_with_context(
-                first_task,
-                operation,
-                definition.clone(),
-                json!({}),
-                ToolContext::new(first_context.clone(), operation, operation.to_string())?
-            )
-            .await?,
-        Outcome::Succeeded(Value::Null)
-    ));
-    let records = journal.replay(operation, 0, 64).await?;
+    for _ in 0..2 {
+        assert!(matches!(
+            runner
+                .run(
+                    first_task,
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: operation,
+                        call_id: operation.to_string(),
+                        name: definition.name.clone(),
+                        arguments: json!({}),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await?.0,
+            Outcome::Succeeded(Value::Null)
+        ));
+    }
+    let records = journal.replay(operation, 0, 64, None)?.await?;
     let invocation = records
         .iter()
         .find_map(|record| {
@@ -781,10 +770,24 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             invocation_reads: AtomicUsize::new(0),
         });
         let guarded = DurableToolRunner::new(&registry, spy.clone(), None)?.with_limits(limits)?;
-        assert!(matches!(guarded.run_with_context(
-            first_task, operation, definition.clone(), json!({}),
-            ToolContext::new(first_context.clone(), operation, operation.to_string())?,
-        ).await, Err(Error::Conflict(message)) if message.contains("descriptor limit")));
+        assert!(matches!(
+            guarded
+                .run(
+                    first_task,
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: operation,
+                        call_id: operation.to_string(),
+                        name: definition.name.clone(),
+                        arguments: json!({}),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await.map(|result| result.0),
+            Err(Error::Conflict(_))
+        ));
         assert_eq!(spy.completed_reads.load(Ordering::SeqCst), 0);
         let expected_invocation_reads = if matches!(target, OversizedArtifact::Invocation) {
             0
@@ -805,151 +808,148 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             render_bytes: 1_024,
             ..Limits::default()
         })?;
-    assert!(matches!(bounded.run_with_context(
-        first_task, fresh_operation, definition.clone(), json!({"data":"x".repeat(1_024)}),
-        ToolContext::new(first_context.clone(), fresh_operation, fresh_operation.to_string())?,
-    ).await, Err(Error::Invalid(message)) if message.contains("JSON exceeds declared byte bound")));
-    assert!(journal.replay(fresh_operation, 0, 64).await?.is_empty());
+    assert!(matches!(
+        bounded
+            .run(
+                first_task,
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: fresh_operation,
+                    call_id: fresh_operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: json!({"data":"x".repeat(1_024)}),
+                },
+                &ToolContext::new(std::sync::Arc::new(first_context.clone()), fresh_operation, &(fresh_operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await.map(|result| result.0),
+        Err(Error::Invalid(_))
+    ));
+    assert!(journal.replay(fresh_operation, 0, 64, None)?.await?.is_empty());
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     registry.remove_from_model("example.noop")?;
-    assert!(registry.get("example.noop").is_none());
-    let rebuilt = DurableToolRunner::new(&registry, racing_journal.clone(), None)?.with_limits(limits)?;
+    assert!(registry.get("example.noop", None, None)?.is_none());
+    let rebuilt =
+        DurableToolRunner::new(&registry, racing_journal.clone(), None)?.with_limits(limits)?;
     assert!(matches!(
         rebuilt
-            .run_with_context(
+            .run(
                 first_task,
-                operation,
-                definition.clone(),
-                json!({}),
-                ToolContext::new(first_context.clone(), operation, operation.to_string())?,
-            )
-            .await?,
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: operation,
+                    call_id: operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: json!({}),
+                },
+                &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await?.0,
         Outcome::Succeeded(Value::Null)
     ));
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     assert!(
         runner
-            .run_with_context(
+            .run(
                 other_task,
-                operation,
-                definition,
-                json!({}),
-                ToolContext::new(other_context, operation, operation.to_string())?
-            )
-            .await
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: operation,
+                    call_id: operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: json!({}),
+                },
+                &ToolContext::new(std::sync::Arc::new(other_context), operation, &(operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await.map(|result| result.0)
             .is_err()
     );
-    let failure_operation = OperationId::from_bytes([62; 16]);
-    let first_failure = runner
-        .run_with_context(
-            first_task,
-            failure_operation,
-            invalid_output.clone(),
-            json!({}),
-            ToolContext::new(
-                first_context.clone(),
-                failure_operation,
-                failure_operation.to_string(),
-            )?,
-        )
-        .await?;
-    assert!(matches!(&first_failure, Outcome::Failed { .. }));
-    assert_eq!(
-        first_failure,
-        runner
-            .run_with_context(
+    for (index, (definition, operation, reason)) in [
+        (
+            invalid_output,
+            OperationId::from_bytes([62; 16]),
+            ToolFailureKind::InvalidOutput,
+        ),
+        (
+            invalid_projection,
+            OperationId::from_bytes([65; 16]),
+            ToolFailureKind::ProjectionRejected,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let failure = runner
+            .run(
                 first_task,
-                failure_operation,
-                invalid_output,
-                json!({}),
-                ToolContext::new(
-                    first_context.clone(),
-                    failure_operation,
-                    failure_operation.to_string()
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: operation,
+                    call_id: operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: json!({}),
+                },
+                &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await?.0;
+        assert!(matches!(&failure, Outcome::Failed { .. }));
+        assert_eq!(
+            failure,
+            runner
+                .run(
+                    first_task,
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: operation,
+                        call_id: operation.to_string(),
+                        name: definition.name.clone(),
+                        arguments: json!({}),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                    None,
+                    false,
                 )?
-            )
-            .await?
-    );
-    assert_eq!(racing_journal.losses.load(Ordering::SeqCst), 2);
-    assert_eq!(executions.load(Ordering::SeqCst), 2);
-    assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
-    assert!(matches!(
-        journal
-            .replay(failure_operation, 0, 64)
-            .await?
-            .last()
-            .map(|record| &record.event),
-        Some(ExecutionEvent::ToolFailed {
-            reason: ToolFailureKind::InvalidOutput,
-            ..
-        })
-    ));
-    let projection_operation = OperationId::from_bytes([65; 16]);
-    let projection_failure = runner
-        .run_with_context(
-            first_task,
-            projection_operation,
-            invalid_projection.clone(),
-            json!({}),
-            ToolContext::new(
-                first_context.clone(),
-                projection_operation,
-                projection_operation.to_string(),
-            )?,
-        )
-        .await?;
-    assert!(matches!(&projection_failure, Outcome::Failed { .. }));
-    assert_eq!(
-        projection_failure,
-        runner
-            .run_with_context(
-                first_task,
-                projection_operation,
-                invalid_projection,
-                json!({}),
-                ToolContext::new(
-                    first_context,
-                    projection_operation,
-                    projection_operation.to_string()
-                )?
-            )
-            .await?
-    );
-    assert_eq!(executions.load(Ordering::SeqCst), 3);
-    assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
-    assert!(matches!(
-        journal
-            .replay(projection_operation, 0, 64)
-            .await?
-            .last()
-            .map(|record| &record.event),
-        Some(ExecutionEvent::ToolFailed {
-            reason: ToolFailureKind::ProjectionRejected,
-            ..
-        })
-    ));
+                .await?.0
+        );
+        assert_eq!(racing_journal.losses.load(Ordering::SeqCst), 2);
+        assert_eq!(executions.load(Ordering::SeqCst), index + 2);
+        assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
+        assert!(
+            matches!(journal.replay(operation, 0, 64, None)?.await?.last().map(|record| &record.event),
+            Some(ExecutionEvent::ToolFailed { reason: actual, .. }) if actual == &reason)
+        );
+    }
     let large_operation = OperationId::from_bytes([66; 16]);
     for _ in 0..2 {
         assert!(matches!(
             runner
-                .run_with_context(
+                .run(
                     first_task,
-                    large_operation,
-                    large_definition.clone(),
-                    json!({}),
-                    ToolContext::new(
-                        projection_context.clone(),
-                        large_operation,
-                        large_operation.to_string()
-                    )?
-                )
-                .await?,
+                    &large_definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: large_operation,
+                        call_id: large_operation.to_string(),
+                        name: large_definition.name.clone(),
+                        arguments: json!({}),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(projection_context.clone()), large_operation, &(large_operation.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await?.0,
             Outcome::Succeeded(Value::Null)
         ));
     }
-    let records = journal.replay(large_operation, 0, 64).await?;
+    let records = journal.replay(large_operation, 0, 64, None)?.await?;
     let Some(ExecutionEvent::ToolCompleted {
         result, projection, ..
     }) = records.last().map(|record| &record.event)
@@ -960,7 +960,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     assert!(projection.descriptor().byte_length() > limits.file_bytes);
     assert!(projection.descriptor().byte_length() <= limits.render_bytes);
     assert_eq!(
-        serde_json::from_slice::<Value>(&journal.load(projection).await?)
+        serde_json::from_slice::<Value>(&journal.load(projection, None)?.await?)
             .map_err(|error| Error::Invalid(error.to_string()))?,
         large_projection
     );
@@ -971,37 +971,11 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
 
 #[tokio::test]
 async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()> {
-    let provider = ProviderRef::new("journal-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([42; 16]);
-    let private = VolumeRef::new(
-        provider,
-        "scratch",
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
-    )?;
-    host.create_volume(&private).await?;
-    let issuer = AuthorityIssuer::new(
-        "journal-e2e",
-        [7; 32],
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: "journal-owner".into(),
-        },
-    );
-    let scope = issuer.issue("agent", &Capabilities::new([
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-        ]), Some(agent), None, &mut None).expect("scope proof");
+    let (host, private, issuer) = filesystem("journal-e2e", "journal-owner", agent, 7).await?;
+    let scope = scope(&issuer, &private, agent, &[])?;
     let stream = Arc::new(MemoryStream::default());
-    let journal = FilesystemExecutionJournal::new(
-        stream.clone(),
-        host,
-        &private,
-        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
-        &scope,
-        4_096, None,
-    )?;
+    let journal = journal(stream.clone(), host, &private, &issuer, &scope)?;
     let model = Arc::new(TextModel(AtomicUsize::new(0)));
     let executor = StockExecutor::new(
         Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
@@ -1020,44 +994,24 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     let first = executor.execute(input.clone(), &journal).await?;
     let staged_operation = OperationId::from_bytes([8; 16]);
     let staged = journal
-        .stage(
-            staged_operation,
-            "original".into(),
-            b"original payload".to_vec(),
-            "application/json",
-        )
+        .stage(staged_operation, "original", b"original payload", "application/json", None)?
         .await?;
     for index in 0..32 {
         let replacement = journal
-            .stage(
-                OperationId::new(),
-                format!("replacement-{index}"),
-                format!("replacement payload {index}").into_bytes(),
-                "application/json",
-            )
+            .stage(OperationId::new(), &format!("replacement-{index}"), &format!("replacement payload {index}").into_bytes(), "application/json", None)?
             .await?;
         assert_eq!(replacement.path(), staged.path());
-        assert_eq!(journal.load(&staged).await?.as_ref(), b"original payload");
+        assert_eq!(journal.load(&staged, None)?.await?.as_ref(), b"original payload");
     }
     assert_eq!(
         journal
-            .stage(
-                staged_operation,
-                "original".into(),
-                b"original payload".to_vec(),
-                "application/json",
-            )
+            .stage(staged_operation, "original", b"original payload", "application/json", None)?
             .await?,
         staged
     );
     assert!(matches!(
         journal
-            .stage(
-                staged_operation,
-                "original".into(),
-                b"changed payload".to_vec(),
-                "application/json",
-            )
+            .stage(staged_operation, "original", b"changed payload", "application/json", None)?
             .await,
         Err(Error::Conflict(_))
     ));
@@ -1065,10 +1019,13 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     assert_eq!(first, again);
     assert_eq!(first.text, "private answer");
     assert_eq!(model.0.load(Ordering::SeqCst), 1);
-    let records = journal.replay(operation_id, 0, 64).await?;
+    let records = journal.replay(operation_id, 0, 64, None)?.await?;
     assert_eq!(records.len(), 5);
-    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v2/execution/{operation_id}"))
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+    let stream = acyclic_stream::Stream::new(
+        std::sync::Arc::clone(&stream),
+        format!("harness/v2/execution/{operation_id}"),
+    )
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     use futures::TryStreamExt as _;
     let raw = stream
         .read(0, 16)
@@ -1088,34 +1045,26 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
 
 #[tokio::test]
 async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Result<()> {
-    let provider = ProviderRef::new("interaction-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
-    let private = VolumeRef::new(
-        provider,
-        "scratch",
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(AgentId::from_bytes([43; 16])),
-    )?;
-    host.create_volume(&private).await?;
-    let issuer = AuthorityIssuer::new(
-        "interaction-e2e",
-        [8; 32],
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: "interaction-owner".into(),
-        },
-    );
-    let scope = issuer.issue("agent", &Capabilities::new([
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-            "interaction:open".to_owned(),
-        ]), Some(AgentId::from_bytes([43; 16])), None, &mut None).expect("scope proof");
+    let agent = AgentId::from_bytes([43; 16]);
+    let (host, private, issuer) =
+        filesystem("interaction-e2e", "interaction-owner", agent, 8).await?;
+    let scope = scope(&issuer, &private, agent, &["interaction:open".into()])?;
     let id = InteractionId::from_bytes([11; 16]);
-    let responder = issuer.issue("human", &Capabilities::new([
-            "interaction:resolve".to_owned(),
-            format!("interaction:respond:{id}"),
-        ]), None, None, &mut None).expect("scope proof");
-    let unauthorized = issuer.issue("bystander", &Capabilities::default(), None, None, &mut None).expect("scope proof");
+    let responder = issuer
+        .issue(
+            "human",
+            &Capabilities::new([
+                "interaction:resolve".to_owned(),
+                format!("interaction:respond:{id}"),
+            ]),
+            None,
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
+    let unauthorized = issuer
+        .issue("bystander", &Capabilities::default(), None, None, &mut None)
+        .expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     bind_conversation(
         &stream,
@@ -1137,14 +1086,7 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
         private.clone(),
         4_096,
     )?;
-    let journal = FilesystemExecutionJournal::new(
-        stream.clone(),
-        host,
-        &private,
-        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
-        &scope,
-        4_096, None,
-    )?;
+    let journal = journal(stream.clone(), host, &private, &issuer, &scope)?;
     let request = Interaction::question("The private prompt".into(), json!({"type":"string"}))?;
     journal.open_interaction(id, request.clone()).await?;
     journal.open_interaction(id, request).await?;
@@ -1211,11 +1153,14 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
             .await
             .is_err()
     );
-    let raw = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v2/conversations/interaction-owner")
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
-        .read(0, 3)
-        .await
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+    let raw = acyclic_stream::Stream::new(
+        std::sync::Arc::clone(&stream),
+        "harness/v2/conversations/interaction-owner",
+    )
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
+    .read(0, 3)
+    .await
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     use futures::TryStreamExt as _;
     let records = raw
         .try_collect::<Vec<_>>()
@@ -1241,29 +1186,17 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
 
 #[tokio::test]
 async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> Result<()> {
-    let provider = ProviderRef::new("tool-approval-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
-    let private = VolumeRef::new(
-        provider,
-        "scratch",
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(AgentId::from_bytes([46; 16])),
+    let agent = AgentId::from_bytes([46; 16]);
+    let (host, private, issuer) = filesystem("tool-approval-e2e", "tool-owner", agent, 10).await?;
+    let scope = scope(
+        &issuer,
+        &private,
+        agent,
+        &[
+            "tool:install:example.echo".into(),
+            "interaction:open".into(),
+        ],
     )?;
-    host.create_volume(&private).await?;
-    let issuer = AuthorityIssuer::new(
-        "tool-approval-e2e",
-        [10; 32],
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: "tool-owner".into(),
-        },
-    );
-    let scope = issuer.issue("agent", &Capabilities::new([
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-            "tool:install:example.echo".to_owned(),
-            "interaction:open".to_owned(),
-        ]), Some(AgentId::from_bytes([46; 16])), None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     bind_conversation(
         &stream,
@@ -1272,14 +1205,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         AgentId::from_bytes([46; 16]),
     )
     .await?;
-    let journal = FilesystemExecutionJournal::new(
-        stream,
-        host,
-        &private,
-        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
-        &scope,
-        4_096, None,
-    )?;
+    let journal = journal(stream, host, &private, &issuer, &scope)?;
     let definition = ToolDefinition {
         name: "example.echo".into(),
         revision: "1".into(),
@@ -1292,11 +1218,19 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     let operation = OperationId::from_bytes([14; 16]);
     let denied_id = InteractionId::from_bytes([15; 16]);
     let approved_id = InteractionId::from_bytes([16; 16]);
-    let responder = issuer.issue("human", &Capabilities::new([
-            "interaction:resolve".to_owned(),
-            format!("interaction:respond:{denied_id}"),
-            format!("interaction:respond:{approved_id}"),
-        ]), None, None, &mut None).expect("scope proof");
+    let responder = issuer
+        .issue(
+            "human",
+            &Capabilities::new([
+                "interaction:resolve".to_owned(),
+                format!("interaction:respond:{denied_id}"),
+                format!("interaction:respond:{approved_id}"),
+            ]),
+            None,
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let approval = Interaction::approval("Install echo".into(), operation, digest)?;
     journal
         .open_interaction(denied_id, approval.clone())
@@ -1305,7 +1239,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     let tool = Tool {
         definition,
         executor: Arc::new(NoopTool),
-        projection: Arc::new(NoopTool),
+        projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
     };
     let mut registry = ToolRegistry::default();
     assert!(
@@ -1377,52 +1311,51 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
             &journal,
         )
         .await?;
-    assert!(registry.get("example.echo").is_some());
+    assert!(registry.get("example.echo", None, None)?.is_some());
     Ok(())
 }
 
 #[tokio::test]
 async fn typed_file_input_requires_resident_authorized_bytes_before_journaling() -> Result<()> {
-    let provider = ProviderRef::new("file-input-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
-    let private = VolumeRef::new(
-        provider.clone(),
-        "scratch",
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(AgentId::from_bytes([44; 16])),
-    )?;
+    let agent = AgentId::from_bytes([44; 16]);
+    let (host, private, issuer) =
+        filesystem("file-input-e2e", "file-input-owner", agent, 9).await?;
+    let provider = private.provider().clone();
     let foreign = VolumeRef::new(
         provider.clone(),
-        "foreign",
+        "foreign".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([45; 16])),
+        &mut None,
     )?;
     let project = VolumeRef::new(
         provider,
-        "project",
+        "project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
+        &mut None,
     )?;
-    host.create_volume(&private).await?;
     host.create_volume(&foreign).await?;
     host.create_volume(&project).await?;
-    let issuer = AuthorityIssuer::new(
-        "file-input-e2e",
-        [9; 32],
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: "file-input-owner".into(),
-        },
-    );
-    let scope = issuer.issue("agent", &Capabilities::new([
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-            foreign.capability(VolumeOperation::Read)?,
-            foreign.capability(VolumeOperation::Write)?,
-            project.capability(VolumeOperation::Read)?,
-            project.capability(VolumeOperation::Write)?,
-        ]), Some(AgentId::from_bytes([44; 16])), None, &mut None).expect("scope proof");
-    let grant = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &project, VolumeOperation::Write)?;
+    let scope = scope(
+        &issuer,
+        &private,
+        agent,
+        &[
+            foreign.capability(VolumeOperation::Read, &mut None)?,
+            foreign.capability(VolumeOperation::Write, &mut None)?,
+            project.capability(VolumeOperation::Read, &mut None)?,
+            project.capability(VolumeOperation::Write, &mut None)?,
+        ],
+    )?;
+    let grant = ContentGrant::verify(
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        &project,
+        VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
+    )?;
     let file = host
         .put_content(
             &project,
@@ -1433,6 +1366,8 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             "chart.png",
             4_096,
             &IdempotencyKey::new("chart-upload")?,
+            None,
+            None,
         )
         .await?;
     let foreign_issuer = AuthorityIssuer::new(
@@ -1443,15 +1378,33 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             id: AgentId::from_bytes([45; 16]).to_string(),
         },
     );
-    let foreign_scope = foreign_issuer.issue("foreign-owner", &Capabilities::new([foreign.capability(VolumeOperation::Write)?]), Some(AgentId::from_bytes([45; 16])), None, &mut None).expect("scope proof");
+    let foreign_scope = foreign_issuer
+        .issue(
+            "foreign-owner",
+            &Capabilities::new([foreign.capability(VolumeOperation::Write, &mut None)?]),
+            Some(AgentId::from_bytes([45; 16])),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     assert!(
-        ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &foreign, VolumeOperation::Write).is_err()
+        ContentGrant::verify(
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &scope,
+            &foreign,
+            VolumeOperation::Write,
+            u64::MAX,
+            &mut None
+        )
+        .is_err()
     );
     let foreign_grant = ContentGrant::verify(
         &foreign_issuer.verifier(&mut None).expect("verifier copy"),
         &foreign_scope,
         &foreign,
         VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
     )?;
     let foreign_file = host
         .put_content(
@@ -1463,11 +1416,12 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             "secret.txt",
             4_096,
             &IdempotencyKey::new("foreign-upload")?,
+            None,
+            None,
         )
         .await?;
     let stream = Arc::new(MemoryStream::default());
-    let journal =
-        FilesystemExecutionJournal::new(stream, host, &private, &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(), &scope, 4_096, None)?;
+    let journal = journal(stream, host, &private, &issuer, &scope)?;
     let model = Arc::new(CapturingModel::default());
     let executor = StockExecutor::new(
         Model::new("test".into(), "capture".into(), "1".into(), Value::Null)?,
@@ -1496,10 +1450,11 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
     ]);
     let invalid = FileRef::new(
         project,
-        "images/chart.png",
-        file.version(),
-        FileDescriptor::from_bytes(b"other", "image/png")?,
-        "chart.png",
+        "images/chart.png".into(),
+        file.version().into(),
+        FileDescriptor::from_bytes(b"other", "image/png", &mut None)?,
+        "chart.png".into(),
+        &mut None,
     )?;
     let operation_id = OperationId::from_bytes([12; 16]);
     assert!(
@@ -1528,7 +1483,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             .await
             .is_err()
     );
-    assert!(journal.replay(operation_id, 0, 64).await?.is_empty());
+    assert!(journal.replay(operation_id, 0, 64, None)?.await?.is_empty());
     assert!(
         executor
             .execute(
@@ -1546,7 +1501,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             .await
             .is_err()
     );
-    assert!(journal.replay(operation_id, 0, 64).await?.is_empty());
+    assert!(journal.replay(operation_id, 0, 64, None)?.await?.is_empty());
     executor
         .execute(
             TurnInput {

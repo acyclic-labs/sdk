@@ -1,230 +1,111 @@
-//! macOS notifications from one FSEvents stream over a held source root.
-#![allow(unsafe_code, reason = "uses the documented fcntl and fstat contracts")]
+//! macOS: one `FSEvents` stream over the source root.
 
-use super::{Delivery, HostChange, arc_control_bytes};
-use crate::demand::{DemandError, NativeSourceWork, SourceDemandReadWork, SourcePayloadOwnership};
-use crate::fsevents::{EventBatch, EventStream, ITEM_CREATED, ITEM_REMOVED, ITEM_RENAMED,
-    KERNEL_DROPPED, MOUNT, MUST_SCAN_SUBDIRS, UNMOUNT, USER_DROPPED};
-use crate::{CancellationToken, WorkCounters, WorkError};
-use std::ffi::{CStr, OsStr, OsString};
+#![allow(
+    unsafe_code,
+    reason = "fcntl is a C API; each call documents its contract"
+)]
+
+use super::{Delivery, HostChange};
+use crate::fsevents::{
+    EventStream, ITEM_CREATED, ITEM_REMOVED, ITEM_RENAMED, KERNEL_DROPPED, MOUNT,
+    MUST_SCAN_SUBDIRS, UNMOUNT, USER_DROPPED,
+};
+use std::ffi::CStr;
 use std::io;
 use std::os::unix::ffi::OsStrExt as _;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError, atomic::{AtomicBool, AtomicU64, Ordering}};
-use std::time::Duration;
+use std::path::PathBuf;
+use std::sync::Arc;
 
+/// Every flag that says what changed about an item; an event with none of
 const ITEM_FLAGS: u32 = 0x00ff_ff00;
 
 pub(crate) struct NativeSourceWatch {
     shared: Arc<Shared>,
-    stream: Mutex<Option<EventStream>>,
+    stream: Option<EventStream>,
 }
 
 struct Shared {
+    /// The held root's real path, which the stream reports paths under.
     root: PathBuf,
+    /// The held root's device and inode.
     held: (u64, u64),
     delivery: Arc<Delivery>,
-    stream_bytes: AtomicU64,
-    completed: AtomicBool,
-    ownership: SourcePayloadOwnership,
 }
 
 impl NativeSourceWatch {
-    pub(crate) fn start_driver<W: SourceDemandReadWork>(
-        directory: &crate::native_host::HostRoot, delivery: Arc<Delivery>, work: &mut W,
-    ) -> Result<Self, DemandError> {
-        let _failure = delivery.prepare_startup_failure(work)?;
-        let ownership = SourcePayloadOwnership::new(work)?;
-        let mut ordinary_bytes = 0;
-        let result = (|| {
-            let root = held_path(directory.directory_fd(), work)?;
-            ordinary_bytes = root.capacity() as u64;
-            ownership.retain(ordinary_bytes, work)?;
-            work.charge(WorkCounters { backend_read_operations: 1, items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            let held = identity(&std::fs::symlink_metadata(&root)?);
-            work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
-            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-            // SAFETY: fstat initializes stat on success and borrows the held descriptor.
-            if unsafe { libc::fstat(directory.directory_fd(), stat.as_mut_ptr()) } < 0 { return Err(io::Error::last_os_error().into()); }
-            // SAFETY: fstat succeeded.
-            let stat = unsafe { stat.assume_init() };
-            if held != (stat.st_dev as u64, stat.st_ino) { return Err(DemandError::SourceUnavailable); }
-            let bytes = arc_control_bytes::<Shared>();
-            work.allocate(bytes)?;
-            ordinary_bytes += bytes;
-            ownership.retain(bytes, work)?;
-            let shared = Arc::new(Shared { root, held, delivery, ownership,
-                stream_bytes: AtomicU64::new(0), completed: AtomicBool::new(false) });
-            let bytes = arc_control_bytes::<Arc<Shared>>();
-            work.allocate(bytes)?;
-            ordinary_bytes += bytes;
-            shared.ownership.retain(bytes, work)?;
-            let reader = shared.clone();
-            let handler = Arc::new(move |events: EventBatch<'_>| {
-                let mut ordinary = None;
-                let mut work = reader.delivery.callback_work(&mut ordinary);
-                if let Err(error) = reader.events(events.iter(), &mut work) { reader.delivery.failed_with_work(error, &mut work); }
-            });
-            let mut stream = EventStream::start_borrowed_with_work(
-                std::slice::from_ref(&shared.root), handler, Some(&shared.stream_bytes), work,
-            )?;
-            stream.set_terminal(shared.clone());
-            Ok(Self { shared, stream: Mutex::new(Some(stream)) })
-        })();
-        if !work.is_native_original() { work.release(ordinary_bytes)?; }
-        result
+    pub(super) fn start_driver(
+        directory: &crate::native_host::HostRoot,
+        delivery: Arc<Delivery>,
+    ) -> io::Result<Self> {
+        let root = held_path(directory.directory_fd())?;
+        let held = identity(&std::fs::symlink_metadata(&root)?);
+        let shared = Arc::new(Shared {
+            root,
+            held,
+            delivery,
+        });
+        let reader = Arc::clone(&shared);
+        let stream = EventStream::start(
+            std::slice::from_ref(&shared.root),
+            Arc::new(move |events: &[(PathBuf, u32)]| reader.events(events)),
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(Self {
+            shared,
+            stream: Some(stream),
+        })
     }
 
-    pub(crate) fn fence_with_work<W: SourceDemandReadWork>(&self, _: Duration, work: &mut W) -> Result<bool, DemandError> {
-        work.check()?;
-        self.shared.delivery.take_failure(work)?;
-        work.charge(WorkCounters { backend_read_operations: 1, items_examined: 1, ..WorkCounters::UNCHARGED })?;
-        if std::fs::symlink_metadata(&self.shared.root).is_ok_and(|metadata| identity(&metadata) == self.shared.held) {
-            self.delivery().deliver_with_work(&[HostChange::Unconfirmed], work)?;
-        } else if self.delivery().exact.swap(false, Ordering::AcqRel) {
-            self.delivery().deliver_with_work(&[HostChange::Everything], work)?;
-        }
-        Ok(false)
-    }
-
+    /// Reports that anything may have changed, or, once the root's path no
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "keeps the fallible fence signature the other watch sources share"
+    )]
     pub(crate) fn fence(&self) -> io::Result<()> {
-        let mut ordinary = None;
-        let mut work = self.delivery().callback_work(&mut ordinary);
-        self.fence_with_work(Duration::ZERO, &mut work).map(|_| ()).map_err(crate::demand::native_demand_read_error)
-    }
-
-    pub(crate) fn stop_with_work<W: SourceDemandReadWork>(&self, work: &mut W) -> Result<(), DemandError> {
-        self.stop(work, None, false)
-    }
-
-    pub(crate) fn stop_with_cleanup_wait(&self, wait: &CancellationToken) -> Result<(), DemandError> {
-        wait.check().map_err(|_| DemandError::Cancelled)?;
-        let birth = self.delivery().original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
-        self.stop(&mut NativeSourceWork::from_original_work(birth), Some(wait), true)
-    }
-
-    pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
-        let birth = self.delivery().original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
-        self.stop(&mut NativeSourceWork::from_original_work(birth), None, true)
-    }
-
-    fn stop<W: SourceDemandReadWork>(&self, work: &mut W, wait: Option<&CancellationToken>, prepaid: bool) -> Result<(), DemandError> {
-        if !prepaid { work.check()?; }
-        if let Some(wait) = wait { wait.check().map_err(|_| DemandError::Cancelled)?; }
-        self.delivery().ensure_stop_available()?;
-        let mut owner = if wait.is_some() {
-            match self.stream.try_lock() {
-                Ok(owner) => owner,
-                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => return Err(DemandError::WorkerUnavailable),
-            }
-        } else { self.stream.lock().unwrap_or_else(PoisonError::into_inner) };
-        if let Some(wait) = wait { wait.check().map_err(|_| DemandError::Cancelled)?; }
-        let Some(stream) = owner.as_mut() else {
-            return if self.is_stopped() { Ok(()) } else { Err(DemandError::WorkerUnavailable) };
-        };
-        let result = if prepaid {
-            stream.ensure_cleanup_wait_available(work)?;
-            stream.cleanup_admitted(work)
-        } else { stream.stop_with_work(work) };
-        let bytes = stream.logical_owned_bytes();
-        if stream.is_stopped() {
-            *owner = None;
-            self.shared.stream_bytes.store(bytes, Ordering::Release);
-            self.delivery().exact.store(false, Ordering::Release);
+        let shared = &self.shared;
+        let named = std::fs::symlink_metadata(&shared.root)
+            .is_ok_and(|metadata| identity(&metadata) == shared.held);
+        if named {
+            shared.delivery.deliver(&[HostChange::Unconfirmed]);
+        } else {
+            shared.delivery.abandon();
         }
-        if prepaid && !self.is_stopped() { return result.and(Err(DemandError::WorkerUnavailable)); }
-        match wait { Some(wait) => result.and(wait.check().map_err(|_| DemandError::Cancelled)), None => result }
+        Ok(())
     }
 
-    pub(crate) fn is_stopped(&self) -> bool { self.shared.completed.load(Ordering::Acquire) }
-    pub(crate) fn platform_owned_bytes(&self) -> u64 {
-        let stream = self.shared.stream_bytes.load(Ordering::Acquire);
-        arc_control_bytes::<Shared>() + self.shared.root.capacity() as u64 + stream
-            + if stream == 0 { 0 } else { arc_control_bytes::<Arc<Shared>>() }
+    pub(super) fn delivery(&self) -> &Delivery {
+        &self.shared.delivery
     }
-    pub(crate) fn delivery(&self) -> &Delivery { &self.shared.delivery }
 
+    /// Delivers one event as the stream would.
     #[cfg(test)]
-    pub(crate) fn inject(&self, path: &Path, flags: u32) {
-        let mut ordinary = None;
-        let mut work = self.delivery().callback_work(&mut ordinary);
-        if let Err(error) = self.shared.events(std::iter::once((path, flags)), &mut work) { self.delivery().failed_with_work(error, &mut work); }
+    pub(super) fn inject(&self, path: &std::path::Path, flags: u32) {
+        self.shared.events(&[(path.to_path_buf(), flags)]);
     }
 }
 
 impl Drop for NativeSourceWatch {
     fn drop(&mut self) {
-        if self.is_stopped() { return; }
-        let mut ordinary = None;
-        let mut work = self.shared.delivery.callback_work(&mut ordinary);
-        let owner = self.stream.get_mut().unwrap_or_else(PoisonError::into_inner);
-        if let Some(stream) = owner.as_mut() { let _ = stream.cleanup_admitted(&mut work); }
-        *owner = None;
+        // Stopped first, after any batch in delivery.
+        self.stream = None;
     }
 }
 
 impl Shared {
-    fn events<'a, W: SourceDemandReadWork>(&self, events: impl ExactSizeIterator<Item = (&'a Path, u32)>, work: &mut W) -> Result<(), DemandError> {
-        let count = events.len() as u64;
-        let slots = count.checked_mul(size_of::<HostChange>() as u64).ok_or(WorkError::Overflow)?;
-        work.check()?;
-        work.admit(WorkCounters { items_examined: count, ..WorkCounters::UNCHARGED })?;
-        work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, count))?;
-        if let Err(error) = work.allocate(slots) {
-            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, count).expect("balanced event reservation"));
-            return Err(error);
-        }
-        let mut changes = Vec::with_capacity(count as usize);
-        let mut payload = 0_u64;
-        let result = (|| {
-            for (path, flags) in events {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                if flags & (USER_DROPPED | KERNEL_DROPPED | MOUNT | UNMOUNT) != 0 { changes.push(HostChange::Everything); }
-                else if let Some(relative) = relative_path(path, &self.root, work)? {
-                    let bytes = relative.as_os_str().as_bytes().len() as u64;
-                    let copy = WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED };
-                    let retained = payload.checked_add(bytes).ok_or(WorkError::Overflow)?;
-                    work.admit(copy)?;
-                    work.allocate(bytes)?;
-                    payload = retained;
-                    changes.push(change(relative.to_path_buf(), flags));
-                    work.record(copy)?;
-                }
+    fn events(&self, events: &[(PathBuf, u32)]) {
+        let mut changes = Vec::with_capacity(events.len());
+        for (path, flags) in events {
+            if flags & (USER_DROPPED | KERNEL_DROPPED | MOUNT | UNMOUNT) != 0 {
+                changes.push(HostChange::Everything);
+            } else if let Ok(relative) = path.strip_prefix(&self.root) {
+                changes.push(change(relative.to_path_buf(), *flags));
             }
-            self.delivery.deliver_with_work(&changes, work)
-        })();
-        let returned = changes.len() as u64;
-        drop(changes);
-        let cleaned = work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::Items, returned, returned));
-        work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, count - returned).expect("balanced event reservation"));
-        work.release(payload + slots)?;
-        result.and(cleaned)
-    }
-}
-
-impl crate::fsevents::StreamTerminal for Shared {
-    fn stream_stopped(&self) {
-        if let Err(error) = self.ownership.retire(arc_control_bytes::<Arc<Shared>>()) {
-            let mut ordinary = None;
-            let mut work = self.delivery.callback_work(&mut ordinary);
-            self.delivery.failed_with_work(error, &mut work);
         }
-        self.stream_bytes.store(0, Ordering::Release);
-        self.delivery.exact.store(false, Ordering::Release);
-        self.completed.store(true, Ordering::Release);
+        self.delivery.deliver(&changes);
     }
 }
 
-fn relative_path<'a, W: SourceDemandReadWork>(path: &'a Path, root: &Path, work: &mut W) -> Result<Option<&'a Path>, DemandError> {
-    let mut path = path.components();
-    for expected in root.components() {
-        work.charge(WorkCounters { source_path_components: 1, ..WorkCounters::UNCHARGED })?;
-        if path.next() != Some(expected) { return Ok(None); }
-    }
-    Ok(Some(path.as_path()))
-}
-
+/// What one event says of the path it names.
 fn change(relative: PathBuf, flags: u32) -> HostChange {
     let unspecific = flags & ITEM_FLAGS == 0 || flags & MUST_SCAN_SUBDIRS != 0;
     if relative.as_os_str().is_empty() {
@@ -246,33 +127,79 @@ fn identity(metadata: &std::fs::Metadata) -> (u64, u64) {
     (metadata.dev(), metadata.ino())
 }
 
-
-fn held_path<W: SourceDemandReadWork>(descriptor: i32, work: &mut W) -> Result<PathBuf, DemandError> {
-    let mut buffer = [0_u8; libc::PATH_MAX as usize];
-    work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
-    // SAFETY: F_GETPATH writes at most PATH_MAX bytes into this live array.
-    if unsafe { libc::fcntl(descriptor, libc::F_GETPATH, buffer.as_mut_ptr()) } < 0 { return Err(io::Error::last_os_error().into()); }
-    let bytes = CStr::from_bytes_until_nul(&buffer).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?.to_bytes();
-    let mut copy = work.reserve_source_copy(bytes.len() as u64)?;
-    let mut allocation = work.claim(bytes.len() as u64)?;
-    let mut path = OsString::new();
-    let result = (|| {
-        let reserved = path.try_reserve_exact(bytes.len());
-        let reconciled = work.reconcile_allocation(&mut allocation, path.capacity() as u64);
-        reserved.map_err(DemandError::Allocation)?;
-        reconciled?;
-        path.push(OsStr::from_bytes(bytes));
-        let copied = WorkCounters { bytes_copied: bytes.len() as u64, ..WorkCounters::UNCHARGED };
-        match copy.take() {
-            Some(mut copy) => copy.record_completed(copied).map_err(crate::native_name::original_name_error)?,
-            None => work.record(copied)?,
-        }
-        work.check()
-    })();
-    if let Err(error) = result { drop(path); work.release(allocation)?; return Err(error); }
-    Ok(path.into())
+/// The real path of a held directory, as `FSEvents` reports paths.
+fn held_path(descriptor: i32) -> io::Result<PathBuf> {
+    let mut buffer = vec![0_u8; usize::try_from(libc::PATH_MAX).unwrap_or(1024)];
+    // SAFETY: `F_GETPATH` writes at most `PATH_MAX` bytes into the buffer.
+    if unsafe { libc::fcntl(descriptor, libc::F_GETPATH, buffer.as_mut_ptr()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let path = CStr::from_bytes_until_nul(&buffer)
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(path.to_bytes())))
 }
 
 #[cfg(test)]
-#[path = "fsevents/tests.rs"]
-mod tests;
+mod tests {
+    use super::{HostChange, ITEM_CREATED, ITEM_REMOVED, ITEM_RENAMED, MUST_SCAN_SUBDIRS, change};
+    use std::path::PathBuf;
+
+    const ITEM_MODIFIED: u32 = 0x1000;
+    const ITEM_IS_FILE: u32 = 0x1_0000;
+    const ITEM_IS_DIR: u32 = 0x2_0000;
+
+    /// `FSEvents` proves no delivery order, so a fence reports everything.
+    #[test]
+    fn a_fence_reports_everything() -> Result<(), Box<dyn std::error::Error>> {
+        struct Recorded(std::sync::Mutex<Vec<HostChange>>);
+        impl super::super::HostChangeSink for Recorded {
+            fn host_changed(&self, changes: &[HostChange]) {
+                if let Ok(mut recorded) = self.0.lock() {
+                    recorded.extend_from_slice(changes);
+                }
+            }
+        }
+        let root = tempfile::tempdir()?;
+        let recorded = std::sync::Arc::new(Recorded(std::sync::Mutex::new(Vec::new())));
+        let watch = super::NativeSourceWatch::start_driver(
+            &crate::native_host::HostRoot::open(root.path())?,
+            std::sync::Arc::new(super::super::Delivery::new(recorded.clone())),
+        )?;
+        watch.fence()?;
+        let recorded = recorded.0.lock().map_err(|_| "poisoned")?;
+        assert!(recorded.contains(&HostChange::Unconfirmed));
+        assert!(!recorded.contains(&HostChange::Everything));
+        Ok(())
+    }
+
+    /// An event that does not say which item it changed, or says its
+    #[test]
+    fn unspecific_events_cover_everything_beneath_their_path() {
+        let root = PathBuf::new;
+        let name = || PathBuf::from("d");
+        assert_eq!(change(root(), 0), HostChange::Everything);
+        assert_eq!(
+            change(root(), MUST_SCAN_SUBDIRS | ITEM_IS_DIR),
+            HostChange::Everything
+        );
+        assert_eq!(
+            change(root(), ITEM_CREATED | ITEM_IS_DIR),
+            HostChange::Altered(root())
+        );
+        assert_eq!(change(name(), 0), HostChange::Rebound(name()));
+        assert_eq!(
+            change(name(), MUST_SCAN_SUBDIRS),
+            HostChange::Rebound(name())
+        );
+        for flag in [ITEM_CREATED, ITEM_REMOVED, ITEM_RENAMED] {
+            assert_eq!(
+                change(name(), flag | ITEM_MODIFIED | ITEM_IS_FILE),
+                HostChange::Rebound(name())
+            );
+        }
+        assert_eq!(
+            change(name(), ITEM_MODIFIED | ITEM_IS_FILE),
+            HostChange::Altered(name())
+        );
+    }
+}

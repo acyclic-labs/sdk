@@ -8,7 +8,8 @@ import { DEFAULT_LIMITS } from "./conversation.js";
 import { selectModelContext } from "./projection.js";
 import { memoryContentStore } from "./memory-content-store.js";
 import type { ResourceRef } from "./fork.js";
-import { IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness, type ContentBindings, type ContentReader, type PrivateDirectoryPage, type RunOutput } from "./runtime.js";
+import { IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness, type RunOutput } from "./agent-harness.js";
+import type { ContentBindings, ContentReader, PrivateDirectoryPage } from "./content.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 
 const encoder = new TextEncoder();
@@ -55,26 +56,22 @@ export class MemoryConversation {
       authority, issuerId: options.issuerId ?? "local-harness",
       issuerKey: options.issuerKey ?? crypto.getRandomValues(new Uint8Array(32)),
     });
-    let limits: Limits;
     const maxResidentBytes = options.maxResidentBytes ?? Number.MAX_SAFE_INTEGER;
     const maxResidentFiles = options.maxResidentFiles ?? Number.MAX_SAFE_INTEGER;
     try {
-      limits = core.contracts.validate("limits", options.limits ?? DEFAULT_LIMITS);
+      const limits = core.contracts.validate("limits", options.limits ?? DEFAULT_LIMITS);
       if (!Number.isSafeInteger(maxResidentBytes) || maxResidentBytes < 0
         || !Number.isSafeInteger(maxResidentFiles) || maxResidentFiles < 1) {
         throw new RangeError("memory content retention limits are invalid");
       }
-    }
-    catch (error) { core.free(); throw error; }
-    try {
       const volume: VolumeRef<"agent_private", "memory"> = {
         provider: { namespace: "local", family: "memory", version: "2" },
         id: crypto.randomUUID(), class: "agent_private", owner: { kind: "agent", id: options.agent },
       };
-      const scope = core.issueScopeForAgent(options.agent, "conversation-owner", [
+      const scope = core.issueScope("conversation-owner", [
         "conversation:bind", "conversation:append", "conversation:select_context",
         core.volumeCapability(volume, "read"), core.volumeCapability(volume, "write"),
-      ]);
+      ], options.agent);
       const content = memoryContentStore(volume, limits.file_bytes, limits.path_bytes,
         maxResidentBytes, maxResidentFiles);
       const host = new MemoryConversation(core, scope, volume, maxResidentFiles, content);
@@ -148,7 +145,6 @@ export class MemoryConversation {
     this.#core.verifyScope(admittedScope);
     return {
       validate: (file, limits) => this.#core.validateFileUnderLimits(file, limits),
-      verify: (file, bytes) => this.#core.contracts.verifyFileBytes(file, bytes),
       read: file => this.readAuthorized(admittedScope, file),
       requireFileRead: file => {
         const reference = this.#core.contracts.validate("file_ref", file);
@@ -171,15 +167,8 @@ export class MemoryConversation {
   /** Bind this owner's authenticated content provider to typed task/tool contexts. */
   contentBindings(): ContentBindings {
     return {
-      validate: (file, limits) => {
-        this.#core.validateFileUnderLimits(file, limits);
-      },
-      verify: (file, bytes) => this.#core.contracts.verifyFileBytes(file, bytes),
+      ...this.readBindings(this.#scope),
       read: file => this.read(file),
-      fileReadCapability: file => this.#core.fileReadCapability(file),
-      volumeReadCapability: volume => this.#core.volumeCapability(volume, "read"),
-      directoryReadCapability: (volume, prefix) => this.#core.directoryReadCapability(volume, prefix),
-      directory: this.readBindings(this.#scope).directory!,
       writer: {
         volume: this.#volume,
         writeCapability: () => this.#core.volumeCapability(this.#volume, "write"),
@@ -378,7 +367,7 @@ export class MemoryConversation {
     runtime: AgentHarness, operationId: OperationId, content: FileRef,
     attachments: readonly Attachment[],
   ): Promise<RunOutput> {
-    const limits = runtime.limits;
+    const limits = runtime.components.limits;
     const userContent = this.#core.contracts.validate("file_ref", content);
     this.#core.validateFileUnderLimits(userContent, limits);
     await this.read(userContent);
@@ -390,7 +379,7 @@ export class MemoryConversation {
     const committedSelection = this.#core.contextSelectionForOperation(operationId);
     const preparation = this.#core.contracts.prepareConversationTurn(
       state, operationId, userContent, list, limits, committedSelection,
-      completed !== undefined, runtime.canReconcileSelectedTurn(),
+      completed !== undefined, runtime.components.state?.executeSelectedTurn !== undefined,
     );
     const userId = this.#core.contracts.validateConversationMessageId(preparation.user_id);
     if (preparation.append_user) {

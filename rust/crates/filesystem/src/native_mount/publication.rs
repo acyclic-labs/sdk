@@ -3,7 +3,7 @@
 use crate::MountSourceError;
 use crate::kernel::RebaseDecision;
 use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Checkout, CheckoutCommitOutcome,
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Checkout, LivePublicationObservation,
     LiveMutationOutcome, OperationId, PublicationPermit, WorkBudget, WorkCounters,
 };
 
@@ -62,15 +62,15 @@ pub async fn seal_checkout_with_permit_measured<A: AsyncAuthorityStore, O: Async
     }
     match checkout.mode().mutations {
         crate::model::MutationMode::PrivateOverlay => {
-            let receipt = checkout.commit(operation_id, None, None, None, permit, budget, cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
+            let receipt = checkout.commit(operation_id, None, None, None, permit, budget, cancellation, |_| async { crate::FsResult::Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
                 .await.map_err(|failure| publication_failure(failure, &mut work))?;
             work = receipt.work;
             match receipt.value {
-            CheckoutCommitOutcome::Committed { .. }
-            | CheckoutCommitOutcome::AlreadyCommitted { .. } => Ok(()),
-            CheckoutCommitOutcome::Conflict { .. }
-            | CheckoutCommitOutcome::Fenced { .. }
-            | CheckoutCommitOutcome::IdempotencyConflict { .. } => Err(MountSourceError::Stale),
+            LivePublicationObservation::Committed { .. }
+            | LivePublicationObservation::AlreadyCommitted { .. } => Ok(()),
+            LivePublicationObservation::Conflict { .. }
+            | LivePublicationObservation::Fenced { .. }
+            | LivePublicationObservation::IdempotencyConflict { .. } => Err(MountSourceError::Stale),
             }
         }
         crate::model::MutationMode::DirectLive if permit == PublicationPermit::Unrestricted => {
@@ -86,12 +86,8 @@ pub async fn seal_checkout_with_permit_measured<A: AsyncAuthorityStore, O: Async
                 | LiveMutationOutcome::IdempotencyConflict { .. } => Err(MountSourceError::Stale),
             }
         }
-        crate::model::MutationMode::DirectLive => Err(MountSourceError::Unsupported(
-            "direct-live mounts do not support operation lease permits".to_owned(),
-        )),
-        crate::model::MutationMode::None => Err(MountSourceError::Unsupported(
-            "checkout does not admit native writes".to_owned(),
-        )),
+        crate::model::MutationMode::DirectLive => Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("direct-live mounts do not support operation lease permits".to_owned(),))),
+        crate::model::MutationMode::None => Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("checkout does not admit native writes".to_owned(),))),
     }
     }.await;
     result.map(|value| crate::OperationReceipt { value, work })
@@ -123,29 +119,27 @@ pub async fn seal_checkout_with_permit_force_measured<A: AsyncAuthorityStore, O:
     let result = async {
     cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
     if checkout.mode().mutations != crate::model::MutationMode::PrivateOverlay {
-        return Err(MountSourceError::Unsupported(
-            "forced publication requires a private-overlay checkout".to_owned(),
-        ));
+        return Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("forced publication requires a private-overlay checkout".to_owned(),)));
     }
     // The same safe-rebase bound governs the original native carrier below.
     for _ in 0..MAXIMUM_SAFE_REBASE_ATTEMPTS {
         let remaining = work.remaining(budget).map_err(engine_error)?;
         let publication = if checkout.has_pending_mutations() {
             checkout
-                .commit(operation_id, None, None, None, permit, remaining, cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
+                .commit(operation_id, None, None, None, permit, remaining, cancellation, |_| async { crate::FsResult::Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
                 .await
         } else {
             checkout
-                .commit_even_if_clean(operation_id, None, None, None, permit, remaining, cancellation, &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
+                .commit_even_if_clean(operation_id, None, None, None, permit, remaining, cancellation, &mut |_| async { crate::FsResult::Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
                 .await
         }
         .map_err(|failure| publication_failure(failure, &mut work))?;
         work = work.checked_add(publication.work).map_err(engine_error)?;
         work.verify(budget).map_err(engine_error)?;
         match publication.value {
-            CheckoutCommitOutcome::Committed { .. }
-            | CheckoutCommitOutcome::AlreadyCommitted { .. } => return Ok(()),
-            CheckoutCommitOutcome::Conflict { .. } => {
+            LivePublicationObservation::Committed { .. }
+            | LivePublicationObservation::AlreadyCommitted { .. } => return Ok(()),
+            LivePublicationObservation::Conflict { .. } => {
                 let maximum_conflicts = checkout
                     .volume_config()
                     .limits
@@ -164,15 +158,13 @@ pub async fn seal_checkout_with_permit_force_measured<A: AsyncAuthorityStore, O:
                     return Err(MountSourceError::Stale);
                 }
             }
-            CheckoutCommitOutcome::Fenced { .. }
-            | CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+            LivePublicationObservation::Fenced { .. }
+            | LivePublicationObservation::IdempotencyConflict { .. } => {
                 return Err(MountSourceError::Stale);
             }
         }
     }
-    Err(MountSourceError::Engine(
-        "publication raced with repeated head advances; retry retained operation".to_owned(),
-    ))
+    Err(MountSourceError::Engine(std::borrow::Cow::Owned("publication raced with repeated head advances; retry retained operation".to_owned(),)))
     }.await;
     result.map(|value| crate::OperationReceipt { value, work })
         .map_err(|error| crate::OperationFailure::new(error, work))
@@ -192,7 +184,7 @@ pub(super) fn seal_checkout_with_permit_guarded_with_native_work<'a, A, O, T, F,
     operation_context: Option<crate::Digest>,
     operation_evidence: Option<acyclic_stream::OwnedBytes>,
     original_fingerprint_permit: Option<PublicationPermit>,
-) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<super::adapter::NativeSourcePublicationAck>, T>>
+) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(Option<OperationId>, crate::GenerationId)>, T>>
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -202,7 +194,6 @@ where
 {
     Box::pin(async move {
         cancellation.check().map_err(|error| T::from(crate::FsError::Cancelled(error)))?;
-        use super::adapter::NativeSourcePublicationAck;
         let original_generation = checkout.generation_id();
         let mode = checkout.mode().mutations;
         if force && mode != crate::model::MutationMode::PrivateOverlay {
@@ -218,16 +209,16 @@ where
                     producer_custody, operation_context, operation_evidence.clone(), original_fingerprint_permit,
                 ).await? {
                     return Ok(match outcome {
-                        CheckoutCommitOutcome::Committed { generation_id, .. }
-                        | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } =>
-                            Some(NativeSourcePublicationAck::Published { operation: operation_id, generation: generation_id }),
-                        CheckoutCommitOutcome::Conflict { .. }
-                        | CheckoutCommitOutcome::Fenced { .. }
-                        | CheckoutCommitOutcome::IdempotencyConflict { .. } => None,
+                        LivePublicationObservation::Committed { generation_id, .. }
+                        | LivePublicationObservation::AlreadyCommitted { generation_id, .. } =>
+                            Some((Some(operation_id), generation_id)),
+                        LivePublicationObservation::Conflict { .. }
+                        | LivePublicationObservation::Fenced { .. }
+                        | LivePublicationObservation::IdempotencyConflict { .. } => None,
                     });
                 }
                 if !force && !checkout.has_pending_mutations() {
-                    return Ok(Some(NativeSourcePublicationAck::Unchanged { generation: original_generation }));
+                    return Ok(Some((None, original_generation)));
                 }
                 let attempts = if force { MAXIMUM_SAFE_REBASE_ATTEMPTS } else { 1 };
                 for _ in 0..attempts {
@@ -238,11 +229,11 @@ where
                         producer_custody, operation_context, operation_evidence.clone(), original_fingerprint_permit,
                     ).await?;
                     match outcome {
-                        CheckoutCommitOutcome::Committed { generation_id, .. }
-                        | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } =>
-                            return Ok(Some(NativeSourcePublicationAck::Published { operation: operation_id, generation: generation_id })),
-                        CheckoutCommitOutcome::Conflict { .. } if force => {
-                            let (decision, allocation) = checkout.rebase_head_with_native_work(
+                        LivePublicationObservation::Committed { generation_id, .. }
+                        | LivePublicationObservation::AlreadyCommitted { generation_id, .. } =>
+                            return Ok(Some((Some(operation_id), generation_id))),
+                        LivePublicationObservation::Conflict { .. } if force => {
+                            let (decision, allocation) = checkout.rebase_head(
                                 checkout.volume_config().limits.maximum_checkout_dependencies,
                                 original, cancellation,
                             ).await.map_err(T::from)?;
@@ -251,16 +242,16 @@ where
                             drop(allocation);
                             if conflicted { return Ok(None); }
                         }
-                        CheckoutCommitOutcome::Conflict { .. }
-                        | CheckoutCommitOutcome::Fenced { .. }
-                        | CheckoutCommitOutcome::IdempotencyConflict { .. } => return Ok(None),
+                        LivePublicationObservation::Conflict { .. }
+                        | LivePublicationObservation::Fenced { .. }
+                        | LivePublicationObservation::IdempotencyConflict { .. } => return Ok(None),
                     }
                 }
                 Err(T::from(MountSourceError::PublicationRetryLimit))
             }
             crate::model::MutationMode::DirectLive if permit == PublicationPermit::Unrestricted => {
                 if !checkout.has_pending_mutations() {
-                    return Ok(Some(NativeSourcePublicationAck::Unchanged { generation: original_generation }));
+                    return Ok(Some((None, original_generation)));
                 }
                 let (outcome, allocation) = checkout.resume_live_with_native_work(
                     operation_id, 8, 256, permit, original, cancellation, before_publication, producer_custody,
@@ -269,7 +260,7 @@ where
                 let ack = match &outcome {
                     LiveMutationOutcome::Committed { generation_id, .. }
                     | LiveMutationOutcome::AlreadyCommitted { generation_id, .. } =>
-                        Some(NativeSourcePublicationAck::Published { operation: operation_id, generation: *generation_id }),
+                        Some((Some(operation_id), *generation_id)),
                     LiveMutationOutcome::Conflicted { .. }
                     | LiveMutationOutcome::RetryLimit { .. }
                     | LiveMutationOutcome::Fenced { .. }
@@ -286,7 +277,7 @@ where
 }
 
 fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
-    MountSourceError::Engine(error.to_string())
+    MountSourceError::Engine(std::borrow::Cow::Owned(error.to_string()))
 }
 
 fn publication_failure(
@@ -374,17 +365,17 @@ mod tests {
         }
         assert!(matches!(
             first
-                .commit(OperationId::from_bytes([1; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
+                .commit(OperationId::from_bytes([1; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
                 .await?
                 .value,
-            CheckoutCommitOutcome::Committed { .. }
+            LivePublicationObservation::Committed { .. }
         ));
         let conflict = stale
-            .commit(OperationId::from_bytes([2; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
+            .commit(OperationId::from_bytes([2; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
             .await?;
         assert!(matches!(
             conflict.value,
-            CheckoutCommitOutcome::Conflict { .. }
+            LivePublicationObservation::Conflict { .. }
         ));
         assert!(conflict.work.authority_records_read > 0);
         let rebase = stale
@@ -445,7 +436,7 @@ mod tests {
         ).await?.value;
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let mut checkout = volume.checkout_with_native_work(
+        let mut checkout = volume.checkout(
             GenerationSelector::Head, CheckoutMode::tracking_transaction(), &original, &cancellation,
         ).await?;
         let generation = checkout.generation_id();
@@ -456,7 +447,7 @@ mod tests {
             &mut |_: &crate::NativeMaterializationWork| async { Ok::<(), NativePublicationTestError>(()) },
             None, None, None, None,
         ).await?;
-        assert_eq!(ack, Some(super::super::adapter::NativeSourcePublicationAck::Unchanged { generation }));
+        assert_eq!(ack, Some((None, generation)));
         let after = original.receipt();
         assert_eq!(after.authority_records_appended, before.authority_records_appended);
         assert_eq!(after.backend_write_operations, before.backend_write_operations);
@@ -477,7 +468,7 @@ mod tests {
         ).await?.value;
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let mut checkout = volume.checkout_with_native_work(
+        let mut checkout = volume.checkout(
             GenerationSelector::Head, CheckoutMode::tracking_transaction(), &original, &cancellation,
         ).await?;
         let generation = checkout.generation_id();
@@ -523,13 +514,9 @@ mod tests {
             &mut |_: &crate::NativeMaterializationWork| async { Ok::<(), NativePublicationTestError>(()) },
             None, Some(context), Some(evidence.clone()), None,
         ).await?;
-        assert_eq!(ack, Some(super::super::adapter::NativeSourcePublicationAck::Published {
-            operation, generation,
-        }));
+        assert_eq!(ack, Some((Some(operation), generation)));
         assert_eq!(original.receipt().authority_records_appended, appended);
-        let (durable, custody) = fs.authority().find_operation_with_native_work(
-            crate::kernel::volume_authority_id(volume.id()), operation, &original, &cancellation,
-        ).await?;
+        let durable =(async { let __authority_args = (crate::kernel::volume_authority_id(volume.id()), operation, &original, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = fs.authority().find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result }.await)?;
         let durable = durable.ok_or("original append disappeared")?;
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
         let decoded = crate::kernel::decode_publication_evidence_with_accounting(
@@ -537,7 +524,6 @@ mod tests {
         )?;
         assert_eq!(decoded.original_evidence, Some(evidence.as_slice()));
         drop(durable);
-        drop(custody);
         Ok(())
     }
 }

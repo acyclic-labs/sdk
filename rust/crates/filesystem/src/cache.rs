@@ -17,15 +17,16 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::cancellation::CancellationToken;
-use crate::performance::{WorkBudget, WorkCounters};
-use crate::storage::{
-    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError, ObjectWrite,
-};
-use acyclic_stream::OwnedBytes;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::materializer::{NativeAllocation, NativeMaterializationWork};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::materializer::{NativeAllocation, NativeMaterializationWork};
+use crate::performance::{WorkBudget, WorkCounters};
+use crate::storage::{
+    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError,
+    ObjectWrite,
+};
+use acyclic_stream::OwnedBytes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::{Future, poll_fn};
 use std::mem::size_of;
@@ -270,7 +271,9 @@ impl Flight {
                         replacement.values.try_reserve_exact(capacity).map_err(|error| ObjectStoreError::Native(
                             crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)))?;
                     }
-                    let copy = work.map(|work| work.reserve_work(crate::WorkCounters { bytes_copied: (waiters.values.len() * size_of::<Waker>()) as u64, ..crate::WorkCounters::UNCHARGED })).transpose()?;
+                    let copy = work.map(|work| {
+                            work.reserve_work(crate::WorkCounters { bytes_copied: (waiters.values.len() * size_of::<Waker>()) as u64, ..crate::WorkCounters::UNCHARGED })
+                        }).transpose()?;
                     replacement.values.append(&mut waiters.values);
                     let copied = (replacement.values.len() * size_of::<Waker>()) as u64;
                     // Commit moved waiters before a late refusal, preserving all
@@ -362,8 +365,10 @@ impl<T> BatchBuffer<T> {
             let allocation = accounting.claim_owned(requested, u64::from(count != 0))
                 .map_err(crate::async_storage::object_error)?;
             let mut owner = Self { values: Vec::new(), allocation: Some(allocation) };
-            owner.values.try_reserve_exact(count).map_err(|error| ObjectStoreError::Native(
-                crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)))?;
+            owner.values.try_reserve_exact(count).map_err(|error| {
+                ObjectStoreError::Native(
+                crate::materializer::NativeTreeMaterializationError::AllocationFailed(error))
+            })?;
             let actual = owner.values.capacity().checked_mul(size_of::<T>())
                 .ok_or(ObjectStoreError::Work(crate::WorkError::Overflow))? as u64;
             accounting.reconcile_owned(
@@ -778,13 +783,32 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         let load = async {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(native) = native {
-                return self.inner.read_with_native_work(object_id, maximum_bytes, native, cancellation)
-                    .await.map(|read| crate::OperationReceipt { value: read, work: WorkCounters::default() })
-                    .map_err(|error| (error, prior));
+                return {
+                    let __object_args = (object_id, maximum_bytes, native, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                    let __object_result = self
+                        .inner
+                        .read(__object_args.0, __object_args.1, &mut __object_work)
+                        .await;
+                    __object_result
+                }
+                .map(|read| crate::OperationReceipt { value: read, work: WorkCounters::default() })
+                .map_err(|error| (error, prior));
             }
-            let remaining = prior.remaining(budget).map_err(|error| (error.into(), prior))?;
-            self.inner.read(object_id, maximum_bytes, remaining, cancellation).await
-                .map_err(|failure| {
+            let remaining = prior
+                .remaining(budget)
+                .map_err(|error| (error.into(), prior))?;
+            {
+                let __object_args = (object_id, maximum_bytes, remaining, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = self
+                    .inner
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+            .map_err(|failure| {
                     let work = prior.checked_add(*failure.work);
                     match work {
                         Ok(work) => (failure.error, work),
@@ -833,10 +857,12 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                 .map_err(|error| (error, prior))?;
             let bytes = match plan {
                 ReadPlan::Hit(bytes) => bytes,
-                ReadPlan::Leader(flight) => return self.load_leader(
+                ReadPlan::Leader(flight) => {
+                    return self.load_leader(
                     object_id, maximum_bytes, budget, cancellation, prior, flight,
                     #[cfg(not(target_arch = "wasm32"))] native,
-                ).await,
+                ).await;
+                }
                 ReadPlan::Follower(flight) => {
                     let result = wait_for_flight_with_context(
                         &flight, cancellation, #[cfg(not(target_arch = "wasm32"))] native,
@@ -969,7 +995,9 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             #[cfg(not(target_arch = "wasm32"))] native,
         ).map_err(|error| (error, prepared.work))?;
         #[cfg(not(target_arch = "wasm32"))]
-        let copy = native.map(|native| native.reserve_work(crate::WorkCounters { bytes_copied: (prepared.leaders.values.len() * size_of::<ObjectReadRequest>()) as u64, ..crate::WorkCounters::UNCHARGED })).transpose().map_err(|error| (error.into(), prepared.work))?;
+        let copy = native.map(|native| {
+                native.reserve_work(crate::WorkCounters { bytes_copied: (prepared.leaders.values.len() * size_of::<ObjectReadRequest>()) as u64, ..crate::WorkCounters::UNCHARGED })
+            }).transpose().map_err(|error| (error.into(), prepared.work))?;
         requests.values.extend(prepared.leaders.values.iter().map(|leader| ObjectReadRequest {
             object_id: leader.object_id, maximum_bytes: leader.maximum_bytes,
         }));
@@ -981,14 +1009,28 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         let mut guards = BatchBuffer::new(prepared.leaders.values.len(), "object cache flight guard allocation failed",
             #[cfg(not(target_arch = "wasm32"))] native,
         ).map_err(|error| (error, prepared.work))?;
-        guards.values.extend(prepared.leaders.values.iter().map(|leader| Some(ActiveFlightGuard::new(
+        guards.values.extend(prepared.leaders.values.iter().map(|leader| {
+                Some(ActiveFlightGuard::new(
             self, leader.object_id, Arc::clone(&leader.flight),
-        ))));
+        ))
+            }));
         let receipt = async {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(native) = native {
-                let batch = self.inner.read_many_with_native_work(&requests.values, native, cancellation).await
-                    .map_err(|error| (error, prepared.work))?;
+                let batch = {
+                    let __object_args = (&requests.values, native, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .inner
+                        .read_many(__object_args.0, &mut __object_work)
+                        .await
+                        .map(|(values, allocation)| {
+                            (values, allocation.expect("native batch allocation"))
+                        });
+                    __object_result
+                }
+                .map_err(|error| (error, prepared.work))?;
                 let (values, allocation) = batch;
                 return Ok(crate::OperationReceipt {
                     value: BatchBuffer { values, allocation: Some(KernelOwnedAllocation::NativeOriginal(allocation)) },
@@ -996,8 +1038,17 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                 });
             }
             let remaining = prepared.work.remaining(budget).map_err(|error| (error.into(), prepared.work))?;
-            self.inner.read_many(&requests.values, remaining, cancellation).await
-                .map(|receipt| crate::OperationReceipt {
+            {
+                let __object_args = (&requests.values, remaining, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .read_many(__object_args.0, &mut __object_work)
+                    .await
+                    .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }
+            .map(|receipt| crate::OperationReceipt {
                     value: BatchBuffer {
                         values: receipt.value,
                         #[cfg(not(target_arch = "wasm32"))]
@@ -1079,7 +1130,9 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                     self.remove_flight(request.object_id, &flight).map_err(|error| (error, *work))?;
                     #[cfg(not(target_arch = "wasm32"))]
                     let remaining = match native {
-                        Some(native) => native.remaining().map_err(|error| (error.into(), *work))?,
+                        Some(native) => {
+                            native.remaining().map_err(|error| (error.into(), *work))?
+                        }
                         None => work.remaining(budget).map_err(|error| (error.into(), *work))?,
                     };
                     #[cfg(target_arch = "wasm32")]
@@ -1151,179 +1204,222 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         record: &crate::DurableCommit,
         maximum_bytes: u64,
         maximum_objects: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Option<crate::kernel::HistoricalGenerationEvidence>> {
-        self.inner.historical_generation_evidence(
-            authority_id, record, maximum_bytes, maximum_objects, budget, cancellation,
-        ).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn decoded_cache_get_with_native_work(
-        &self, key: DecodedCacheKey, work: &NativeMaterializationWork,
-    ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
-        work.remaining()?;
-        self.decoded_get(key)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn decoded_cache_admit_with_native_work(
-        &self, key: DecodedCacheKey, value: DecodedCacheValue, work: &NativeMaterializationWork,
-    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        work.remaining()?;
-        // The caller's decoded Arc already owns its original physical guard.
-        self.decoded_admit(key, value)
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<Option<crate::kernel::HistoricalGenerationEvidence>, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (
+                    authority_id,
+                    record,
+                    maximum_bytes,
+                    maximum_objects,
+                    budget,
+                    cancellation,
+                );
+                let mut __object_work = crate::AuthorityWork::new(__object_args.4, __object_args.5);
+                let __object_result = self
+                    .inner
+                    .historical_generation_evidence(
+                        __object_args.0,
+                        __object_args.1,
+                        __object_args.2,
+                        __object_args.3,
+                        &mut __object_work,
+                    )
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn put(
         &self,
         object_id: ObjectId,
         bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let retained = bytes.clone();
-        let receipt = self
-            .inner
-            .put(object_id, bytes, budget, cancellation)
-            .await?;
-        self.insert(object_id, retained)
-            .map_err(|error| ObjectFailure::new(error, receipt.work))?;
-        Ok(receipt)
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                cancellation
+                    .check()
+                    .map_err(|_| ObjectStoreError::Cancelled)?;
+                work.admit(WorkCounters::UNCHARGED)?;
+                let retained = bytes.clone();
+                {
+                    let __object_args = (object_id, bytes, work, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                    let __object_result = self
+                        .inner
+                        .put(__object_args.0, __object_args.1, &mut __object_work)
+                        .await;
+                    __object_result
+                }?;
+                // Resident aliases keep the original intrinsic physical byte owner.
+                // Tree node implementation footprint is deliberately opaque.
+                self.insert(object_id, retained)?;
+                Ok(())
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            let retained = bytes.clone();
+            let receipt = {
+                let __object_args = (object_id, bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = self
+                    .inner
+                    .put(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }?;
+            self.insert(object_id, retained)
+                .map_err(|error| ObjectFailure::new(error, receipt.work))?;
+            Ok(receipt)
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn put_hashed(
-        &self, object: crate::storage::HashedObject, budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        cancellation.check().map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        &self, object: crate::storage::HashedObject,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                cancellation
+                    .check()
+                    .map_err(|_| ObjectStoreError::Cancelled)?;
+                work.admit(WorkCounters::UNCHARGED)?;
+                let object_id = object.object_id();
+                let retained = object.bytes().clone();
+                {
+                    let __object_args = (object, work, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .inner
+                        .put_hashed(__object_args.0, &mut __object_work)
+                        .await;
+                    __object_result
+                }?;
+                self.insert(object_id, retained)?;
+                Ok(())
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            cancellation
+                .check().map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
         let object_id = object.object_id();
         let retained = object.bytes().clone();
-        let receipt = self.inner.put_hashed(object, budget, cancellation).await?;
+        let receipt = {
+                let __object_args = (object, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .put_hashed(__object_args.0, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }?;
         self.insert(object_id, retained).map_err(|error| ObjectFailure::new(error, receipt.work))?;
         Ok(receipt)
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn flush_before_publish(
-        &self, scope: crate::async_storage::PublicationScope<'_>, budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<crate::PublicationHold> {
-        self.inner.flush_before_publish(scope, budget, cancellation).await
+        &self, scope: crate::async_storage::PublicationScope<'_>,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::PublicationHold, crate::ObjectStoreError> {
+        self.inner.flush_before_publish(scope, context).await
     }
 
     async fn put_many(
         &self,
         writes: &[ObjectWrite],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let receipt = self.inner.put_many(writes, budget, cancellation).await?;
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                cancellation
+                    .check()
+            .map_err(|_| ObjectStoreError::Cancelled)?;
+                work.admit(WorkCounters::UNCHARGED)?;
+                {
+                    let __object_args = (writes, work, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .inner
+                        .put_many(__object_args.0, &mut __object_work)
+                        .await;
+                    __object_result
+                }?;
         for write in writes {
-            self.insert(write.object_id, write.bytes.clone())
+            self.insert(write.object_id, write.bytes.clone())?; }
+                Ok(())
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            let receipt = {
+                let __object_args = (writes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .put_many(__object_args.0, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }?;
+        for write in writes { self.insert(write.object_id, write.bytes.clone())
                 .map_err(|error| ObjectFailure::new(error, receipt.work))?;
         }
-        Ok(receipt)
+            Ok(receipt)
+        }
+        .await;
+        context.accept(result)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn put_with_native_work(
-        &self, object_id: ObjectId, bytes: OwnedBytes, work: &NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
-        work.admit(WorkCounters::UNCHARGED)?;
-        let retained = bytes.clone();
-        self.inner.put_with_native_work(object_id, bytes, work, cancellation).await?;
-        // Resident aliases keep the original intrinsic physical byte owner.
-        // Tree node implementation footprint is deliberately opaque.
-        self.insert(object_id, retained)?;
-        Ok(())
-    }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn put_hashed_with_native_work(
-        &self, object: crate::storage::HashedObject, work: &NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
-        work.admit(WorkCounters::UNCHARGED)?;
-        let object_id = object.object_id();
-        let retained = object.bytes().clone();
-        self.inner.put_hashed_with_native_work(object, work, cancellation).await?;
-        self.insert(object_id, retained)?;
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn put_many_with_native_work(
-        &self, writes: &[ObjectWrite], work: &NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
-        work.admit(WorkCounters::UNCHARGED)?;
-        self.inner.put_many_with_native_work(writes, work, cancellation).await?;
-        for write in writes { self.insert(write.object_id, write.bytes.clone())?; }
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn flush_before_publish_with_native_work(
-        &self, scope: crate::async_storage::PublicationScope<'_>, work: &NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<crate::PublicationHold, ObjectStoreError> {
-        self.inner.flush_before_publish_with_native_work(scope, work, cancellation).await
-    }
-
-    async fn prepare_generation_publication(
-        &self, request: &crate::kernel::PublishGenerationRequest,
-        proof: &crate::kernel::GenerationProof, append: &crate::GuardedAppend,
-        scope: crate::PublicationScope<'_>, budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        self.inner.prepare_generation_publication(
-            request, proof, append, scope, budget, cancellation,
-        ).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn prepare_generation_publication_with_native_work(
-        &self, request: &crate::kernel::PublishGenerationRequest,
-        proof: &crate::kernel::GenerationProof, append: &crate::GuardedAppend,
-        scope: crate::PublicationScope<'_>, original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        self.inner.prepare_generation_publication_with_native_work(
-            request, proof, append, scope, original, cancellation,
-        ).await
-    }
 
     async fn read(
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
-        self.read_engine(object_id, maximum_bytes, budget, cancellation,
-            #[cfg(not(target_arch = "wasm32"))] None,
-        ).await.map_err(|(error, work)| ObjectFailure::new(error, work))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn read_with_native_work(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        work: &NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<ObjectRead, ObjectStoreError> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
         let mut read = self.read_engine(object_id, maximum_bytes, work.remaining()?, cancellation, Some(work))
             .await.map_err(|(error, _)| error)?.value;
         // Genuine native backend bytes have intrinsic canonical OwnedBytes custody;
@@ -1331,41 +1427,68 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         read.retention = ObjectReadRetention::Shared;
         Ok(read)
     }
+            .await;
+        }
+        let budget = context.read_budget()?;
+        let cancellation = context.cancellation;
+        let result = async {
+        self.read_engine(object_id, maximum_bytes, budget, cancellation,
+            #[cfg(not(target_arch = "wasm32"))] None,
+        ).await.map_err(|(error, work)| ObjectFailure::new(error, work))
+    }
+        .await;
+        context.accept(result)
+    }
 
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                let receipt = self
+                    .read_many_engine(requests, work.remaining()?, cancellation, Some(work)).await.map_err(|(error, _)| error)?;
+                let BatchBuffer { values, allocation } = receipt.value;
+                match allocation {
+                    Some(KernelOwnedAllocation::NativeOriginal(allocation)) => {
+                        crate::async_storage::native_read_batch(values, allocation)
+                    }
+                    _ => {
+                drop(values);
+                Err(ObjectStoreError::Corrupt)
+            }
+                }
+            }
+            .await
+            .map(|(values, allocation)| (values, Some(allocation)));
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         self.read_many_engine(requests, budget, cancellation,
             #[cfg(not(target_arch = "wasm32"))] None,
         ).await.map(|receipt| crate::OperationReceipt { value: receipt.value.values, work: receipt.work })
             .map_err(|(error, work)| ObjectFailure::new(error, work))
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn read_many_with_native_work(
-        &self, requests: &[ObjectReadRequest], work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
-        let receipt = self.read_many_engine(requests, work.remaining()?, cancellation, Some(work))
-            .await.map_err(|(error, _)| error)?;
-        let BatchBuffer { values, allocation } = receipt.value;
-        match allocation {
-            Some(KernelOwnedAllocation::NativeOriginal(allocation)) => crate::async_storage::native_read_batch(values, allocation),
-            _ => {
-                drop(values);
-                Err(ObjectStoreError::Corrupt)
-            }
-        }
+        .await;
+        context.accept(result).map(|values| (values, None))
     }
 
     async fn contains(
         &self,
         object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
@@ -1382,26 +1505,34 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
                 work: prior,
             });
         }
-        let receipt = self
-            .inner
-            .contains(
-                object_id,
-                prior
-                    .remaining(budget)
-                    .map_err(|error| ObjectFailure::new(error.into(), prior))?,
-                cancellation,
-            )
-            .await
+        let receipt = {
+                let __object_args = (
+                    object_id,
+                    prior
+                        .remaining(budget)
+                        .map_err(|error| ObjectFailure::new(error.into(), prior))?,
+                    cancellation,
+                );
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .contains(__object_args.0, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
             .map_err(|failure| combine_failure(prior, failure))?;
-        Ok(crate::OperationReceipt {
+            Ok(crate::OperationReceipt {
             value: receipt.value,
             work: prior
                 .checked_add(receipt.work)
-                .map_err(|error| ObjectFailure::new(error.into(), prior))?,
+                    .map_err(|error| ObjectFailure::new(error.into(), prior))?,
         })
+        }
+        .await;
+        context.accept(result)
     }
 }
 
 #[cfg(all(test, feature = "memory"))]
-#[path = "tests/cache.rs"]
+#[path = "tests/cache/mod.rs"]
 mod tests;

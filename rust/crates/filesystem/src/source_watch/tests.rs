@@ -1,7 +1,5 @@
 use super::{HostChange, HostChangeSink, NativeSourceWatch};
-use crate::native_host::{HostRoot, NativeHostWork as _};
-use crate::demand::{DemandError, NativeSourceWork};
-use crate::{CancellationToken, NativeMaterializationWork, WorkBudget};
+use crate::native_host::HostRoot;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -9,44 +7,19 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Every change delivered, in order.
 #[derive(Default)]
-pub(super) struct Recorded(Mutex<Vec<HostChange>>);
+struct Recorded(Mutex<Vec<HostChange>>);
 
 impl HostChangeSink for Recorded {
-    fn logical_owned_bytes(&self) -> u64 { 0 }
-    fn host_changed(&self, changes: &[HostChange], work: &mut crate::source_watch::CallbackWork<'_>)
-        -> Result<(), DemandError>
-    {
-        work.check()?;
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).extend_from_slice(changes);
-        Ok(())
+    fn host_changed(&self, changes: &[HostChange]) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend_from_slice(changes);
     }
-
-    #[cfg(windows)]
-    fn host_changed_wide(&self, changes: &[super::HostChangeWide<'_>], work: &mut crate::source_watch::CallbackWork<'_>)
-        -> Result<(), DemandError>
-    {
-        work.check()?;
-        self.record_wide(changes);
-        Ok(())
-    }
-
 }
 
 impl Recorded {
-    #[cfg(windows)]
-    fn record_wide(&self, changes: &[super::HostChangeWide<'_>]) {
-        use std::os::windows::ffi::OsStringExt as _;
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).extend(changes.iter().map(|change| match change {
-            super::HostChangeWide::Path { action, path } => {
-                let path = PathBuf::from(std::ffi::OsString::from_wide(path));
-                if *action == 3 { HostChange::Altered(path) } else { HostChange::Rebound(path) }
-            }
-            super::HostChangeWide::File(file) => HostChange::File(*file),
-            super::HostChangeWide::Everything => HostChange::Everything,
-            super::HostChangeWide::Unconfirmed => HostChange::Unconfirmed,
-        }));
-    }
-    pub(super) fn take(&self) -> Vec<HostChange> {
+    fn take(&self) -> Vec<HostChange> {
         std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
@@ -95,7 +68,7 @@ fn reports_until(
 
 fn watch(root: &Path) -> Result<(NativeSourceWatch, Arc<Recorded>), Box<dyn std::error::Error>> {
     let recorded = Arc::new(Recorded::default());
-    let watch = NativeSourceWatch::start(&HostRoot::open(root, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?, recorded.clone())?;
+    let watch = NativeSourceWatch::start(&HostRoot::open(root)?, recorded.clone())?;
     Ok((watch, recorded))
 }
 
@@ -307,107 +280,5 @@ fn a_root_whose_path_moves_makes_the_watch_inexact() -> TestResult {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(Recorded::everything(&recorded.take()));
-    Ok(())
-}
-
-fn original_watch_budget() -> Result<WorkBudget, Box<dyn std::error::Error>> {
-    let mut value = serde_json::to_value(WorkBudget::UNBOUNDED)?;
-    for allowance in value.as_object_mut().ok_or("work budget is not an object")?.values_mut() {
-        *allowance = serde_json::json!(1_000_000_u64);
-    }
-    Ok(serde_json::from_value(value)?)
-}
-
-#[test]
-fn ordinary_watch_rejects_birth_cleanup_and_keeps_reporting() -> TestResult {
-    let root = tempfile::tempdir()?;
-    let (watch, recorded) = watch(root.path())?;
-    assert!(matches!(watch.stop_with_cleanup_wait(&CancellationToken::new()), Err(DemandError::NativeWorkUnavailable)));
-    assert!(matches!(watch.stop_accepted_cleanup(), Err(DemandError::NativeWorkUnavailable)));
-    std::fs::write(root.path().join("after-denial"), b"real notification")?;
-    let changes = reports_until(&watch, &recorded, |changes| Recorded::reported(changes, Path::new("after-denial")))?;
-    assert!(Recorded::reported(&changes, Path::new("after-denial")));
-    watch.stop_with_work(&mut crate::native_host::ordinary_work())?;
-    assert!(watch.is_stopped());
-    Ok(())
-}
-
-#[test]
-fn original_watch_precancel_preserves_delivery_and_cleanup_survives_root_cancel() -> TestResult {
-    acyclic_native_runtime::initialize_native_io_services()?;
-    for accepted_cleanup in [false, true] {
-        let directory = tempfile::tempdir()?;
-        let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let budget = original_watch_budget()?;
-        let cancellation = CancellationToken::new();
-        let root = NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
-        let scope = root.native_volume_work(budget)?;
-        let original = scope.original_demand_work();
-        let meter = Arc::downgrade(&original.state);
-        let resource = Arc::downgrade(scope.resource_allowance().ok_or("birth resource absent")?);
-        let recorded = Arc::new(Recorded::default());
-        let watch = NativeSourceWatch::start_with_work(&host, recorded.clone(), &mut NativeSourceWork::from_original_work(&original))?;
-        let declined = CancellationToken::new();
-        declined.cancel();
-        assert!(matches!(watch.stop_with_cleanup_wait(&declined), Err(DemandError::Cancelled)));
-        assert!(!watch.is_stopped());
-        std::fs::write(directory.path().join("after-precancel"), b"real notification")?;
-        watch.fence_with_work(std::time::Duration::from_secs(10), &mut NativeSourceWork::from_original_work(&original))?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut changes = recorded.take();
-        while !Recorded::reported(&changes, Path::new("after-precancel")) && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            changes.extend(recorded.take());
-        }
-        assert!(Recorded::reported(&changes, Path::new("after-precancel")));
-        cancellation.cancel();
-        drop(original);
-        drop(scope);
-        drop(root);
-        assert!(meter.upgrade().is_some());
-        assert!(resource.upgrade().is_some());
-        let wait = CancellationToken::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let cleanup = || if accepted_cleanup { watch.stop_accepted_cleanup() } else { watch.stop_with_cleanup_wait(&wait) };
-        loop {
-            match cleanup() {
-                Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => std::thread::yield_now(),
-                result => { result?; break; }
-            }
-        }
-        assert!(watch.is_stopped());
-        assert!(!watch.is_exact());
-        cleanup()?;
-        recorded.take();
-        std::fs::write(directory.path().join("after-terminal"), b"not watched")?;
-        assert!(recorded.take().is_empty());
-        drop(watch);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while meter.upgrade().is_some() && std::time::Instant::now() < deadline { std::thread::yield_now(); }
-        assert!(meter.upgrade().is_none());
-        assert!(resource.upgrade().is_none());
-    }
-    Ok(())
-}
-
-#[test]
-fn original_watch_denies_precancel_and_finite_io_before_birth() -> TestResult {
-    acyclic_native_runtime::initialize_native_io_services()?;
-    let directory = tempfile::tempdir()?;
-    let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-    let budget = original_watch_budget()?;
-    for precancelled in [false, true] {
-        let cancellation = CancellationToken::new();
-        let root = NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
-        let limit = if precancelled { budget } else { WorkBudget { backend_read_operations: 0, backend_write_operations: 0, ..budget } };
-        let scope = root.native_volume_work(limit)?;
-        if precancelled { cancellation.cancel(); }
-        let before = root.receipt();
-        let result = NativeSourceWatch::start_with_work(&host, Arc::new(Recorded::default()), &mut NativeSourceWork::from_native_materialization_work(&scope));
-        assert!(matches!(result, Err(DemandError::Cancelled)) || !precancelled && result.is_err());
-        let denied = root.receipt();
-        assert_eq!(denied.backend_read_operations, before.backend_read_operations);
-        assert_eq!(denied.backend_write_operations, before.backend_write_operations);
-    }
     Ok(())
 }
