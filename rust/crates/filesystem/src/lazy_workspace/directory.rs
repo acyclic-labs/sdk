@@ -1,4 +1,7 @@
 use super::*;
+use crate::demand::SourceDirectoryPage;
+use crate::kernel::{KernelAccounting, Owned, allocation::KernelOwnedAllocation};
+use std::ops::Bound;
 
 /// Sparse seek target for a lazily sourced regular file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -16,705 +19,556 @@ pub struct LazyDirectoryEntry {
     pub name: LogicalName,
     /// Observed or authored kind.
     pub kind: SourceNodeKind,
-    /// Whether the authored checkout overrides the source.
+    /// Whether the authored checkout supplies the name.
     pub authored: bool,
-    /// The source node observed while listing, for entries the source supplies.
+    /// Source fact captured by this listing.
     pub source: Option<SourceNode>,
-    /// Whether the overlay records no fact for the entry, which the listing
-    /// proved of its whole directory: the listed node is then its node.
+    /// Whether the observation index contains no child fact.
     pub unobserved: bool,
 }
 
-/// Opaque bounded continuation for a merged source/authored directory scan.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LazyDirectoryCursor {
-    pub(super) source: SourceReference,
-    pub(super) overlay: LazyOverlayId,
-    pub(super) directory: NamespacePath,
-    pub(super) phase: LazyDirectoryPhase,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum LazyDirectoryPhase {
-    Source(Option<SourceCursor>),
-    Authored(Option<LogicalName>),
-}
-
-/// One bounded page from the merged lazy directory view.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// One bounded merged directory page.
+#[derive(Debug, Eq, PartialEq)]
 pub struct LazyDirectoryPage {
     /// At most the requested number of visible entries.
     pub entries: Vec<LazyDirectoryEntry>,
-    /// Opaque continuation, absent after the authored phase is exhausted.
+    /// Continuation, absent after the authored phase is exhausted.
     pub next: Option<LazyDirectoryCursor>,
 }
 
-
-impl<A, O, D, S> LazyWorkspace<A, O, D, S>
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-    D: DemandSource + 'static,
-    S: LazyWorkspaceStore,
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
+    LazyWorkspace<A, O, D, S>
 {
-
-
-    /// Returns one bounded page combining unresolved source entries with the
-    /// authored overlay. Source-native order is followed by authored order;
-    /// authored entries replace same-name source entries and tombstones hide
-    /// source entries without forcing unrelated subtrees.
+    /// Reads the current merged directory under the supplied accounting context.
     pub async fn list_directory(
         &self,
         path: &str,
         cursor: Option<LazyDirectoryCursor>,
-        maximum_entries: u32,
-    ) -> Result<LazyDirectoryPage, LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.list_directory_measured(
-            path,
-            cursor,
-            maximum_entries,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            None,
-            None,
-        )
-        .await
-        .map(|receipt| receipt.value)
+        maximum: u32,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(LazyDirectoryPage, KernelOwnedAllocation), LazyWorkspaceError> {
+        let state = self.state(accounting).await?;
+        let mut checkout = self
+            .checkout(crate::model::GenerationSelector::Head, accounting)
+            .await?;
+        let result = self
+            .list_directory_at(
+                &state,
+                &mut checkout.value,
+                path,
+                cursor,
+                maximum,
+                None,
+                accounting,
+            )
+            .await;
+        checkout.retire(accounting)?;
+        result.map(|(page, _, allocation)| (page, allocation))
     }
 
-    /// Reads the same merged sparse directory against an unpublished mounted
-    /// checkout candidate instead of the workspace's last committed head.
+    /// Reads the merged directory against an unpublished mounted checkout.
     #[cfg(feature = "native-mount")]
-    ///
-    /// Returns the state the page was listed against, so callers resolve its
-    /// entries with [`Self::inspect_unauthored`] from the same snapshot.
     pub(crate) async fn list_directory_in_checkout(
         &self,
         checkout: &mut crate::Checkout<A, O>,
         path: &str,
         cursor: Option<LazyDirectoryCursor>,
-        maximum_entries: u32,
-        mounted_mask: Option<(&[String], bool)>,
-    ) -> Result<(LazyDirectoryPage, LazyWorkspaceState), LazyWorkspaceError> {
-        in_heap(move || async move {
-            let cancellation = CancellationToken::new();
-            let state = { self.state().await? };
-            let page = self
-                .list_directory_at(
-                    &state,
-                    WorkCounters::default(),
-                    path,
-                    cursor,
-                    maximum_entries,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                    Some(checkout),
-                    mounted_mask,
-                )
-                .await?;
-            Ok((page.value, state))
-        })
-        .await
+        maximum: u32,
+        mask: Option<(&[String], bool)>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(LazyDirectoryPage, LazyWorkspaceState, KernelOwnedAllocation), LazyWorkspaceError>
+    {
+        let state = self.state(accounting).await?;
+        let (page, _, allocation) = self
+            .list_directory_at(&state, checkout, path, cursor, maximum, mask, accounting)
+            .await?;
+        Ok((page, state, allocation))
     }
 
-    /// A mounted replacement must not inherit entries from an unrelated
-    /// source directory at the same path.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "compares one mounted directory against its source with the shared checkout, work counters, budget, and cancellation"
-    )]
-    async fn mounted_directory_replaces_source(
-        &self,
-        path: &str,
-        directory: &NamespacePath,
-        source: SourceReference,
-        overlay: LazyOverlayId,
-        checkout: &mut crate::Checkout<A, O>,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<MountedDirectory, LazyWorkspaceError> {
-        in_heap(move || async move {
-            let candidate = checkout
-                .lookup_no_follow(directory, remaining_work(*work, budget)?, cancellation)
-                .await
-                .map_err(|failure| LazyWorkspaceError::Workspace(failure.error.to_string()))?;
-            *work = account_work(*work, candidate.work, budget)?;
-            let tombstoned = self
-                .tombstoned_measured(overlay, path, remaining_work(*work, budget)?, cancellation)
-                .await?;
-            *work = account_work(*work, tombstoned.work, budget)?;
-            let replaces_source = match candidate.value.record {
-                None if tombstoned.value => return Err(LazyWorkspaceError::NotFound),
-                Some(_) if tombstoned.value => true,
-                Some(record) => {
-                    let source = self
-                        .source
-                        .lookup(source, directory, cancellation)
-                        .await
-                        .map_err(|failure| failure.error)?;
-                    *work = account_work(*work, source.work, budget)?;
-                    match source.value {
-                        None => true,
-                        Some(node) if self.source_file_id(&node) == record.file_id => false,
-                        // A directory the workspace already held merges with
-                        // the source's: once published, only a tombstone
-                        // replaces a source directory. One the checkout made
-                        // since replaces an unrelated one at its path.
-                        Some(_) => {
-                            let head = self
-                                .workspace
-                                .head_measured(remaining_work(*work, budget)?, cancellation)
-                                .await
-                                .map_err(workspace_error)?;
-                            *work = account_work(*work, head.work, budget)?;
-                            let committed = head
-                                .value
-                                .lookup_paths(
-                                    std::slice::from_ref(directory),
-                                    remaining_work(*work, budget)?,
-                                    cancellation,
-                                )
-                                .await
-                                .map_err(|failure| {
-                                    LazyWorkspaceError::Workspace(failure.error.to_string())
-                                })?;
-                            *work = account_work(*work, committed.work, budget)?;
-                            committed
-                                .value
-                                .first()
-                                .copied()
-                                .flatten()
-                                .is_none_or(|committed| committed.file_id != record.file_id)
-                        }
-                    }
-                }
-                None => false,
-            };
-            Ok(MountedDirectory {
-                replaces_source,
-                authored: candidate.value.record.is_some(),
-            })
-        })
-        .await
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the page request plus the optional mounted checkout and mask to list_directory_at"
-    )]
-    async fn list_directory_measured(
-        &self,
-        path: &str,
-        cursor: Option<LazyDirectoryCursor>,
-        maximum_entries: u32,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        mounted: Option<&mut crate::Checkout<A, O>>,
-        mounted_mask: Option<(&[String], bool)>,
-    ) -> Result<OperationReceipt<LazyDirectoryPage>, LazyWorkspaceError> {
-        let state = self.state_measured(budget, cancellation).await?;
-        self.list_directory_at(
-            &state.value,
-            state.work,
-            path,
-            cursor,
-            maximum_entries,
-            budget,
-            cancellation,
-            mounted,
-            mounted_mask,
-        )
-        .await
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        clippy::too_many_arguments,
-        reason = "one page merges overlay, source, and mounted entries in name order under a single budget"
-    )]
-    async fn list_directory_at(
+    pub(crate) async fn list_directory_at(
         &self,
         state: &LazyWorkspaceState,
-        mut work: WorkCounters,
+        checkout: &mut crate::Checkout<A, O>,
         path: &str,
         cursor: Option<LazyDirectoryCursor>,
-        maximum_entries: u32,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        mut mounted: Option<&mut crate::Checkout<A, O>>,
-        mounted_mask: Option<(&[String], bool)>,
-    ) -> Result<OperationReceipt<LazyDirectoryPage>, LazyWorkspaceError> {
-        in_heap(move || async move {
-            if maximum_entries == 0 {
-                return Err(LazyWorkspaceError::InvalidPageBound);
+        maximum: u32,
+        mask: Option<(&[String], bool)>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(LazyDirectoryPage, bool, KernelOwnedAllocation), LazyWorkspaceError> {
+        if maximum == 0 {
+            return Err(LazyWorkspaceError::InvalidPageBound);
+        }
+        let directory = self.namespace_path(path, accounting)?;
+        accounting.charge(WorkCounters {
+            bytes_hashed: LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let cut = LazySnapshotRef::new(
+            self.workspace.id(),
+            checkout.generation_id(),
+            state.source,
+            state.overlay,
+            state.shadows,
+        );
+        let mut prior = None;
+        let mut phase = LazyDirectoryPhase::Source(None);
+        if let Some(cursor) = cursor {
+            if cursor.cut != cut || cursor.directory != directory.value {
+                cursor.retire(accounting)?;
+                directory.retire(accounting)?;
+                return Err(LazyWorkspaceError::StaleCursor);
             }
-            let directory = self.namespace_path(path)?;
-            let mut phase = match cursor {
-                Some(cursor)
-                    if cursor.source == state.source
-                        && cursor.overlay == state.overlay
-                        && cursor.directory == directory =>
-                {
-                    cursor.phase
+            let bytes = cursor.retained_bytes()?;
+            phase = cursor.phase;
+            prior = Some(Owned::new(cursor.directory, cursor.allocation, bytes));
+        }
+        let result = self
+            .list_directory_phase(
+                state, checkout, path, directory, cut, phase, maximum, mask, accounting,
+            )
+            .await;
+        if let Some(prior) = prior {
+            prior.retire(accounting)?;
+        }
+        result
+    }
+
+    async fn list_directory_phase(
+        &self,
+        state: &LazyWorkspaceState,
+        checkout: &mut crate::Checkout<A, O>,
+        path: &str,
+        directory: Owned<NamespacePath>,
+        cut: LazySnapshotRef,
+        mut phase: LazyDirectoryPhase,
+        maximum: u32,
+        mask: Option<(&[String], bool)>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(LazyDirectoryPage, bool, KernelOwnedAllocation), LazyWorkspaceError> {
+        let mut source_used = false;
+        let cancellation = cancellation(accounting);
+        let authored = checkout
+            .lookup_no_follow_with_metadata_with_accounting(
+                &directory.value,
+                accounting,
+                cancellation,
+            )
+            .await?;
+        if authored
+            .as_ref()
+            .is_some_and(|entry| entry.record.kind != FileKind::Directory)
+        {
+            directory.retire(accounting)?;
+            return Err(LazyWorkspaceError::NotDirectory);
+        }
+        let directory_authored = authored.is_some();
+        let hidden = self.tombstoned(state.overlay, path, accounting).await?;
+        if hidden && !directory_authored {
+            directory.retire(accounting)?;
+            return Err(LazyWorkspaceError::NotFound);
+        }
+        if matches!(phase, LazyDirectoryPhase::Source(None))
+            && (hidden || mask.is_some_and(|(_, opaque)| opaque))
+        {
+            phase = LazyDirectoryPhase::Authored(None);
+        }
+        if matches!(phase, LazyDirectoryPhase::Source(None))
+            && !directory.value.is_root()
+            && let Some(authored) = authored
+        {
+            source_used = true;
+            let source = self.source_lookup(state.source, path, accounting).await?;
+            let replaces = match source {
+                None => true,
+                Some(node) => {
+                    self.source_file_id(&node.file_identity, accounting)? != authored.record.file_id
                 }
-                Some(_) => return Err(LazyWorkspaceError::StaleCursor),
-                None => LazyDirectoryPhase::Source(None),
             };
-            if mounted_mask.is_some_and(|(_, opaque)| opaque)
-                && matches!(phase, LazyDirectoryPhase::Source(None))
-            {
-                phase = LazyDirectoryPhase::Authored(None);
-            }
-            // Whether the checkout holds the directory: a child can be
-            // authored only in a directory that is.
-            let mut directory_authored = None;
-            if matches!(phase, LazyDirectoryPhase::Source(None))
-                && !directory.is_root()
-                && let Some(checkout) = mounted.as_deref_mut()
-            {
-                let mounted_directory = self
-                    .mounted_directory_replaces_source(
-                        path,
-                        &directory,
-                        state.source,
-                        state.overlay,
-                        checkout,
-                        &mut work,
-                        budget,
+            if replaces {
+                let mut committed = self
+                    .checkout(crate::model::GenerationSelector::Head, accounting)
+                    .await?;
+                let record = committed
+                    .value
+                    .lookup_no_follow_with_metadata_with_accounting(
+                        &directory.value,
+                        accounting,
                         cancellation,
                     )
-                    .await?;
-                directory_authored = Some(mounted_directory.authored);
-                if mounted_directory.replaces_source {
+                    .await;
+                committed.retire(accounting)?;
+                if record?.is_none_or(|record| record.record.file_id != authored.record.file_id) {
                     phase = LazyDirectoryPhase::Authored(None);
                 }
             }
-            let mut source_absent = false;
-            loop {
-                match phase {
-                    LazyDirectoryPhase::Source(source_cursor) => {
-                        let receipt = match self
-                            .source
-                            .list_page(
-                                state.source,
-                                &directory,
-                                source_cursor,
-                                maximum_entries,
-                                cancellation,
+        }
+        let mut source_absent = false;
+        loop {
+            match phase {
+                LazyDirectoryPhase::Source(source_cursor) => {
+                    source_used = true;
+                    if state.source != self.source.reference() {
+                        directory.retire(accounting)?;
+                        return Err(LazyWorkspaceError::StaleSource);
+                    }
+                    let bytes = std::mem::size_of::<LazyWorkspaceError>() as u64;
+                    let cleanup_allocation = accounting.claim_owned(bytes, 1)?;
+                    let cleanup_slot = Box::<LazyWorkspaceError>::new_uninit();
+                    let answer = {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(original) = accounting.native_work() {
+                            self.source
+                                .list_page(
+                                    state.source,
+                                    &directory.value,
+                                    source_cursor,
+                                    maximum,
+                                    original,
+                                    cancellation,
+                                )
+                                .await
+                                .map_err(LazyWorkspaceError::from)
+                        } else {
+                            accept_receipt(
+                                self.source
+                                    .list_page(
+                                        state.source,
+                                        &directory.value,
+                                        source_cursor,
+                                        maximum,
+                                        accounting.remaining()?,
+                                        cancellation,
+                                    )
+                                    .await,
+                                accounting,
+                            )
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            accept_receipt(
+                                self.source
+                                    .list_page(
+                                        state.source,
+                                        &directory.value,
+                                        source_cursor,
+                                        maximum,
+                                        accounting.remaining()?,
+                                        cancellation,
+                                    )
+                                    .await,
+                                accounting,
+                            )
+                        }
+                    };
+                    let mut page = match answer {
+                        Ok(page) => page,
+                        Err(LazyWorkspaceError::Demand(
+                            DemandError::Absent | DemandError::NotDirectory,
+                        )) => {
+                            drop(cleanup_slot);
+                            crate::kernel::retire_allocation(
+                                cleanup_allocation,
+                                bytes,
+                                accounting,
+                            )?;
+                            source_absent = true;
+                            phase = LazyDirectoryPhase::Authored(None);
+                            continue;
+                        }
+                        Err(error) => {
+                            drop(cleanup_slot);
+                            crate::kernel::retire_allocation(
+                                cleanup_allocation,
+                                bytes,
+                                accounting,
+                            )?;
+                            directory.retire(accounting)?;
+                            return Err(error);
+                        }
+                    };
+                    let retained = page.retained_bytes();
+                    let mut source_allocation = accounting.claim_owned(0, 0)?;
+                    let admitted = if accounting.standalone_parts().is_some() {
+                        let (claim, admitted) = accounting.record_actual_owned(retained)?;
+                        source_allocation = claim;
+                        admitted.map_err(LazyWorkspaceError::from)
+                    } else {
+                        Ok(())
+                    };
+                    let projection = match admitted {
+                        Ok(()) => {
+                            self.project_source_page(
+                                state,
+                                checkout,
+                                &directory.value,
+                                &page,
+                                maximum,
+                                mask,
+                                accounting,
                             )
                             .await
-                        {
-                            Ok(receipt) => receipt,
-                            // A directory only the authored generation holds
-                            // (one a fork created) has no source entries; the
-                            // authored phase lists it, or reports it absent.
-                            Err(failure)
-                                if matches!(
-                                    failure.error,
-                                    DemandError::Absent | DemandError::NotDirectory
-                                ) =>
-                            {
-                                work = account_work(work, *failure.work, budget)?;
-                                source_absent = true;
-                                phase = LazyDirectoryPhase::Authored(None);
-                                continue;
-                            }
-                            Err(failure) => return Err(failure.error.into()),
-                        };
-                        work = account_work(work, receipt.work, budget)?;
-                        let page = receipt.value;
-                        if page.entries.len()
-                            > usize::try_from(maximum_entries).unwrap_or(usize::MAX)
-                        {
-                            return Err(LazyWorkspaceError::Work(
-                                "source directory page exceeded its requested bound".to_owned(),
-                            ));
                         }
-                        let temporary_bytes = retained_directory_page_bytes(
-                            page.entries.capacity(),
-                            std::mem::size_of::<SourceDirectoryEntry>(),
-                            page.entries.iter().map(|entry| entry.name.retained_bytes()),
-                        )?;
-                        let mut entries = Vec::new();
-                        let projection_bytes = reserve_lazy_directory_page(
-                            &mut entries,
-                            page.entries.len(),
-                            temporary_bytes,
-                            &mut work,
-                            budget,
-                        )?;
-                        // A source page shares one authored generation. Resolve its
-                        // candidate children together so the authenticated directory
-                        // and file-table frontier is not rebuilt once per entry.
-                        let count = page.entries.len();
-                        let child_storage = count
-                            .checked_mul(
-                                std::mem::size_of::<NamespacePath>()
-                                    + std::mem::size_of::<(bool, Option<usize>)>()
-                                    + 1
-                                    + (directory.components().len() + 1)
-                                        * std::mem::size_of::<LogicalName>(),
-                            )
-                            .and_then(|total| {
-                                page.entries.iter().try_fold(total, |sum, entry| {
-                                    // Portable-to-native transcoding can expand a
-                                    // name (notably UTF-8 to Windows UTF-16).
-                                    sum.checked_add(entry.name.retained_bytes().saturating_mul(4))
-                                })
-                            })
-                            .and_then(|total| {
-                                total
-                                    .checked_add(count.saturating_mul(path.len().saturating_mul(4)))
-                            })
-                            .and_then(|bytes| u64::try_from(bytes).ok())
-                            .ok_or_else(|| {
-                                LazyWorkspaceError::Work("counter overflow".to_owned())
-                            })?;
-                        let live_bytes =
-                            projection_bytes.checked_add(child_storage).ok_or_else(|| {
-                                LazyWorkspaceError::Work("counter overflow".to_owned())
-                            })?;
-                        work.peak_allocation_bytes = work.peak_allocation_bytes.max(live_bytes);
-                        work.verify(budget)?;
-                        let mut source_paths = Vec::new();
-                        let mut slots = Vec::new();
-                        source_paths.try_reserve_exact(count).map_err(|_| {
-                            LazyWorkspaceError::Work(
-                                "source page lookup allocation failed".to_owned(),
-                            )
-                        })?;
-                        slots.try_reserve_exact(count).map_err(|_| {
-                            LazyWorkspaceError::Work(
-                                "source page lookup allocation failed".to_owned(),
-                            )
-                        })?;
-                        let limits = self.workspace.limits();
-                        // A child is hidden when it or an ancestor is a
-                        // tombstone; the ancestors are this page's directory
-                        // and its own, so they are read once for the page.
-                        let directory_tombstoned = self
-                            .tombstoned_measured(
-                                state.overlay,
-                                path,
-                                remaining_work(work, budget)?,
-                                cancellation,
-                            )
-                            .await?;
-                        work = account_nested_with_live_memory(
-                            work,
-                            directory_tombstoned.work,
-                            live_bytes,
-                            budget,
-                        )?;
-                        // A child's own fact is read only when the overlay
-                        // records anything beneath the directory at all.
-                        let facts_beneath = self
-                            .overlay_has_beneath(
-                                state.overlay,
-                                path,
-                                remaining_work(work, budget)?,
-                                cancellation,
-                            )
-                            .await?;
-                        work = account_nested_with_live_memory(
-                            work,
-                            facts_beneath.work,
-                            live_bytes,
-                            budget,
-                        )?;
-                        let directory_authored = match directory_authored {
-                            Some(authored) => authored,
-                            None => match mounted.as_deref_mut() {
-                                Some(checkout) if !directory.is_root() => {
-                                    let record = checkout
-                                        .lookup_no_follow(
-                                            &directory,
-                                            remaining_work(work, budget)?,
-                                            cancellation,
-                                        )
-                                        .await
-                                        .map_err(|failure| {
-                                            LazyWorkspaceError::Workspace(failure.error.to_string())
-                                        })?;
-                                    work = account_nested_with_live_memory(
-                                        work,
-                                        record.work,
-                                        live_bytes,
-                                        budget,
-                                    )?;
-                                    record.value.record.is_some()
+                        Err(error) => Err(error),
+                    };
+                    let projection = match projection {
+                        Ok(entries) => {
+                            let accepted = page
+                                .publication
+                                .as_mut()
+                                .map_or(Ok(()), |publication| publication.accept(accounting));
+                            match accepted {
+                                Ok(()) => {
+                                    page.publication.take();
+                                    Ok(entries)
                                 }
-                                _ => true,
-                            },
-                        };
-                        for entry in &page.entries {
-                            let child_path = logical_child_path(path, &entry.name);
-                            if let Some(child) = child_path.as_ref() {
-                                work = account_transient_string(work, child, live_bytes, budget)?;
-                                if directory_tombstoned.value
-                                    || mounted_mask.is_some_and(|(paths, _)| {
-                                        paths.binary_search(child).is_ok()
-                                    })
-                                {
-                                    slots.push((true, None));
-                                    continue;
+                                Err(error) => {
+                                    entries.retire(accounting)?;
+                                    Err(error.into())
                                 }
-                                let tombstoned = if facts_beneath.value {
-                                    let fact = self
-                                        .overlay_fact_measured(
-                                            state.overlay,
-                                            &self.canonical_path(child)?,
-                                            remaining_work(work, budget)?,
-                                            cancellation,
-                                        )
-                                        .await?;
-                                    work = account_nested_with_live_memory(
-                                        work, fact.work, live_bytes, budget,
-                                    )?;
-                                    matches!(fact.value, Some(LazyOverlayChange::Tombstone { .. }))
-                                } else {
-                                    false
+                            }
+                        }
+                        Err(error) => Err(error),
+                    };
+                    let entries = match projection {
+                        Ok(entries) => entries,
+                        Err(primary) => {
+                            let rollback = page
+                                .publication
+                                .as_mut()
+                                .map_or(Ok(()), |publication| publication.abort(accounting));
+                            if let Err(cleanup) = rollback {
+                                let publication = page.publication.take();
+                                let primary = Box::write(cleanup_slot, primary);
+                                #[cfg(not(target_arch = "wasm32"))]
+                                let allocation = match cleanup_allocation {
+                                    KernelOwnedAllocation::NativeOriginal(allocation) => {
+                                        Some(allocation)
+                                    }
+                                    KernelOwnedAllocation::Standalone => None,
                                 };
-                                if tombstoned {
-                                    slots.push((true, None));
-                                    continue;
-                                }
-                                if !directory_authored {
-                                    slots.push((false, None));
-                                    continue;
-                                }
-                                let child = self.namespace_path(child)?;
-                                slots.push((false, Some(source_paths.len())));
-                                source_paths.push(child);
-                            } else {
-                                slots.push((false, None));
-                            }
-                        }
-                        let mut authored = Vec::new();
-                        authored
-                            .try_reserve_exact(source_paths.len())
-                            .map_err(|_| {
-                                LazyWorkspaceError::Work(
-                                    "source page lookup allocation failed".to_owned(),
-                                )
-                            })?;
-                        authored.resize(source_paths.len(), false);
-                        if directory_authored && !source_paths.is_empty() {
-                            let generation = if mounted.is_some() {
-                                None
-                            } else {
-                                let head = self
-                                    .workspace
-                                    .head_measured(remaining_work(work, budget)?, cancellation)
-                                    .await
-                                    .map_err(workspace_error)?;
-                                work = account_nested_with_live_memory(
-                                    work, head.work, live_bytes, budget,
+                                drop(page);
+                                crate::kernel::retire_allocation(
+                                    source_allocation,
+                                    retained,
+                                    accounting,
                                 )?;
-                                Some(head.value)
-                            };
-                            let maximum = usize::try_from(limits.maximum_paths_per_batch)
-                                .unwrap_or(usize::MAX)
-                                .max(1);
-                            let mut offset = 0_usize;
-                            for chunk in source_paths.chunks(maximum) {
-                                let (records, lookup_work) = if let Some(checkout) =
-                                    mounted.as_deref_mut()
-                                {
-                                    let lookup = checkout
-                                        .lookup_batch_no_follow(
-                                            chunk,
-                                            remaining_work(work, budget)?,
-                                            cancellation,
-                                        )
-                                        .await
-                                        .map_err(|failure| {
-                                            LazyWorkspaceError::Workspace(failure.error.to_string())
-                                        })?;
-                                    (
-                                        lookup
-                                            .value
-                                            .entries
-                                            .into_iter()
-                                            .map(|entry| entry.record)
-                                            .collect::<Vec<_>>(),
-                                        lookup.work,
-                                    )
-                                } else {
-                                    let lookup = generation
-                                        .as_ref()
-                                        .ok_or(LazyWorkspaceError::Concurrent)?
-                                        .lookup_paths(
-                                            chunk,
-                                            remaining_work(work, budget)?,
-                                            cancellation,
-                                        )
-                                        .await
-                                        .map_err(|failure| {
-                                            LazyWorkspaceError::Workspace(failure.error.to_string())
-                                        })?;
-                                    (lookup.value, lookup.work)
-                                };
-                                work = account_nested_with_live_memory(
-                                    work,
-                                    lookup_work,
-                                    live_bytes,
-                                    budget,
-                                )?;
-                                for (slot, record) in authored
-                                    .get_mut(offset..offset + chunk.len())
-                                    .ok_or_else(|| {
-                                        LazyWorkspaceError::Work(
-                                            "lookup result offset overflow".to_owned(),
-                                        )
-                                    })?
-                                    .iter_mut()
-                                    .zip(records)
-                                {
-                                    *slot = record.is_some();
-                                }
-                                offset += chunk.len();
-                            }
-                        }
-                        for (entry, (hidden, index)) in page.entries.into_iter().zip(slots) {
-                            if hidden
-                                || index.is_some_and(|index| {
-                                    authored.get(index).copied().unwrap_or(false)
-                                })
-                            {
-                                continue;
-                            }
-                            entries.push(LazyDirectoryEntry {
-                                name: entry.name,
-                                kind: entry.node.kind,
-                                authored: false,
-                                source: Some(entry.node),
-                                unobserved: !facts_beneath.value,
-                            });
-                        }
-                        // The checkout's own names follow the source's, unless
-                        // it holds no such directory to name them in.
-                        let next = match page.next {
-                            Some(next) => Some(LazyDirectoryPhase::Source(Some(next))),
-                            None if directory_authored => Some(LazyDirectoryPhase::Authored(None)),
-                            None => None,
-                        }
-                        .map(|phase| LazyDirectoryCursor {
-                            source: state.source,
-                            overlay: state.overlay,
-                            directory,
-                            phase,
-                        });
-                        return Ok(OperationReceipt {
-                            value: LazyDirectoryPage { entries, next },
-                            work,
-                        });
-                    }
-                    LazyDirectoryPhase::Authored(after) => {
-                        let authored_page = if let Some(checkout) = mounted {
-                            match checkout
-                                .list_directory(
-                                    &directory,
-                                    after.as_ref(),
-                                    maximum_entries,
-                                    remaining_work(work, budget)?,
-                                    cancellation,
-                                )
-                                .await
-                            {
-                                Ok(page) => Ok(OperationReceipt {
-                                    value: crate::WorkspaceDirectoryPage {
-                                        entries: page
-                                            .value
-                                            .entries
-                                            .into_iter()
-                                            .map(|entry| crate::WorkspaceDirectoryEntry {
-                                                name: entry.name,
-                                                file_id: entry.file_id,
-                                                kind: entry.kind,
-                                            })
-                                            .collect(),
-                                        has_more: page.value.has_more,
-                                    },
-                                    work: page.work,
-                                }),
-                                Err(failure)
-                                    if matches!(failure.error, crate::FsError::NotFound) =>
-                                {
-                                    Err(WorkspaceError::NotFound)
-                                }
-                                Err(failure) => Err(WorkspaceError::from(failure.error)),
-                            }
-                        } else {
-                            self.workspace
-                                .list_directory_measured(
-                                    path,
-                                    after.as_ref(),
-                                    maximum_entries,
-                                    remaining_work(work, budget)?,
-                                    cancellation,
-                                )
-                                .await
-                        };
-                        let page = match authored_page {
-                            Ok(page) => page,
-                            Err(WorkspaceError::NotFound) if source_absent => {
-                                return Err(LazyWorkspaceError::NotFound);
-                            }
-                            Err(WorkspaceError::NotFound) => {
-                                return Ok(OperationReceipt {
-                                    value: LazyDirectoryPage {
-                                        entries: Vec::new(),
-                                        next: None,
-                                    },
-                                    work,
+                                directory.retire(accounting)?;
+                                return Err(LazyWorkspaceError::SourcePageCleanup {
+                                    primary,
+                                    cleanup,
+                                    publication,
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    allocation,
                                 });
                             }
-                            Err(error) => return Err(workspace_error(error)),
-                        };
-                        work = account_work(work, page.work, budget)?;
-                        let page = page.value;
-                        if page.entries.len()
-                            > usize::try_from(maximum_entries).unwrap_or(usize::MAX)
-                        {
-                            return Err(LazyWorkspaceError::Work(
-                                "authored directory page exceeded its requested bound".to_owned(),
+                            drop(page);
+                            crate::kernel::retire_allocation(
+                                source_allocation,
+                                retained,
+                                accounting,
+                            )?;
+                            drop(cleanup_slot);
+                            crate::kernel::retire_allocation(
+                                cleanup_allocation,
+                                bytes,
+                                accounting,
+                            )?;
+                            directory.retire(accounting)?;
+                            return Err(primary);
+                        }
+                    };
+                    drop(cleanup_slot);
+                    crate::kernel::retire_allocation(cleanup_allocation, bytes, accounting)?;
+                    let next = match page.next.take() {
+                        Some(cursor) => Some(LazyDirectoryPhase::Source(Some(cursor))),
+                        None if directory_authored => Some(LazyDirectoryPhase::Authored(None)),
+                        None => None,
+                    };
+                    let transferred = next.as_ref().map_or(0, |phase| match phase {
+                        LazyDirectoryPhase::Source(Some(cursor)) => cursor.retained_bytes(),
+                        _ => 0,
+                    });
+                    drop(page);
+                    crate::kernel::retire_allocation(
+                        source_allocation,
+                        retained - transferred,
+                        accounting,
+                    )?;
+                    let cursor = if let Some(phase) = next {
+                        Some(LazyDirectoryCursor {
+                            cut,
+                            directory: directory.value,
+                            phase,
+                            allocation: directory.allocation,
+                        })
+                    } else {
+                        directory.retire(accounting)?;
+                        None
+                    };
+                    return Ok((
+                        LazyDirectoryPage {
+                            entries: entries.value,
+                            next: cursor,
+                        },
+                        source_used,
+                        entries.allocation,
+                    ));
+                }
+                LazyDirectoryPhase::Authored(after) => {
+                    let answer = checkout
+                        .list_directory_with_accounting(
+                            &directory.value,
+                            after.as_ref().map_or(Bound::Unbounded, Bound::Excluded),
+                            maximum,
+                            accounting,
+                            cancellation,
+                        )
+                        .await;
+                    let (page, allocation) = match answer {
+                        Ok(page) => page,
+                        Err(crate::FsError::NotFound) if !source_absent => {
+                            directory.retire(accounting)?;
+                            return Ok((
+                                LazyDirectoryPage {
+                                    entries: Vec::new(),
+                                    next: None,
+                                },
+                                source_used,
+                                accounting.claim_owned(0, 0)?,
                             ));
                         }
-                        let next = if page.has_more {
-                            page.entries.last().map(|entry| LazyDirectoryCursor {
-                                source: state.source,
-                                overlay: state.overlay,
-                                directory,
-                                phase: LazyDirectoryPhase::Authored(Some(entry.name.clone())),
-                            })
-                        } else {
-                            None
-                        };
-                        let temporary_bytes = retained_directory_page_bytes(
-                            page.entries.capacity(),
-                            std::mem::size_of::<crate::WorkspaceDirectoryEntry>(),
-                            page.entries.iter().map(|entry| entry.name.retained_bytes()),
-                        )?;
-                        let mut entries = Vec::new();
-                        let _projection_bytes = reserve_lazy_directory_page(
-                            &mut entries,
-                            page.entries.len(),
-                            temporary_bytes,
-                            &mut work,
-                            budget,
-                        )?;
-                        entries.extend(page.entries.into_iter().map(authored_entry));
-                        return Ok(OperationReceipt {
-                            value: LazyDirectoryPage { entries, next },
-                            work,
+                        Err(error) => {
+                            directory.retire(accounting)?;
+                            return Err(error.into());
+                        }
+                    };
+                    let retained = retained_directory_page_bytes(
+                        &page.entries,
+                        page.entries.iter().map(|entry| entry.name.retained_bytes()),
+                    )?;
+                    let mut entries = Owned::allocate(page.entries.len(), accounting)?;
+                    for entry in &page.entries {
+                        let (name, mut claim) =
+                            entry.name.clone_with_accounting(accounting, cancellation)?;
+                        entries.bytes += name.retained_bytes() as u64;
+                        entries.allocation.absorb(&mut claim)?;
+                        entries.value.push(LazyDirectoryEntry {
+                            name,
+                            kind: source_kind(entry.kind),
+                            authored: true,
+                            source: None,
+                            unobserved: false,
                         });
                     }
+                    let next = if page.has_more {
+                        let name = page
+                            .entries
+                            .last()
+                            .ok_or(LazyWorkspaceError::StaleCursor)?
+                            .name
+                            .clone_with_accounting(accounting, cancellation)?;
+                        Some(name)
+                    } else {
+                        None
+                    };
+                    drop(page);
+                    crate::kernel::retire_allocation(allocation, retained, accounting)?;
+                    let next = if let Some((name, mut claim)) = next {
+                        let mut allocation = directory.allocation;
+                        allocation.absorb(&mut claim)?;
+                        Some(LazyDirectoryCursor {
+                            cut,
+                            directory: directory.value,
+                            phase: LazyDirectoryPhase::Authored(Some(name)),
+                            allocation,
+                        })
+                    } else {
+                        directory.retire(accounting)?;
+                        None
+                    };
+                    return Ok((
+                        LazyDirectoryPage {
+                            entries: entries.value,
+                            next,
+                        },
+                        source_used,
+                        entries.allocation,
+                    ));
                 }
             }
-        })
-        .await
+        }
+    }
+
+    async fn project_source_page(
+        &self,
+        state: &LazyWorkspaceState,
+        checkout: &mut crate::Checkout<A, O>,
+        directory: &NamespacePath,
+        page: &SourceDirectoryPage,
+        maximum: u32,
+        mask: Option<(&[String], bool)>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Owned<Vec<LazyDirectoryEntry>>, LazyWorkspaceError> {
+        if page.entries.len() > maximum as usize {
+            return Err(LazyWorkspaceError::TooLarge);
+        }
+        let mut entries = Owned::allocate(page.entries.len(), accounting)?;
+        let result = async {
+            for entry in page.entries.iter() {
+                let child = self.child_path(directory, entry.name(), accounting)?;
+                let mut unobserved = true;
+                let include = if let Some(child) = child {
+                    let result = async {
+                        if mask.is_some_and(|(paths, _)| paths.binary_search(&child.value).is_ok())
+                        {
+                            return Ok(false);
+                        }
+                        let fact = self
+                            .overlay_fact(state.overlay, &child.value, accounting)
+                            .await?;
+                        unobserved = fact.is_none();
+                        if matches!(fact, Some(LazyOverlayChange::Tombstone { .. })) {
+                            return Ok(false);
+                        }
+                        let namespace = self.namespace_path(&child.value, accounting)?;
+                        let authored = checkout
+                            .lookup_no_follow_with_metadata_with_accounting(
+                                &namespace.value,
+                                accounting,
+                                cancellation(accounting),
+                            )
+                            .await;
+                        namespace.retire(accounting)?;
+                        Ok::<_, LazyWorkspaceError>(authored?.is_none())
+                    }
+                    .await;
+                    child.retire(accounting)?;
+                    result?
+                } else {
+                    true
+                };
+                if include {
+                    let (name, mut claim) = entry
+                        .name()
+                        .clone_with_accounting(accounting, cancellation(accounting))?;
+                    entries.bytes += name.retained_bytes() as u64;
+                    entries.allocation.absorb(&mut claim)?;
+                    entries.value.push(LazyDirectoryEntry {
+                        name,
+                        kind: entry.node.kind,
+                        authored: false,
+                        source: Some(entry.node),
+                        unobserved,
+                    });
+                }
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            entries.retire(accounting)?;
+            return Err(error);
+        }
+        Ok(entries)
     }
 }

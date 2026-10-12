@@ -1516,8 +1516,8 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
     if let Some(original) = io.original_native_work() {
         original.spent(encoding)?;
         return generation.pin(identity, original, io.cancellation())
-            .await.map(|_| ()).map_err(|source| LazyWorkspaceError::NativeWorkspaceCause(
-                acyclic_fs::lazy_workspace::NativeLazyWorkspaceCause { source, custody: None }));
+            .await.map(|_| ()).map_err(|source| LazyWorkspaceError:: NativeWorkspace (
+                 source,  None ));
     }
     io.spent_workspace(encoding).map_err(LazyWorkspaceError::WorkspaceCause)?;
     let result = generation.pin(

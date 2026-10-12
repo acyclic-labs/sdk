@@ -7772,7 +7772,7 @@ fn record_logical_bytes(record: FileRecord) -> u64 {
     }
 }
 
-async fn seek_record_extent_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(crate) async fn seek_record_extent_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>, record: FileRecord, offset: u64, target: ExtentSeekTarget,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
 ) -> Result<Option<u64>, FsError> {
@@ -7803,7 +7803,7 @@ async fn seek_record_extent_with_accounting<A: AsyncAuthorityStore, O: AsyncObje
     }
 }
 
-async fn read_record_metadata_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(crate) async fn read_record_metadata_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
     record: FileRecord,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -9848,7 +9848,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(Arc::new(ProofDataCustody::default()))
     }
 
-    fn private_candidate_with_accounting(
+    pub(crate) fn private_candidate_with_accounting(
         &self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -12783,7 +12783,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.read_record_range_with_accounting(record, range, range, accounting, cancellation).await
     }
 
-    async fn lookup_file_record_by_id_with_accounting(
+    pub(crate) async fn lookup_file_record_by_id_with_accounting(
         &self, file_id: FileId, accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<FileRecord>, FsError> {

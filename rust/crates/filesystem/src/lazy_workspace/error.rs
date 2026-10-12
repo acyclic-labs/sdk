@@ -3,9 +3,15 @@ use super::*;
 /// Fail-closed lazy workspace errors.
 #[derive(Debug, Error)]
 pub enum LazyWorkspaceError {
-    /// Authenticated workspace operation failed.
-    #[error("workspace operation failed: {0}")]
-    Workspace(String),
+    /// Original workspace failure.
+    #[error(transparent)]
+    WorkspaceCause(#[from] WorkspaceError),
+    /// Original filesystem failure.
+    #[error(transparent)]
+    Filesystem(#[from] crate::FsError),
+    /// Original path validation failure.
+    #[error(transparent)]
+    NamespacePath(#[from] crate::kernel::NamespacePathError),
     /// Demand provider operation failed.
     #[error("source demand failed: {0}")]
     Demand(#[from] DemandError),
@@ -43,13 +49,108 @@ pub enum LazyWorkspaceError {
     #[error("source node cannot be represented by the authored workspace")]
     UnsupportedNode,
     /// Removing the last promoted binding would resurrect stale source bytes
-    /// through an unresolved hard-link alias.
     #[error("source hard-link aliases must be promoted before removing the final authored binding")]
     UnresolvedHardLinks,
     /// Exact traversal was cancelled before every path was captured.
     #[error("lazy exact scan was cancelled")]
     Cancelled,
-    /// Exact traversal exceeded an explicit work budget.
-    #[error("lazy exact scan exceeded its work budget: {0}")]
-    Work(String),
+    /// Original projection failure and failed producer rollback, both retained.
+    #[error("{primary}; source rollback failed: {cleanup}")]
+    SourcePageCleanup {
+        /// Original consumer failure.
+        #[source]
+        primary: Box<Self>,
+        /// Original rollback failure.
+        cleanup: DemandError,
+        /// Producer state still requiring cleanup.
+        publication: Option<Box<dyn crate::demand::SourceDirectoryPublication>>,
+        /// Diagnostic allocation retires after both causes and producer state.
+        #[cfg(not(target_arch = "wasm32"))]
+        allocation: Option<crate::NativeAllocation>,
+    },
+    /// Original logical cut cannot be authenticated.
+    #[error("original snapshot is unavailable")]
+    OriginalSnapshotUnavailable,
+    /// Original publication did not commit.
+    #[error("publication was not committed: {0:?}")]
+    SelectedPublication(crate::CheckoutCommitOutcome),
+    /// Original native denial.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error(transparent)]
+    NativeWork(#[from] crate::NativeTreeMaterializationError),
+    /// Native construction failed after this work prefix.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("native construction failed: {cause}")]
+    NativeConstruction {
+        /// Original constructor failure.
+        #[source]
+        cause: crate::NativeTreeMaterializationError,
+        /// Completed work.
+        work: WorkCounters,
+    },
+    /// Payload belongs to another invocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("native ledger mismatch")]
+    NativeLedgerMismatch,
+    /// Original creation failure with retained diagnostic storage.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("{0}")]
+    NativeWorkspace(#[source] WorkspaceError, Option<crate::NativeAllocation>),
+    /// Original IO error with its retained allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("{0}")]
+    NativeRecordIo(#[source] std::io::Error, Option<crate::NativeAllocation>),
+    /// Original codec error with its retained allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("{0}")]
+    NativeRecordJson(#[source] serde_json::Error, Option<crate::NativeAllocation>),
+    /// Record lock timed out.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("record lock timed out: {}", .0.display())]
+    NativeRecordLockTimeout(std::path::PathBuf, Option<crate::NativeAllocation>),
+    /// Record namespace has another owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("record ownership conflict: {}", .0.display())]
+    NativeRecordOwnershipConflict(std::path::PathBuf, Option<crate::NativeAllocation>),
+    /// Nonterminal materialization cannot be discarded.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("materialization is in progress")]
+    NativeRecordMaterializationInProgress,
+    /// Stored record does not match its address.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("record integrity failure")]
+    NativeRecordIntegrity,
+    /// Context transaction is incompatible.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("context transaction is incompatible: {0}")]
+    NativeRecordContextTransaction(String, Option<crate::NativeAllocation>),
+    /// Intact log frame is undecodable.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("corrupt record log: {}", .0.display())]
+    NativeRecordCorrupt(std::path::PathBuf, Option<crate::NativeAllocation>),
+}
+
+impl LazyWorkspaceError {
+    /// Original semantic cause.
+    pub fn semantic_error(&self) -> &Self {
+        match self {
+            Self::SourcePageCleanup { primary, .. } => primary.semantic_error(),
+            error => error,
+        }
+    }
+
+    /// Completed standalone work retained by this failure.
+    pub fn spent_work(&self) -> WorkCounters {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeConstruction { work, .. } => *work,
+            _ => WorkCounters::UNCHARGED,
+        }
+    }
+
+    /// Transfers the original work prefix to the standalone result.
+    pub fn into_measured_failure(self) -> crate::OperationFailure<Self> {
+        let work = self.spent_work();
+        crate::OperationFailure::new(self, work)
+    }
 }

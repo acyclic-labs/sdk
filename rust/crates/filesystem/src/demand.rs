@@ -313,7 +313,7 @@ impl SourceCursor {
         }
     }
 
-    fn cursor_accounting_error(error: crate::FsError) -> DemandError {
+    pub(crate) fn cursor_accounting_error(error: crate::FsError) -> DemandError {
         match error {
             crate::FsError::Work(error) => DemandError::Work(error),
             crate::FsError::Cancelled(_) => DemandError::Cancelled,

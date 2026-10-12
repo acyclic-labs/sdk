@@ -1989,9 +1989,9 @@ where
                                     return Err(failure.cause);
                                 },
                             };
-                            let actual = qualified.snapshot().lazy_snapshot_with_native_work(
+                            let actual = qualified. lazy_snapshot ( &mut acyclic_fs::kernel::KernelAccounting::native (
                                 lazy.original_work(), lazy.original_work().cancellation(),
-                            )?.ok_or_else(|| Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout))?;
+                            ) ) ?.ok_or_else(|| Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout))?;
                             if actual.workspace_id != snapshot.workspace_id || actual.source != snapshot.source
                                 || actual.authored_generation != snapshot.authored_generation
                             {

@@ -231,8 +231,19 @@ async fn lazy_workspace(
             "stack-budget",
             Arc::new(demand),
             LocalCoreStateStore::open_owned(root.join("core"))?,
-        )
-        .await?,
+        crate::VolumeConfig::portable(if (&engine).capabilities().durable {
+                crate::Lifecycle::Durable
+            } else {
+                crate::Lifecycle::Ephemeral
+            }),
+            crate::OperationId::new(),
+            &mut crate::kernel::KernelAccounting::Standalone {
+                allocations: Default::default(),
+                work: crate::WorkCounters::UNCHARGED,
+                budget: crate::WorkBudget::UNBOUNDED,
+                cancellation: &crate::CancellationToken::new(),
+            }, )
+        .await .map(|(lazy, _)| lazy) ?,
     );
     let checkout = lazy
         .workspace()

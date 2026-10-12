@@ -1,339 +1,426 @@
 use super::*;
+use crate::kernel::{KernelAccounting, OwnedSourceChunk};
 
-/// Streams one version-pinned demanded file into the SDK blob builder while
-/// preserving the demand provider's exact work receipt.
-pub(super) struct DemandBlobSource<'a, D> {
-    pub(super) provider: &'a D,
-    pub(super) source: SourceReference,
-    pub(super) path: NamespacePath,
-    pub(super) version: SourceVersion,
-    pub(super) offset: u64,
-    pub(super) length: u64,
-    pub(super) work: Option<WorkCounters>,
-    pub(super) failure: Option<DemandError>,
-}
-
-impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D> {
-    async fn read<'a>(
-        &'a mut self,
-        destination: &'a mut [u8],
-        cancellation: &'a CancellationToken,
-    ) -> std::io::Result<usize> {
-        let remaining = self.length.saturating_sub(self.offset);
-        if remaining == 0 {
-            self.work = Some(WorkCounters::default());
-            return Ok(0);
-        }
-        let requested = remaining.min(u64::try_from(destination.len()).unwrap_or(u64::MAX));
-        let receipt = self
-            .provider
-            .read_range(
-                self.source,
-                &self.path,
-                self.version,
-                self.offset,
-                requested,
-                cancellation,
-            )
-            .await;
-        let receipt = match receipt {
-            Ok(receipt) => receipt,
-            Err(failure) => {
-                self.work = Some(*failure.work);
-                self.failure = Some(failure.error);
-                return Err(std::io::Error::other("version-pinned demand read failed"));
-            }
-        };
-        self.work = Some(receipt.work);
-        let chunk = receipt.value;
-        if chunk.is_empty() || u64::try_from(chunk.len()).unwrap_or(u64::MAX) > requested {
-            self.failure = Some(DemandError::StaleVersion);
-            return Err(std::io::Error::other(
-                "version-pinned demand read was incomplete",
-            ));
-        }
-        self.offset = self
-            .offset
-            .checked_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX))
-            .ok_or_else(|| std::io::Error::other("demand source offset overflow"))?;
-        destination
-            .get_mut(..chunk.len())
-            .ok_or_else(|| std::io::Error::other("demand source exceeded read bound"))?
-            .copy_from_slice(&chunk);
-        Ok(chunk.len())
-    }
-
-    fn take_work(&mut self) -> Option<WorkCounters> {
-        self.work.take()
-    }
-}
-
-
-impl<A, O, D, S> LazyWorkspace<A, O, D, S>
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-    D: DemandSource + 'static,
-    S: LazyWorkspaceStore,
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
+    LazyWorkspace<A, O, D, S>
 {
+    /// Reads one complete regular file under a byte limit.
+    pub async fn read(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
+        self.read_current(path, None, maximum_bytes, accounting)
+            .await
+    }
 
-
-    /// Reads one exact range, demanding no unrelated content.
+    /// Reads one bounded range from the resolved current object.
     pub async fn read_range(
         &self,
         path: &str,
         offset: u64,
         length: u64,
-    ) -> Result<Bytes, LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.read_range_measured(path, offset, length, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map(|receipt| receipt.value)
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
+        self.read_current(
+            path,
+            Some(crate::ByteRange { offset, length }),
+            length,
+            accounting,
+        )
+        .await
     }
 
-    /// Opens the inspected regular source file for repeated reads, each of
-    /// which proves `node` is still the file's current version.
-    #[cfg(any(feature = "native-mount", test))]
+    /// Reads an opaque no-follow link target under a byte limit.
+    pub async fn read_link(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
+        let lookup = self.lookup(path, accounting).await?;
+        let result = self
+            .read_unauthored(&lookup.0, path, None, maximum_bytes, accounting)
+            .await;
+        self.retire_lookup(lookup, accounting)?;
+        result
+    }
+
+    async fn read_current(
+        &self,
+        path: &str,
+        range: Option<crate::ByteRange>,
+        maximum_bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
+        let lookup = self.lookup(path, accounting).await?;
+        if lookup.0.stat().kind != SourceNodeKind::RegularFile {
+            self.retire_lookup(lookup, accounting)?;
+            return Err(LazyWorkspaceError::NotRegularFile);
+        }
+        let result = self
+            .read_unauthored(&lookup.0, path, range, maximum_bytes, accounting)
+            .await;
+        self.retire_lookup(lookup, accounting)?;
+        result
+    }
+
+    /// Reads an exact immutable authored/source cut.
+    pub async fn read_at_snapshot(
+        &self,
+        snapshot: LazySnapshotRef,
+        path: &str,
+        range: Option<crate::ByteRange>,
+        maximum_bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(OwnedSourceChunk, bool), LazyWorkspaceError> {
+        let (lookup, used, allocation) =
+            self.lookup_at_snapshot(snapshot, path, accounting).await?;
+        let lookup = lookup.ok_or(LazyWorkspaceError::NotFound)?;
+        let result = match &lookup {
+            LazyLookup::Authored { path, .. } => {
+                let mut checkout = self
+                    .checkout(
+                        crate::model::GenerationSelector::Exact(snapshot.authored_generation),
+                        accounting,
+                    )
+                    .await?;
+                let namespace = self.namespace_path(path, accounting)?;
+                let result = self
+                    .read_checkout(
+                        &mut checkout.value,
+                        &namespace.value,
+                        range,
+                        maximum_bytes,
+                        accounting,
+                    )
+                    .await;
+                namespace.retire(accounting)?;
+                checkout.retire(accounting)?;
+                result.map(|bytes| (bytes, used))
+            }
+            _ => {
+                let source = matches!(lookup, LazyLookup::Source { .. });
+                if source && snapshot.source != self.source.reference() {
+                    Err(LazyWorkspaceError::StaleSource)
+                } else {
+                    self.read_unauthored(&lookup, path, range, maximum_bytes, accounting)
+                        .await
+                        .map(|bytes| (bytes, used || source))
+                }
+            }
+        };
+        self.retire_lookup((lookup, allocation), accounting)?;
+        result
+    }
+
+    pub(crate) async fn read_unauthored(
+        &self,
+        lookup: &LazyLookup,
+        path: &str,
+        range: Option<crate::ByteRange>,
+        maximum_bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
+        let cancellation = cancellation(accounting);
+        let kind = lookup.stat().kind;
+        if kind != SourceNodeKind::RegularFile && kind != SourceNodeKind::SymbolicLink {
+            return Err(LazyWorkspaceError::NotRegularFile);
+        }
+        let range = if kind == SourceNodeKind::RegularFile {
+            let length = lookup
+                .stat()
+                .logical_bytes
+                .ok_or(LazyWorkspaceError::NotRegularFile)?;
+            let range = range.unwrap_or(crate::ByteRange { offset: 0, length });
+            if range.length > maximum_bytes {
+                return Err(LazyWorkspaceError::TooLarge);
+            }
+            Some(range)
+        } else {
+            None
+        };
+        match lookup {
+            LazyLookup::Source { source, node } => {
+                let namespace = self.namespace_path(path, accounting)?;
+                let result = {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(original) = accounting.native_work() {
+                        Some(
+                            if let Some(range) = range {
+                                self.source
+                                    .read_range(
+                                        *source,
+                                        &namespace.value,
+                                        node.version,
+                                        range.offset,
+                                        range.length,
+                                        original,
+                                        cancellation,
+                                    )
+                                    .await
+                            } else {
+                                self.source
+                                    .read_link(
+                                        *source,
+                                        &namespace.value,
+                                        node.version,
+                                        maximum_bytes,
+                                        original,
+                                        cancellation,
+                                    )
+                                    .await
+                            }
+                            .map_err(LazyWorkspaceError::from),
+                        )
+                    } else {
+                        None
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        None::<Result<OwnedSourceChunk, LazyWorkspaceError>>
+                    }
+                };
+                let result = if let Some(result) = result {
+                    result
+                } else {
+                    let budget = accounting.remaining()?;
+                    let result = if let Some(range) = range {
+                        self.source
+                            .read_range(
+                                *source,
+                                &namespace.value,
+                                node.version,
+                                range.offset,
+                                range.length,
+                                budget,
+                                cancellation,
+                            )
+                            .await
+                    } else {
+                        self.source
+                            .read_link(
+                                *source,
+                                &namespace.value,
+                                node.version,
+                                maximum_bytes,
+                                budget,
+                                cancellation,
+                            )
+                            .await
+                    };
+                    accept_receipt(result, accounting)
+                };
+                namespace.retire(accounting)?;
+                let bytes = result?;
+                if bytes.bytes.len() as u64 > maximum_bytes {
+                    return Err(LazyWorkspaceError::TooLarge);
+                }
+                Ok(bytes)
+            }
+            LazyLookup::Shadow { record, .. } => {
+                let detached = {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(original) = accounting.native_work() {
+                        Some(
+                            crate::facade::DetachedFile::from_record(
+                                self.workspace.volume.clone(),
+                                *record,
+                                original,
+                                cancellation,
+                            )
+                            .map_err(LazyWorkspaceError::from),
+                        )
+                    } else {
+                        None
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        None::<Result<crate::facade::DetachedFile<A, O>, LazyWorkspaceError>>
+                    }
+                };
+                let detached = if let Some(detached) = detached {
+                    detached?
+                } else {
+                    accept_receipt(
+                        crate::facade::DetachedFile::from_record(
+                            self.workspace.volume.clone(),
+                            *record,
+                            accounting.remaining()?,
+                            cancellation,
+                        ),
+                        accounting,
+                    )?
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = accounting.native_work() {
+                    return if let Some(range) = range {
+                        let read = detached.read_range(range, original, cancellation).await?;
+                        Ok(OwnedSourceChunk::intrinsic(
+                            read.bytes,
+                            read.logical_owned_bytes,
+                        ))
+                    } else {
+                        let read = detached.read_symbolic_link(original, cancellation).await?;
+                        if read.bytes.len() as u64 > maximum_bytes {
+                            return Err(LazyWorkspaceError::TooLarge);
+                        }
+                        Ok(read)
+                    };
+                }
+                if let Some(range) = range {
+                    let read = accept_receipt(
+                        detached
+                            .read_range(range, accounting.remaining()?, cancellation)
+                            .await,
+                        accounting,
+                    )?;
+                    Ok(OwnedSourceChunk::claimed(
+                        read.bytes,
+                        read.logical_owned_bytes,
+                    ))
+                } else {
+                    let read = accept_receipt(
+                        detached
+                            .read_symbolic_link(accounting.remaining()?, cancellation)
+                            .await,
+                        accounting,
+                    )?;
+                    if read.bytes.len() as u64 > maximum_bytes {
+                        return Err(LazyWorkspaceError::TooLarge);
+                    }
+                    Ok(read)
+                }
+            }
+            LazyLookup::Authored { path, .. } => {
+                let mut checkout = self
+                    .checkout(crate::model::GenerationSelector::Head, accounting)
+                    .await?;
+                let namespace = self.namespace_path(path, accounting)?;
+                let result = self
+                    .read_checkout(
+                        &mut checkout.value,
+                        &namespace.value,
+                        range,
+                        maximum_bytes,
+                        accounting,
+                    )
+                    .await;
+                namespace.retire(accounting)?;
+                checkout.retire(accounting)?;
+                result
+            }
+        }
+    }
+
+    async fn read_checkout(
+        &self,
+        checkout: &mut crate::Checkout<A, O>,
+        path: &NamespacePath,
+        range: Option<crate::ByteRange>,
+        maximum_bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
+        let cancellation = cancellation(accounting);
+        let lookup = checkout
+            .lookup_no_follow_with_metadata_with_accounting(path, accounting, cancellation)
+            .await?
+            .ok_or(LazyWorkspaceError::NotFound)?;
+        let bytes = if lookup.record.kind == FileKind::Regular {
+            let range = range.unwrap_or(crate::ByteRange {
+                offset: 0,
+                length: record_logical_bytes(lookup.record)
+                    .ok_or(LazyWorkspaceError::NotRegularFile)?,
+            });
+            if range.length > maximum_bytes {
+                return Err(LazyWorkspaceError::TooLarge);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                let read = checkout
+                    .read_file_range_by_id(lookup.record.file_id, range, original, cancellation)
+                    .await?;
+                return Ok(OwnedSourceChunk::intrinsic(
+                    read.bytes,
+                    read.logical_owned_bytes,
+                ));
+            }
+            let read = accept_receipt(
+                checkout
+                    .read_file_range_by_id(
+                        lookup.record.file_id,
+                        range,
+                        accounting.remaining()?,
+                        cancellation,
+                    )
+                    .await,
+                accounting,
+            )?;
+            OwnedSourceChunk::claimed(read.bytes, read.logical_owned_bytes)
+        } else if lookup.record.kind == FileKind::SymbolicLink {
+            checkout
+                .read_symbolic_link_with_accounting(path, accounting, cancellation)
+                .await?
+        } else {
+            return Err(LazyWorkspaceError::NotRegularFile);
+        };
+        if bytes.bytes.len() as u64 > maximum_bytes {
+            return Err(LazyWorkspaceError::TooLarge);
+        }
+        Ok(bytes)
+    }
+
+    /// Opens one source fact at its exact original version.
     pub(crate) async fn open_source_file(
         &self,
         path: &str,
         source: SourceReference,
         node: SourceNode,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<Box<dyn crate::demand::DemandFile>, LazyWorkspaceError> {
-        if node.kind != SourceNodeKind::RegularFile {
-            return Err(LazyWorkspaceError::NotRegularFile);
-        }
-        self.source
-            .open_file(
-                source,
-                &self.namespace_path(path)?,
-                node.version,
-                &CancellationToken::new(),
+        let namespace = self.namespace_path(path, accounting)?;
+        let cancellation = cancellation(accounting);
+        let result = {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                Some(
+                    self.source
+                        .open_file(
+                            source,
+                            &namespace.value,
+                            node.version,
+                            original,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(LazyWorkspaceError::from),
+                )
+            } else {
+                None
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                None::<Result<Box<dyn crate::demand::DemandFile>, LazyWorkspaceError>>
+            }
+        };
+        let result = if let Some(result) = result {
+            result
+        } else {
+            accept_receipt(
+                self.source
+                    .open_file(
+                        source,
+                        &namespace.value,
+                        node.version,
+                        accounting.remaining()?,
+                        cancellation,
+                    )
+                    .await,
+                accounting,
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| LazyWorkspaceError::from(failure.error))
-    }
-
-    async fn read_range_measured(
-        &self,
-        path: &str,
-        offset: u64,
-        length: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<Bytes>, LazyWorkspaceError> {
-        let lookup = self.lookup_measured(path, budget, cancellation).await?;
-        let prior = lookup.work;
-        let ResolvedLazyLookup { lookup, source } = lookup.value;
-        match lookup {
-            LazyLookup::Authored {
-                path: authored_path,
-                ..
-            } => {
-                let value = self
-                    .workspace
-                    .read_range(&authored_path, offset, length)
-                    .await
-                    .map_err(workspace_error)?;
-                Ok(OperationReceipt { value, work: prior })
-            }
-            LazyLookup::Shadow { record, .. } => {
-                if record.kind != FileKind::Regular {
-                    return Err(LazyWorkspaceError::NotRegularFile);
-                }
-                let receipt = self
-                    .workspace
-                    .detached_record(record)
-                    .read_range(
-                        crate::ByteRange { offset, length },
-                        remaining_work(prior, budget)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|failure| LazyWorkspaceError::Workspace(failure.error.to_string()));
-                let receipt = receipt?;
-                Ok(OperationReceipt {
-                    value: receipt.value.bytes,
-                    work: account_work(prior, receipt.work, budget)?,
-                })
-            }
-            LazyLookup::Source(node) => {
-                if node.kind != SourceNodeKind::RegularFile {
-                    return Err(LazyWorkspaceError::NotRegularFile);
-                }
-                let source = source.ok_or(LazyWorkspaceError::Concurrent)?;
-                let receipt = self
-                    .source
-                    .read_range(
-                        source,
-                        &self.namespace_path(path)?,
-                        node.version,
-                        offset,
-                        length,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|failure| LazyWorkspaceError::from(failure.error))?;
-                Ok(OperationReceipt {
-                    value: receipt.value,
-                    work: account_work(prior, receipt.work, budget)?,
-                })
-            }
-        }
-    }
-
-    /// Reads a complete regular file under an explicit byte bound.
-    pub async fn read(&self, path: &str, maximum_bytes: u64) -> Result<Bytes, LazyWorkspaceError> {
-        let stat = self.stat(path).await?;
-        let length = stat
-            .logical_bytes
-            .ok_or(LazyWorkspaceError::NotRegularFile)?;
-        if length > maximum_bytes {
-            return Err(LazyWorkspaceError::TooLarge);
-        }
-        self.read_range(path, 0, length).await
-    }
-
-    /// Reads one exact symbolic-link target without following it.
-    pub async fn read_link(&self, path: &str) -> Result<Bytes, LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.read_link_measured(path, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map(|receipt| receipt.value)
-    }
-
-    async fn read_link_measured(
-        &self,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<Bytes>, LazyWorkspaceError> {
-        let lookup = self.lookup_measured(path, budget, cancellation).await?;
-        let prior = lookup.work;
-        let ResolvedLazyLookup { lookup, source } = lookup.value;
-        match lookup {
-            LazyLookup::Authored {
-                path: authored_path,
-                stat,
-            } => {
-                if stat.kind != FileKind::SymbolicLink {
-                    return Err(LazyWorkspaceError::NotRegularFile);
-                }
-                let value = self
-                    .workspace
-                    .read_symbolic_link(&authored_path)
-                    .await
-                    .map_err(workspace_error)?;
-                Ok(OperationReceipt { value, work: prior })
-            }
-            LazyLookup::Shadow { record, .. } => {
-                let receipt = self
-                    .workspace
-                    .detached_record(record)
-                    .read_symbolic_link(remaining_work(prior, budget)?, cancellation)
-                    .await
-                    .map_err(|failure| LazyWorkspaceError::Workspace(failure.error.to_string()))?;
-                Ok(OperationReceipt {
-                    value: receipt.value,
-                    work: account_work(prior, receipt.work, budget)?,
-                })
-            }
-            LazyLookup::Source(node) => {
-                if node.kind != SourceNodeKind::SymbolicLink {
-                    return Err(LazyWorkspaceError::NotRegularFile);
-                }
-                let source = source.ok_or(LazyWorkspaceError::Concurrent)?;
-                let receipt = self
-                    .source
-                    .read_link(
-                        source,
-                        &self.namespace_path(path)?,
-                        node.version,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|failure| LazyWorkspaceError::from(failure.error))?;
-                Ok(OperationReceipt {
-                    value: receipt.value,
-                    work: account_work(prior, receipt.work, budget)?,
-                })
-            }
-        }
-    }
-
-    /// Finds a sparse boundary without demanding file contents.
-    ///
-    /// Authored files use their authenticated extent tree. Unresolved native
-    /// sources currently expose only dense length/version facts, so their
-    /// exact portable representation is data through EOF followed by a hole.
-    pub async fn seek(
-        &self,
-        path: &str,
-        offset: u64,
-        target: LazySeekTarget,
-    ) -> Result<Option<u64>, LazyWorkspaceError> {
-        match self.lookup(path).await? {
-            LazyLookup::Authored {
-                path: authored_path,
-                stat,
-            } => {
-                if stat.kind != FileKind::Regular {
-                    return Err(LazyWorkspaceError::NotRegularFile);
-                }
-                let length = stat
-                    .logical_bytes
-                    .ok_or(LazyWorkspaceError::NotRegularFile)?;
-                if offset >= length {
-                    return Ok(None);
-                }
-                let plan = self
-                    .workspace
-                    .plan_extents(&authored_path, offset, length - offset, 65_536)
-                    .await
-                    .map_err(workspace_error)?;
-                let found = plan.spans.into_iter().find(|span| match target {
-                    LazySeekTarget::Data => span.kind != WorkspaceExtentKind::Hole,
-                    LazySeekTarget::Hole => span.kind == WorkspaceExtentKind::Hole,
-                });
-                Ok(found
-                    .map(|span| span.offset)
-                    .or_else(|| (target == LazySeekTarget::Hole).then_some(length)))
-            }
-            LazyLookup::Shadow { record, .. } => {
-                if record.kind != FileKind::Regular {
-                    return Err(LazyWorkspaceError::NotRegularFile);
-                }
-                self.workspace
-                    .detached_record(record)
-                    .seek(
-                        offset,
-                        match target {
-                            LazySeekTarget::Data => crate::kernel::ExtentSeekTarget::Data,
-                            LazySeekTarget::Hole => crate::kernel::ExtentSeekTarget::Hole,
-                        },
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| LazyWorkspaceError::Workspace(failure.error.to_string()))
-            }
-            LazyLookup::Source(node) => {
-                if node.kind != SourceNodeKind::RegularFile {
-                    return Err(LazyWorkspaceError::NotRegularFile);
-                }
-                let length = node
-                    .logical_bytes
-                    .ok_or(LazyWorkspaceError::NotRegularFile)?;
-                if offset >= length {
-                    return Ok(None);
-                }
-                Ok(Some(match target {
-                    LazySeekTarget::Data => offset,
-                    LazySeekTarget::Hole => length,
-                }))
-            }
-        }
+        };
+        namespace.retire(accounting)?;
+        result
     }
 }

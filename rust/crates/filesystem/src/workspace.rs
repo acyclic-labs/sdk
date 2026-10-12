@@ -804,7 +804,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         Ok(absolute)
     }
 
-    async fn checkout_with_accounting(
+    pub(crate) async fn checkout_with_accounting(
         &self, selector: GenerationSelector, mode: CheckoutMode,
         accounting: &mut KernelAccounting<'_>, cancellation: &crate::CancellationToken,
     ) -> Result<Checkout<A, O>, WorkspaceError> {
@@ -1680,7 +1680,7 @@ pub struct Transaction<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
-    fn from_checkout(
+    pub(crate) fn from_checkout(
         workspace: &Workspace<A, O>,
         mut checkout: Checkout<A, O>,
         idempotency_key: IdempotencyKey,
@@ -1729,7 +1729,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         Ok(crate::kernel::Owned::new(path, allocation, bytes))
     }
 
-    fn push_workspace_mutation<T>(
+    pub(crate) fn push_workspace_mutation<T>(
         operations: &mut crate::kernel::Owned<Vec<T>>,
         operation: crate::kernel::Owned<T>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -1748,7 +1748,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         Ok(())
     }
 
-    async fn apply_workspace_authored_with_accounting(
+    pub(crate) async fn apply_workspace_authored_with_accounting(
         &mut self,
         operations: crate::kernel::Owned<Vec<AuthoredMutation>>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -1761,7 +1761,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         applied.retire(accounting).map_err(WorkspaceError::from)
     }
 
-    async fn apply_workspace_path_with_accounting(
+    pub(crate) async fn apply_workspace_path_with_accounting(
         &mut self,
         path: &str,
         build: impl FnOnce(NamespacePath) -> AuthoredMutation,
@@ -1784,7 +1784,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         work.finish(result, &accounting)
     }
 
-    async fn restore_record_with_accounting(
+    pub(crate) async fn restore_record_with_accounting(
         &mut self,
         path: &str,
         record: crate::kernel::FileRecord,
@@ -1810,7 +1810,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         work.finish(result, &accounting)
     }
 
-    async fn create_dir_all_with_accounting(
+    pub(crate) async fn create_dir_all_with_accounting(
         &mut self, path: &str,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &crate::CancellationToken,
@@ -1938,7 +1938,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         self.apply_workspace_path(path, |path| AuthoredMutation::Reidentify { path, file_id }, work, cancellation).await
     }
 
-    fn prepare_hard_link(
+    pub(crate) fn prepare_hard_link(
         &mut self, source: &str, destination: &str,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &crate::CancellationToken,
@@ -2216,7 +2216,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         work.finish(result, &accounting)
     }
 
-    async fn write_with_accounting(
+    pub(crate) async fn write_with_accounting(
         &mut self, path: &str, bytes: acyclic_stream::OwnedBytes,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &crate::CancellationToken,

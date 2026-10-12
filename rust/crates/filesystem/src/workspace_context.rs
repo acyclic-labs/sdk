@@ -142,7 +142,7 @@ pub trait WorkspaceContextStore: Send + Sync {
         context_id: WorkspaceContextId,
         original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> impl Future<Output = Result<Option<crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>>, (WorkspaceContextError<Self::Error>, Option<crate::NativeAllocation>)>> + Send {
+    ) -> impl Future<Output = Result<Option<(WorkspaceContext, crate::NativeAllocation)>, (WorkspaceContextError<Self::Error>, Option<crate::NativeAllocation>)>> + Send {
         let _ = context_id;
         async move {
             KernelAccounting::native(original, cancellation).check()
@@ -158,7 +158,7 @@ pub trait WorkspaceContextStore: Send + Sync {
         &self,
         context_id: WorkspaceContextId,
         expected_revision: u64,
-        replacement: crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>,
+        replacement: (WorkspaceContext, crate::NativeAllocation),
         original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> impl Future<Output = Result<bool, (WorkspaceContextError<Self::Error>, Option<crate::NativeAllocation>)>> + Send {
@@ -275,13 +275,13 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
         roots: (Vec<WorkspaceContextRoot>, crate::NativeAllocation),
         original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>, (WorkspaceContextError<S::Error>, Option<crate::NativeAllocation>)> {
+    ) -> Result<(WorkspaceContext, crate::NativeAllocation), (WorkspaceContextError<S::Error>, Option<crate::NativeAllocation>)> {
         let record = native_root_record(context_id, roots, original, cancellation)
             .map_err(|error| (error, None))?;
         self.register_record(record, RegistrationMode::Native { original, cancellation })
             .await
             .map(|record| {
-                crate::lazy_workspace::NativeOwnedCoreState::from_parts(
+                (
                     record.context, record.allocation.expect("native registration retains its physical payload"),
                 )
             })
@@ -818,8 +818,8 @@ impl ContextOwnedRecord {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn native(record: crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>) -> Self {
-        let (context, allocation) = record.into_parts();
+    fn native(record: (WorkspaceContext, crate::NativeAllocation)) -> Self {
+        let (context, allocation) = record;
         Self { context, allocation: Some(allocation), entry_allocation: None }
     }
 }
@@ -969,7 +969,7 @@ fn clone_context_with_native_work<E: std::error::Error + 'static>(
     context: &WorkspaceContext,
     original: &crate::NativeMaterializationWork,
     cancellation: &crate::CancellationToken,
-) -> Result<crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>, WorkspaceContextError<E>> {
+) -> Result<(WorkspaceContext, crate::NativeAllocation), WorkspaceContextError<E>> {
     let mut accounting = KernelAccounting::native(original, cancellation);
     let allocation = accounting.claim_owned(0, 0)
         .map_err(WorkspaceContextError::NativeFilesystem)?;
@@ -1020,7 +1020,7 @@ fn clone_context_with_native_work<E: std::error::Error + 'static>(
     let KernelOwnedAllocation::NativeOriginal(allocation) = owned.1 else {
         return Err(WorkspaceContextError::IncompatibleState);
     };
-    let result = crate::lazy_workspace::NativeOwnedCoreState::from_parts(WorkspaceContext {
+    let result = (WorkspaceContext {
         version: context.version,
         revision: context.revision,
         context_id: context.context_id,
@@ -1265,7 +1265,7 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
         context_id: WorkspaceContextId,
         original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<Option<crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>>, (WorkspaceContextError<Self::Error>, Option<crate::NativeAllocation>)> {
+    ) -> Result<Option<(WorkspaceContext, crate::NativeAllocation)>, (WorkspaceContextError<Self::Error>, Option<crate::NativeAllocation>)> {
         KernelAccounting::native(original, cancellation).charge(crate::WorkCounters {
             items_examined: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
@@ -1281,7 +1281,7 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
         &self,
         context_id: WorkspaceContextId,
         expected_revision: u64,
-        replacement: crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>,
+        replacement: (WorkspaceContext, crate::NativeAllocation),
         original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<bool, (WorkspaceContextError<Self::Error>, Option<crate::NativeAllocation>)> {

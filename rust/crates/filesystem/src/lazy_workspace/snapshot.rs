@@ -1,257 +1,220 @@
 use super::*;
+use crate::kernel::KernelAccounting;
 
-
-#[derive(Clone, Copy)]
-pub(super) struct ExactificationSource(pub(super) SourceReference);
-
-impl LazySnapshotRef {
-    pub(super) fn exactification_source(
-        self,
-        live_source: SourceReference,
-    ) -> Result<ExactificationSource, LazyWorkspaceError> {
-        if self.source.identity != live_source.identity {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
-        Ok(ExactificationSource(live_source))
-    }
-
-    pub(super) fn exactification_state(
-        self,
-        workspace_id: WorkspaceId,
-        parent_workspace_id: WorkspaceId,
-        source: ExactificationSource,
-    ) -> LazyWorkspaceState {
-        LazyWorkspaceState {
-            schema_version: LAZY_STATE_SCHEMA,
-            revision: 1,
-            workspace_id,
-            parent_workspace_id: Some(parent_workspace_id),
-            // Observed overlay records retain their pinned source epochs. This
-            // binding is deliberately live for paths unresolved at capture.
-            source: source.0,
-            overlay: self.overlay,
-            shadows: self.shadows,
-            pending_remove: None,
-        }
-    }
-}
-
-
-impl<A, O, D, S> LazyWorkspace<A, O, D, S>
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-    D: DemandSource + 'static,
-    S: LazyWorkspaceStore,
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
+    LazyWorkspace<A, O, D, S>
 {
-
-
-    /// Forks in constant-size metadata while retaining the exact overlay snapshot.
+    /// Forks from the first durable cut and returns the original child snapshot.
     pub async fn fork(
         &self,
-        destination: impl AsRef<str>,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<Self, LazyWorkspaceError> {
-        let parent = self.state().await?;
-        let generation = self.workspace.head().await.map_err(workspace_error)?;
-        let workspace = self
-            .workspace
-            .fork(
-                destination,
-                ForkOptions::from_generation(generation, idempotency_key),
-            )
-            .await
-            .map_err(workspace_error)?;
-        let state = LazyWorkspaceState {
-            schema_version: LAZY_STATE_SCHEMA,
-            revision: 1,
-            workspace_id: workspace.id(),
-            parent_workspace_id: Some(self.workspace.id()),
-            source: parent.source,
-            overlay: parent.overlay,
-            shadows: parent.shadows,
-            pending_remove: None,
+        destination: &str,
+        operation: IdempotencyKey,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(Self, LazySnapshotRef), LazyWorkspaceError> {
+        let cancellation = cancellation(accounting);
+        let (name, id) = {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                self.workspace
+                    .volume
+                    .fs
+                    .workspace_name_identity_with_native_work(destination, original, cancellation)
+                    .map_err(|(error, allocation)| {
+                        LazyWorkspaceError::NativeWorkspace(error, allocation)
+                    })?
+            } else {
+                accept_receipt(
+                    self.workspace.volume.fs.workspace_name_identity(
+                        destination,
+                        accounting.remaining()?,
+                        cancellation,
+                    ),
+                    accounting,
+                )?
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                accept_receipt(
+                    self.workspace.volume.fs.workspace_name_identity(
+                        destination,
+                        accounting.remaining()?,
+                        cancellation,
+                    ),
+                    accounting,
+                )?
+            }
         };
-        if !self
-            .store
-            .compare_and_swap_lazy_workspace(workspace.id(), 0, state)
+        drop(name);
+        let frozen = if let Some(state) = self.store.load_lazy_workspace(id, accounting).await? {
+            self.fork_origin(&state, id, operation.operation_id(), accounting)?
+                .snapshot
+        } else {
+            self.snapshot(accounting).await?
+        };
+        self.fork_snapshot(destination, frozen, operation, accounting)
             .await
-            .map_err(store_error)?
-        {
-            let existing = self
-                .store
-                .load_lazy_workspace(workspace.id())
-                .await
-                .map_err(store_error)?
-                .ok_or(LazyWorkspaceError::Concurrent)?;
-            if existing.parent_workspace_id != Some(self.workspace.id())
-                || existing.source != parent.source
-                || existing.overlay != parent.overlay
-                || existing.shadows != parent.shadows
-            {
-                return Err(LazyWorkspaceError::Concurrent);
-            }
-        }
-        Ok(Self {
-            workspace,
-            source: Arc::clone(&self.source),
-            store: self.store.clone(),
-        })
     }
 
-    /// Materializes an immutable lazy snapshot in a deterministic scratch fork.
-    ///
-    /// Previously observed records remain pinned to the snapshot's source epoch;
-    /// unresolved paths are observed from the injected live source when first
-    /// demanded. The owning workspace is never moved or rewritten.
-    pub async fn exactify_snapshot(
+    pub(super) async fn fork_snapshot(
         &self,
-        snapshot: LazySnapshotRef,
-        destination: impl AsRef<str>,
-        idempotency_key: IdempotencyKey,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError> {
-        cancellation
-            .check()
-            .map_err(|_| LazyWorkspaceError::Cancelled)?;
-        if snapshot.workspace_id != self.workspace.id() {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
-        let exactification_source = snapshot.exactification_source(self.source.reference())?;
-        let overlay = self
-            .store
-            .load_lazy_overlay_measured(snapshot.overlay, budget, cancellation)
+        destination: &str,
+        frozen: LazySnapshotRef,
+        operation: IdempotencyKey,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(Self, LazySnapshotRef), LazyWorkspaceError> {
+        let frozen = self
+            .prepare_fork_snapshot(destination, frozen, operation.operation_id(), accounting)
             .await?;
-        let mut work = overlay.work;
-        let shadow = self
-            .store
-            .load_lazy_shadow_measured(
-                snapshot.shadows,
-                remaining_work(work, budget)?,
-                cancellation,
-            )
-            .await?;
-        work = account_work(work, shadow.work, budget)?;
-        if overlay.value.is_none() || shadow.value.is_none() {
-            return Err(LazyWorkspaceError::Store(
-                "lazy snapshot index is absent".to_owned(),
-            ));
-        }
-        let generation = self
-            .workspace
-            .generation_measured(
-                snapshot.authored_generation,
-                remaining_work(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(workspace_error)?;
-        work = account_work(work, generation.work, budget)?;
-        let workspace = self
-            .workspace
-            .fork_measured(
-                destination,
-                ForkOptions::from_generation(generation.value, idempotency_key),
-                remaining_work(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(workspace_error)?;
-        work = account_work(work, workspace.work, budget)?;
-        let workspace = workspace.value;
-        let state = snapshot.exactification_state(
-            workspace.id(),
-            self.workspace.id(),
-            exactification_source,
-        );
-        let inserted = self
-            .store
-            .compare_and_swap_lazy_workspace_measured(
-                workspace.id(),
-                0,
-                state.clone(),
-                remaining_work(work, budget)?,
-                cancellation,
-            )
-            .await?;
-        work = account_work(work, inserted.work, budget)?;
-        if !inserted.value {
-            let existing = self
-                .store
-                .load_lazy_workspace_measured(
-                    workspace.id(),
-                    remaining_work(work, budget)?,
-                    cancellation,
-                )
-                .await?;
-            work = account_work(work, existing.work, budget)?;
-            let existing = existing.value.ok_or(LazyWorkspaceError::Concurrent)?;
-            if existing.parent_workspace_id != state.parent_workspace_id
-                || existing.source != state.source
-                || existing.overlay != state.overlay
-                || existing.shadows != state.shadows
+        let cancellation = cancellation(accounting);
+        let generation = {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                self.workspace
+                    .generation(frozen.authored_generation, original, cancellation)
+                    .await?
+            } else {
+                accept_receipt(
+                    self.workspace
+                        .generation(
+                            frozen.authored_generation,
+                            accounting.remaining()?,
+                            cancellation,
+                        )
+                        .await,
+                    accounting,
+                )?
+            }
+            #[cfg(target_arch = "wasm32")]
             {
-                return Err(LazyWorkspaceError::Concurrent);
+                accept_receipt(
+                    self.workspace
+                        .generation(
+                            frozen.authored_generation,
+                            accounting.remaining()?,
+                            cancellation,
+                        )
+                        .await,
+                    accounting,
+                )?
             }
-        }
-        let exactified = Self {
-            workspace,
-            source: Arc::clone(&self.source),
-            store: self.store.clone(),
-        }
-        .exactify(remaining_work(work, budget)?, cancellation)
-        .await?;
-        work = account_work(work, exactified.work, budget)?;
-        Ok(OperationReceipt {
-            value: exactified.value,
-            work,
-        })
-    }
-
-    /// Advances this binding to the provider's current invalidation epoch
-    /// without enumerating the source. Prior overlay roots remain immutable;
-    /// observations are refreshed on demand in the new epoch while authored
-    /// state and tombstones remain shared.
-    pub async fn rebind_source(&self) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
-        let source = self.source.reference();
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let state = self
-                .store
-                .load_lazy_workspace(self.workspace.id())
-                .await
-                .map_err(store_error)?
-                .ok_or_else(|| LazyWorkspaceError::Store("lazy binding is absent".to_owned()))?;
-            if state.schema_version != LAZY_STATE_SCHEMA
-                || state.workspace_id != self.workspace.id()
-                || state.source.identity != source.identity
+        };
+        let options = ForkOptions::from_generation(generation, operation);
+        let child = {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                self.workspace
+                    .fork_with_native_work(
+                        destination,
+                        options,
+                        crate::PublicationPermit::Unrestricted,
+                        original,
+                        cancellation,
+                        &mut |_| async { Ok::<(), LazyWorkspaceError>(()) },
+                    )
+                    .await?
+            } else {
+                accept_receipt(
+                    self.workspace
+                        .fork(
+                            destination,
+                            options,
+                            crate::PublicationPermit::Unrestricted,
+                            accounting.remaining()?,
+                            cancellation,
+                            |_| async {
+                                Ok::<_, crate::OperationFailure<crate::FsError>>(OperationReceipt {
+                                    value: (),
+                                    work: WorkCounters::UNCHARGED,
+                                })
+                            },
+                        )
+                        .await,
+                    accounting,
+                )?
+            }
+            #[cfg(target_arch = "wasm32")]
             {
-                return Err(LazyWorkspaceError::StaleSource);
+                accept_receipt(
+                    self.workspace
+                        .fork(
+                            destination,
+                            options,
+                            crate::PublicationPermit::Unrestricted,
+                            accounting.remaining()?,
+                            cancellation,
+                            |_| async {
+                                Ok::<_, crate::OperationFailure<crate::FsError>>(OperationReceipt {
+                                    value: (),
+                                    work: WorkCounters::UNCHARGED,
+                                })
+                            },
+                        )
+                        .await,
+                    accounting,
+                )?
             }
-            if state.pending_remove.is_some() {
-                return Err(LazyWorkspaceError::Concurrent);
+        };
+        let observed = {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                self.workspace
+                    .volume
+                    .fs
+                    .workspace_for_creation_operation_with_native_work(
+                        child.name.as_str(),
+                        child.volume.config,
+                        operation.operation_id(),
+                        original,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|(error, allocation)| {
+                        LazyWorkspaceError::NativeWorkspace(error, allocation)
+                    })?
+            } else {
+                accept_receipt(
+                    self.workspace
+                        .volume
+                        .fs
+                        .workspace_for_creation_operation(
+                            child.name.as_str(),
+                            child.volume.config,
+                            operation.operation_id(),
+                            accounting.remaining()?,
+                            cancellation,
+                        )
+                        .await,
+                    accounting,
+                )?
             }
-            if state.source == source {
-                return Ok(state);
-            }
-            let replacement = LazyWorkspaceState {
-                revision: state.revision.saturating_add(1),
-                source,
-                ..state.clone()
-            };
-            if self
-                .store
-                .compare_and_swap_lazy_workspace(
-                    self.workspace.id(),
-                    state.revision,
-                    replacement.clone(),
-                )
-                .await
-                .map_err(store_error)?
+            #[cfg(target_arch = "wasm32")]
             {
-                return Ok(replacement);
+                accept_receipt(
+                    self.workspace
+                        .volume
+                        .fs
+                        .workspace_for_creation_operation(
+                            child.name.as_str(),
+                            child.volume.config,
+                            operation.operation_id(),
+                            accounting.remaining()?,
+                            cancellation,
+                        )
+                        .await,
+                    accounting,
+                )?
             }
         }
-        Err(LazyWorkspaceError::Concurrent)
+        .ok_or(LazyWorkspaceError::Concurrent)?;
+        let original = observed.id();
+        drop(observed);
+        self.bind_prepared_fork(
+            frozen,
+            child,
+            original,
+            operation.operation_id(),
+            accounting,
+        )
+        .await
     }
 }

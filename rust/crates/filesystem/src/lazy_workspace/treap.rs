@@ -1,7 +1,6 @@
 use super::*;
+use crate::kernel::{KernelAccounting, Owned};
 
-
-#[derive(Clone)]
 pub(super) struct ImmutableTreapNode<K, V, I> {
     pub(super) key: K,
     pub(super) priority: u64,
@@ -10,130 +9,137 @@ pub(super) struct ImmutableTreapNode<K, V, I> {
     pub(super) right: I,
 }
 
-#[async_trait]
 pub(super) trait ImmutableTreap: Sync {
     type Id: Copy + Send + Sync;
-    type Key: Clone + Ord + Send + Sync;
-    type Value: Clone + Send + Sync;
-
-    async fn load(
+    type Key: Ord + Send + Sync;
+    type Value: Send + Sync;
+    fn load(
         &self,
         id: Self::Id,
-    ) -> Result<Option<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>, LazyWorkspaceError>;
-
-    async fn store(
+        accounting: &mut KernelAccounting<'_>,
+    ) -> impl Future<
+        Output = Result<
+            Option<Owned<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>>,
+            LazyWorkspaceError,
+        >,
+    > + Send;
+    fn store(
         &self,
-        node: ImmutableTreapNode<Self::Key, Self::Value, Self::Id>,
-    ) -> Result<Self::Id, LazyWorkspaceError>;
-
+        node: Owned<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> impl Future<Output = Result<Self::Id, LazyWorkspaceError>> + Send;
     fn priority(key: &Self::Key) -> u64;
+    fn key_bytes(key: &Self::Key) -> u64;
 }
 
-pub(super) fn insert_immutable_treap<'a, T: ImmutableTreap>(
-    treap: &'a T,
-    root: T::Id,
-    key: T::Key,
-    value: T::Value,
-) -> LazyFuture<'a, Result<T::Id, LazyWorkspaceError>> {
-    Box::pin(async move {
-        let Some(current) = treap.load(root).await? else {
-            return treap
-                .store(ImmutableTreapNode {
-                    priority: T::priority(&key),
-                    key,
-                    value,
-                    left: root,
-                    right: root,
-                })
-                .await;
-        };
-        match key.cmp(&current.key) {
-            std::cmp::Ordering::Equal => {
-                treap
-                    .store(ImmutableTreapNode {
-                        key,
-                        value,
-                        ..current
-                    })
-                    .await
-            }
-            ordering => {
-                let descend_left = ordering == std::cmp::Ordering::Less;
-                let child_root = if descend_left {
-                    current.left
-                } else {
-                    current.right
-                };
-                let inserted = insert_immutable_treap(treap, child_root, key, value).await?;
-                let child = treap.load(inserted).await?.ok_or_else(|| {
-                    LazyWorkspaceError::Store("inserted lazy index node is absent".to_owned())
-                })?;
-                if child.priority > current.priority {
-                    let rotated = treap
-                        .store(if descend_left {
-                            ImmutableTreapNode {
-                                left: child.right,
-                                ..current
-                            }
-                        } else {
-                            ImmutableTreapNode {
-                                right: child.left,
-                                ..current
-                            }
-                        })
-                        .await?;
-                    return treap
-                        .store(if descend_left {
-                            ImmutableTreapNode {
-                                right: rotated,
-                                ..child
-                            }
-                        } else {
-                            ImmutableTreapNode {
-                                left: rotated,
-                                ..child
-                            }
-                        })
-                        .await;
-                }
-                treap
-                    .store(if descend_left {
-                        ImmutableTreapNode {
-                            left: inserted,
-                            ..current
-                        }
-                    } else {
-                        ImmutableTreapNode {
-                            right: inserted,
-                            ..current
-                        }
-                    })
-                    .await
-            }
-        }
-    })
-}
-
-pub(super) async fn immutable_treap_value<T: ImmutableTreap>(
+pub(super) async fn insert_immutable_treap<T: ImmutableTreap>(
     treap: &T,
     mut root: T::Id,
-    key: &T::Key,
-) -> Result<Option<T::Value>, LazyWorkspaceError> {
-    loop {
-        let Some(node) = treap.load(root).await? else {
-            return Ok(None);
-        };
-        match key.cmp(&node.key) {
-            std::cmp::Ordering::Equal => return Ok(Some(node.value)),
-            std::cmp::Ordering::Less => root = node.left,
-            std::cmp::Ordering::Greater => root = node.right,
+    input: Owned<(T::Key, T::Value)>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<T::Id, LazyWorkspaceError> {
+    let mut input = Some(input);
+    let mut parents = Owned::allocate(0, accounting)?;
+    let result = async {
+        loop {
+            let Some(node) = treap.load(root, accounting).await? else {
+                break;
+            };
+            let direction = input
+                .as_ref()
+                .expect("pending key")
+                .value
+                .0
+                .cmp(&node.value.key);
+            if direction.is_eq() {
+                let input = input.take().expect("pending replacement");
+                let replacement = Owned::new(
+                    ImmutableTreapNode {
+                        key: input.value.0,
+                        value: input.value.1,
+                        priority: node.value.priority,
+                        left: node.value.left,
+                        right: node.value.right,
+                    },
+                    input.allocation,
+                    input.bytes,
+                );
+                node.retire(accounting)?;
+                root = treap.store(replacement, accounting).await?;
+                break;
+            }
+            root = if direction.is_lt() {
+                node.value.left
+            } else {
+                node.value.right
+            };
+            if let Err(error) = parents.ensure_for_push(usize::MAX, accounting) {
+                node.retire(accounting)?;
+                return Err(error.into());
+            }
+            parents.value.push((node, direction));
         }
+        if let Some(input) = input.take() {
+            accounting.charge(WorkCounters {
+                bytes_hashed: T::key_bytes(&input.value.0),
+                ..WorkCounters::UNCHARGED
+            })?;
+            let priority = T::priority(&input.value.0);
+            let leaf = Owned::new(
+                ImmutableTreapNode {
+                    key: input.value.0,
+                    value: input.value.1,
+                    priority,
+                    left: root,
+                    right: root,
+                },
+                input.allocation,
+                input.bytes,
+            );
+            root = treap.store(leaf, accounting).await?;
+        }
+        while let Some((mut parent, direction)) = parents.value.pop() {
+            let child = treap.load(root, accounting).await?;
+            if let Some(mut child) = child {
+                if child.value.priority < parent.value.priority {
+                    if direction.is_lt() {
+                        parent.value.left = child.value.right;
+                    } else {
+                        parent.value.right = child.value.left;
+                    }
+                    let rotated = treap.store(parent, accounting).await?;
+                    if direction.is_lt() {
+                        child.value.right = rotated;
+                    } else {
+                        child.value.left = rotated;
+                    }
+                    root = treap.store(child, accounting).await?;
+                    continue;
+                }
+                child.retire(accounting)?;
+            }
+            if direction.is_lt() {
+                parent.value.left = root;
+            } else {
+                parent.value.right = root;
+            }
+            root = treap.store(parent, accounting).await?;
+        }
+        Ok(root)
     }
+    .await;
+    if let Some(input) = input {
+        input.retire(accounting)?;
+    }
+    while let Some((node, _)) = parents.value.pop() {
+        node.retire(accounting)?;
+    }
+    parents.retire(accounting)?;
+    result
 }
 
 pub(super) struct OverlayTreap<'a, S>(pub(super) &'a S);
 
-#[async_trait]
 impl<S: LazyWorkspaceStore> ImmutableTreap for OverlayTreap<'_, S> {
     type Id = LazyOverlayId;
     type Key = String;
@@ -142,54 +148,69 @@ impl<S: LazyWorkspaceStore> ImmutableTreap for OverlayTreap<'_, S> {
     async fn load(
         &self,
         id: Self::Id,
-    ) -> Result<Option<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>, LazyWorkspaceError>
-    {
-        match self.0.load_lazy_overlay(id).await.map_err(store_error)? {
-            Some(LazyOverlay::Empty) => Ok(None),
-            Some(LazyOverlay::Node {
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<
+        Option<Owned<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>>,
+        LazyWorkspaceError,
+    > {
+        let node = self
+            .0
+            .load_lazy_overlay(id, accounting)
+            .await?
+            .ok_or(LazyWorkspaceError::NotFound)?;
+        let bytes = node.0.owned_bytes();
+        match node.0 {
+            LazyOverlay::Empty => {
+                crate::kernel::retire_allocation(node.1, bytes, accounting)?;
+                Ok(None)
+            }
+            LazyOverlay::Node {
                 path,
                 priority,
                 change,
                 left,
                 right,
-            }) => Ok(Some(ImmutableTreapNode {
-                key: path,
-                priority,
-                value: change,
-                left,
-                right,
-            })),
-            None => Err(LazyWorkspaceError::Store(
-                "lazy overlay is absent".to_owned(),
-            )),
+            } => Ok(Some(Owned::new(
+                ImmutableTreapNode {
+                    key: path,
+                    priority,
+                    value: change,
+                    left,
+                    right,
+                },
+                node.1,
+                bytes,
+            ))),
         }
     }
 
     async fn store(
         &self,
-        node: ImmutableTreapNode<Self::Key, Self::Value, Self::Id>,
+        node: Owned<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self::Id, LazyWorkspaceError> {
-        let overlay = LazyOverlay::Node {
-            path: node.key,
-            priority: node.priority,
-            change: node.value,
-            left: node.left,
-            right: node.right,
+        let value = LazyOverlay::Node {
+            path: node.value.key,
+            priority: node.value.priority,
+            change: node.value.value,
+            left: node.value.left,
+            right: node.value.right,
         };
-        let id = overlay.id()?;
+        let id = LazyOverlayId::from_bytes(hash_lazy_value(&value, accounting)?);
         self.0
-            .put_lazy_overlay(id, overlay)
-            .await
-            .map_err(store_error)?;
+            .put_lazy_overlay(id, (value, node.allocation), accounting)
+            .await?;
         Ok(id)
     }
 
     fn priority(key: &Self::Key) -> u64 {
         path_priority(key)
     }
+    fn key_bytes(key: &Self::Key) -> u64 {
+        key.len() as u64
+    }
 }
 
-#[derive(Clone)]
 pub(super) struct ShadowValue {
     pub(super) record: Vec<u8>,
     pub(super) metadata: Box<crate::WorkspaceMetadata>,
@@ -197,7 +218,6 @@ pub(super) struct ShadowValue {
 
 pub(super) struct ShadowTreap<'a, S>(pub(super) &'a S);
 
-#[async_trait]
 impl<S: LazyWorkspaceStore> ImmutableTreap for ShadowTreap<'_, S> {
     type Id = LazyShadowId;
     type Key = FileId;
@@ -206,52 +226,67 @@ impl<S: LazyWorkspaceStore> ImmutableTreap for ShadowTreap<'_, S> {
     async fn load(
         &self,
         id: Self::Id,
-    ) -> Result<Option<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>, LazyWorkspaceError>
-    {
-        match self.0.load_lazy_shadow(id).await.map_err(store_error)? {
-            Some(LazyShadow::Empty) => Ok(None),
-            Some(LazyShadow::Node {
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<
+        Option<Owned<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>>,
+        LazyWorkspaceError,
+    > {
+        let node = self
+            .0
+            .load_lazy_shadow(id, accounting)
+            .await?
+            .ok_or(LazyWorkspaceError::NotFound)?;
+        let bytes = node.0.owned_bytes();
+        match node.0 {
+            LazyShadow::Empty => {
+                crate::kernel::retire_allocation(node.1, bytes, accounting)?;
+                Ok(None)
+            }
+            LazyShadow::Node {
                 file_id,
                 priority,
                 record,
                 metadata,
                 left,
                 right,
-            }) => Ok(Some(ImmutableTreapNode {
-                key: file_id,
-                priority,
-                value: ShadowValue { record, metadata },
-                left,
-                right,
-            })),
-            None => Err(LazyWorkspaceError::Store(
-                "lazy identity shadow is absent".to_owned(),
-            )),
+            } => Ok(Some(Owned::new(
+                ImmutableTreapNode {
+                    key: file_id,
+                    priority,
+                    value: ShadowValue { record, metadata },
+                    left,
+                    right,
+                },
+                node.1,
+                bytes,
+            ))),
         }
     }
 
     async fn store(
         &self,
-        node: ImmutableTreapNode<Self::Key, Self::Value, Self::Id>,
+        node: Owned<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self::Id, LazyWorkspaceError> {
-        let shadow = LazyShadow::Node {
-            file_id: node.key,
-            priority: node.priority,
-            record: node.value.record,
-            metadata: node.value.metadata,
-            left: node.left,
-            right: node.right,
+        let value = LazyShadow::Node {
+            file_id: node.value.key,
+            priority: node.value.priority,
+            record: node.value.value.record,
+            metadata: node.value.value.metadata,
+            left: node.value.left,
+            right: node.value.right,
         };
-        let id = shadow.id()?;
+        let id = LazyShadowId::from_bytes(hash_lazy_value(&value, accounting)?);
         self.0
-            .put_lazy_shadow(id, shadow)
-            .await
-            .map_err(store_error)?;
+            .put_lazy_shadow(id, (value, node.allocation), accounting)
+            .await?;
         Ok(id)
     }
 
     fn priority(key: &Self::Key) -> u64 {
         shadow_priority(*key)
     }
+    fn key_bytes(_: &Self::Key) -> u64 {
+        16
+    }
 }
-

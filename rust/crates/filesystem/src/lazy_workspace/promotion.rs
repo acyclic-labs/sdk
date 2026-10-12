@@ -1,312 +1,254 @@
 use super::*;
+use crate::kernel::KernelAccounting;
 
-
-impl<A, O, D, S> LazyWorkspace<A, O, D, S>
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-    D: DemandSource + 'static,
-    S: LazyWorkspaceStore,
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
+    LazyWorkspace<A, O, D, S>
 {
-
-
-    /// Promotes one demanded node under an authority-side publication permit.
-    pub async fn promote_with_permit(
+    /// Promotes one resolved object under the supplied publication authority.
+    pub async fn promote(
         &self,
         path: &str,
         maximum_bytes: u64,
-        idempotency_key: IdempotencyKey,
+        operation: IdempotencyKey,
         permit: crate::PublicationPermit,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<TransactionCommit<A, O>, LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.promote_with_permit_measured(
-            path,
-            maximum_bytes,
-            idempotency_key,
-            permit,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map(|receipt| receipt.value)
+        let requested = self.canonical_path(path, accounting)?;
+        let lookup = self.lookup(&requested.value, accounting).await?;
+        let result = self
+            .promote_resolved(
+                &requested.value,
+                &lookup.0,
+                maximum_bytes,
+                operation,
+                permit,
+                accounting,
+            )
+            .await;
+        self.retire_lookup(lookup, accounting)?;
+        requested.retire(accounting)?;
+        result
     }
 
-    async fn promote_with_permit_measured(
-        &self,
-        path: &str,
-        maximum_bytes: u64,
-        idempotency_key: IdempotencyKey,
-        permit: crate::PublicationPermit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<TransactionCommit<A, O>>, LazyWorkspaceError> {
-        let requested = self.canonical_path(path)?;
-        let lookup = self
-            .lookup_measured(&requested, budget, cancellation)
-            .await?;
-        self.promote_resolved_with_permit_measured(
-            &requested,
-            lookup.value,
-            maximum_bytes,
-            idempotency_key,
-            permit,
-            lookup.work,
-            budget,
-            cancellation,
-        )
-        .await
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "carries the resolved lookup, byte bound, idempotency key, permit, work, budget, and cancellation of one promotion"
-    )]
-    async fn promote_resolved_with_permit_measured(
+    async fn promote_resolved(
         &self,
         requested: &str,
-        lookup: ResolvedLazyLookup,
+        lookup: &LazyLookup,
         maximum_bytes: u64,
-        idempotency_key: IdempotencyKey,
+        operation: IdempotencyKey,
         permit: crate::PublicationPermit,
-        mut work: WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<TransactionCommit<A, O>>, LazyWorkspaceError> {
-        work.verify(budget)?;
-        let transaction = self
-            .workspace
-            .begin_transaction_measured(
-                idempotency_key,
-                remaining_work(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(workspace_error)?;
-        work = account_work(work, transaction.work, budget)?;
-        let mut transaction = transaction.value;
-        if let Some(parent) = parent_path(requested) {
-            let applied = transaction
-                .create_dir_all_measured(parent, remaining_work(work, budget)?, cancellation)
-                .await
-                .map_err(workspace_error)?;
-            work = account_work(work, applied, budget)?;
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<TransactionCommit<A, O>, LazyWorkspaceError> {
+        if matches!(lookup, LazyLookup::Authored { path, .. } if path == requested) {
+            return Ok(TransactionCommit::AlreadyCommitted(
+                self.head(accounting).await?,
+            ));
         }
-        let applied = self
-            .apply_resolved_promotion_measured(
-                &mut transaction,
-                requested,
-                lookup,
-                maximum_bytes,
-                remaining_work(work, budget)?,
-                cancellation,
+        let checkout = self
+            .workspace
+            .checkout_with_accounting(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+                accounting,
+                cancellation(accounting),
             )
             .await?;
-        work = account_work(work, applied.work, budget)?;
-        if !applied.value {
-            return self.existing_promotion(work, budget, cancellation).await;
+        let mut transaction =
+            crate::Transaction::from_checkout(&self.workspace, checkout, operation, false);
+        if let Some(parent) = parent_path(requested) {
+            transaction
+                .create_dir_all_with_accounting(parent, accounting, cancellation(accounting))
+                .await?;
         }
-        self.commit_promotion(transaction, permit, work, budget, cancellation)
-            .await
+        self.apply_resolved_promotion(
+            &mut transaction,
+            requested,
+            lookup,
+            maximum_bytes,
+            accounting,
+        )
+        .await?;
+        self.commit(&mut transaction, permit, accounting).await
     }
 
-    /// Applies one already-resolved source fact to an unpublished candidate.
-    /// Callers choose the publication boundary; the source semantics stay here.
-    async fn apply_resolved_promotion_measured(
+    pub(super) async fn apply_resolved_promotion(
         &self,
         transaction: &mut crate::Transaction<A, O>,
         requested: &str,
-        lookup: ResolvedLazyLookup,
+        lookup: &LazyLookup,
         maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<bool>, LazyWorkspaceError> {
-        in_heap(move || async move {
-            let mut work = WorkCounters::default();
-            let ResolvedLazyLookup { lookup, source } = lookup;
-            let pinned = match lookup {
-                LazyLookup::Source(node) => PinnedSourceNode {
-                    source: source.ok_or(LazyWorkspaceError::Concurrent)?,
-                    node,
-                },
-                LazyLookup::Authored {
-                    path: authored_path,
-                    ..
-                } => {
-                    if authored_path == requested {
-                        return Ok(OperationReceipt { value: false, work });
-                    }
-                    let applied = transaction
-                        .hard_link_measured(
-                            &authored_path,
-                            requested,
-                            remaining_work(work, budget)?,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(workspace_error)?;
-                    work = account_work(work, applied, budget)?;
-                    return Ok(OperationReceipt { value: true, work });
-                }
-                LazyLookup::Shadow { record, .. } => {
-                    let applied = transaction
-                        .restore_record_measured(
-                            requested,
-                            record,
-                            remaining_work(work, budget)?,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(workspace_error)?;
-                    work = account_work(work, applied, budget)?;
-                    return Ok(OperationReceipt { value: true, work });
-                }
-            };
-            let populated = self
-                .populate_source_node_measured(
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, LazyWorkspaceError> {
+        let cancellation = cancellation(accounting);
+        match lookup {
+            LazyLookup::Source { source, node } => {
+                self.populate_source_node(
                     transaction,
                     requested,
-                    &pinned,
+                    *source,
+                    *node,
                     maximum_bytes,
-                    remaining_work(work, budget)?,
-                    cancellation,
+                    accounting,
                 )
                 .await?;
-            work = account_work(work, populated, budget)?;
-            Ok(OperationReceipt { value: true, work })
-        })
-        .await
+            }
+            LazyLookup::Authored { path, .. } if path == requested => return Ok(false),
+            LazyLookup::Authored { path, .. } => {
+                let operations =
+                    transaction.prepare_hard_link(path, requested, accounting, cancellation)?;
+                transaction
+                    .apply_workspace_authored_with_accounting(operations, accounting, cancellation)
+                    .await?;
+            }
+            LazyLookup::Shadow { record, .. } => {
+                transaction
+                    .restore_record_with_accounting(requested, *record, accounting, cancellation)
+                    .await?;
+            }
+        }
+        Ok(true)
     }
 
-    /// Promotes one source node and accepts only a durable successful outcome.
-    ///
-    /// Mount adapters use this boundary so a typed conflict can never advance
-    /// their authored view as though promotion succeeded.
+    /// Promotes only the exact identity the caller inspected.
     pub async fn promote_exact(
         &self,
         path: &str,
-        expected_source: FileId,
+        expected: FileId,
         maximum_bytes: u64,
-        idempotency_key: IdempotencyKey,
+        operation: IdempotencyKey,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        let requested = self.canonical_path(path)?;
-        let lookup = self.lookup(&requested).await?;
-        if self.direct_file_id_for_lookup(&lookup) != expected_source {
-            return Err(LazyWorkspaceError::StaleIdentity);
-        }
-        if let LazyLookup::Authored { path, .. } = lookup
-            && path == requested
-        {
-            return self.workspace.head().await.map_err(workspace_error);
-        }
-        match self
-            .promote(&requested, maximum_bytes, idempotency_key)
-            .await?
-        {
-            TransactionCommit::Committed(generation)
-            | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-            TransactionCommit::Conflict { .. } | TransactionCommit::Fenced => {
-                Err(LazyWorkspaceError::StaleIdentity)
-            }
-            TransactionCommit::IdempotencyConflict => Err(LazyWorkspaceError::Concurrent),
-        }
-    }
-
-    /// Promotes one pinned source fact into an unpublished mount candidate.
-    /// The caller owns the only eventual workspace publication; promotion
-    /// itself must never advance HEAD ahead of dirty mounted mutations.
-    #[cfg(feature = "native-mount")]
-    pub(crate) async fn stage_exact_into_checkout(
-        &self,
-        checkout: &mut crate::Checkout<A, O>,
-        path: &str,
-        expected_source: FileId,
-        maximum_bytes: u64,
-        cancellation: &CancellationToken,
-    ) -> Result<bool, LazyWorkspaceError> {
-        in_heap(move || async move {
-            let requested = self.canonical_path(path)?;
-            let lookup = self
-                .lookup_measured(&requested, WorkBudget::UNBOUNDED, cancellation)
+        let lookup = self.lookup(path, accounting).await?;
+        let result = async {
+            if self
+                .stable_file_id_for_lookup(path, &lookup.0, accounting)
                 .await?
-                .value;
-            let actual = self.direct_file_id_for_lookup(&lookup.lookup);
-            if actual != expected_source {
-                return Err(LazyWorkspaceError::StaleIdentity);
-            }
-            let candidate_path = self.namespace_path(&requested)?;
-            if let Some(record) = checkout
-                .lookup_no_follow(&candidate_path, WorkBudget::UNBOUNDED, cancellation)
-                .await
-                .map_err(|failure| workspace_error(failure.error.into()))?
-                .value
-                .record
+                != expected
             {
-                return (record.file_id == expected_source)
-                    .then_some(false)
-                    .ok_or(LazyWorkspaceError::StaleIdentity);
-            }
-            if matches!(
-                &lookup.lookup,
-                LazyLookup::Authored { path, .. } if path == &requested
-            ) {
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
-            let existing_identity = if matches!(
-                &lookup.lookup,
-                LazyLookup::Source(node) if node.kind != SourceNodeKind::Directory
-            ) {
-                match checkout
-                    .read_file_record_by_id(expected_source, WorkBudget::UNBOUNDED, cancellation)
-                    .await
-                {
-                    Ok(receipt) => Some(receipt.value),
-                    Err(failure) if matches!(failure.error, crate::FsError::NotFound) => None,
-                    Err(failure) => {
-                        return Err(LazyWorkspaceError::Workspace(failure.error.to_string()));
-                    }
-                }
-            } else {
-                None
-            };
-            let mut transaction = crate::Transaction::for_checkout_candidate(
-                &self.workspace,
-                checkout.private_candidate(),
-            );
-            if let Some(parent) = parent_path(&requested) {
-                transaction
-                    .create_dir_all_measured(parent, WorkBudget::UNBOUNDED, cancellation)
-                    .await
-                    .map_err(workspace_error)?;
-            }
-            if let Some(record) = existing_identity {
-                transaction
-                    .restore_record_measured(
-                        &requested,
-                        record,
-                        WorkBudget::UNBOUNDED,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(workspace_error)?;
-                *checkout = transaction.into_checkout_candidate();
-                return Ok(true);
-            }
-            let changed = self
-                .apply_resolved_promotion_measured(
-                    &mut transaction,
-                    &requested,
-                    lookup,
+            match self
+                .promote_resolved(
+                    path,
+                    &lookup.0,
                     maximum_bytes,
-                    WorkBudget::UNBOUNDED,
-                    cancellation,
+                    operation,
+                    crate::PublicationPermit::Unrestricted,
+                    accounting,
                 )
                 .await?
-                .value;
+            {
+                TransactionCommit::Committed(generation)
+                | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
+                TransactionCommit::IdempotencyConflict => Err(LazyWorkspaceError::Concurrent),
+                TransactionCommit::Conflict { .. } | TransactionCommit::Fenced => {
+                    Err(LazyWorkspaceError::StaleIdentity)
+                }
+            }
+        }
+        .await;
+        self.retire_lookup(lookup, accounting)?;
+        result
+    }
+
+    /// Stages a live or frozen identity in an unpublished checkout.
+    #[cfg(feature = "native-mount")]
+    pub(crate) async fn stage_into_checkout(
+        &self,
+        checkout: &mut crate::Checkout<A, O>,
+        snapshot: Option<LazySnapshotRef>,
+        path: &str,
+        expected: FileId,
+        maximum_bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, LazyWorkspaceError> {
+        let lookup = if let Some(snapshot) = snapshot {
+            let (lookup, _, allocation) =
+                self.lookup_at_snapshot(snapshot, path, accounting).await?;
+            (lookup.ok_or(LazyWorkspaceError::NotFound)?, allocation)
+        } else {
+            self.lookup(path, accounting).await?
+        };
+        let result = async {
+            if self
+                .stable_file_id_for_lookup(path, &lookup.0, accounting)
+                .await?
+                != expected
+            {
+                return Err(LazyWorkspaceError::StaleIdentity);
+            }
+            let namespace = self.namespace_path(path, accounting)?;
+            let record = checkout
+                .lookup_no_follow_with_metadata_with_accounting(
+                    &namespace.value,
+                    accounting,
+                    cancellation(accounting),
+                )
+                .await;
+            namespace.retire(accounting)?;
+            if let Some(record) = record? {
+                return if record.record.file_id == expected {
+                    Ok(false)
+                } else {
+                    Err(LazyWorkspaceError::StaleIdentity)
+                };
+            }
+            if matches!(&lookup.0, LazyLookup::Authored { path: authored, .. } if authored == path)
+            {
+                return Err(LazyWorkspaceError::StaleIdentity);
+            }
+            let candidate =
+                checkout.private_candidate_with_accounting(accounting, cancellation(accounting))?;
+            let mut transaction = {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = accounting.native_work() {
+                    crate::Transaction::for_checkout_candidate(
+                        &self.workspace,
+                        candidate,
+                        original,
+                        cancellation(accounting),
+                    )?
+                } else {
+                    let result = crate::Transaction::for_checkout_candidate(
+                        &self.workspace,
+                        candidate,
+                        accounting.remaining()?,
+                        cancellation(accounting),
+                    );
+                    accept_receipt(result, accounting)?
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let result = crate::Transaction::for_checkout_candidate(
+                        &self.workspace,
+                        candidate,
+                        accounting.remaining()?,
+                        cancellation(accounting),
+                    );
+                    accept_receipt(result, accounting)?
+                }
+            };
+            if let Some(parent) = parent_path(path) {
+                transaction
+                    .create_dir_all_with_accounting(parent, accounting, cancellation(accounting))
+                    .await?;
+            }
+            let changed = self
+                .apply_resolved_promotion(
+                    &mut transaction,
+                    path,
+                    &lookup.0,
+                    maximum_bytes,
+                    accounting,
+                )
+                .await?;
             if changed {
-                *checkout = transaction.into_checkout_candidate();
+                *checkout = transaction.checkout;
             }
             Ok(changed)
-        })
-        .await
+        }
+        .await;
+        self.retire_lookup(lookup, accounting)?;
+        result
     }
 }

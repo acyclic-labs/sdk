@@ -1,616 +1,402 @@
 use super::*;
+use crate::kernel::KernelAccounting;
 
-/// Facts an inspection's caller already established, so it need not repeat them.
-#[derive(Clone, Copy, Default)]
-pub(super) struct InspectBasis<'a> {
-    /// State the caller read; otherwise the current state is loaded.
-    pub(super) state: Option<&'a LazyWorkspaceState>,
-    /// The caller's authored view already lacks the path.
-    pub(super) authored_absent: bool,
-    /// Node a listing observed for the path after excluding tombstones.
-    pub(super) listed: Option<SourceNode>,
-    /// Keep an observation pinned to an earlier source epoch.
-    pub(super) retain_pinned_observation: bool,
-    /// The overlay records no fact for the path, as its listing proved.
-    pub(super) unobserved: bool,
-}
-
-/// Path facts returned without forcing unrelated source state.
+/// Path facts without fetching content.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LazyStat {
     /// Observed kind.
     pub kind: SourceNodeKind,
-    /// Observed logical bytes when meaningful.
+    /// Logical length when known.
     pub logical_bytes: Option<u64>,
-    /// Whether the authored checkout overrides the source.
+    /// Whether authenticated authored data supplies the object.
     pub authored: bool,
 }
 
-/// Complete facts returned from either authored state or a source observation.
+/// A no-follow authored or source fact.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LazyLookup {
-    /// Authenticated authored state overrides the source.
+    /// An authored namespace binding.
     Authored {
-        /// Existing authored binding used to serve this path. This may differ
-        /// from the requested source alias until that alias is promoted.
+        /// Exact binding path.
         path: String,
-        /// Authenticated authored facts for the shared identity.
+        /// Authenticated scalar facts.
         stat: WorkspaceStat,
     },
-    /// Latest authored state retained after the final promoted binding was removed.
+    /// Authored data for a source identity, including unresolved aliases.
     Shadow {
-        /// Path-independent immutable file record.
+        /// Immutable authored record.
         record: FileRecord,
-        /// Projected scalar metadata retained with the record.
+        /// Authenticated scalar metadata.
         metadata: crate::WorkspaceMetadata,
-        /// Source-native alias count evidence.
+        /// Source alias count.
         source_link_count: u64,
     },
-    /// Immutable first-observation source state.
-    Source(SourceNode),
+    /// Pinned no-follow source fact.
+    Source {
+        /// Exact observed source reference.
+        source: SourceReference,
+        /// Exact observed node/version.
+        node: SourceNode,
+    },
 }
 
-pub(super) struct ResolvedLazyLookup {
-    pub(super) lookup: LazyLookup,
-    pub(super) source: Option<SourceReference>,
-}
-
-pub(super) struct PinnedSourceNode {
-    pub(super) source: SourceReference,
-    pub(super) node: SourceNode,
-}
-
-
-impl<A, O, D, S> LazyWorkspace<A, O, D, S>
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-    D: DemandSource + 'static,
-    S: LazyWorkspaceStore,
-{
-
-
-    /// Observes one path without reading file content.
-    pub async fn stat(&self, path: &str) -> Result<LazyStat, LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.stat_measured(path, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map(|receipt| receipt.value)
+impl LazyLookup {
+    /// Retained SDK heap backing.
+    pub fn logical_owned_bytes(&self) -> u64 {
+        match self {
+            Self::Authored { path, .. } => path.capacity() as u64,
+            _ => 0,
+        }
     }
-
-    async fn stat_measured(
-        &self,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<LazyStat>, LazyWorkspaceError> {
-        let receipt = self.lookup_measured(path, budget, cancellation).await?;
-        let value = match receipt.value.lookup {
-            LazyLookup::Authored { stat, .. } => LazyStat {
+    /// Scalar classification without marking promotion as modification.
+    pub fn stat(&self) -> LazyStat {
+        match self {
+            Self::Authored { stat, .. } => LazyStat {
                 kind: source_kind(stat.kind),
                 logical_bytes: stat.logical_bytes,
                 authored: true,
             },
-            LazyLookup::Shadow { record, .. } => LazyStat {
+            Self::Shadow { record, .. } => LazyStat {
                 kind: source_kind(record.kind),
-                logical_bytes: record_logical_bytes(record),
+                logical_bytes: record_logical_bytes(*record),
                 authored: true,
             },
-            LazyLookup::Source(node) => LazyStat {
+            Self::Source { node, .. } => LazyStat {
                 kind: node.kind,
                 logical_bytes: node.logical_bytes,
                 authored: false,
             },
-        };
-        Ok(OperationReceipt {
-            value,
-            work: receipt.work,
-        })
+        }
     }
-
-    /// Returns complete demanded facts without reading regular-file content.
-    pub async fn lookup(&self, path: &str) -> Result<LazyLookup, LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.lookup_measured(path, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map(|receipt| receipt.value.lookup)
+    /// Scalar cross-profile metadata.
+    pub fn metadata(&self) -> crate::WorkspaceMetadata {
+        match self {
+            Self::Authored { stat, .. } => stat.metadata,
+            Self::Shadow { metadata, .. } => *metadata,
+            Self::Source { node, .. } => {
+                crate::WorkspaceMetadata::from_engine(source_file_metadata(node.metadata))
+            }
+        }
     }
+}
 
-    async fn lookup_measured(
+#[derive(Clone, Copy, Default)]
+pub(crate) struct InspectBasis<'a> {
+    pub(crate) state: Option<&'a LazyWorkspaceState>,
+    pub(crate) authored_absent: bool,
+    pub(crate) listed: Option<SourceNode>,
+    pub(crate) retain_pinned_observation: bool,
+    pub(crate) unobserved: bool,
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
+    LazyWorkspace<A, O, D, S>
+{
+    /// Resolves and records a first source observation.
+    pub async fn lookup(
         &self,
         path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        in_heap(move || async move {
-            let authored = self
-                .workspace
-                .stat_optional_measured(path, budget, cancellation)
-                .await
-                .map_err(workspace_error)?;
-            let mut work = authored.work;
-            if let Some(stat) = authored.value {
-                return Ok(OperationReceipt {
-                    value: ResolvedLazyLookup {
-                        lookup: LazyLookup::Authored {
-                            path: self.canonical_path(path)?,
-                            stat,
-                        },
-                        source: None,
-                    },
-                    work,
-                });
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(LazyLookup, crate::kernel::allocation::KernelOwnedAllocation), LazyWorkspaceError>
+    {
+        let lookup = self.inspect(path, accounting).await?;
+        if let LazyLookup::Source { source, node } = lookup.0 {
+            let state = self.state(accounting).await?;
+            let change = LazyOverlayChange::Observe { source, node };
+            if self.overlay_fact(state.overlay, path, accounting).await? != Some(change.clone()) {
+                self.append_overlay(path, change, accounting).await?;
             }
-            let state_receipt = self
-                .state_measured(remaining_work(work, budget)?, cancellation)
-                .await?;
-            work = account_work(work, state_receipt.work, budget)?;
-            let state = state_receipt.value;
-            let tombstoned = self
-                .tombstoned_measured(
-                    state.overlay,
-                    path,
-                    remaining_work(work, budget)?,
-                    cancellation,
-                )
-                .await?;
-            work = account_work(work, tombstoned.work, budget)?;
-            if tombstoned.value {
-                return Err(LazyWorkspaceError::NotFound);
-            }
-            let observed = self.observe_measured(path, state, cancellation).await?;
-            work = account_work(work, observed.work, budget)?;
-            let (source, node) = observed.value;
-            let authored = self
-                .authored_alias_measured(&node, remaining_work(work, budget)?, cancellation)
-                .await?;
-            work = account_work(work, authored.work, budget)?;
-            if let Some(authored) = authored.value {
-                return Ok(OperationReceipt {
-                    value: ResolvedLazyLookup {
-                        lookup: authored,
-                        source: None,
-                    },
-                    work,
-                });
-            }
-            Ok(OperationReceipt {
-                value: ResolvedLazyLookup {
-                    lookup: LazyLookup::Source(node),
-                    source: Some(source),
+        }
+        Ok(lookup)
+    }
+
+    /// Inspects transiently, leaving the observation index unchanged.
+    pub async fn inspect(
+        &self,
+        path: &str,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(LazyLookup, crate::kernel::allocation::KernelOwnedAllocation), LazyWorkspaceError>
+    {
+        let mut checkout = self
+            .checkout(crate::model::GenerationSelector::Head, accounting)
+            .await?;
+        let result = self
+            .inspect_unauthored(
+                &mut checkout.value,
+                path,
+                None,
+                InspectBasis::default(),
+                accounting,
+            )
+            .await;
+        checkout.retire(accounting)?;
+        let (lookup, _, allocation) = result?;
+        Ok((lookup.ok_or(LazyWorkspaceError::NotFound)?, allocation))
+    }
+
+    /// Resolves an immutable cut, including known absence and actual source participation.
+    pub async fn lookup_at_snapshot(
+        &self,
+        snapshot: LazySnapshotRef,
+        path: &str,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<
+        (
+            Option<LazyLookup>,
+            bool,
+            crate::kernel::allocation::KernelOwnedAllocation,
+        ),
+        LazyWorkspaceError,
+    > {
+        self.validate_snapshot(snapshot, accounting)?;
+        let mut checkout = self
+            .checkout(
+                crate::model::GenerationSelector::Exact(snapshot.authored_generation),
+                accounting,
+            )
+            .await?;
+        let state = LazyWorkspaceState::new(
+            snapshot.workspace_id,
+            snapshot.source,
+            snapshot.overlay,
+            snapshot.shadows,
+        );
+        let result = self
+            .inspect_unauthored(
+                &mut checkout.value,
+                path,
+                Some(snapshot),
+                InspectBasis {
+                    state: Some(&state),
+                    retain_pinned_observation: true,
+                    ..InspectBasis::default()
                 },
-                work,
-            })
-        })
-        .await
+                accounting,
+            )
+            .await;
+        checkout.retire(accounting)?;
+        result
     }
 
-    /// Returns current facts without extending the immutable observation index.
-    ///
-    /// Directory projection uses this after receiving a source page so that
-    /// gathering entry metadata cannot invalidate the page's continuation.
-    pub async fn inspect(&self, path: &str) -> Result<LazyLookup, LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.inspect_measured(path, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map(|receipt| receipt.value.lookup)
-    }
-
-    async fn inspect_measured(
+    /// Classifies one demanding lookup.
+    pub async fn stat(
         &self,
         path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        self.inspect_with(path, InspectBasis::default(), budget, cancellation)
-            .await
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<LazyStat, LazyWorkspaceError> {
+        let lookup = self.lookup(path, accounting).await?;
+        let stat = lookup.0.stat();
+        self.retire_lookup(lookup, accounting)?;
+        Ok(stat)
     }
 
-    async fn inspect_snapshot_measured(
-        &self,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        let basis = InspectBasis {
-            retain_pinned_observation: true,
-            ..InspectBasis::default()
-        };
-        self.inspect_with(path, basis, budget, cancellation).await
-    }
-
-    async fn inspect_snapshot_after_authored_absence(
-        &self,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        let basis = InspectBasis {
-            retain_pinned_observation: true,
-            authored_absent: true,
-            ..InspectBasis::default()
-        };
-        self.inspect_with(path, basis, budget, cancellation).await
-    }
-
-    /// Resolves `path` for a mount whose own checkout already lacks it.
-    ///
-    /// The mount's checkout, not the published head, is its authored view, so
-    /// the head is not consulted again. `state` pins the snapshot a directory
-    /// page was listed against; otherwise the current state is read.
-    #[cfg(any(feature = "native-mount", test))]
     pub(crate) async fn inspect_unauthored(
         &self,
+        checkout: &mut crate::Checkout<A, O>,
         path: &str,
-        state: Option<&LazyWorkspaceState>,
-    ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
-        in_heap(move || async move {
-            let basis = InspectBasis {
-                state,
-                authored_absent: true,
-                ..InspectBasis::default()
-            };
-            self.inspect_with(
-                path,
-                basis,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| (receipt.value.lookup, receipt.value.source))
-        })
-        .await
-    }
-
-    /// The source view lookups currently resolve in.
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn source_reference(&self) -> SourceReference {
-        self.source.reference()
-    }
-
-    /// What the source itself names at `path` in the view `source`, read
-    /// afresh and bypassing the overlay.
-    #[cfg(feature = "native-mount")]
-    pub(crate) async fn source_lookup(
-        &self,
-        source: SourceReference,
-        path: &str,
-    ) -> Result<Option<SourceNode>, LazyWorkspaceError> {
-        self.source
-            .lookup(
-                source,
-                &self.namespace_path(path)?,
-                &CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| LazyWorkspaceError::from(failure.error))
-    }
-
-    /// Resolves a source entry of a page listed against `state`, reusing the
-    /// node the listing observed. The listing already excluded tombstoned and
-    /// authored names, so neither the source nor the tombstones are consulted.
-    #[cfg(feature = "native-mount")]
-    pub(crate) async fn inspect_listed(
-        &self,
-        state: &LazyWorkspaceState,
-        path: &str,
-        node: SourceNode,
-        unobserved: bool,
-    ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
-        in_heap(move || async move {
-            let basis = InspectBasis {
-                state: Some(state),
-                authored_absent: true,
-                listed: Some(node),
-                unobserved,
-                ..InspectBasis::default()
-            };
-            self.inspect_with(
-                path,
-                basis,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| (receipt.value.lookup, receipt.value.source))
-        })
-        .await
-    }
-
-    /// The source node `path` names in `state`: a pinned observation, the node
-    /// a listing supplied, or a fresh source lookup, never a tombstoned path.
-    async fn source_node_in(
-        &self,
-        state: &LazyWorkspaceState,
-        path: &str,
+        snapshot: Option<LazySnapshotRef>,
         basis: InspectBasis<'_>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<(SourceReference, SourceNode)>, LazyWorkspaceError> {
-        let fact = if basis.unobserved && basis.listed.is_some() {
-            OperationReceipt {
-                value: None,
-                work: WorkCounters::default(),
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<
+        (
+            Option<LazyLookup>,
+            bool,
+            crate::kernel::allocation::KernelOwnedAllocation,
+        ),
+        LazyWorkspaceError,
+    > {
+        PortablePath::validate(path, self.workspace.limits())
+            .map_err(crate::kernel::NamespacePathError::Path)?;
+        let cancellation = cancellation(accounting);
+        if !basis.authored_absent {
+            let namespace = self.namespace_path(path, accounting)?;
+            let authored = checkout
+                .lookup_no_follow_with_metadata_with_accounting(
+                    &namespace.value,
+                    accounting,
+                    cancellation,
+                )
+                .await;
+            namespace.retire(accounting)?;
+            if let Some(authored) = authored? {
+                let path = self.canonical_path(path, accounting)?;
+                return Ok((
+                    Some(LazyLookup::Authored {
+                        path: path.value,
+                        stat: authored_stat(authored.record, authored.metadata),
+                    }),
+                    false,
+                    path.allocation,
+                ));
             }
+        }
+        let loaded;
+        let state = if let Some(state) = basis.state {
+            state
         } else {
-            self.overlay_fact_measured(state.overlay, path, budget, cancellation)
-                .await?
+            loaded = self.state(accounting).await?;
+            &loaded
         };
-        let mut work = fact.work;
-        let observed = match fact.value {
-            Some(LazyOverlayChange::Tombstone { .. }) => return Err(LazyWorkspaceError::NotFound),
+        if self.tombstoned(state.overlay, path, accounting).await? {
+            return Ok((None, false, accounting.claim_owned(0, 0)?));
+        }
+        let observed = if basis.unobserved {
+            None
+        } else {
+            self.overlay_fact(state.overlay, path, accounting).await?
+        };
+        let mut used = false;
+        let (source, node) = match observed {
             Some(LazyOverlayChange::Observe { source, node })
                 if basis.retain_pinned_observation || source == state.source =>
             {
-                Some((source, node))
+                (source, Some(node))
             }
-            Some(LazyOverlayChange::Observe { .. }) | None => None,
+            _ => {
+                if let Some(node) = basis.listed {
+                    (state.source, Some(node))
+                } else {
+                    if snapshot.is_some() && state.source != self.source.reference() {
+                        return Err(LazyWorkspaceError::StaleSource);
+                    }
+                    used = true;
+                    (
+                        state.source,
+                        self.source_lookup(state.source, path, accounting).await?,
+                    )
+                }
+            }
         };
-        let (source, node) = if let Some(observed) = observed {
-            observed
-        } else if let Some(node) = basis.listed {
-            (state.source, node)
-        } else {
-            let receipt = self
-                .source
-                .lookup(state.source, &self.namespace_path(path)?, cancellation)
-                .await
-                .map_err(|failure| LazyWorkspaceError::from(failure.error))?;
-            work = account_work(work, receipt.work, budget)?;
-            (
-                state.source,
-                receipt.value.ok_or(LazyWorkspaceError::NotFound)?,
-            )
+        let Some(node) = node else {
+            return Ok((None, used, accounting.claim_owned(0, 0)?));
         };
-        if basis.listed.is_none() {
-            let tombstoned = self
-                .tombstoned_measured(
-                    state.overlay,
-                    path,
-                    remaining_work(work, budget)?,
-                    cancellation,
-                )
-                .await?;
-            work = account_work(work, tombstoned.work, budget)?;
-            if tombstoned.value {
-                return Err(LazyWorkspaceError::NotFound);
+        if node.kind != SourceNodeKind::Directory && node.link_count != Some(1) {
+            let id = self.source_file_id(&node.file_identity, accounting)?;
+            let record = {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = accounting.native_work() {
+                    Some(
+                        checkout
+                            .read_file_record_by_id(id, original, cancellation)
+                            .await
+                            .map_err(LazyWorkspaceError::from),
+                    )
+                } else {
+                    None
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    None::<Result<FileRecord, LazyWorkspaceError>>
+                }
+            };
+            let record = if let Some(record) = record {
+                record
+            } else {
+                let receipt = checkout
+                    .read_file_record_by_id(id, accounting.remaining()?, cancellation)
+                    .await;
+                accept_receipt(receipt, accounting)
+            };
+            let shadow = match record {
+                Ok(record) => Some((
+                    record,
+                    crate::WorkspaceMetadata::from_engine(
+                        checkout
+                            .read_metadata_by_id_with_accounting(
+                                record.file_id,
+                                accounting,
+                                cancellation,
+                            )
+                            .await?,
+                    ),
+                )),
+                Err(LazyWorkspaceError::Filesystem(crate::FsError::NotFound)) => {
+                    self.shadow_record(state.shadows, id, accounting).await?
+                }
+                Err(error) => return Err(error),
+            };
+            if let Some((record, metadata)) = shadow {
+                return Ok((
+                    Some(LazyLookup::Shadow {
+                        record,
+                        metadata,
+                        source_link_count: node.link_count.unwrap_or(1),
+                    }),
+                    used,
+                    accounting.claim_owned(0, 0)?,
+                ));
             }
         }
-        Ok(OperationReceipt {
-            value: (source, node),
-            work,
-        })
+        Ok((
+            Some(LazyLookup::Source { source, node }),
+            used,
+            accounting.claim_owned(0, 0)?,
+        ))
     }
 
-    async fn inspect_with(
+    /// Stable SDK identity of an unresolved source node.
+    pub fn source_file_id(
         &self,
-        path: &str,
-        basis: InspectBasis<'_>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        let authored = if basis.authored_absent {
-            OperationReceipt {
-                value: None,
-                work: WorkCounters::default(),
-            }
-        } else {
-            self.workspace
-                .stat_optional_measured(path, budget, cancellation)
-                .await
-                .map_err(workspace_error)?
-        };
-        let mut work = authored.work;
-        if let Some(stat) = authored.value {
-            return Ok(OperationReceipt {
-                value: ResolvedLazyLookup {
-                    lookup: LazyLookup::Authored {
-                        path: self.canonical_path(path)?,
-                        stat,
-                    },
-                    source: None,
-                },
-                work,
-            });
-        }
-        let state = if let Some(state) = basis.state {
-            state.clone()
-        } else {
-            let receipt = self
-                .state_measured(remaining_work(work, budget)?, cancellation)
-                .await?;
-            work = account_work(work, receipt.work, budget)?;
-            receipt.value
-        };
-        let resolved = self
-            .source_node_in(
-                &state,
-                path,
-                basis,
-                remaining_work(work, budget)?,
-                cancellation,
-            )
-            .await?;
-        work = account_work(work, resolved.work, budget)?;
-        let (source, node) = resolved.value;
-        let authored = self
-            .authored_alias_measured(&node, remaining_work(work, budget)?, cancellation)
-            .await?;
-        work = account_work(work, authored.work, budget)?;
-        if let Some(authored) = authored.value {
-            return Ok(OperationReceipt {
-                value: ResolvedLazyLookup {
-                    lookup: authored,
-                    source: None,
-                },
-                work,
-            });
-        }
-        Ok(OperationReceipt {
-            value: ResolvedLazyLookup {
-                lookup: LazyLookup::Source(node),
-                source: Some(source),
-            },
-            work,
-        })
-    }
-
-    /// Returns a stable SDK identity for an unresolved source object.
-    ///
-    /// Aliases carrying the same source-native identity map to one `FileId`,
-    /// independent of path, so mount lookups preserve hard-link topology.
-    pub fn source_file_id(&self, node: &SourceNode) -> FileId {
-        self.source_file_id_of(&node.file_identity)
-    }
-
-    /// The identity of the source node whose [`SourceNode::file_identity`]
-    /// is `file_identity`.
-    pub(crate) fn source_file_id_of(&self, file_identity: &[u8; 32]) -> FileId {
+        identity: &[u8; 32],
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<FileId, LazyWorkspaceError> {
+        let domain = b"acyclic-fs-lazy-source-file-id-v1\0";
+        accounting.charge(WorkCounters {
+            bytes_hashed: domain.len() as u64 + 48,
+            ..WorkCounters::UNCHARGED
+        })?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"acyclic-fs-lazy-source-file-id-v1\0");
+        hasher.update(domain);
         hasher.update(&self.source.reference().identity);
-        hasher.update(file_identity);
+        hasher.update(identity);
         let digest = hasher.finalize();
-        let mut bytes = [0_u8; 16];
+        let mut bytes = [0; 16];
         bytes.copy_from_slice(&digest.as_bytes()[..16]);
-        FileId::from_bytes(bytes)
+        Ok(FileId::from_bytes(bytes))
     }
 
-    /// Starts the source reporting its changes to `sink`; `None` when it
-    /// cannot (see [`DemandSource::watch`]).
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn watch_source(
-        &self,
-        sink: Arc<dyn crate::demand::SourceChangeSink>,
-    ) -> Result<Option<Box<dyn crate::demand::SourceWatch>>, LazyWorkspaceError> {
-        self.source.watch(sink).map_err(LazyWorkspaceError::from)
-    }
-
-    /// Direct identity of the resolved fact. Mounted directory identity is a
-    /// separate projection rule in `stable_file_id_for_lookup`.
-    fn direct_file_id_for_lookup(&self, lookup: &LazyLookup) -> FileId {
-        match lookup {
-            LazyLookup::Source(node) => self.source_file_id(node),
-            LazyLookup::Authored { stat, .. } => stat.file_id,
-            LazyLookup::Shadow { record, .. } => record.file_id,
-        }
-    }
-
-    #[cfg(any(
-        feature = "native-mount",
-        all(test, feature = "native-watch", not(target_arch = "wasm32"))
-    ))]
-    pub(crate) async fn stable_file_id_for_lookup(
+    /// Resolves the original directory identity after shallow promotion.
+    pub async fn stable_file_id_for_lookup(
         &self,
         path: &str,
         lookup: &LazyLookup,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<FileId, LazyWorkspaceError> {
         match lookup {
-            LazyLookup::Source(node) => Ok(self.source_file_id(node)),
+            LazyLookup::Source { node, .. } => self.source_file_id(&node.file_identity, accounting),
             LazyLookup::Shadow { record, .. } => Ok(record.file_id),
-            LazyLookup::Authored { stat, .. } if stat.kind == FileKind::Directory => {
-                let state = self.state().await?;
-                match self.overlay_fact(state.overlay, path).await? {
-                    Some(LazyOverlayChange::Observe { node, .. })
-                        if node.kind == SourceNodeKind::Directory =>
+            LazyLookup::Authored { stat, .. } => {
+                if stat.kind == FileKind::Directory {
+                    let state = self.state(accounting).await?;
+                    if let Some(LazyOverlayChange::Observe { node, .. }) =
+                        self.overlay_fact(state.overlay, path, accounting).await?
+                        && node.kind == SourceNodeKind::Directory
                     {
-                        Ok(self.source_file_id(&node))
+                        return self.source_file_id(&node.file_identity, accounting);
                     }
-                    Some(LazyOverlayChange::Observe { .. })
-                    | Some(LazyOverlayChange::Tombstone { .. })
-                    | None => Ok(stat.file_id),
                 }
+                Ok(stat.file_id)
             }
-            LazyLookup::Authored { stat, .. } => Ok(stat.file_id),
         }
     }
 
-    async fn authored_alias_measured(
+    pub(crate) fn retire_lookup(
         &self,
-        node: &SourceNode,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<Option<LazyLookup>>, LazyWorkspaceError> {
-        in_heap(move || async move {
-            // Only source objects with multiple directory bindings can resolve
-            // through an authored alias. Avoid the generation-wide reverse-path
-            // query for ordinary files and directories; on large compiler trees
-            // that otherwise creates one derived path-index entry per stat.
-            if node.kind == SourceNodeKind::Directory || node.link_count == Some(1) {
-                return Ok(OperationReceipt {
-                    value: None,
-                    work: WorkCounters::default(),
-                });
-            }
-            let file_id = self.source_file_id(node);
-            let state = self.state_measured(budget, cancellation).await?;
-            // A source that does not count links cannot rule an alias out, but
-            // an identity the head's file table does not hold has no name there.
-            let head = self
-                .workspace
-                .head_with_file_record_measured(
-                    file_id,
-                    remaining_work(state.work, budget)?,
-                    cancellation,
-                )
-                .await
-                .map_err(workspace_error)?;
-            let mut work = account_work(state.work, head.work, budget)?;
-            let state = state.value;
-            let (generation, held) = head.value;
-            let path = if held {
-                let paths = generation
-                    .paths_for_file_id_measured(
-                        file_id,
-                        u32::MAX,
-                        remaining_work(work, budget)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(workspace_error)?;
-                work = account_work(work, paths.work, budget)?;
-                paths.value.into_iter().next()
-            } else {
-                None
-            };
-            if let Some(path) = path {
-                let stat = self
-                    .workspace
-                    .stat_optional_measured(&path, remaining_work(work, budget)?, cancellation)
-                    .await
-                    .map_err(workspace_error)?;
-                work = account_work(work, stat.work, budget)?;
-                let mut stat = stat.value.ok_or(LazyWorkspaceError::Concurrent)?;
-                if let Some(source_links) = node.link_count {
-                    stat.link_count = stat.link_count.max(source_links);
-                }
-                return Ok(OperationReceipt {
-                    value: Some(LazyLookup::Authored { path, stat }),
-                    work,
-                });
-            }
-            let shadow = self
-                .shadow_record_measured(
-                    state.shadows,
-                    file_id,
-                    remaining_work(work, budget)?,
-                    cancellation,
-                )
-                .await?;
-            work = account_work(work, shadow.work, budget)?;
-            let Some((record, metadata)) = shadow.value else {
-                return Ok(OperationReceipt { value: None, work });
-            };
-            Ok(OperationReceipt {
-                value: Some(LazyLookup::Shadow {
-                    record,
-                    metadata,
-                    source_link_count: node.link_count.unwrap_or(1),
-                }),
-                work,
-            })
-        })
-        .await
+        lookup: (LazyLookup, crate::kernel::allocation::KernelOwnedAllocation),
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), LazyWorkspaceError> {
+        let bytes = lookup.0.logical_owned_bytes();
+        drop(lookup.0);
+        crate::kernel::retire_allocation(lookup.1, bytes, accounting).map_err(Into::into)
+    }
+}
+
+pub(super) fn authored_stat(record: FileRecord, metadata: FileMetadata) -> WorkspaceStat {
+    WorkspaceStat {
+        file_id: record.file_id,
+        kind: record.kind,
+        link_count: record.link_count,
+        logical_bytes: record_logical_bytes(record),
+        metadata: crate::WorkspaceMetadata::from_engine(metadata),
     }
 }

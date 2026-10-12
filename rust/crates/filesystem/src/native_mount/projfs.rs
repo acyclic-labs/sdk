@@ -4385,7 +4385,7 @@ fn source_hresult(error: &MountSourceError) -> HRESULT {
         MountSourceError::WorkspaceCause(error) => workspace_hresult(error),
         MountSourceError::WorkspacePrefixFailure { source, .. } => workspace_hresult(source),
         MountSourceError::NativeCallbackDenied { .. } => HRESULT::from_win32(5),
-        MountSourceError::NativeWorkspaceCause(error) => workspace_hresult(&error.source),
+        MountSourceError::NativeWorkspaceCause(error , _ ) => workspace_hresult(error),
         MountSourceError::Filesystem(error) => filesystem_hresult(error),
         MountSourceError::Io(error, _) => error.raw_os_error().map_or(HR_IO_DEVICE, |code| {
             if code < 0 { HRESULT(code) } else { HRESULT::from_win32(code as u32) }
@@ -5794,7 +5794,7 @@ fn retain_callback_failure(projection: Projection<'_>, error: NativeMountError) 
             MountSourceError::WorkspacePrefixFailure { source, accounting } =>
                 !workspace_failure_is_fatal(source) && !workspace_failure_is_fatal(accounting),
             MountSourceError::NativeCallbackDenied { .. } => true,
-            MountSourceError::NativeWorkspaceCause(cause) => !workspace_failure_is_fatal(&cause.source),
+            MountSourceError::NativeWorkspaceCause(cause , _ ) => !workspace_failure_is_fatal(cause) ,
             MountSourceError::Filesystem(cause) => !filesystem_failure_is_fatal(cause),
             MountSourceError::NativeText { .. } => true,
             #[cfg(feature = "native-watch")]
@@ -5841,7 +5841,7 @@ fn callback_requires_permanent_fence(error: &NativeMountError) -> bool {
             MountSourceError::WorkspacePrefixFailure { source, accounting } =>
                 workspace_failure_is_fatal(source) || workspace_failure_is_fatal(accounting),
             MountSourceError::NativeCallbackDenied { .. } => false,
-            MountSourceError::NativeWorkspaceCause(error) => workspace_failure_is_fatal(&error.source),
+            MountSourceError::NativeWorkspaceCause(error , _ ) => workspace_failure_is_fatal(error) ,
             MountSourceError::Filesystem(error) => filesystem_failure_is_fatal(error),
             MountSourceError::OriginalSnapshotUnavailable | MountSourceError::Indeterminate
                 | MountSourceError::SelectedPublication(_)
@@ -6480,10 +6480,16 @@ mod tests {
         let demand = crate::demand::native::NativeDemandSource::open(
             std::borrow::Cow::Owned(std::path::Path::new(source_root).to_path_buf()), crate::model::FilesystemProfile::Windows, crate::model::VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        Ok(crate::LazyWorkspace::attach_with_config(
+        Ok(crate::LazyWorkspace:: attach (
             &Fs::memory(), name, Arc::new(demand), crate::MemoryLazyWorkspaceStore::default(),
             VolumeConfig::native(Lifecycle::Ephemeral),
-        ).await?)
+        crate::OperationId::new(),
+            &mut crate::kernel::KernelAccounting::Standalone {
+                allocations: Default::default(),
+                work: crate::WorkCounters::UNCHARGED,
+                budget: crate::WorkBudget::UNBOUNDED,
+                cancellation: &crate::CancellationToken::new(),
+            }, ).await .map(|(lazy, _)| lazy) ?)
     }
 
     fn external_edit(destination: &std::path::Path, command: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -7649,16 +7655,24 @@ mod tests {
             crate::model::VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let lazy = crate::LazyWorkspace::attach_with_config(
+        let engine = Fs::local(LocalOptions::new(root.path().join("state "))).await?;
+        let lazy = crate::LazyWorkspace::attach(
             &engine,
-            "renamed-projfs",
+            " renamed-projfs",
             Arc::new(demand),
-            crate::LocalCoreStateStore::open_owned(root.path().join("core"))?,
+            crate::LocalCoreStateStore::open_owned(root.path().join("core "))?,
             VolumeConfig::native(Lifecycle::Ephemeral),
+            crate::OperationId::new(),
+            &mut crate::kernel::KernelAccounting::Standalone {
+                allocations: Default::default(),
+                work: crate::WorkCounters::UNCHARGED,
+                budget: crate::WorkBudget::UNBOUNDED,
+                cancellation: &crate::CancellationToken::new(),
+            },
         )
-        .await?;
-        let destination = root.path().join("mount");
+        .await
+        .map(|(lazy, _)| lazy)?;
+        let destination = root.path().join(" mount");
         std::fs::create_dir(&destination)?;
         let mount = lazy
             .mount(

@@ -3315,7 +3315,7 @@ fn darwin_source_errno(error: &MountSourceError) -> i32 {
         MountSourceError::WorkspaceCause(error) => super::native_workspace_errno(error),
         MountSourceError::WorkspacePrefixFailure { source, .. } => super::native_workspace_errno(source),
         MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
-        MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_errno(&error.source),
+        MountSourceError::NativeWorkspaceCause(error , _ ) => super::native_workspace_errno(error) ,
         MountSourceError::NativeText { kind, .. } =>
             super::native_source_text_errno(*kind),
         _ => libc::EIO,
@@ -3349,7 +3349,7 @@ fn darwin_handler_is_fatal(error: &NativeMountError) -> bool {
                     super::native_workspace_failure_is_fatal(source)
                         || super::native_workspace_failure_is_fatal(accounting),
                 MountSourceError::NativeCallbackDenied { .. } => false,
-                MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_failure_is_fatal(&error.source),
+                MountSourceError::NativeWorkspaceCause(error , _ ) => super::native_workspace_failure_is_fatal(error),
                 MountSourceError::Cancelled | MountSourceError::Work(_)
                 | MountSourceError::OriginalSnapshotUnavailable | MountSourceError::Indeterminate
                 | MountSourceError::Filesystem(crate::FsError::Cancelled(_) | crate::FsError::Work(_)) => true,

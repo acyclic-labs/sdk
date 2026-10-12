@@ -1,7 +1,7 @@
 //! Journaled local persistence for filesystem control-plane state.
 
 use crate::record_store::Revisioned;
-use crate::lazy_workspace::{MemoryLazyNode, NativeOwnedCoreState};
+use crate::lazy_workspace::MemoryLazyNode;
 use crate::workspace_context::{
     WorkspaceContextChildren, discard_context_subtree, plan_context_subtree_discard,
     update_context_children,
@@ -701,7 +701,7 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         workspace_id: WorkspaceId,
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<Option<NativeOwnedCoreState<WorkspaceLineageRecord>>,
+    ) -> Result<Option<(WorkspaceLineageRecord, crate::NativeAllocation)>,
         (crate::lineage::WorkspaceLineageError<Self::Error>, Option<crate::materializer::NativeAllocation>)> {
         self.native_logged_transaction(original, cancellation, move |root, log, work, cancellation| {
             native_records::load_native_lineage(root, log, workspace_id, work, cancellation)
@@ -713,7 +713,7 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         &self,
         workspace_id: WorkspaceId,
         expected_revision: u64,
-        replacement: NativeOwnedCoreState<WorkspaceLineageRecord>,
+        replacement: (WorkspaceLineageRecord, crate::NativeAllocation),
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<bool,
@@ -743,7 +743,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         context_id: WorkspaceContextId,
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<Option<NativeOwnedCoreState<WorkspaceContext>>,
+    ) -> Result<Option<(WorkspaceContext, crate::NativeAllocation)>,
         (crate::workspace_context::WorkspaceContextError<Self::Error>, Option<crate::materializer::NativeAllocation>)> {
         self.native_logged_transaction(original, cancellation, move |root, log, work, cancellation| {
             native_records::load_native_context(root, log, context_id, work, cancellation)
@@ -755,7 +755,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         &self,
         context_id: WorkspaceContextId,
         expected_revision: u64,
-        replacement: NativeOwnedCoreState<WorkspaceContext>,
+        replacement: (WorkspaceContext, crate::NativeAllocation),
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<bool,
@@ -1215,7 +1215,7 @@ impl NativeChange {
     }
 
     pub(super) fn put_owned(
-        &mut self, key: RecordKey, value: NativeOwnedCoreState<RecordValue>,
+        &mut self, key: RecordKey, value: (RecordValue, crate::NativeAllocation),
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
         self.push(key, Some(value), work)
@@ -1231,14 +1231,14 @@ impl NativeChange {
             }
         }
         let value = match value {
-            Some(value) => Some(NativeOwnedCoreState::from_parts(value, work.claim(0, 0, crate::WorkCounters::UNCHARGED)?)),
+            Some(value) => Some((value, work.claim(0, 0, crate::WorkCounters::UNCHARGED)?)),
             None => None,
         };
         self.push(key, value, work)
     }
 
     fn push(
-        &mut self, key: RecordKey, value: Option<NativeOwnedCoreState<RecordValue>>,
+        &mut self, key: RecordKey, value: Option<(RecordValue, crate::NativeAllocation)>,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
         let mut empty = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
@@ -1246,7 +1246,7 @@ impl NativeChange {
         self.slots.reserve(&mut self.change.0, needed, work)?;
         self.slots.reserve(&mut self.payloads, needed, work)?;
         let value = if let Some(value) = value {
-            let (value, mut allocation) = value.into_parts();
+            let (value, mut allocation) = value;
             let value = value;
             let compatible = matches!((key, &value),
                 (RecordKey::Context(_), RecordValue::Context(_) | RecordValue::FlatContext(_)) |
@@ -2039,7 +2039,7 @@ impl CoreLog {
         key: RecordKey,
         work: &crate::materializer::NativeMaterializationWork,
         cxl: &crate::CancellationToken,
-    ) -> Result<Option<NativeOwnedCoreState<RecordValue>>, LocalCoreStateStoreError> {
+    ) -> Result<Option<(RecordValue, crate::NativeAllocation)>, LocalCoreStateStoreError> {
         if cxl.is_cancelled() {
             return Err(crate::materializer::NativeTreeMaterializationError::Cancelled.into());
         }
@@ -2055,14 +2055,14 @@ impl CoreLog {
         }
         let (paths, _paths_allocation) = key.measured_paths(root, work)?;
         let value = native_records::read_native_record(key, &paths.current, work, cxl)?;
-        let output = value.as_ref().map(|value| native_records::clone_native_record_value(value.as_state(), work, cxl)).transpose()?;
+        let output = value.as_ref().map(|value| native_records::clone_native_record_value((&value.0), work, cxl)).transpose()?;
         let mut residents = self.residents();
         let needed = residents.0.len() + 1;
         let Residents(values, _, slots) = &mut *residents;
         slots.reserve(values, needed, work)?;
         let payload = residents.payload_slot(key, work)?;
         let (value, allocation) = match value {
-            Some(value) => { let (value, allocation) = value.into_parts(); (Some(value), allocation) },
+            Some(value) => { let (value, allocation) = value; (Some(value), allocation) },
             None => (None, work.claim(0, 0, crate::WorkCounters::UNCHARGED)?),
         };
         residents.0.push((key, value));
@@ -2284,7 +2284,7 @@ impl CoreLog {
     ) -> Result<Option<LazyWorkspaceState>, LocalCoreStateStoreError> {
         self.get_native_value(root, RecordKey::LazyWorkspace(id), work, work.cancellation())?
             .map(|owned| {
-                let (value, allocation) = owned.into_parts();
+                let (value, allocation) = owned;
                 let _allocation = allocation;
                 match value {
                     RecordValue::LazyWorkspace(value) => Ok(value),
@@ -3851,8 +3851,8 @@ const NODE_CACHE_GENERATION: usize = 16_384;
 /// Two-generation bounded memo: an entry read since the last rotation survives the next one, so hot treap spines stay resident.
 #[derive(Debug)]
 struct Generations<K, V> {
-    current: Vec<(K, NativeOwnedCoreState<V>)>,
-    previous: Vec<(K, NativeOwnedCoreState<V>)>,
+    current: Vec<(K, (V, crate::NativeAllocation))>,
+    previous: Vec<(K, (V, crate::NativeAllocation))>,
     /// When each node was last put; see [`LAZY_NODE_GRACE`].
     put: Vec<(K, Instant)>,
     /// The size at which expired put times are next pruned: twice what the last pruning kept, so pruning stays amortized constant per put.
@@ -3974,25 +3974,25 @@ impl<K: Copy + Ord, V> Generations<K, V> {
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<Option<&V>, LocalCoreStateStoreError> {
         if let Ok(index) = Self::position(&self.current, key, work)? {
-            return Ok(Some(self.current[index].1.as_state()));
+            return Ok(Some((&self.current[index].1.0)));
         }
         let Ok(index) = Self::position(&self.previous, key, work)? else {
             return Ok(None);
         };
         // Promote the owned node without cloning it twice.
         work.charge(crate::WorkCounters {
-            bytes_copied: ((self.previous.len() - index - 1) * std::mem::size_of::<(K, NativeOwnedCoreState<V>)>()) as u64,
+            bytes_copied: ((self.previous.len() - index - 1) * std::mem::size_of::<(K, (V, crate::NativeAllocation))>()) as u64,
             ..Default::default()
         })?;
         let (key, value) = self.previous.remove(index);
         let index = self.insert(key, value, work)?;
-        Ok(Some(self.current[index].1.as_state()))
+        Ok(Some((&self.current[index].1.0)))
     }
 
     fn insert(
         &mut self,
         key: K,
-        value: NativeOwnedCoreState<V>,
+        value: (V, crate::NativeAllocation),
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<usize, LocalCoreStateStoreError> {
         let mut index = match Self::position(&self.current, &key, work)? {
@@ -4013,7 +4013,7 @@ impl<K: Copy + Ord, V> Generations<K, V> {
         }
         Self::reserve(&mut self.current, work, &mut self.slots)?;
         work.charge(crate::WorkCounters {
-            bytes_copied: ((self.current.len() - index) * std::mem::size_of::<(K, NativeOwnedCoreState<V>)>()) as u64,
+            bytes_copied: ((self.current.len() - index) * std::mem::size_of::<(K, (V, crate::NativeAllocation))>()) as u64,
             ..Default::default()
         })?;
         self.current.insert(index, (key, value));
@@ -4129,8 +4129,10 @@ fn lazy_digest<T: Serialize>(
     value: &T,
     meter: &crate::materializer::NativeMaterializationWork,
 ) -> Result<[u8; 32], LocalCoreStateStoreError> {
-    meter.allocations(|_, work, budget, cancellation| {
-        crate::lazy_workspace::hash_lazy_value_with_counters(value, work, budget, cancellation)
+    meter.allocations(|allocations, work, budget, cancellation| {
+        crate::lazy_workspace::hash_lazy_value(value,
+            &mut crate::kernel::KernelAccounting::borrowed_standalone(
+                allocations, work, budget, cancellation))
             .map_err(LocalCoreStateStoreError::LazyWork)
     }).map(|(value, _allocation)| value)
 }
@@ -4164,34 +4166,84 @@ fn lazy_native_failure(
     crate::LazyWorkspaceError::NativeConstruction { cause, work }
 }
 
-fn finish_lazy_receipt<T>(
-    result: Result<T, LocalCoreStateStoreError>,
-    meter: &crate::materializer::NativeMaterializationWork,
-) -> Result<crate::OperationReceipt<T>, crate::LazyWorkspaceError> {
-    match result {
-        Ok(value) => Ok(crate::OperationReceipt { value, work: meter.receipt() }),
-        Err(error) => {
-            let error = native_core_error(error);
-            Err(crate::LazyWorkspaceError::SpentWork(Box::new(
-                crate::OperationFailure::new(error, meter.receipt()),
-            )))
-        }
+fn core_lazy_work(
+    accounting: &mut crate::kernel::KernelAccounting<'_>,
+) -> Result<crate::NativeMaterializationWork, crate::LazyWorkspaceError> {
+    if let Some(original) = accounting.native_work() {
+        return Ok(original.clone());
     }
+    let cancellation = match &*accounting {
+        crate::kernel::KernelAccounting::Standalone { cancellation, .. }
+        | crate::kernel::KernelAccounting::BorrowedStandalone { cancellation, .. } => *cancellation,
+        _ => unreachable!("native context has its original work"),
+    };
+    crate::NativeMaterializationWork::new(accounting.remaining()?, cancellation).map_err(
+        |(cause, work)| {
+            if let Some((_, prefix, _, _)) = accounting.standalone_parts() {
+                *prefix = prefix
+                    .checked_add(work)
+                    .expect("constructor used its remaining allowance");
+            }
+            crate::LazyWorkspaceError::NativeConstruction { cause, work }
+        },
+    )
 }
 
-fn unbounded_lazy_work() -> Result<crate::materializer::NativeMaterializationWork, LocalCoreStateStoreError> {
-    crate::materializer::NativeMaterializationWork::new(
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    ).map_err(|failure| LocalCoreStateStoreError::LazyWork(lazy_native_failure(failure)))
+fn finish_core_lazy<T>(
+    result: Result<T, LocalCoreStateStoreError>,
+    work: &crate::NativeMaterializationWork,
+    accounting: &mut crate::kernel::KernelAccounting<'_>,
+) -> Result<T, crate::LazyWorkspaceError> {
+    if let Some((_, prefix, _, _)) = accounting.standalone_parts() {
+        *prefix = prefix
+            .checked_add(work.receipt())
+            .map_err(crate::LazyWorkspaceError::from)?;
+    }
+    result.map_err(native_core_error)
+}
+
+fn core_lazy_node<T: crate::lazy_workspace::MemoryLazyNode>(
+    result: Result<Option<(T, crate::NativeAllocation)>, LocalCoreStateStoreError>,
+    work: &crate::NativeMaterializationWork,
+    accounting: &mut crate::kernel::KernelAccounting<'_>,
+) -> Result<Option<(T, crate::kernel::allocation::KernelOwnedAllocation)>, crate::LazyWorkspaceError>
+{
+    let result = finish_core_lazy(result, work, accounting)?;
+    result
+        .map(|node| {
+            if accounting.native_work().is_some() {
+                return Ok((
+                    node.0,
+                    crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(node.1),
+                ));
+            }
+            let bytes = node.0.owned_bytes();
+            let (mut allocation, admitted) = accounting.record_actual_owned(bytes)?;
+            if let Err(error) = admitted {
+                drop(node);
+                accounting.release_owned(&mut allocation, bytes)?;
+                return Err(error.into());
+            }
+            Ok((node.0, allocation))
+        })
+        .transpose()
 }
 
 fn clone_node<T: crate::lazy_workspace::MemoryLazyNode>(
-    value: &T, meter: &crate::materializer::NativeMaterializationWork,
-) -> Result<NativeOwnedCoreState<T>, LocalCoreStateStoreError> {
-    meter.allocations(|allocations, work, budget, cancellation| {
-        Ok(crate::lazy_workspace::clone_lazy_node(value, allocations, work, budget, cancellation)?)
-    }).map(|(value, allocation)| NativeOwnedCoreState::from_parts(value, allocation))
+    value: &T,
+    meter: &crate::materializer::NativeMaterializationWork,
+) -> Result<(T, crate::NativeAllocation), LocalCoreStateStoreError> {
+    meter
+        .allocations(|allocations, work, budget, cancellation| {
+            Ok(crate::lazy_workspace::clone_lazy_node(
+                value,
+                allocations,
+                work,
+                budget,
+                cancellation,
+            )?)
+        })
+        .map(|(value, allocation)| (value, allocation))
 }
 
 impl LocalCoreStateStore {
@@ -4199,9 +4251,9 @@ impl LocalCoreStateStore {
         &self,
         id: T::Id,
         meter: crate::materializer::NativeMaterializationWork,
-    ) -> Result<Option<NativeOwnedCoreState<T>>, LocalCoreStateStoreError> {
+    ) -> Result<Option<(T, crate::NativeAllocation)>, LocalCoreStateStoreError> {
         if T::address(id) == lazy_digest(&T::default(), &meter)? {
-            return Ok(Some(NativeOwnedCoreState::from_parts(T::default(), meter.claim(0, 0, crate::WorkCounters::UNCHARGED)?)));
+            return Ok(Some((T::default(), meter.claim(0, 0, crate::WorkCounters::UNCHARGED)?)));
         }
         let collected = {
             let mut memo = T::memo(&self.nodes);
@@ -4220,8 +4272,8 @@ impl LocalCoreStateStore {
                 };
                 let value = T::from_wire(wire, work, &mut allocation)?;
                 allocation.substitute(value.owned_bytes())?;
-                let owned = NativeOwnedCoreState::from_parts(value, allocation);
-                if lazy_digest(owned.as_state(), work)? != T::address(id) {
+                let owned = (value, allocation);
+                if lazy_digest((&owned.0), work)? != T::address(id) {
                     return Err(LocalCoreStateStoreError::Integrity);
                 }
                 Ok(Some(owned))
@@ -4231,7 +4283,7 @@ impl LocalCoreStateStore {
             let mut memo = T::memo(&self.nodes);
             // Collection's generation guards against a late read resurrecting a memo.
             if memo.collected == collected {
-                memo.insert(id, clone_node(owned.as_state(), &meter)?, &meter)?;
+                memo.insert(id, clone_node((&owned.0), &meter)?, &meter)?;
             }
             Ok(Some(owned))
         } else {
@@ -4242,21 +4294,21 @@ impl LocalCoreStateStore {
     async fn put_node<T: LazyNode>(
         &self,
         id: T::Id,
-        owned: NativeOwnedCoreState<T>,
+        owned: (T, crate::NativeAllocation),
         meter: crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
-        let (value, allocation) = owned.into_parts();
+        let (value, allocation) = owned;
         let same_ledger = meter.shares_ledger(allocation.work());
-        let owned = NativeOwnedCoreState::from_parts(value, allocation);
+        let owned = (value, allocation);
         if !same_ledger {
             return Err(LocalCoreStateStoreError::NativeLedgerMismatch);
         }
         let empty = lazy_digest(&T::default(), &meter)?;
-        if lazy_digest(owned.as_state(), &meter)? != T::address(id) {
+        if lazy_digest((&owned.0), &meter)? != T::address(id) {
             return Err(LocalCoreStateStoreError::Integrity);
         }
         if T::address(id) == empty {
-            return if owned.as_state() == &T::default() { Ok(()) }
+            return if (&owned.0) == &T::default() { Ok(()) }
                 else { Err(LocalCoreStateStoreError::Integrity) };
         }
         {
@@ -4267,7 +4319,7 @@ impl LocalCoreStateStore {
                     items_examined: 1,
                     ..Default::default()
                 })?;
-                return if existing == owned.as_state() { Ok(()) }
+                return if existing == (&owned.0) { Ok(()) }
                     else { Err(LocalCoreStateStoreError::Integrity) };
             }
         }
@@ -4281,11 +4333,11 @@ impl LocalCoreStateStore {
                         items_examined: 1,
                         ..Default::default()
                     })?;
-                    if &existing != owned.as_state() {
+                    if &existing != (&owned.0) {
                         return Err(LocalCoreStateStoreError::Integrity);
                     }
                 } else {
-                    measured_write_record(&paths, owned.as_state(), work)?;
+                    measured_write_record(&paths, (&owned.0), work)?;
                 }
                 Ok(owned)
             })
@@ -4296,207 +4348,149 @@ impl LocalCoreStateStore {
 }
 
 impl LazyWorkspaceStore for LocalCoreStateStore {
-    type Error = LocalCoreStateStoreError;
-
     async fn load_lazy_workspace(
         &self,
-        workspace_id: WorkspaceId,
-    ) -> Result<Option<LazyWorkspaceState>, Self::Error> {
-        self.load_lazy_logged(workspace_id, unbounded_lazy_work()?).await
+        id: WorkspaceId,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<Option<LazyWorkspaceState>, crate::LazyWorkspaceError> {
+        let work = core_lazy_work(accounting)?;
+        let state = finish_core_lazy(
+            self.load_lazy_logged(id, work.clone()).await,
+            &work,
+            accounting,
+        )?;
+        if state.as_ref().is_some_and(|state| {
+            state.schema_version != crate::lazy_workspace::LAZY_STATE_SCHEMA
+                || state.workspace_id != id
+        }) {
+            return Err(crate::LazyWorkspaceError::NativeRecordIntegrity);
+        }
+        Ok(state)
     }
 
     async fn compare_and_swap_lazy_workspace(
         &self,
-        workspace_id: WorkspaceId,
-        expected_revision: u64,
-        replacement: LazyWorkspaceState,
-    ) -> Result<bool, Self::Error> {
-        self.swap_lazy_logged(workspace_id, expected_revision, replacement, unbounded_lazy_work()?).await
+        id: WorkspaceId,
+        revision: u64,
+        state: LazyWorkspaceState,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<bool, crate::LazyWorkspaceError> {
+        let work = core_lazy_work(accounting)?;
+        if state.schema_version != crate::lazy_workspace::LAZY_STATE_SCHEMA
+            || state.workspace_id != id
+        {
+            return Err(crate::LazyWorkspaceError::NativeRecordIntegrity);
+        }
+        finish_core_lazy(
+            self.swap_lazy_logged(id, revision, state, work.clone())
+                .await,
+            &work,
+            accounting,
+        )
     }
 
     async fn load_lazy_overlay(
         &self,
-        overlay: LazyOverlayId,
-    ) -> Result<Option<LazyOverlay>, Self::Error> {
-        self.load_node::<LazyOverlay>(overlay, unbounded_lazy_work()?).await
-            .map(|value| value.map(|owned| owned.into_parts().0))
+        id: LazyOverlayId,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<
+        Option<(
+            LazyOverlay,
+            crate::kernel::allocation::KernelOwnedAllocation,
+        )>,
+        crate::LazyWorkspaceError,
+    > {
+        let work = core_lazy_work(accounting)?;
+        core_lazy_node(
+            self.load_node::<LazyOverlay>(id, work.clone()).await,
+            &work,
+            accounting,
+        )
     }
 
     async fn put_lazy_overlay(
         &self,
-        overlay: LazyOverlayId,
-        value: LazyOverlay,
-    ) -> Result<(), Self::Error> {
-        let work = unbounded_lazy_work()?;
-        let allocation = work.claim(value.owned_bytes(), 0, crate::WorkCounters::UNCHARGED)?;
-        self.put_node(overlay, NativeOwnedCoreState::from_parts(value, allocation), work).await
+        id: LazyOverlayId,
+        value: (
+            LazyOverlay,
+            crate::kernel::allocation::KernelOwnedAllocation,
+        ),
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), crate::LazyWorkspaceError> {
+        let bytes = value.0.owned_bytes();
+        let work = core_lazy_work(accounting)?;
+        let mut value = value;
+        let allocation = match &mut value.1 {
+            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
+                if !allocation.matches_work(&work) {
+                    return Err(crate::LazyWorkspaceError::NativeLedgerMismatch);
+                }
+                allocation.split_off(allocation.bytes())?
+            }
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
+                work.claim(bytes, 0, crate::WorkCounters::UNCHARGED)?
+            }
+        };
+        let result = self.put_node(id, (value.0, allocation), work.clone()).await;
+        if matches!(
+            value.1,
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone
+        ) {
+            accounting.release_owned(&mut value.1, bytes)?;
+        }
+        finish_core_lazy(result, &work, accounting)
     }
 
     async fn load_lazy_shadow(
         &self,
-        shadow: crate::LazyShadowId,
-    ) -> Result<Option<crate::LazyShadow>, Self::Error> {
-        self.load_node::<crate::LazyShadow>(shadow, unbounded_lazy_work()?).await
-            .map(|value| value.map(|owned| owned.into_parts().0))
+        id: crate::LazyShadowId,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<
+        Option<(
+            crate::LazyShadow,
+            crate::kernel::allocation::KernelOwnedAllocation,
+        )>,
+        crate::LazyWorkspaceError,
+    > {
+        let work = core_lazy_work(accounting)?;
+        core_lazy_node(
+            self.load_node::<crate::LazyShadow>(id, work.clone()).await,
+            &work,
+            accounting,
+        )
     }
 
     async fn put_lazy_shadow(
         &self,
-        shadow: crate::LazyShadowId,
-        value: crate::LazyShadow,
-    ) -> Result<(), Self::Error> {
-        let work = unbounded_lazy_work()?;
-        let allocation = work.claim(value.owned_bytes(), 0, crate::WorkCounters::UNCHARGED)?;
-        self.put_node(shadow, NativeOwnedCoreState::from_parts(value, allocation), work).await
-    }
-
-    async fn load_lazy_workspace_measured(
-        &self,
-        workspace_id: WorkspaceId,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Option<LazyWorkspaceState>>, crate::LazyWorkspaceError> {
-        let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(lazy_native_failure)?;
-        finish_lazy_receipt(self.load_lazy_logged(workspace_id, work.clone()).await, &work)
-    }
-
-    async fn compare_and_swap_lazy_workspace_measured(
-        &self,
-        workspace_id: WorkspaceId,
-        expected_revision: u64,
-        replacement: LazyWorkspaceState,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<bool>, crate::LazyWorkspaceError> {
-        let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(lazy_native_failure)?;
-        finish_lazy_receipt(
-            self.swap_lazy_logged(workspace_id, expected_revision, replacement, work.clone()).await,
-            &work,
-        )
-    }
-
-    async fn load_lazy_overlay_measured(
-        &self,
-        overlay: LazyOverlayId,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Option<LazyOverlay>>, crate::LazyWorkspaceError> {
-        let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(lazy_native_failure)?;
-        finish_lazy_receipt(self.load_node::<LazyOverlay>(overlay, work.clone()).await
-            .map(|value| value.map(|owned| owned.into_parts().0)), &work)
-    }
-
-    async fn put_lazy_overlay_measured(
-        &self,
-        overlay: LazyOverlayId,
-        value: LazyOverlay,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<()>, crate::LazyWorkspaceError> {
-        let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(lazy_native_failure)?;
-        let result = match work.claim(value.owned_bytes(), 0, crate::WorkCounters::UNCHARGED) {
-            Ok(allocation) => self.put_node(overlay, NativeOwnedCoreState::from_parts(value, allocation), work.clone()).await,
-            Err(error) => Err(error.into()),
-        };
-        finish_lazy_receipt(result, &work)
-    }
-
-    async fn load_lazy_shadow_measured(
-        &self,
-        shadow: crate::LazyShadowId,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<Option<crate::LazyShadow>>, crate::LazyWorkspaceError> {
-        let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(lazy_native_failure)?;
-        finish_lazy_receipt(self.load_node::<crate::LazyShadow>(shadow, work.clone()).await
-            .map(|value| value.map(|owned| owned.into_parts().0)), &work)
-    }
-
-    async fn put_lazy_shadow_measured(
-        &self,
-        shadow: crate::LazyShadowId,
-        value: crate::LazyShadow,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<()>, crate::LazyWorkspaceError> {
-        let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(lazy_native_failure)?;
-        let result = match work.claim(value.owned_bytes(), 0, crate::WorkCounters::UNCHARGED) {
-            Ok(allocation) => self.put_node(shadow, NativeOwnedCoreState::from_parts(value, allocation), work.clone()).await,
-            Err(error) => Err(error.into()),
-        };
-        finish_lazy_receipt(result, &work)
-    }
-
-    async fn load_lazy_workspace_with_native_work(
-        &self,
-        id: WorkspaceId,
-        work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<Option<NativeOwnedCoreState<LazyWorkspaceState>>, crate::LazyWorkspaceError> {
-        let state = self.load_lazy_logged(id, work.clone()).await.map_err(native_core_error)?;
-        state.map(|state| {
-            work.charge(crate::WorkCounters { items_examined: 1, ..Default::default() })
-                .map_err(|error| native_core_error(error.into()))?;
-            if state.schema_version != crate::lazy_workspace::LAZY_STATE_SCHEMA || state.workspace_id != id {
-                return Err(crate::LazyWorkspaceError::NativeRecordIntegrity);
+        id: crate::LazyShadowId,
+        value: (
+            crate::LazyShadow,
+            crate::kernel::allocation::KernelOwnedAllocation,
+        ),
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), crate::LazyWorkspaceError> {
+        let bytes = value.0.owned_bytes();
+        let work = core_lazy_work(accounting)?;
+        let mut value = value;
+        let allocation = match &mut value.1 {
+            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
+                if !allocation.matches_work(&work) {
+                    return Err(crate::LazyWorkspaceError::NativeLedgerMismatch);
+                }
+                allocation.split_off(allocation.bytes())?
             }
-            let allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(|error| native_core_error(error.into()))?;
-            Ok(NativeOwnedCoreState::from_parts(state, allocation))
-        }).transpose()
-    }
-
-    async fn compare_and_swap_lazy_workspace_with_native_work(
-        &self,
-        id: WorkspaceId,
-        expected_revision: u64,
-        replacement: LazyWorkspaceState,
-        work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<bool, crate::LazyWorkspaceError> {
-        work.charge(crate::WorkCounters { items_examined: 1, ..Default::default() })
-            .map_err(|error| native_core_error(error.into()))?;
-        if replacement.schema_version != crate::lazy_workspace::LAZY_STATE_SCHEMA || replacement.workspace_id != id {
-            return Err(crate::LazyWorkspaceError::NativeRecordIntegrity);
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
+                work.claim(bytes, 0, crate::WorkCounters::UNCHARGED)?
+            }
+        };
+        let result = self.put_node(id, (value.0, allocation), work.clone()).await;
+        if matches!(
+            value.1,
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone
+        ) {
+            accounting.release_owned(&mut value.1, bytes)?;
         }
-        self.swap_lazy_logged(id, expected_revision, replacement, work.clone()).await.map_err(native_core_error)
-    }
-
-    async fn load_lazy_overlay_with_native_work(
-        &self,
-        id: LazyOverlayId,
-        work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<Option<NativeOwnedCoreState<LazyOverlay>>, crate::LazyWorkspaceError> {
-        self.load_node::<LazyOverlay>(id, work.clone()).await.map_err(native_core_error)
-    }
-
-    async fn put_lazy_overlay_with_native_work(
-        &self,
-        id: LazyOverlayId,
-        value: NativeOwnedCoreState<LazyOverlay>,
-        work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<(), crate::LazyWorkspaceError> {
-        self.put_node(id, value, work.clone()).await.map_err(native_core_error)
-    }
-
-    async fn load_lazy_shadow_with_native_work(
-        &self,
-        id: crate::LazyShadowId,
-        work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<Option<NativeOwnedCoreState<crate::LazyShadow>>, crate::LazyWorkspaceError> {
-        self.load_node::<crate::LazyShadow>(id, work.clone()).await.map_err(native_core_error)
-    }
-
-    async fn put_lazy_shadow_with_native_work(
-        &self,
-        id: crate::LazyShadowId,
-        value: NativeOwnedCoreState<crate::LazyShadow>,
-        work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<(), crate::LazyWorkspaceError> {
-        self.put_node(id, value, work.clone()).await.map_err(native_core_error)
+        finish_core_lazy(result, &work, accounting)
     }
 }
 
@@ -5126,9 +5120,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let store = LocalCoreStateStore::new(directory.path());
         let (overlay, node) = overlay_node("/original");
-        store
-            .put_lazy_overlay(overlay, node)
-            .await
+        async { let cancellation = &crate::CancellationToken::new(); let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = node; let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = store.put_lazy_overlay(overlay, (value, allocation), &mut accounting).await; result }.await
             .expect("persist overlay");
         let (_, tampered) = overlay_node("/tampered");
         let paths = store
@@ -5143,9 +5135,9 @@ mod tests {
         .expect("tamper overlay");
         assert!(matches!(
             LocalCoreStateStore::new(directory.path())
-                .load_lazy_overlay(overlay)
-                .await,
-            Err(LocalCoreStateStoreError::Integrity)
+                .load_lazy_overlay(overlay, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
+                .await.map(|node| node.map(|(value, _)| value)),
+            Err(crate::LazyWorkspaceError::NativeRecordIntegrity)
         ));
     }
 
@@ -5154,24 +5146,22 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let store = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
         let (overlay, node) = overlay_node("/memoized");
-        store
-            .put_lazy_overlay(overlay, node.clone())
-            .await
+        async { let cancellation = &crate::CancellationToken::new(); let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = node.clone(); let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = store.put_lazy_overlay(overlay, (value, allocation), &mut accounting).await; result }.await
             .expect("put overlay");
         std::fs::remove_dir_all(directory.path().join("lazy-overlays")).expect("drop overlays");
         let clone = store.clone();
         assert_eq!(
             clone
-                .load_lazy_overlay(overlay)
-                .await
+                .load_lazy_overlay(overlay, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
+                .await.map(|node| node.map(|(value, _)| value))
                 .expect("memoized overlay"),
             Some(node)
         );
         let (_, different) = overlay_node("/different");
         assert!(
             matches!(
-                clone.put_lazy_overlay(overlay, different).await,
-                Err(LocalCoreStateStoreError::Integrity)
+                async { let cancellation = &crate::CancellationToken::new(); let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = different; let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = clone.put_lazy_overlay(overlay, (value, allocation), &mut accounting).await; result }.await,
+                Err(crate::LazyWorkspaceError::NativeRecordIntegrity)
             ),
             "a memoized address still rejects a different value"
         );
@@ -5188,13 +5178,9 @@ mod tests {
             content_address(&crate::LazyShadow::default()).expect("empty shadow address")
         ))
         .expect("empty shadow id");
-        store
-            .put_lazy_overlay(overlay, LazyOverlay::default())
-            .await
+        async { let cancellation = &crate::CancellationToken::new(); let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = LazyOverlay::default(); let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = store.put_lazy_overlay(overlay, (value, allocation), &mut accounting).await; result }.await
             .expect("put empty overlay");
-        store
-            .put_lazy_shadow(shadow, crate::LazyShadow::default())
-            .await
+        async { let cancellation = &crate::CancellationToken::new(); let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = crate::LazyShadow::default(); let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = store.put_lazy_shadow(shadow, (value, allocation), &mut accounting).await; result }.await
             .expect("put empty shadow");
         assert_eq!(
             std::fs::read_dir(directory.path())
@@ -5205,13 +5191,13 @@ mod tests {
         );
         assert_eq!(
             store
-                .load_lazy_overlay(overlay)
-                .await
+                .load_lazy_overlay(overlay, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
+                .await.map(|node| node.map(|(value, _)| value))
                 .expect("empty overlay"),
             Some(LazyOverlay::default())
         );
         assert_eq!(
-            store.load_lazy_shadow(shadow).await.expect("empty shadow"),
+            store.load_lazy_shadow(shadow, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|node| node.map(|(value, _)| value)).expect("empty shadow"),
             Some(crate::LazyShadow::default())
         );
     }
@@ -5646,8 +5632,6 @@ mod tests {
             "parent_workspace_id": null,
             "fork_origin": null,
             "completed_selected_import": null,
-            "pending_write": null,
-            "completed_write": null,
             "source": crate::demand::SourceReference { identity: [1; 16], epoch: 0 },
             "overlay": LazyOverlayId::from_bytes([2; 32]),
             "shadows": shadows,
@@ -5678,30 +5662,23 @@ mod tests {
         ).expect("original native meter");
         work.charge(crate::WorkCounters { bytes_hashed: 5, ..Default::default() }).expect("original prior producer");
         let store = LocalCoreStateStore::new(directory.path());
-        assert!(store.compare_and_swap_lazy_workspace_with_native_work(
-            id, 0, state.clone(), &work,
-        ).await.expect("native original CAS"));
-        let first = store.load_lazy_workspace_with_native_work(id, &work).await
+        assert!(async { let mut accounting = crate::kernel::KernelAccounting::native(&work, (&work).cancellation()); let result = store.compare_and_swap_lazy_workspace(id, 0, state.clone(), &mut accounting).await; result }.await.expect("native original CAS"));
+        let first = async { let mut accounting = crate::kernel::KernelAccounting::native(&work, (&work).cancellation()); let result = store.load_lazy_workspace(id, &mut accounting).await; result }.await
             .expect("native original load").expect("actual state");
-        assert_eq!(first.as_state(), &state);
-        let (_, allocation) = first.into_parts();
-        assert!(work.shares_ledger(allocation.work()));
-        drop(allocation);
+        assert_eq!(&first, &state);
         assert_eq!(work.receipt().bytes_hashed, 5);
         let before = work.receipt().object_bytes_written;
         let mut stale = state.clone();
         stale.revision += 1;
-        assert!(!store.compare_and_swap_lazy_workspace_with_native_work(
-            id, 0, stale, &work,
-        ).await.expect("original CAS miss"));
+        assert!(!async { let mut accounting = crate::kernel::KernelAccounting::native(&work, (&work).cancellation()); let result = store.compare_and_swap_lazy_workspace(id, 0, stale, &mut accounting).await; result }.await.expect("original CAS miss"));
         assert_eq!(work.receipt().object_bytes_written, before);
         drop(store);
         let restarted = LocalCoreStateStore::new(directory.path());
-        let original = restarted.load_lazy_workspace_with_native_work(id, &work).await
+        let original = async { let mut accounting = crate::kernel::KernelAccounting::native(&work, (&work).cancellation()); let result = restarted.load_lazy_workspace(id, &mut accounting).await; result }.await
             .expect("real backend restart").expect("original retained state");
-        assert_eq!(original.as_state().completed_selected_import, state.completed_selected_import);
-        assert_eq!(original.as_state().source, state.source);
-        assert_eq!(original.as_state().workspace_id, id);
+        assert_eq!(original.completed_selected_import, state.completed_selected_import);
+        assert_eq!(original.source, state.source);
+        assert_eq!(original.workspace_id, id);
     }
 
     #[tokio::test]
@@ -5709,7 +5686,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("native core namespace");
         let id = WorkspaceId::from_bytes([0xb5; 16]);
         let store = LocalCoreStateStore::new(directory.path());
-        assert!(store.compare_and_swap_lazy_workspace(id, 0, lazy_state(id, 1))
+        assert!(store.compare_and_swap_lazy_workspace(id, 0, lazy_state(id, 1), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
             .await.expect("durable fixture"));
         drop(store);
         let cancellation = crate::CancellationToken::new();
@@ -5718,7 +5695,7 @@ mod tests {
             .expect("original finite meter");
         work.charge(crate::WorkCounters { bytes_hashed: 5, ..Default::default() }).expect("prior actual work");
         let restarted = LocalCoreStateStore::new(directory.path());
-        let error = restarted.load_lazy_workspace_with_native_work(id, &work).await
+        let error = async { let mut accounting = crate::kernel::KernelAccounting::native(&work, (&work).cancellation()); let result = restarted.load_lazy_workspace(id, &mut accounting).await; result }.await
             .expect_err("actual decoder stops at original exact source allowance");
         assert!(matches!(error, crate::LazyWorkspaceError::Demand(crate::DemandError::Work(_))));
         assert_eq!(work.receipt().source_bytes_read, 7);
@@ -5727,7 +5704,7 @@ mod tests {
         let before = work.receipt();
         cancellation.cancel();
         assert!(matches!(
-            restarted.load_lazy_workspace_with_native_work(id, &work).await,
+            async { let mut accounting = crate::kernel::KernelAccounting::native(&work, (&work).cancellation()); let result = restarted.load_lazy_workspace(id, &mut accounting).await; result }.await,
             Err(crate::LazyWorkspaceError::Cancelled),
         ));
         assert_eq!(work.receipt(), before);
@@ -5744,14 +5721,12 @@ mod tests {
         cancellation.cancel();
         let budget = crate::WorkBudget::UNBOUNDED;
         let errors = [
-            store.load_lazy_workspace_measured(workspace, budget, &cancellation).await.unwrap_err(),
-            store.compare_and_swap_lazy_workspace_measured(
-                workspace, 0, lazy_state(workspace, 1), budget, &cancellation,
-            ).await.unwrap_err(),
-            store.load_lazy_overlay_measured(overlay, budget, &cancellation).await.unwrap_err(),
-            store.put_lazy_overlay_measured(overlay, LazyOverlay::Empty, budget, &cancellation).await.unwrap_err(),
-            store.load_lazy_shadow_measured(shadow, budget, &cancellation).await.unwrap_err(),
-            store.put_lazy_shadow_measured(shadow, crate::LazyShadow::Empty, budget, &cancellation).await.unwrap_err(),
+            async { let cancellation = &cancellation; let budget = budget; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let result = store.load_lazy_workspace(workspace, &mut accounting).await; crate::facade::measured(result, &accounting) }.await.map_err(|failure| failure.error).unwrap_err(),
+            async { let cancellation = &cancellation; let budget = budget; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let result = store.compare_and_swap_lazy_workspace(workspace, 0, lazy_state(workspace, 1), &mut accounting).await; crate::facade::measured(result, &accounting) }.await.map_err(|failure| failure.error).unwrap_err(),
+            async { let cancellation = &cancellation; let budget = budget; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let result = store.load_lazy_overlay(overlay, &mut accounting).await.map(|node| node.map(|(value, _)| value)); crate::facade::measured(result, &accounting) }.await.map_err(|failure| failure.error).unwrap_err(),
+            async { let cancellation = &cancellation; let budget = budget; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = LazyOverlay::Empty; let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = store.put_lazy_overlay(overlay, (value, allocation), &mut accounting).await; crate::facade::measured(result, &accounting) }.await.map_err(|failure| failure.error).unwrap_err(),
+            async { let cancellation = &cancellation; let budget = budget; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let result = store.load_lazy_shadow(shadow, &mut accounting).await.map(|node| node.map(|(value, _)| value)); crate::facade::measured(result, &accounting) }.await.map_err(|failure| failure.error).unwrap_err(),
+            async { let cancellation = &cancellation; let budget = budget; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = crate::LazyShadow::Empty; let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = store.put_lazy_shadow(shadow, (value, allocation), &mut accounting).await; crate::facade::measured(result, &accounting) }.await.map_err(|failure| failure.error).unwrap_err(),
         ];
         for error in errors {
             assert!(matches!(error.semantic_error(), crate::LazyWorkspaceError::Cancelled));
@@ -5776,8 +5751,9 @@ mod tests {
         assert!(is_ownership_conflict(
             &WorkspaceLineageStore::load(&shared, workspace()).await
         ));
-        assert!(is_ownership_conflict(
-            &shared.load_lazy_workspace(workspace()).await
+        assert!(matches!(
+            shared.load_lazy_workspace(workspace(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await,
+            Err(crate::LazyWorkspaceError::NativeRecordOwnershipConflict(..))
         ));
 
         drop(owner);
@@ -5891,7 +5867,7 @@ mod tests {
         let seed = LocalCoreStateStore::new(directory.path());
         for workspace_id in workspaces {
             assert!(
-                seed.compare_and_swap_lazy_workspace(workspace_id, 0, lazy_state(workspace_id, 1))
+                seed.compare_and_swap_lazy_workspace(workspace_id, 0, lazy_state(workspace_id, 1), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                     .await
                     .expect("seed binding")
             );
@@ -5914,7 +5890,7 @@ mod tests {
                             .expect("binding slot");
                         let floor_before_load = floor.load(Ordering::SeqCst);
                         let current = owner
-                            .load_lazy_workspace(*workspace_id)
+                            .load_lazy_workspace(*workspace_id, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                             .await
                             .expect("load binding")
                             .expect("binding is present");
@@ -5930,11 +5906,7 @@ mod tests {
                         };
                         let revision = replacement.revision;
                         if owner
-                            .compare_and_swap_lazy_workspace(
-                                *workspace_id,
-                                expected_revision,
-                                replacement,
-                            )
+                            .compare_and_swap_lazy_workspace(*workspace_id, expected_revision, replacement, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                             .await
                             .expect("swap binding")
                         {
@@ -5955,7 +5927,7 @@ mod tests {
         let mut cached = Vec::new();
         for (workspace_id, floor) in committed.iter() {
             let state = owner
-                .load_lazy_workspace(*workspace_id)
+                .load_lazy_workspace(*workspace_id, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                 .await
                 .expect("load final binding")
                 .expect("final binding is present");
@@ -5973,7 +5945,7 @@ mod tests {
         for state in cached {
             assert_eq!(
                 durable
-                    .load_lazy_workspace(state.workspace_id)
+                    .load_lazy_workspace(state.workspace_id, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                     .await
                     .expect("load durable binding"),
                 Some(state)
@@ -5988,11 +5960,7 @@ mod tests {
         for revision in 1..OWNED_CHECKPOINT {
             assert!(
                 owner
-                    .compare_and_swap_lazy_workspace(
-                        workspace(),
-                        revision - 1,
-                        lazy_state(workspace(), revision),
-                    )
+                    .compare_and_swap_lazy_workspace(workspace(), revision - 1, lazy_state(workspace(), revision), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                     .await
                     .expect("commit below the checkpoint threshold")
             );
@@ -6020,11 +5988,7 @@ mod tests {
         );
         assert!(
             owner
-                .compare_and_swap_lazy_workspace(
-                    workspace(),
-                    OWNED_CHECKPOINT - 1,
-                    lazy_state(workspace(), OWNED_CHECKPOINT),
-                )
+                .compare_and_swap_lazy_workspace(workspace(), OWNED_CHECKPOINT - 1, lazy_state(workspace(), OWNED_CHECKPOINT), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                 .await
                 .is_err(),
             "the next transaction reports the failed checkpoint"
@@ -6032,11 +5996,7 @@ mod tests {
         std::fs::remove_file(directory.path().join(LINEAGE_FAMILY)).expect("remove obstacle");
         assert!(
             owner
-                .compare_and_swap_lazy_workspace(
-                    workspace(),
-                    OWNED_CHECKPOINT - 1,
-                    lazy_state(workspace(), OWNED_CHECKPOINT),
-                )
+                .compare_and_swap_lazy_workspace(workspace(), OWNED_CHECKPOINT - 1, lazy_state(workspace(), OWNED_CHECKPOINT), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                 .await
                 .expect("the retried checkpoint succeeds")
         );
@@ -6098,7 +6058,7 @@ mod tests {
             let writer = LocalCoreStateStore::open_owned(directory.path()).expect("writer");
             assert!(
                 writer
-                    .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1))
+                    .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                     .await
                     .expect("commit lazy workspace frame")
             );
@@ -6145,7 +6105,7 @@ mod tests {
             let owner = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
             assert!(
                 owner
-                    .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1))
+                    .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                     .await
                     .expect("commit")
             );
@@ -6155,7 +6115,7 @@ mod tests {
             let store = LocalCoreStateStore::new(directory.path());
             assert!(
                 matches!(
-                    store.load_lazy_workspace(workspace()).await,
+                    store.load_lazy_workspace(workspace(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await,
                     Err(LocalCoreStateStoreError::Corrupt(_))
                 ),
                 "{case}: an intact frame that does not decode is corruption"
@@ -6176,13 +6136,13 @@ mod tests {
         let (deferred, durability) = owner.defer_durability();
         assert!(
             deferred
-                .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1))
+                .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                 .await
                 .expect("deferred commit")
         );
         assert_eq!(
             owner
-                .load_lazy_workspace(workspace())
+                .load_lazy_workspace(workspace(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                 .await
                 .expect("visible deferred commit"),
             Some(lazy_state(workspace(), 1))
@@ -6190,7 +6150,7 @@ mod tests {
         durability.commit().await.expect("flush deferred commits");
         assert!(
             deferred
-                .compare_and_swap_lazy_workspace(workspace(), 1, lazy_state(workspace(), 2))
+                .compare_and_swap_lazy_workspace(workspace(), 1, lazy_state(workspace(), 2), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                 .await
                 .expect("commit after the scope ended")
         );
@@ -6207,7 +6167,7 @@ mod tests {
         drop((owner, deferred));
         assert_eq!(
             LocalCoreStateStore::new(directory.path())
-                .load_lazy_workspace(workspace())
+                .load_lazy_workspace(workspace(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                 .await
                 .expect("durable binding"),
             Some(lazy_state(workspace(), 2))
@@ -6300,11 +6260,7 @@ mod tests {
                 }
                 4 => {
                     store
-                        .compare_and_swap_lazy_workspace(
-                            CRASH_WORKSPACE,
-                            0,
-                            lazy_state(CRASH_WORKSPACE, 1),
-                        )
+                        .compare_and_swap_lazy_workspace(CRASH_WORKSPACE, 0, lazy_state(CRASH_WORKSPACE, 1), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                         .await
                 }
                 5 => {
@@ -6320,11 +6276,7 @@ mod tests {
                 }
                 6 => {
                     store
-                        .compare_and_swap_lazy_workspace(
-                            CRASH_WORKSPACE,
-                            1,
-                            lazy_state(CRASH_WORKSPACE, 2),
-                        )
+                        .compare_and_swap_lazy_workspace(CRASH_WORKSPACE, 1, lazy_state(CRASH_WORKSPACE, 2), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                         .await
                 }
                 _ => WorkspaceContextStore::discard_subtree(store, CRASH_PARENT, CRASH_CHILD, 8)
@@ -6523,7 +6475,7 @@ mod tests {
             (root, root_node),
             (orphan, orphan_node.clone()),
         ] {
-            store.put_lazy_overlay(id, node).await.expect("put overlay");
+            async { let cancellation = &crate::CancellationToken::new(); let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = node; let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = store.put_lazy_overlay(id, (value, allocation), &mut accounting).await; result }.await.expect("put overlay");
         }
         let empty_shadows = crate::LazyShadowId::from_bytes(
             content_address(&crate::LazyShadow::Empty).expect("empty shadow"),
@@ -6542,9 +6494,7 @@ mod tests {
         };
         let shadow_id =
             crate::LazyShadowId::from_bytes(content_address(&shadow).expect("shadow address"));
-        store
-            .put_lazy_shadow(shadow_id, shadow)
-            .await
+        async { let cancellation = &crate::CancellationToken::new(); let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = shadow; let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = store.put_lazy_shadow(shadow_id, (value, allocation), &mut accounting).await; result }.await
             .expect("put shadow");
         let orphan_shadow = crate::LazyShadow::Node {
             file_id: crate::foundation::FileId::from_bytes([8; 16]),
@@ -6557,16 +6507,14 @@ mod tests {
         let orphan_shadow_id = crate::LazyShadowId::from_bytes(
             content_address(&orphan_shadow).expect("orphan shadow address"),
         );
-        store
-            .put_lazy_shadow(orphan_shadow_id, orphan_shadow)
-            .await
+        async { let cancellation = &crate::CancellationToken::new(); let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = orphan_shadow; let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = store.put_lazy_shadow(orphan_shadow_id, (value, allocation), &mut accounting).await; result }.await
             .expect("put orphan shadow");
         let mut state = lazy_state(workspace(), 1);
         state.overlay = root;
         state.shadows = shadow_id;
         assert!(
             store
-                .compare_and_swap_lazy_workspace(workspace(), 0, state)
+                .compare_and_swap_lazy_workspace(workspace(), 0, state, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                 .await
                 .expect("bind lazy workspace")
         );
@@ -6577,41 +6525,39 @@ mod tests {
         for id in [root, leaf] {
             assert!(
                 reopened
-                    .load_lazy_overlay(id)
-                    .await
+                    .load_lazy_overlay(id, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
+                    .await.map(|node| node.map(|(value, _)| value))
                     .expect("load")
                     .is_some()
             );
         }
         assert!(
             reopened
-                .load_lazy_shadow(shadow_id)
-                .await
+                .load_lazy_shadow(shadow_id, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
+                .await.map(|node| node.map(|(value, _)| value))
                 .expect("load")
                 .is_some()
         );
         assert!(
             reopened
-                .load_lazy_overlay(orphan)
-                .await
+                .load_lazy_overlay(orphan, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
+                .await.map(|node| node.map(|(value, _)| value))
                 .expect("load")
                 .is_none()
         );
         assert!(
             reopened
-                .load_lazy_shadow(orphan_shadow_id)
-                .await
+                .load_lazy_shadow(orphan_shadow_id, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
+                .await.map(|node| node.map(|(value, _)| value))
                 .expect("load")
                 .is_none()
         );
-        reopened
-            .put_lazy_overlay(orphan, orphan_node)
-            .await
+        async { let cancellation = &crate::CancellationToken::new(); let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = orphan_node; let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = reopened.put_lazy_overlay(orphan, (value, allocation), &mut accounting).await; result }.await
             .expect("put again");
         assert!(
             reopened
-                .load_lazy_overlay(orphan)
-                .await
+                .load_lazy_overlay(orphan, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
+                .await.map(|node| node.map(|(value, _)| value))
                 .expect("load")
                 .is_some()
         );
@@ -6620,7 +6566,7 @@ mod tests {
     async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWorkspaceState {
         let empty = LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).expect("empty"));
         let (overlay, node) = linked_overlay("/original", empty, empty);
-        store.put_lazy_overlay(overlay, node).await.expect("original overlay");
+        async { let cancellation = &crate::CancellationToken::new(); let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = node; let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = store.put_lazy_overlay(overlay, (value, allocation), &mut accounting).await; result }.await.expect("original overlay");
         let empty_shadows = crate::LazyShadowId::from_bytes(
             content_address(&crate::LazyShadow::Empty).expect("empty shadows"),
         );
@@ -6635,15 +6581,13 @@ mod tests {
             right: empty_shadows,
         };
         let shadows = crate::LazyShadowId::from_bytes(content_address(&shadow).expect("shadow"));
-        store.put_lazy_shadow(shadows, shadow).await.expect("original shadows");
+        async { let cancellation = &crate::CancellationToken::new(); let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = shadow; let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = store.put_lazy_shadow(shadows, (value, allocation), &mut accounting).await; result }.await.expect("original shadows");
         let parent = LazyWorkspaceState {
             overlay,
             shadows,
             ..lazy_state(WorkspaceId::from_bytes([0xa0; 16]), 1)
         };
-        assert!(store.compare_and_swap_lazy_workspace(
-            parent.workspace_id, 0, parent.clone(),
-        ).await.expect("parent binding"));
+        assert!(store.compare_and_swap_lazy_workspace(parent.workspace_id, 0, parent.clone(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.expect("parent binding"));
         parent
     }
 
@@ -6700,29 +6644,25 @@ mod tests {
             let update = updated.clone();
             let expected = parent.revision;
             assert!(tokio::spawn(async move {
-                updater.compare_and_swap_lazy_workspace(update.workspace_id, expected, update)
+                updater.compare_and_swap_lazy_workspace(update.workspace_id, expected, update, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                     .await.expect("concurrent source binding update")
             }).await.expect("update task"));
             assert_eq!(store.collect_lazy_nodes().await.expect("collect old source roots"), u64::from(component != 0));
             if component == 1 {
-                assert!(store.load_lazy_overlay(parent.overlay).await.expect("old overlay").is_none());
+                assert!(store.load_lazy_overlay(parent.overlay, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|node| node.map(|(value, _)| value)).expect("old overlay").is_none());
             } else if component == 2 {
-                assert!(store.load_lazy_shadow(parent.shadows).await.expect("old shadow").is_none());
+                assert!(store.load_lazy_shadow(parent.shadows, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|node| node.map(|(value, _)| value)).expect("old shadow").is_none());
             }
 
             let cancellation = crate::CancellationToken::new();
-            let rejected = store.compare_and_swap_lazy_workspace_measured(
-                prepared.workspace_id, 0, prepared.clone(), crate::WorkBudget::UNBOUNDED, &cancellation,
-            ).await.expect("stale freeze is a CAS miss");
+            let rejected = async { let cancellation = &cancellation; let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let result = store.compare_and_swap_lazy_workspace(prepared.workspace_id, 0, prepared.clone(), &mut accounting).await; crate::facade::measured(result, &accounting) }.await.expect("stale freeze is a CAS miss");
             assert!(!rejected.value);
             assert!(rejected.work.items_examined > 0);
             assert_eq!(rejected.work.object_bytes_written, 0);
-            assert!(store.load_lazy_workspace(prepared.workspace_id).await.expect("child").is_none());
+            assert!(store.load_lazy_workspace(prepared.workspace_id, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.expect("child").is_none());
 
             let refreshed = prepared_origin_fixture(&updated);
-            assert!(store.compare_and_swap_lazy_workspace(
-                refreshed.workspace_id, 0, refreshed,
-            ).await.expect("current source freeze"));
+            assert!(store.compare_and_swap_lazy_workspace(refreshed.workspace_id, 0, refreshed, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.expect("current source freeze"));
         }
     }
 
@@ -6734,27 +6674,19 @@ mod tests {
         let prepared = prepared_origin_fixture(&parent);
         // The caller loses the first write's acknowledgement, then recovers
         // only the authentic persisted original record after reopening.
-        let _ = store.compare_and_swap_lazy_workspace(
-            prepared.workspace_id, 0, prepared.clone(),
-        ).await.expect("durable original freeze");
+        let _ = store.compare_and_swap_lazy_workspace(prepared.workspace_id, 0, prepared.clone(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.expect("durable original freeze");
         drop(store);
         let store = LocalCoreStateStore::open_owned(directory.path()).expect("reopened store");
-        assert_eq!(store.load_lazy_workspace(prepared.workspace_id).await.expect("recover"), Some(prepared.clone()));
+        assert_eq!(store.load_lazy_workspace(prepared.workspace_id, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.expect("recover"), Some(prepared.clone()));
         let updated = advanced_origin_parent(&parent);
-        assert!(store.compare_and_swap_lazy_workspace(
-            parent.workspace_id, parent.revision, updated.clone(),
-        ).await.expect("advance mutable parent"));
+        assert!(store.compare_and_swap_lazy_workspace(parent.workspace_id, parent.revision, updated.clone(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.expect("advance mutable parent"));
         assert_eq!(store.collect_lazy_nodes().await.expect("prepared origin roots"), 0);
-        assert!(!store.compare_and_swap_lazy_workspace(
-            prepared.workspace_id, 0, prepared.clone(),
-        ).await.expect("lost acknowledgement retry is revision fenced"));
+        assert!(!store.compare_and_swap_lazy_workspace(prepared.workspace_id, 0, prepared.clone(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.expect("lost acknowledgement retry is revision fenced"));
 
         let mut committed = prepared.clone();
         committed.revision += 1;
         committed.fork_origin.as_mut().expect("origin").phase = crate::LazyForkPhase::Committed;
-        assert!(store.compare_and_swap_lazy_workspace(
-            committed.workspace_id, prepared.revision, committed.clone(),
-        ).await.expect("commit original without rereading mutable parent"));
+        assert!(store.compare_and_swap_lazy_workspace(committed.workspace_id, prepared.revision, committed.clone(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.expect("commit original without rereading mutable parent"));
         let child = LazyWorkspaceState {
             revision: committed.revision + 1,
             source: updated.source,
@@ -6762,12 +6694,10 @@ mod tests {
             shadows: updated.shadows,
             ..committed.clone()
         };
-        assert!(store.compare_and_swap_lazy_workspace(
-            child.workspace_id, committed.revision, child.clone(),
-        ).await.expect("later child observation epoch"));
+        assert!(store.compare_and_swap_lazy_workspace(child.workspace_id, committed.revision, child.clone(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.expect("later child observation epoch"));
         assert_eq!(store.collect_lazy_nodes().await.expect("committed origin roots"), 0);
-        assert!(store.load_lazy_overlay(parent.overlay).await.expect("original overlay retained").is_some());
-        assert!(store.load_lazy_shadow(parent.shadows).await.expect("original shadows retained").is_some());
+        assert!(store.load_lazy_overlay(parent.overlay, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|node| node.map(|(value, _)| value)).expect("original overlay retained").is_some());
+        assert!(store.load_lazy_shadow(parent.shadows, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|node| node.map(|(value, _)| value)).expect("original shadows retained").is_some());
         let origin = prepared.fork_origin.expect("original");
         assert_eq!(store.lazy_retained_generations().await.expect("original generation roots"),
             [(origin.snapshot.authored_generation, origin.config)]);
@@ -6787,10 +6717,8 @@ mod tests {
         let mut regressed = next;
         regressed.fork_origin.as_mut().expect("origin").phase = crate::LazyForkPhase::Prepared;
         for replacement in [removed, new_operation, new_config, new_snapshot, new_parent, regressed] {
-            assert!(!store.compare_and_swap_lazy_workspace(
-                child.workspace_id, child.revision, replacement,
-            ).await.expect("immutable original rejects replacement"));
+            assert!(!store.compare_and_swap_lazy_workspace(child.workspace_id, child.revision, replacement, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.expect("immutable original rejects replacement"));
         }
-        assert_eq!(store.load_lazy_workspace(child.workspace_id).await.expect("unchanged child"), Some(child));
+        assert_eq!(store.load_lazy_workspace(child.workspace_id, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.expect("unchanged child"), Some(child));
     }
 }

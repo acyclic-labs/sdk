@@ -21,21 +21,21 @@ fn check(work: &NativeMaterializationWork, cancellation: &crate::CancellationTok
 }
 
 pub(super) fn checked_native_packet<T>(
-    packet: NativeOwnedCoreState<T>,
+    packet: (T, crate::NativeAllocation),
     original: &NativeMaterializationWork,
     cancellation: &crate::CancellationToken,
     owned_bytes: impl FnOnce(&T, &NativeMaterializationWork) -> Result<u64, LocalCoreStateStoreError>,
-) -> Result<NativeOwnedCoreState<T>, LocalCoreStateStoreError> {
+) -> Result<(T, crate::NativeAllocation), LocalCoreStateStoreError> {
     check(original, cancellation)?;
     // Keep the tuple intact on denial: physical DTO first, original guard last.
-    let parts = packet.into_parts();
+    let parts = packet;
     if !parts.1.matches_work(original) {
         return Err(LocalCoreStateStoreError::NativeLedgerMismatch);
     }
     if parts.1.bytes() != owned_bytes(&parts.0, original)? {
         return Err(LocalCoreStateStoreError::Integrity);
     }
-    Ok(NativeOwnedCoreState::from_parts(parts.0, parts.1))
+    Ok((parts.0, parts.1))
 }
 
 fn copy_path(root: &Path, leaf: Option<&Path>, work: &NativeMaterializationWork) -> Result<NativeCorePath, LocalCoreStateStoreError> {
@@ -170,11 +170,11 @@ mod tests {
         }
     }
 
-    fn paid_lineage(value: &WorkspaceLineageRecord, work: &NativeMaterializationWork, cxl: &crate::CancellationToken) -> NativeOwnedCoreState<WorkspaceLineageRecord> {
+    fn paid_lineage(value: &WorkspaceLineageRecord, work: &NativeMaterializationWork, cxl: &crate::CancellationToken) -> (WorkspaceLineageRecord, crate::NativeAllocation) {
         let owned = native_records::clone_native_record_value(&RecordValue::Lineage(value.clone()), work, cxl).expect("actual original producer");
-        let parts = owned.into_parts();
+        let parts = owned;
         match parts.0 {
-            RecordValue::Lineage(value) => NativeOwnedCoreState::from_parts(value, parts.1),
+            RecordValue::Lineage(value) => (value, parts.1),
             _ => panic!("lineage producer changed its actual type"),
         }
     }
@@ -208,8 +208,8 @@ mod tests {
         ).await.expect("stock original CAS"));
         let loaded = WorkspaceLineageStore::load_with_native_work(&store, id, &work, &cancellation)
             .await.expect("stock original load").expect("exact record");
-        assert_eq!(loaded.as_state(), &value);
-        let parts = loaded.into_parts();
+        assert_eq!((&loaded.0), &value);
+        let parts = loaded;
         assert!(parts.1.matches_work(&work));
         drop(parts);
         assert!(!WorkspaceLineageStore::compare_and_swap_with_native_work(
@@ -219,7 +219,7 @@ mod tests {
         let restarted = LocalCoreStateStore::new(directory.path());
         let loaded = WorkspaceLineageStore::load_with_native_work(&restarted, id, &work, &cancellation)
             .await.expect("cold canonical WAL replay").expect("durable record");
-        assert_eq!(loaded.as_state(), &value);
+        assert_eq!((&loaded.0), &value);
         assert_eq!(WorkspaceLineageStore::load(&restarted, id).await.expect("ordinary consumer"), Some(value));
         work.receipt().verify(finite_budget()).expect("same finite original receipt");
     }
@@ -240,7 +240,7 @@ mod tests {
         ).await.expect_err("resource substitution");
         assert!(matches!(error.0, crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::NativeLedgerMismatch)));
         assert_eq!(work.receipt(), before);
-        let forged = NativeOwnedCoreState::from_parts(lineage(id), work.claim(0, 0, crate::WorkCounters::UNCHARGED).expect("zero-byte caller guard"));
+        let forged = (lineage(id), work.claim(0, 0, crate::WorkCounters::UNCHARGED).expect("zero-byte caller guard"));
         let error = WorkspaceLineageStore::compare_and_swap_with_native_work(
             &store, id, 0, forged, &work, &cancellation,
         ).await.expect_err("unfunded caller payload");
@@ -275,22 +275,22 @@ mod tests {
         let work = original.native_volume_work(finite_budget()).expect("resource view");
         let loaded = WorkspaceContextStore::load_with_native_work(&store, id, &work, &cancellation)
             .await.expect("funded deep projection").expect("context");
-        assert_eq!(loaded.as_state(), &value);
-        let mut parts = loaded.into_parts();
+        assert_eq!((&loaded.0), &value);
+        let mut parts = loaded;
         assert!(parts.1.matches_work(&work));
         assert_eq!(parts.1.bytes(), native_records::native_context_owned_bytes(&parts.0, &work).expect("actual capacities"));
         parts.0.revision += 1;
         parts.0.state = WorkspaceContextState::Frozen;
         assert!(WorkspaceContextStore::compare_and_swap_with_native_work(
-            &store, id, 1, NativeOwnedCoreState::from_parts(parts.0, parts.1), &work, &cancellation,
+            &store, id, 1, (parts.0, parts.1), &work, &cancellation,
         ).await.expect("same canonical context CAS"));
         drop(store);
         let reopened = LocalCoreStateStore::new(directory.path());
         let actual = WorkspaceContextStore::load_with_native_work(&reopened, id, &work, &cancellation)
             .await.expect("reopened original context").expect("context");
-        assert_eq!(actual.as_state().revision, 2);
-        assert_eq!(actual.as_state().state, WorkspaceContextState::Frozen);
-        assert_eq!(actual.as_state().roots, value.roots);
+        assert_eq!((&actual.0).revision, 2);
+        assert_eq!((&actual.0).state, WorkspaceContextState::Frozen);
+        assert_eq!((&actual.0).roots, value.roots);
         work.receipt().verify(finite_budget()).expect("finite root resource");
     }
 
@@ -367,7 +367,7 @@ mod tests {
                         selected.revision += 1;
                         selected.parent_context_id = parents.get(*destination as usize).copied();
                         if native {
-                            let packet = NativeOwnedCoreState::from_parts(selected.clone(), work.claim(0, 0, crate::WorkCounters::UNCHARGED).expect("actual zero deep payload"));
+                            let packet = (selected.clone(), work.claim(0, 0, crate::WorkCounters::UNCHARGED).expect("actual zero deep payload"));
                             assert!(WorkspaceContextStore::compare_and_swap_with_native_work(
                                 &store, child, previous, packet, &work, &cancellation,
                             ).await.expect("original parent transition"));

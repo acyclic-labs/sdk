@@ -2291,8 +2291,8 @@ fn fatal_handler_error(error: &NativeMountError) -> bool {
             if matches!(error.semantic_error(), MountSourceError::NativeCallbackDenied { .. }) {
                 return false;
             }
-            if let MountSourceError::NativeWorkspaceCause(error) = error.semantic_error() {
-                return super::native_workspace_failure_is_fatal(&error.source);
+            if let MountSourceError::NativeWorkspaceCause(error , _ ) = error.semantic_error() {
+                return super::native_workspace_failure_is_fatal(error);
             }
             #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
             if matches!(error.semantic_error(), MountSourceError::SourceWatchStartup(_)
@@ -2320,7 +2320,7 @@ fn source_callback_errno(error: &MountSourceError) -> i32 {
         MountSourceError::AlreadyExists => libc::EEXIST,
         MountSourceError::NativeWork(error) => super::native_materialization_errno(error),
         MountSourceError::WorkspaceCause(error) => super::native_workspace_errno(error),
-        MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_errno(&error.source),
+        MountSourceError::NativeWorkspaceCause(error , _ ) => super::native_workspace_errno(error) ,
         MountSourceError::NativeText { kind, .. } =>
             super::native_source_text_errno(*kind),
         MountSourceError::Io(error, _) =>

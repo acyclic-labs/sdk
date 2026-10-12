@@ -226,7 +226,7 @@ pub use lazy_workspace::{
     LazyOverlayId, LazySeekTarget, LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef,
     LazyStat, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
     MemoryLazyWorkspaceStore, SelectedImportPlan,
-    OriginalQualifiedSnapshot, NativePublicationSnapshot,
+    NativePublicationSnapshot,
 };
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,

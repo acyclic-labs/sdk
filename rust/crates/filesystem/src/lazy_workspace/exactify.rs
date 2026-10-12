@@ -1,538 +1,273 @@
 use super::*;
+use crate::kernel::{KernelAccounting, Owned};
 
-
-impl<A, O, D, S> LazyWorkspace<A, O, D, S>
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-    D: DemandSource + 'static,
-    S: LazyWorkspaceStore,
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
+    LazyWorkspace<A, O, D, S>
 {
-
-
-    /// Captures every currently visible path into an exact authored generation.
-    ///
-    /// Enumeration completes before promotion begins so authored overlay
-    /// changes cannot invalidate source cursors. Budget exhaustion and
-    /// cancellation are explicit errors; callers must never present a partial
-    /// capture as exact. A retry safely continues from already promoted paths.
+    /// Captures a visible subtree into complete authored state using bounded batches.
     pub async fn exactify(
         &self,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError> {
-        self.exactify_with_permit(budget, cancellation, crate::PublicationPermit::Unrestricted)
-            .await
-    }
-
-    /// Exactifies under the supplied operation-window or reservation permit.
-    pub async fn exactify_with_permit(
-        &self,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
+        root: &str,
         permit: crate::PublicationPermit,
-    ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError> {
-        self.exactify_selected_with_permit("/", budget, cancellation, permit)
-            .await
-    }
-
-    /// Captures one visible subtree into authored state without visiting its
-    /// siblings. The selected directory and every descendant become exact;
-    /// unresolved paths outside it retain their normal lazy semantics.
-    pub async fn exactify_subtree(
-        &self,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError> {
-        self.exactify_subtree_with_permit(
-            path,
-            budget,
-            cancellation,
-            crate::PublicationPermit::Unrestricted,
-        )
-        .await
-    }
-
-    /// Captures one visible subtree into authored state without visiting its
-    /// siblings. The selected directory and every descendant become exact;
-    /// unresolved paths outside it retain their normal lazy semantics.
-    pub async fn exactify_subtree_with_permit(
-        &self,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        permit: crate::PublicationPermit,
-    ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError> {
-        let root = self.canonical_path(path)?;
-        let selected = self.lookup(&root).await?;
-        if !matches!(
-            selected,
-            LazyLookup::Authored {
-                stat: crate::WorkspaceStat {
-                    kind: FileKind::Directory,
-                    ..
-                },
-                ..
-            } | LazyLookup::Source(SourceNode {
-                kind: SourceNodeKind::Directory,
-                ..
-            }) | LazyLookup::Shadow {
-                record: FileRecord {
-                    kind: FileKind::Directory,
-                    ..
-                },
-                ..
-            }
-        ) {
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
+        let lookup = self.inspect(root, accounting).await?;
+        let directory = lookup.0.stat().kind == SourceNodeKind::Directory;
+        self.retire_lookup(lookup, accounting)?;
+        if !directory {
             return Err(LazyWorkspaceError::NotDirectory);
         }
-        self.exactify_selected_with_permit(&root, budget, cancellation, permit)
+        let capture = self.snapshot(accounting).await?;
+        let state = LazyWorkspaceState::new(
+            self.workspace.id(),
+            capture.source,
+            capture.overlay,
+            capture.shadows,
+        );
+        self.exactify_at(root, capture, state, permit, accounting)
             .await
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        clippy::cognitive_complexity,
-        reason = "exactifies the selected subtree as one ordered traversal that batches mutations under one permit"
-    )]
-    async fn exactify_selected_with_permit(
+    /// Materializes an immutable cut in a deterministic scratch fork.
+    pub async fn exactify_snapshot(
+        &self,
+        snapshot: LazySnapshotRef,
+        destination: &str,
+        operation: IdempotencyKey,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
+        self.validate_snapshot(snapshot, accounting)?;
+        let overlay = self
+            .store
+            .load_lazy_overlay(snapshot.overlay, accounting)
+            .await?
+            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+        retire_node(overlay, accounting)?;
+        let shadows = self
+            .store
+            .load_lazy_shadow(snapshot.shadows, accounting)
+            .await?
+            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+        retire_node(shadows, accounting)?;
+        let (child, _) = self
+            .fork_snapshot(destination, snapshot, operation, accounting)
+            .await?;
+        child
+            .exactify("/", crate::PublicationPermit::Unrestricted, accounting)
+            .await
+    }
+
+    pub(super) async fn exactify_at(
         &self,
         root: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
+        capture: LazySnapshotRef,
+        state: LazyWorkspaceState,
         permit: crate::PublicationPermit,
-    ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError> {
-        cancellation
-            .check()
-            .map_err(|_| LazyWorkspaceError::Cancelled)?;
-        let state = self.state_measured(budget, cancellation).await?;
-        let mut work = state.work;
-        let head = self
-            .workspace
-            .head_measured(remaining_work(work, budget)?, cancellation)
-            .await
-            .map_err(workspace_error)?;
-        work = account_work(work, head.work, budget)?;
-        let mut pinned_generation = head.value;
-        let capture = LazySnapshotRef::new(
-            self.workspace.id(),
-            pinned_generation.id(),
-            state.value.source,
-            state.value.overlay,
-            state.value.shadows,
-        )
-        .id;
-        let mut retained_bytes = 0_u64;
-        let mut directories = Vec::new();
-        let mut paths = Vec::new();
-        reserve_exactify_path_slot(&mut directories, &mut retained_bytes, &mut work, budget)?;
-        let root_key = root;
-        let root = root.to_owned();
-        retain_exactify_string(&root, &mut retained_bytes, &mut work, budget)?;
-        directories.push(root.clone());
-        if root != "/" {
-            reserve_exactify_path_slot(&mut paths, &mut retained_bytes, &mut work, budget)?;
-            retain_exactify_string(&root, &mut retained_bytes, &mut work, budget)?;
-            paths.push(root);
-        }
-        let mut next_directory = 0_usize;
-        while next_directory < directories.len() {
-            cancellation
-                .check()
-                .map_err(|_| LazyWorkspaceError::Cancelled)?;
-            let directory = directories
-                .get_mut(next_directory)
-                .map(std::mem::take)
-                .ok_or(LazyWorkspaceError::Concurrent)?;
-            next_directory += 1;
-            let mut cursor = None;
-            loop {
-                cancellation
-                    .check()
-                    .map_err(|_| LazyWorkspaceError::Cancelled)?;
-                let receipt = self
-                    .list_directory_measured(
-                        &directory,
-                        cursor,
-                        1_024,
-                        remaining_work(work, budget)?,
-                        cancellation,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
+        let (mut paths, _) = self
+            .enumerate_paths(root, capture, &state, accounting)
+            .await?;
+        paths
+            .value
+            .sort_unstable_by(|a, b| exactify_path_order(a, b));
+        let result = async {
+            let limits = self.workspace.limits();
+            let maximum = (limits.maximum_checkout_dependencies as usize
+                / (limits.maximum_path_depth as usize + 4))
+                .min(limits.maximum_mutations_per_batch as usize / 4)
+                .max(1);
+            let mut generation = capture.authored_generation;
+            for (batch, chunk) in paths.value.chunks(maximum).enumerate() {
+                accounting.check()?;
+                let checkout = self.workspace.checkout_with_accounting(
+                    crate::model::GenerationSelector::Exact(generation),
+                    crate::model::CheckoutMode::tracking_transaction(),
+                    accounting,
+                    cancellation(accounting),
+                ).await?;
+                let key = exactify_batch_key(capture.id, root, batch as u64);
+                let mut transaction = crate::Transaction::from_checkout(
+                    &self.workspace, checkout, key, false,
+                );
+                let mut dirty = false;
+                for path in chunk {
+                    let (lookup, _, allocation) = self.inspect_unauthored(
+                        &mut transaction.checkout,
+                        path,
                         None,
-                        None,
-                    )
-                    .await
-                    .map_err(|error| exactify_error("enumerate", &directory, error))?;
-                work = account_nested_with_live_memory(work, receipt.work, retained_bytes, budget)?;
-                let page = receipt.value;
-                for entry in page.entries {
-                    let path = logical_child_path(&directory, &entry.name)
-                        .ok_or(LazyWorkspaceError::UnsupportedNode)?;
-                    work.items_examined = work
-                        .items_examined
-                        .checked_add(1)
-                        .ok_or_else(counter_overflow)?;
-                    work.verify(budget)?;
-                    if entry.kind == SourceNodeKind::Directory {
-                        reserve_exactify_path_slot(
-                            &mut directories,
-                            &mut retained_bytes,
-                            &mut work,
-                            budget,
-                        )?;
-                        let child_directory = path.clone();
-                        retain_exactify_string(
-                            &child_directory,
-                            &mut retained_bytes,
-                            &mut work,
-                            budget,
-                        )?;
-                        directories.push(child_directory);
+                        InspectBasis {
+                            state: Some(&state),
+                            retain_pinned_observation: true,
+                            ..InspectBasis::default()
+                        },
+                        accounting,
+                    ).await?;
+                    let lookup = lookup.ok_or(LazyWorkspaceError::NotFound)?;
+                    let applied = async {
+                        if matches!(&lookup, LazyLookup::Authored { path: authored, .. } if authored == path) {
+                            return Ok(false);
+                        }
+                        if matches!(&lookup, LazyLookup::Source { .. }) {
+                            accounting.charge(WorkCounters {
+                                materializations: 1,
+                                ..WorkCounters::UNCHARGED
+                            })?;
+                        }
+                        if let Some(parent) = parent_path(path) {
+                            transaction.create_dir_all_with_accounting(
+                                parent, accounting, cancellation(accounting),
+                            ).await?;
+                        }
+                        let maximum_bytes = accounting.remaining()?.source_bytes_read;
+                        self.apply_resolved_promotion(
+                            &mut transaction, path, &lookup, maximum_bytes, accounting,
+                        ).await
+                    }.await;
+                    self.retire_lookup((lookup, allocation), accounting)?;
+                    dirty |= applied?;
+                }
+                if dirty {
+                    match self.commit(&mut transaction, permit, accounting).await? {
+                        TransactionCommit::Committed(committed)
+                        | TransactionCommit::AlreadyCommitted(committed) => generation = committed.id(),
+                        TransactionCommit::Conflict { .. }
+                        | TransactionCommit::Fenced
+                        | TransactionCommit::IdempotencyConflict => return Err(LazyWorkspaceError::Concurrent),
                     }
-                    reserve_exactify_path_slot(&mut paths, &mut retained_bytes, &mut work, budget)?;
-                    retain_exactify_string(&path, &mut retained_bytes, &mut work, budget)?;
-                    paths.push(path);
-                }
-                cursor = page.next;
-                if cursor.is_none() {
-                    break;
                 }
             }
-            retained_bytes = retained_bytes
-                .checked_sub(u64::try_from(directory.capacity()).unwrap_or(u64::MAX))
-                .ok_or_else(counter_overflow)?;
-        }
-        let directory_vector_bytes = exactify_path_vector_bytes(&directories)?;
-        retained_bytes = retained_bytes
-            .checked_sub(directory_vector_bytes)
-            .ok_or_else(counter_overflow)?;
-        drop(directories);
-        let path_vector_bytes = exactify_path_vector_bytes(&paths)?;
-        paths.sort_unstable_by(|left, right| exactify_path_order(left, right));
-        let limits = self.workspace.limits();
-        // A path can add an ancestor proof for every component. Keep each
-        // unpublished candidate well inside the volume dependency ceiling.
-        let dependency_paths = usize::try_from(limits.maximum_checkout_dependencies)
-            .unwrap_or(usize::MAX)
-            / (usize::from(limits.maximum_path_depth) + 4);
-        let mutation_paths =
-            usize::try_from(limits.maximum_mutations_per_batch).unwrap_or(usize::MAX) / 4;
-        let maximum_batch_paths = dependency_paths.min(mutation_paths).max(1);
-        let mut seen_sources: Vec<(FileId, String)> = Vec::new();
-        seen_sources
-            .try_reserve_exact(maximum_batch_paths.min(paths.len()))
-            .map_err(|_| LazyWorkspaceError::Work("exactify batch allocation failed".to_owned()))?;
-        let seen_vector_bytes = u64::try_from(
-            seen_sources
-                .capacity()
-                .checked_mul(std::mem::size_of::<(FileId, String)>())
-                .ok_or_else(counter_overflow)?,
-        )
-        .map_err(|_| counter_overflow())?;
-        retained_bytes = retained_bytes
-            .checked_add(seen_vector_bytes)
-            .ok_or_else(counter_overflow)?;
-        work.peak_allocation_bytes = work.peak_allocation_bytes.max(retained_bytes);
-        work.verify(budget)?;
-        let mut transaction = None;
-        let mut batch_paths = 0_usize;
-        let mut batch_dirty = false;
-        let mut batch_index = 0_u64;
-        let mut pending_sources = Vec::new();
-        let mut pending_source_bytes = 0_u64;
-        let mut authored_batch = Vec::new();
-        for index in 0..paths.len() {
-            cancellation
-                .check()
-                .map_err(|_| LazyWorkspaceError::Cancelled)?;
-            if batch_paths == maximum_batch_paths {
-                if batch_dirty {
-                    work = self
-                        .flush_exactify_source_batch(
-                            transaction.as_mut().ok_or(LazyWorkspaceError::Concurrent)?,
-                            &mut pending_sources,
-                            &mut pending_source_bytes,
-                            &mut retained_bytes,
-                            work,
-                            budget,
-                            cancellation,
-                        )
-                        .await?;
-                    let current = transaction.take().ok_or(LazyWorkspaceError::Concurrent)?;
-                    let committed = self
-                        .commit_exactify_batch(
-                            current,
-                            permit,
-                            remaining_work(work, budget)?,
-                            cancellation,
-                        )
-                        .await?;
-                    work = account_nested_with_live_memory(
-                        work,
-                        committed.work,
-                        retained_bytes,
-                        budget,
-                    )?;
-                    pinned_generation = committed.value;
-                }
-                transaction = None;
-                batch_dirty = false;
-                batch_paths = 0;
-                batch_index = batch_index.checked_add(1).ok_or_else(counter_overflow)?;
-                for (_, retained) in seen_sources.drain(..) {
-                    retained_bytes = retained_bytes
-                        .checked_sub(u64::try_from(retained.capacity()).unwrap_or(u64::MAX))
-                        .ok_or_else(counter_overflow)?;
-                }
+            let cancellation = cancellation(accounting);
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                return self.workspace.generation(generation, original, cancellation)
+                    .await.map_err(Into::into);
             }
-            if batch_paths == 0 {
-                let end = index.saturating_add(maximum_batch_paths).min(paths.len());
-                let namespace_paths = paths
-                    .get(index..end)
-                    .ok_or(LazyWorkspaceError::Concurrent)?
-                    .iter()
-                    .map(|path| self.namespace_path(path))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let found = pinned_generation
-                    .lookup_paths(
-                        &namespace_paths,
-                        remaining_work(work, budget)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|failure| LazyWorkspaceError::Workspace(failure.error.to_string()))?;
-                work = account_nested_with_live_memory(work, found.work, retained_bytes, budget)?;
-                authored_batch = found
-                    .value
-                    .into_iter()
-                    .map(|record| record.is_some())
-                    .collect();
-            }
-            let authored_absent = !authored_batch
-                .get(batch_paths)
-                .copied()
-                .ok_or(LazyWorkspaceError::Concurrent)?;
-            let path = std::mem::take(paths.get_mut(index).ok_or(LazyWorkspaceError::Concurrent)?);
-            let receipt = if authored_absent {
-                self.inspect_snapshot_after_authored_absence(
-                    &path,
-                    remaining_work(work, budget)?,
-                    cancellation,
-                )
-                .await
-            } else {
-                self.inspect_snapshot_measured(&path, remaining_work(work, budget)?, cancellation)
-                    .await
-            }
-            .map_err(|error| exactify_error("inspect", &path, error))?;
-            work = account_nested_with_live_memory(work, receipt.work, retained_bytes, budget)?;
-            let lookup = receipt.value;
-            if matches!(lookup.lookup, LazyLookup::Source(_)) {
-                work.materializations = work
-                    .materializations
-                    .checked_add(1)
-                    .ok_or_else(counter_overflow)?;
-                work.verify(budget)?;
-            }
-            if transaction.is_none() {
-                let begun = self
-                    .workspace
-                    .begin_pinned_transaction_measured(
-                        &pinned_generation,
-                        exactify_batch_key(capture, root_key, batch_index),
-                        remaining_work(work, budget)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(workspace_error)?;
-                work = account_nested_with_live_memory(work, begun.work, retained_bytes, budget)?;
-                transaction = Some(begun.value);
-                if let Some(parent) = parent_path(root_key) {
-                    let prepared = transaction
-                        .as_mut()
-                        .ok_or(LazyWorkspaceError::Concurrent)?
-                        .create_dir_all_measured(
-                            parent,
-                            remaining_work(work, budget)?,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(workspace_error)?;
-                    work = account_nested_with_live_memory(work, prepared, retained_bytes, budget)?;
-                }
-            }
-            let source_id = match &lookup.lookup {
-                LazyLookup::Source(node)
-                    if node.kind == SourceNodeKind::RegularFile && node.link_count != Some(1) =>
-                {
-                    Some(self.source_file_id(node))
-                }
-                _ => None,
-            };
-            if let Some((_, alias)) =
-                source_id.and_then(|id| seen_sources.iter().find(|(seen, _)| *seen == id))
-            {
-                work = self
-                    .flush_exactify_source_batch(
-                        transaction.as_mut().ok_or(LazyWorkspaceError::Concurrent)?,
-                        &mut pending_sources,
-                        &mut pending_source_bytes,
-                        &mut retained_bytes,
-                        work,
-                        budget,
-                        cancellation,
-                    )
-                    .await?;
-                let linked = transaction
-                    .as_mut()
-                    .ok_or(LazyWorkspaceError::Concurrent)?
-                    .hard_link_measured(alias, &path, remaining_work(work, budget)?, cancellation)
-                    .await
-                    .map_err(workspace_error)
-                    .map_err(|error| exactify_error("link", &path, error))?;
-                work = account_nested_with_live_memory(work, linked, retained_bytes, budget)?;
-                batch_dirty = true;
-                retained_bytes = retained_bytes
-                    .checked_sub(u64::try_from(path.capacity()).unwrap_or(u64::MAX))
-                    .ok_or_else(counter_overflow)?;
-            } else if let LazyLookup::Source(node) = &lookup.lookup
-                && node.kind == SourceNodeKind::RegularFile
-            {
-                let pinned = PinnedSourceNode {
-                    source: lookup.source.ok_or(LazyWorkspaceError::Concurrent)?,
-                    node: *node,
-                };
-                let staged = self
-                    .stage_regular_source_content(
-                        transaction.as_ref().ok_or(LazyWorkspaceError::Concurrent)?,
-                        &path,
-                        &pinned,
-                        remaining_work(work, budget)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|error| exactify_error("stage", &path, error))?;
-                work = account_nested_with_live_memory(work, staged.work, retained_bytes, budget)?;
-                let namespace_path = self.namespace_path(&path)?;
-                queue_exactify_mutation(
-                    &mut pending_sources,
-                    AuthoredMutation::CreateFileFromContent {
-                        path: namespace_path,
-                        content: staged.value,
-                        metadata: source_file_metadata(node.metadata),
-                        file_id: Some(self.source_file_id(node)),
+            accept_receipt(
+                self.workspace.generation(generation, accounting.remaining()?, cancellation).await,
+                accounting,
+            )
+        }.await;
+        paths.retire(accounting)?;
+        result
+    }
+
+    pub(super) async fn enumerate_paths(
+        &self,
+        root: &str,
+        capture: LazySnapshotRef,
+        state: &LazyWorkspaceState,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(Owned<Vec<String>>, bool), LazyWorkspaceError> {
+        let root = self.canonical_path(root, accounting)?;
+        let mut paths = Owned::allocate(1, accounting)?;
+        crate::Transaction::<A, O>::push_workspace_mutation(&mut paths, root, accounting)?;
+        let mut directories = Owned::allocate(1, accounting)?;
+        let mut source_used = false;
+        let mut checkout = self
+            .checkout(
+                crate::model::GenerationSelector::Exact(capture.authored_generation),
+                accounting,
+            )
+            .await?;
+        let result = async {
+            let (lookup, used, allocation) = self
+                .inspect_unauthored(
+                    &mut checkout.value,
+                    &paths.value[0],
+                    Some(capture),
+                    InspectBasis {
+                        state: Some(state),
+                        retain_pinned_observation: true,
+                        ..InspectBasis::default()
                     },
-                    &mut pending_source_bytes,
-                    &mut retained_bytes,
-                    &mut work,
-                    budget,
-                )?;
-                batch_dirty = true;
-                if let Some(id) = source_id {
-                    seen_sources.push((id, path));
-                } else {
-                    retained_bytes = retained_bytes
-                        .checked_sub(u64::try_from(path.capacity()).unwrap_or(u64::MAX))
-                        .ok_or_else(counter_overflow)?;
-                }
-            } else if let LazyLookup::Source(node) = &lookup.lookup
-                && node.kind == SourceNodeKind::Directory
-            {
-                queue_exactify_mutation(
-                    &mut pending_sources,
-                    AuthoredMutation::CreateDirectory {
-                        path: self.namespace_path(&path)?,
-                        metadata: source_file_metadata(node.metadata),
-                    },
-                    &mut pending_source_bytes,
-                    &mut retained_bytes,
-                    &mut work,
-                    budget,
-                )?;
-                batch_dirty = true;
-                retained_bytes = retained_bytes
-                    .checked_sub(u64::try_from(path.capacity()).unwrap_or(u64::MAX))
-                    .ok_or_else(counter_overflow)?;
-            } else {
-                work = self
-                    .flush_exactify_source_batch(
-                        transaction.as_mut().ok_or(LazyWorkspaceError::Concurrent)?,
-                        &mut pending_sources,
-                        &mut pending_source_bytes,
-                        &mut retained_bytes,
-                        work,
-                        budget,
-                        cancellation,
-                    )
-                    .await?;
-                let applied = self
-                    .apply_resolved_promotion_measured(
-                        transaction.as_mut().ok_or(LazyWorkspaceError::Concurrent)?,
-                        &path,
-                        lookup,
-                        budget.source_bytes_read,
-                        remaining_work(work, budget)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|error| exactify_error("promote", &path, error))?;
-                work = account_nested_with_live_memory(work, applied.work, retained_bytes, budget)?;
-                batch_dirty |= applied.value;
-                if let Some(id) = source_id.filter(|_| applied.value) {
-                    seen_sources.push((id, path));
-                } else {
-                    retained_bytes = retained_bytes
-                        .checked_sub(u64::try_from(path.capacity()).unwrap_or(u64::MAX))
-                        .ok_or_else(counter_overflow)?;
-                }
-            }
-            batch_paths += 1;
-        }
-        if batch_dirty {
-            work = self
-                .flush_exactify_source_batch(
-                    transaction.as_mut().ok_or(LazyWorkspaceError::Concurrent)?,
-                    &mut pending_sources,
-                    &mut pending_source_bytes,
-                    &mut retained_bytes,
-                    work,
-                    budget,
-                    cancellation,
+                    accounting,
                 )
                 .await?;
-            let current = transaction.take().ok_or(LazyWorkspaceError::Concurrent)?;
-            let committed = self
-                .commit_exactify_batch(current, permit, remaining_work(work, budget)?, cancellation)
-                .await?;
-            work = account_nested_with_live_memory(work, committed.work, retained_bytes, budget)?;
-            pinned_generation = committed.value;
+            source_used |= used;
+            if let Some(lookup) = lookup {
+                if lookup.stat().kind == SourceNodeKind::Directory {
+                    directories.value.push(0usize);
+                }
+                self.retire_lookup((lookup, allocation), accounting)?;
+            } else {
+                crate::kernel::retire_allocation(allocation, 0, accounting)?;
+            }
+            let mut next = 0;
+            while next < directories.value.len() {
+                accounting.check()?;
+                let index = directories.value[next];
+                next += 1;
+                let namespace = self.namespace_path(&paths.value[index], accounting)?;
+                let mut cursor = None;
+                let enumerated = async {
+                    loop {
+                        let maximum = self
+                            .workspace
+                            .limits()
+                            .maximum_directory_page_entries
+                            .min(1024);
+                        let (mut page, used, allocation) = self
+                            .list_directory_at(
+                                state,
+                                &mut checkout.value,
+                                &paths.value[index],
+                                cursor,
+                                maximum,
+                                None,
+                                accounting,
+                            )
+                            .await?;
+                        source_used |= used;
+                        let bytes = retained_directory_page_bytes(
+                            &page.entries,
+                            page.entries.iter().map(|entry| entry.name.retained_bytes()),
+                        )?;
+                        cursor = page.next.take();
+                        let projected = (|| -> Result<(), LazyWorkspaceError> {
+                            for entry in &page.entries {
+                                let path = self
+                                    .child_path(&namespace.value, &entry.name, accounting)?
+                                    .ok_or(LazyWorkspaceError::UnsupportedNode)?;
+                                paths.ensure_for_push(usize::MAX, accounting)?;
+                                let index = paths.value.len();
+                                crate::Transaction::<A, O>::push_workspace_mutation(
+                                    &mut paths, path, accounting,
+                                )?;
+                                if entry.kind == SourceNodeKind::Directory {
+                                    directories.ensure_for_push(usize::MAX, accounting)?;
+                                    directories.value.push(index);
+                                }
+                            }
+                            Ok(())
+                        })();
+                        drop(page);
+                        crate::kernel::retire_allocation(allocation, bytes, accounting)?;
+                        if let Err(error) = projected {
+                            if let Some(cursor) = cursor.take() {
+                                cursor.retire(accounting)?;
+                            }
+                            return Err(error);
+                        }
+                        if cursor.is_none() {
+                            break;
+                        }
+                    }
+                    Ok(())
+                }
+                .await;
+                namespace.retire(accounting)?;
+                enumerated?;
+            }
+            Ok(())
         }
-        for (_, retained) in seen_sources.drain(..) {
-            retained_bytes = retained_bytes
-                .checked_sub(u64::try_from(retained.capacity()).unwrap_or(u64::MAX))
-                .ok_or_else(counter_overflow)?;
+        .await;
+        checkout.retire(accounting)?;
+        directories.retire(accounting)?;
+        if let Err(error) = result {
+            paths.retire(accounting)?;
+            return Err(error);
         }
-        retained_bytes = retained_bytes
-            .checked_sub(seen_vector_bytes)
-            .ok_or_else(counter_overflow)?;
-        drop(seen_sources);
-        retained_bytes = retained_bytes
-            .checked_sub(path_vector_bytes)
-            .ok_or_else(counter_overflow)?;
-        debug_assert_eq!(retained_bytes, 0);
-        let head = self
-            .workspace
-            .head_measured(remaining_work(work, budget)?, cancellation)
-            .await
-            .map_err(workspace_error)
-            .map_err(|error| exactify_error("load head", "/", error))?;
-        work = account_work(work, head.work, budget)?;
-        if head.value.id() != pinned_generation.id() {
-            return Err(LazyWorkspaceError::Concurrent);
-        }
-        Ok(OperationReceipt {
-            value: head.value,
-            work,
-        })
+        Ok((paths, source_used))
     }
 }

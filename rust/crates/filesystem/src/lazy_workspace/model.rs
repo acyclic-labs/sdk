@@ -1,11 +1,6 @@
 use super::*;
 
-#[cfg(target_arch = "wasm32")]
-pub(super) type LazyFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) type LazyFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-pub(super) const LAZY_STATE_SCHEMA: u32 = 7;
+pub(crate) const LAZY_STATE_SCHEMA: u32 = 10;
 
 pub(super) const LAZY_SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-lazy-snapshot-v1\0";
 
@@ -97,6 +92,9 @@ pub struct LazyWorkspaceState {
     pub workspace_id: WorkspaceId,
     /// Direct sparse parent, when this state was produced by a fork.
     pub parent_workspace_id: Option<WorkspaceId>,
+    /// Original pre-creation source cut.
+    #[serde(deserialize_with = "Option::<LazyForkOrigin>::deserialize")]
+    pub fork_origin: Option<LazyForkOrigin>,
     /// Provider identity and invalidation epoch pinned at attach time.
     pub source: SourceReference,
     /// Immutable observations and tombstones visible to this context.
@@ -105,6 +103,9 @@ pub struct LazyWorkspaceState {
     pub shadows: LazyShadowId,
     /// Prepared authored removal recovered atomically when the workspace reopens.
     pub pending_remove: Option<PendingLazyRemove>,
+    /// Latest committed selected import.
+    #[serde(deserialize_with = "Option::<CompletedSelectedImport>::deserialize")]
+    pub completed_selected_import: Option<CompletedSelectedImport>,
 }
 
 /// Content address of one immutable source-identity shadow index node.
@@ -113,7 +114,6 @@ pub struct LazyWorkspaceState {
 pub struct LazyShadowId(pub(super) [u8; 32]);
 
 impl LazyShadowId {
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     pub(crate) const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
@@ -148,14 +148,6 @@ pub enum LazyShadow {
     },
 }
 
-impl LazyShadow {
-    pub(super) fn id(&self) -> Result<LazyShadowId, LazyWorkspaceError> {
-        let encoded = serde_json::to_vec(self)
-            .map_err(|error| LazyWorkspaceError::Store(error.to_string()))?;
-        Ok(LazyShadowId(*blake3::hash(&encoded).as_bytes()))
-    }
-}
-
 /// Durable intent that makes authored removal and source tombstoning recoverable.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -188,9 +180,6 @@ pub enum PendingLazyRemoveKind {
 }
 
 /// One immutable node in the persistent source-knowledge index.
-///
-/// The deterministic treap keeps attach and fork O(1), mutations O(log n),
-/// and exact lookups O(log n) without rewriting the complete observed set.
 #[allow(
     clippy::large_enum_variant,
     reason = "boxing the Node payload would change this public enum's pattern-matching API"
@@ -215,14 +204,6 @@ pub enum LazyOverlay {
     },
 }
 
-/// What removing a path records: a deletion of the source version it held,
-/// or only hiding a path the view never owned.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Removal {
-    Deleted,
-    Hidden,
-}
-
 /// One fact introduced by a lazy overlay delta.
 #[allow(
     clippy::large_enum_variant,
@@ -238,19 +219,8 @@ pub enum LazyOverlayChange {
         node: SourceNode,
     },
     /// Authored removal of a source path or subtree. `removed` is the source
-    /// version the removal deleted; `None` only hides a path the view never
-    /// owned (one an ancestor gained after the fork), which is no deletion.
     Tombstone {
         /// Source version deleted, or `None` for a hidden path.
         removed: Option<SourceVersion>,
     },
 }
-
-impl LazyOverlay {
-    pub(super) fn id(&self) -> Result<LazyOverlayId, LazyWorkspaceError> {
-        let encoded = serde_json::to_vec(self)
-            .map_err(|error| LazyWorkspaceError::Store(error.to_string()))?;
-        Ok(LazyOverlayId(*blake3::hash(&encoded).as_bytes()))
-    }
-}
-

@@ -157,7 +157,7 @@ fn errno(error: MountSourceError) -> i32 {
         MountSourceError::NativeWork(error) => native_materialization_errno(error),
         MountSourceError::WorkspaceCause(error) => native_workspace_errno(error),
         MountSourceError::WorkspacePrefixFailure { source, .. } => native_workspace_errno(source),
-        MountSourceError::NativeWorkspaceCause(cause) => native_workspace_errno(&cause.source),
+        MountSourceError::NativeWorkspaceCause(cause , _ ) => native_workspace_errno(cause),
         MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
         MountSourceError::NativeText { kind, .. } =>
             native_source_text_errno(*kind),
@@ -674,8 +674,9 @@ pub enum MountSourceError {
         accounting: crate::WorkspaceError,
     },
     /// Whole original workspace cause and its already funded outer custody.
-    #[error(transparent)]
-    NativeWorkspaceCause(crate::lazy_workspace::NativeLazyWorkspaceCause),
+    #[error( "{0}" )]
+    NativeWorkspaceCause( #[source] crate:: WorkspaceError,
+        Option<crate :: NativeAllocation>, ),
     /// Original authorization denial in its already funded callback slot.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("native callback authorization failed")]
@@ -751,7 +752,7 @@ impl MountSourceError {
             | Self::NativeRecordContextTransaction(_, allocation) | Self::NativeRecordCorrupt(_, allocation) =>
                 Some(allocation),
             Self::MutationFinalization { custody, .. } => Some(custody),
-            Self::NativeWorkspaceCause(cause) => Some(&mut cause.custody),
+            Self::NativeWorkspaceCause( _, allocation ) => Some( allocation ),
             Self::NativeWork(error) => error.native_failure_allocation_mut(),
             _ => None,
         }
