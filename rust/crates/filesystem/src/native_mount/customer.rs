@@ -100,13 +100,6 @@ enum MountedSnapshotCapture {
 
 
 /// SDK-owned capture and publication boundary for a pinned native directory.
-///
-/// The caller owns the physical volume-root directory and supplies exact
-/// changed paths. A selected subdirectory retains its namespace path below
-/// that physical root; its contents are not remapped to the root itself.
-/// Filesystem semantics and fenced publication use an exact-generation
-/// checkout. This handle never rebinds to a live source or starts a
-/// mount driver.
 pub struct NativeWorkingSet<A, O> {
     source: Arc<CheckoutMountSource<A, O>>,
     workspace: Workspace<A, O>,
@@ -121,11 +114,6 @@ pub struct NativeWorkingSet<A, O> {
     _custody: crate::NativeAllocation,
 }
 /// Retains an SDK source after its view-dependent physical work has retired.
-///
-/// Only the SDK retirement engines can create this proof. It retains the
-/// original source and allocation custody without allocating another owner.
-/// It is not namespace-deletion authority or proof of process termination,
-/// and does not certify unrelated immutable base-provider reads.
 pub struct NativeMountDrainProof {
     _source: Arc<dyn super::MountFilesystem>,
     #[cfg(windows)]
@@ -133,10 +121,7 @@ pub struct NativeMountDrainProof {
 }
 
 impl NativeMountDrainProof {
-    /// Moves the original authored-capture failure and any distinct namespace
-    /// cleanup failure after physical retirement. The proof keeps the original
-    /// uncaptured namespace data; taking the cause never certifies publication
-    /// or permits deleting that data.
+    /// Moves the original authored-capture failure and any distinct namespace cleanup failure after physical retirement.
     pub fn take_retained_capture_failure(&mut self) -> Option<MountLifecycleError> {
         #[cfg(windows)]
         {
@@ -171,39 +156,23 @@ where
     }
 
     /// Accepts physical view-dependent I/O on this source's paid retirement gate.
-    ///
-    /// The caller must authenticate its owner, volume and path before issuance.
-    /// This lease is cleanup custody, not a read or write grant.
     pub fn native_source_io_lease(
         &self,
     ) -> Result<super::adapter::NativeSourceIoLease, NativeMountError> {
         self.source.native_source_io_lease().map_err(NativeMountError::from)
     }
 
-    /// Revalidates a prepared native view immediately before a quiescent
-    /// presentation switch. This is optimistic admission, not a lock on the
-    /// workspace head: publication remains fenced by the operation permit.
-    /// It reads only the selected directory metadata and the current head.
+    /// Revalidates a prepared native view immediately before a quiescent presentation switch.
     pub async fn validate_for_presentation(&self) -> Result<(), MountLifecycleError> {
-        self.validate_for_presentation_measured(self.capture_budget, self.source.cancellation())
-            .await.map(|receipt| receipt.value).map_err(|(error, _)| error)
+        let cancellation = self.source.cancellation();
+        let work = crate::NativeMaterializationWork::new(self.capture_budget, cancellation)
+            .map_err(|(error, _)| MountLifecycleError::Materialization(error))?;
+        self.validate_for_presentation_with_work(&work, cancellation).await
     }
 
-    /// Revalidates the current fence and physical root under one exact allowance.
-    pub async fn validate_for_presentation_measured(
-        &self,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<()>, (MountLifecycleError, crate::WorkCounters)> {
-        let work = crate::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(|(error, spent)| (MountLifecycleError::Materialization(error), spent))?;
-        let result = self.validate_for_presentation_with_work(&work, cancellation).await;
-        result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
-            .map_err(|error| (error, work.receipt()))
-    }
 
-    /// Revalidates the same selected generation and held-root metadata on the
-    /// complete original native ledger, without constructing another meter.
+
+    /// Revalidates the same selected generation and held-root metadata on the complete original native ledger, without constructing another meter.
     pub async fn validate_for_presentation_with_work(
         &self, work: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
     ) -> Result<(), MountLifecycleError> {
@@ -228,30 +197,14 @@ where
     }
 
     /// Captures only the supplied changed paths from a native working directory.
-    ///
-    /// The source root is authenticated by the core capture path. This is a
-    /// path hint, not proof that other native writes did not occur. Call this
-    /// at an operation boundary, then publish with [`Self::sync_with_permit`].
     pub async fn capture_host_paths(&self, paths: &[MountPath]) -> Result<(), MountLifecycleError> {
-        self.capture_host_paths_measured(paths, self.capture_budget, self.source.cancellation())
-            .await.map(|receipt| receipt.value).map_err(|(error, _)| error)
+        let cancellation = self.source.cancellation();
+        let work = crate::NativeMaterializationWork::new(self.capture_budget, cancellation)
+            .map_err(|(error, _)| MountLifecycleError::Materialization(error))?;
+        self.capture_host_paths_with_work(paths, &work, cancellation).await
     }
 
-    /// Captures selected paths through the original capture gate and budget.
-    pub async fn capture_host_paths_measured(
-        &self,
-        paths: &[MountPath],
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<()>, (MountLifecycleError, crate::WorkCounters)> {
-        let work = crate::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(|(error, work)| (MountLifecycleError::Materialization(error), work))?;
-        let result = self.capture_host_paths_with_work(
-            paths, &work, cancellation,
-        ).await;
-        result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
-            .map_err(|error| (error, work.receipt()))
-    }
+
 
     /// Captures selected paths using the caller's complete original ledger.
     pub async fn capture_host_paths_with_work(
@@ -263,29 +216,15 @@ where
         self.capture_with_work(paths, HostCaptureScope::ExactPaths, work, cancellation).await
     }
 
-    /// Reconciles a complete selected subtree after a watcher overflow or
-    /// missed event. Both host and checkout descendants participate, so
-    /// creations and deletions are captured without scanning sibling trees.
+    /// Reconciles a complete selected subtree after a watcher overflow or missed event.
     pub async fn capture_host_subtree(&self, root: &MountPath) -> Result<(), MountLifecycleError> {
-        self.capture_host_subtree_measured(root, self.capture_budget, self.source.cancellation())
-            .await.map(|receipt| receipt.value).map_err(|(error, _)| error)
+        let cancellation = self.source.cancellation();
+        let work = crate::NativeMaterializationWork::new(self.capture_budget, cancellation)
+            .map_err(|(error, _)| MountLifecycleError::Materialization(error))?;
+        self.capture_host_subtree_with_work(root, &work, cancellation).await
     }
 
-    /// Reconciles the complete physical subtree, retaining failed capture work.
-    pub async fn capture_host_subtree_measured(
-        &self,
-        root: &MountPath,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<()>, (MountLifecycleError, crate::WorkCounters)> {
-        let work = crate::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(|(error, work)| (MountLifecycleError::Materialization(error), work))?;
-        let result = self.capture_host_subtree_with_work(
-            root, &work, cancellation,
-        ).await;
-        result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
-            .map_err(|error| (error, work.receipt()))
-    }
+
 
     /// Captures one complete subtree through the original capture meter.
     pub async fn capture_host_subtree_with_work(
@@ -315,37 +254,22 @@ where
         Ok(())
     }
 
-    /// Reconciles the selected subtree and publishes under an active, fenced
-    /// operation permit. Path hints alone cannot establish completeness: a
-    /// missing or delayed notification must not silently omit a native write.
+    /// Reconciles the selected subtree and publishes under an active, fenced operation permit.
     pub async fn sync_with_permit(
         &self,
         permit: crate::PublicationPermit,
     ) -> Result<(), MountLifecycleError> {
-        self.sync_with_permit_measured(permit, self.capture_budget, self.source.cancellation())
-            .await.map(|receipt| receipt.value).map_err(|(error, _)| error)
+        let cancellation = self.source.cancellation();
+        let work = crate::NativeMaterializationWork::new(self.capture_budget, cancellation)
+            .map_err(|(error, _)| MountLifecycleError::Materialization(error))?;
+        self.sync_with_permit_with_work(permit, &work, cancellation,
+            |_| std::future::ready(Ok::<(), MountLifecycleError>(())))
+            .await.map(|_| ()).map_err(|error| error.cause)
     }
 
-    /// Captures and publishes one candidate without resetting its work budget.
-    pub async fn sync_with_permit_measured(
-        &self,
-        permit: crate::PublicationPermit,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<()>, (MountLifecycleError, crate::WorkCounters)> {
-        let work = crate::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(|(error, spent)| (MountLifecycleError::Materialization(error), spent))?;
-        let result = self.sync_with_permit_with_work(
-            permit, &work, cancellation,
-            |_| std::future::ready(Ok::<(), MountLifecycleError>(())),
-        ).await;
-        result.map(|_| crate::OperationReceipt { value: (), work: work.receipt() })
-            .map_err(|error| (error.cause, work.receipt()))
-    }
 
-    /// Captures and publishes through the canonical source, retaining the
-    /// caller's typed pre-publication guard error without formatting or boxing.
-    /// Returns the source's actual operation and authored namespace qualification.
+
+    /// Captures and publishes through the canonical source, retaining the caller's typed pre-publication guard error without formatting or boxing.
     pub async fn sync_with_permit_with_work<F, Fut, E>(
         &self, permit: crate::PublicationPermit, work: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken, before_publication: F,
@@ -391,9 +315,6 @@ where
         })
     }
     /// Retires this view's accepted captures using its retained birth credit.
-    ///
-    /// `wait` controls the caller's wait, not the source's original authority.
-    /// An error retains the source and its cleanup credit for a later retry.
     pub fn retire_with_work(
         &self,
         wait: &crate::CancellationToken,
@@ -410,26 +331,15 @@ where
     }
 
 
-    /// Checks the complete selected physical subtree against its admitted
-    /// generation without publishing. Host permissions are not a sandbox:
-    /// an approved process may mutate the view, but cannot publish source edits.
+    /// Checks the complete selected physical subtree against its admitted generation without publishing.
     pub async fn verify_unchanged(&self) -> Result<(), MountLifecycleError> {
-        self.verify_unchanged_measured(self.capture_budget, self.source.cancellation())
-            .await.map(|receipt| receipt.value).map_err(|(error, _)| error)
+        let cancellation = self.source.cancellation();
+        let work = crate::NativeMaterializationWork::new(self.capture_budget, cancellation)
+            .map_err(|(error, _)| MountLifecycleError::Materialization(error))?;
+        self.verify_unchanged_with_work(&work, cancellation).await.map(|_| ())
     }
 
-    /// Captures the admitted source without allowing publication of its edits.
-    pub async fn verify_unchanged_measured(
-        &self,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<()>, (MountLifecycleError, crate::WorkCounters)> {
-        let work = crate::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(|(error, work)| (MountLifecycleError::Materialization(error), work))?;
-        let result = self.verify_unchanged_with_work(&work, cancellation).await;
-        result.map(|_| crate::OperationReceipt { value: (), work: work.receipt() })
-            .map_err(|error| (error, work.receipt()))
-    }
+
 
     /// Verifies the complete admitted baseline and returns its genuine immutable SDK qualification.
     pub async fn verify_unchanged_with_work(
@@ -602,10 +512,6 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     /// Publishes all pending authored effects with one fenced generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed publication failure without discarding pending state.
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
@@ -628,24 +534,12 @@ where
     }
 
     /// Publishes pending writes and advances the live checkout to workspace head.
-    ///
-    /// This keeps a direct-parent agent mount coherent after a child join
-    /// without exposing remount orchestration to adapters.
     pub async fn refresh(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
         self.advance_to_head().await
     }
 
     /// Advances an already-clean live checkout to the workspace head.
-    ///
-    /// Use this after an external, fenced workspace publication when the
-    /// caller already synchronized the mount before that publication. Unlike
-    /// [`Self::refresh`], this does not try to republish against the newer head.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed conflict or storage failure without changing the
-    /// mounted generation.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
         let advanced = self.source.advance_to_head_async().await;
         // Even a failed advance may have moved part of the view.
@@ -654,39 +548,23 @@ where
     }
 
     /// Publishes all pending effects on the source's dedicated callback runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed publication failure without discarding pending state.
     pub fn sync_blocking(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source.sync().map_err(MountLifecycleError::Source)
     }
 
     /// Publishes pending effects and detaches the native namespace exactly once.
-    ///
-    /// # Errors
-    ///
-    /// Publication failure leaves the live mount owned by this handle. A detach
-    /// failure retains driver state and its destination fence for drop retry.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
         self.detach()
     }
 
     /// Detaches and cancels this mount without publishing pending callbacks.
-    ///
-    /// This is the fail-closed recovery path after a fenced publication. The
-    /// caller may remount from the last durable generation.
     pub fn abandon(&self) -> Result<(), MountLifecycleError> {
         self.detach()
     }
 
     /// Synchronously publishes and detaches for foreign-runtime worker threads.
-    ///
-    /// # Errors
-    ///
-    /// Publication or detach failure retains the complete owner for retry.
     pub fn unmount_blocking(&self) -> Result<(), MountLifecycleError> {
         self.sync_blocking()?;
         self.detach()
@@ -715,9 +593,6 @@ where
     S: LazyWorkspaceStore,
 {
     /// Accepts physical view-dependent I/O on the actual mounted source gate.
-    ///
-    /// The caller must retain its independent owner, volume and path guards.
-    /// The lease follows accepted I/O through physical completion, not wait drop.
     pub fn native_source_io_lease(
         &self,
     ) -> Result<super::adapter::NativeSourceIoLease, NativeMountError> {
@@ -725,11 +600,6 @@ where
     }
 
     /// Transfers already-paid container capacity into this payload's lifetime.
-    ///
-    /// No allocation, admission or cancellation check occurs. The first guard
-    /// retains its independent accounting view without granting mount authority.
-    /// Extending custody requires the same ledger and resource view; failure
-    /// leaves both guards unchanged. Keep the input until its container is freed.
     pub fn retain_payload_allocation(
         &mut self,
         incoming: &mut crate::NativeAllocation,
@@ -749,9 +619,6 @@ where
     }
 
     /// Acquires real callback-meter custody for a retained native I/O owner.
-    ///
-    /// Only the actual session's synchronous scope admission holds its mutex.
-    /// This accounting scope grants no task, volume or path authority.
     pub fn begin_original_work(
         &self,
         native_work: &crate::NativeMaterializationWork,
@@ -763,12 +630,6 @@ where
     }
 
     /// Binds actual mounted I/O callbacks to this unchanged original meter.
-    ///
-    /// This is a driver work scope, not a task grant or caller identity.
-    /// Every callback reaching this physical root during the scope shares
-    /// its work admission. The caller must retain its independent owner,
-    /// volume and path guards, fork the supplied scope into each accepted
-    /// native I/O payload before queueing, and explicitly settle cleanup custody.
     pub async fn with_original_work<T, F, Fut>(
         &self,
         native_work: &crate::NativeMaterializationWork,
@@ -804,10 +665,6 @@ where
     }
 
     /// Flushes actual callbacks and checks the original owner before every seal.
-    ///
-    /// A failed flush, settlement or guard retains the original publication
-    /// owner and the complete work prefix. The callback supplies freshness,
-    /// never a replacement permit or a synthetic lazy snapshot.
     pub async fn sync_with_permit_measured_guarded<F, Fut, E>(
         &self,
         permit: crate::PublicationPermit,
@@ -836,10 +693,6 @@ where
     }
 
     /// Publishes on the enclosing operation's unchanged original native meter.
-    /// Failure retains whether the real source completed before native visibility
-    /// validation failed. An unconfirmed source is not proof of absent publication.
-    /// Success returns the real SDK operation and immutable lazy source cut;
-    /// failure retains qualification only from a real source result or DATA ACK.
     pub async fn sync_with_permit_work_guarded<F, Fut, E>(
         &self,
         permit: crate::PublicationPermit,
@@ -885,10 +738,6 @@ where
     }
 
     /// Imports an original selected mutation through this mount's SDK owner.
-    ///
-    /// The source authenticates the supplied destination and sealed plan
-    /// and guards every publication with the original permit. No private
-    /// source handle or alternate publication engine is exposed.
     #[allow(clippy::too_many_arguments, reason = "retains the original selection, operation, permit, work bounds and owner guard")]
     pub async fn import_selected_measured_guarded<F, Fut, E>(
         &self,
@@ -922,9 +771,6 @@ where
     }
 
     /// Imports the sealed selection using the caller's original native meter.
-    /// The already-paid input guard must cover the plan on this exact ledger
-    /// and resource view. It grants no source or publication authority.
-    /// Input custody is assembled before the returned future can be dropped.
     #[allow(clippy::too_many_arguments, reason = "retains the original selection, operation, permit, carrier and owner guard")]
     pub fn import_selected_work_guarded<'a, F, Fut, E>(
         &'a self,
@@ -980,11 +826,6 @@ where
     }
 
     /// Finishes native visibility and reads this operation's original SDK ACK.
-    ///
-    /// `None` means no original SDK ACK exists. An ACK without completed
-    /// native custody or retained original snapshot evidence is a typed error.
-    /// This finalizer has no permit: it never seals fresh dirty state or
-    /// substitutes the current head for the original completion snapshot.
     pub async fn selected_import_snapshot_measured(
         &self,
         operation: crate::OperationId,
@@ -1033,14 +874,7 @@ where
         advanced.map_err(MountLifecycleError::Source)
     }
 
-    /// Makes changes another handle on the mounted workspace made at
-    /// `paths` (workspace paths), and everything beneath them, visible
-    /// through the mount once this returns.
-    ///
-    /// # Errors
-    ///
-    /// Returns a source failure for an invalid path, or a driver failure
-    /// when the kernel refuses an invalidation.
+    /// Makes changes another handle on the mounted workspace made at `paths` (workspace paths), and everything beneath them, visible through the mount once this returns.
     pub fn changed_outside(&self, paths: &[String]) -> Result<(), MountLifecycleError> {
         self.source
             .changed_outside(paths)
@@ -1048,17 +882,7 @@ where
         revalidate_session(&self.session)
     }
 
-    /// Makes every change made to the source outside the mount, and
-    /// completed before the call, visible through it once this returns.
-    ///
-    /// A watched source's changes become visible on their own as the host
-    /// reports them; this waits for exactly those reported so far, and for
-    /// the kernel caches to drop what they superseded. A process that learns
-    /// of a change some other way calls this before it looks.
-    ///
-    /// # Errors
-    ///
-    /// Returns a driver failure when the kernel refuses an invalidation.
+    /// Makes every change made to the source outside the mount, and completed before the call, visible through it once this returns.
     pub fn revalidate(&self) -> Result<(), MountLifecycleError> {
         revalidate_session(&self.session)
     }
@@ -1091,11 +915,7 @@ where
             }).map_err(|(cause, _)| cause)
     }
 
-    /// Verifies the existing mounted namespace and captures genuine readonly
-    /// SDK qualification without source rebinding or publication.
-    ///
-    /// Fixed snapshot data escapes; decoded state and its custody retire together.
-    /// Both an original source failure and a reconciliation failure are retained.
+    /// Verifies the existing mounted namespace and captures genuine readonly SDK qualification without source rebinding or publication.
     pub async fn publication_snapshot_with_work(
         &self,
         native_work: &crate::NativeMaterializationWork,
@@ -1136,9 +956,6 @@ where
     }
 
     /// Validates the supplied immutable view on the current caller's work.
-    ///
-    /// This does not flush the driver, invoke the source owner's callback guard,
-    /// enter its native scope, publish writes, or grant a caller read authority.
     pub async fn validate_snapshot_with_work(
         &self,
         frozen: crate::LazySnapshotRef,
@@ -1152,9 +969,6 @@ where
     }
 
     /// Looks up exactly the supplied frozen view on the current caller's work.
-    ///
-    /// Drop the returned lookup before its allocation guard. The source's held
-    /// lifetime custody remains separate from this query's actual work.
     pub async fn lookup_at_snapshot_with_work(
         &self,
         frozen: crate::LazySnapshotRef,
@@ -1184,10 +998,6 @@ where
     }
 
     /// Cancels callback custody and detaches through the original work ledger.
-    ///
-    /// Initialize native I/O services before calling. Any failure retains the
-    /// actual session and its destination fence for an explicit bounded retry;
-    /// dropping a failed measured owner must not run unbounded cleanup.
     pub fn abandon_measured(
         &self,
         budget: crate::WorkBudget,
@@ -1232,10 +1042,6 @@ where
         result
     }
     /// Retires the actual driver, source, watch and fence on birth-time credit.
-    ///
-    /// The token controls waiting only. A failure preserves the remaining
-    /// physical owners; no new meter or unbounded drop cleanup is substituted.
-    /// The returned proof covers this mounted view, not unrelated base reads.
     pub fn retire_with_work(
         &self,
         wait: &crate::CancellationToken,
@@ -1289,9 +1095,6 @@ where
 }
 
 /// A typed publication failure retaining the SDK source's observed completion.
-///
-/// `false` means unconfirmed, not absent publication. `true` records only an
-/// actual source result or observed DATA ACK, never namespace or cleanup authority.
 #[derive(Debug, Error)]
 #[error("{cause}")]
 pub struct NativeMountPublicationFailure<E> {
@@ -1331,8 +1134,7 @@ pub enum MountLifecycleError {
     /// Native driver admission or teardown failed.
     #[error(transparent)]
     Native(#[from] NativeMountError),
-    /// Physical retirement preserved uncaptured namespace data and its actual
-    /// authored failure, including a distinct namespace cleanup failure.
+    /// Physical retirement preserved uncaptured namespace data and its actual authored failure, including a distinct namespace cleanup failure.
     #[error("native capture or namespace cleanup failed: {source}")]
     NativeCaptureFailure {
         #[source]
@@ -1379,13 +1181,6 @@ where
     S: LazyWorkspaceStore,
 {
     /// Prepares an authenticated native working set from one exact generation.
-    ///
-    /// The destination must be an existing empty real directory. The SDK first
-    /// exactifies only the selected subtree, materializes that exact generation,
-    /// then admits the resulting directory. Preparation never starts a mount
-    /// driver and fails if the workspace head advances before admission. The
-    /// supplied work budget also caps each later capture or sync on the handle;
-    /// those operations do not inherit the kernel-callback deadline or budget.
     pub async fn prepare_native_working_set(
         &self,
         subdirectory: &str,
@@ -1404,9 +1199,6 @@ where
     }
 
     /// Exactifies and prepares through one original ledger and resource view.
-    /// The capture allowance remains separate for each later invocation.
-    /// `native_original` fixes the source-I/O accounting origin before birth;
-    /// ordinary SDK callers use `None`. This choice is not namespace authority.
     pub async fn prepare_native_working_set_with_work(
         &self, subdirectory: &str, options: &crate::MaterializeOptions,
         capture_budget: crate::WorkBudget, meter: &crate::NativeMaterializationWork,
@@ -1583,9 +1375,6 @@ where
     }
 
     /// Mounts a demand-backed workspace without scanning its source tree.
-    ///
-    /// Admission observes only the selected root node. Unresolved descendants
-    /// remain source-backed until a native callback addresses them.
     pub async fn mount(
         &self,
         destination: impl Into<PathBuf>,
@@ -1599,10 +1388,6 @@ where
     }
 
     /// Mounts the same real lazy source under one original operation allowance.
-    ///
-    /// Initialize native I/O and native mount services before invocation. This
-    /// operation never hides process-wide service startup in a finite receipt.
-    /// Admission reads only the selected root, leaving descendants lazy.
     pub async fn mount_measured(
         &self,
         destination: impl AsRef<Path>,
@@ -1618,13 +1403,6 @@ where
     }
 
     /// Mounts through an enclosing native operation's original carrier.
-    ///
-    /// The work ledger, retained allocation custody and cancellation roots are
-    /// borrowed unchanged. Service startup remains outside this operation.
-    /// Task-operated mounts must supply their genuine owner/fence/purpose
-    /// callback guard; an absent guard is only for a host-configured source.
-    /// `native_original` separately fixes native source-I/O accounting before
-    /// birth. Ordinary SDK callers pass `None`; neither value grants authority.
     pub async fn mount_with_work(
         &self,
         destination: &Path,
@@ -1774,14 +1552,6 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     /// Mounts the complete workspace or one exact subtree as a native directory.
-    ///
-    /// Admission authenticates only the selected root frontier; it never scans
-    /// the workspace or materializes file bodies.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid or non-directory roots, unavailable host capabilities,
-    /// busy/nonempty destinations, and storage/authentication failures.
     pub async fn mount(
         &self,
         destination: impl Into<PathBuf>,
@@ -1838,8 +1608,6 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     /// Materializes this exact generation through the original native ledger.
-    /// The canonical durable-output traversal owns all work; its snapshot is
-    /// never recharged as a new SDK operation or used as generation authority.
     pub async fn materialize_with_native_work(
         &self, options: &crate::MaterializeOptions,
         work: &crate::NativeMaterializationWork,
@@ -1869,11 +1637,6 @@ where
     }
 
     /// Materializes this exact generation and binds its native capture owner.
-    /// Read-only views can be verified but never published. Writable views
-    /// require the admitted generation to remain the workspace head; later
-    /// publication uses the existing conflict and operation-permit mechanism.
-    /// The destination must be an existing empty absolute directory. No live
-    /// OS mount is started, and independent working sets are not jointly atomic.
     pub async fn prepare_native_working_set(
         &self,
         mount: &MountOptions,
@@ -1891,11 +1654,6 @@ where
         reason = "one bounded selected-generation materialization and root-identity admission"
     )]
     /// Prepares the same working set while independently admitting later capture.
-    /// Owned host paths and retained adapter/identity payloads share preparation's
-    /// allocation ledger; borrowed caller inputs and Arc reference counts do not.
-    /// Witnessed attachment's initial capture consumes the remaining preparation
-    /// allowance as well as its capture allowance. Later invocations retain the
-    /// original capture budget; every failure preserves the cumulative work.
     pub async fn prepare_native_working_set_with_budgets(
         &self,
         mount: &MountOptions,
@@ -1910,8 +1668,7 @@ where
         ).await
     }
 
-    /// Attaches an already journaled exact native generation without creating,
-    /// adopting, or rewriting its host allocation.
+    /// Attaches an already journaled exact native generation without creating, adopting, or rewriting its host allocation.
     #[allow(clippy::too_many_arguments, reason = "explicit witnessed allocation and separate admission budgets")]
     pub async fn attach_native_working_set_with_budgets(
         &self,
@@ -1945,8 +1702,6 @@ where
     }
 
     /// Prepares the exact native generation on the caller's original resource view.
-    /// `native_original` binds later operations to the issued original resource;
-    /// `None` preserves standalone operation accounting, not namespace authority.
     pub async fn prepare_native_working_set_with_work(
         &self, mount: &MountOptions, options: &crate::MaterializeOptions,
         capture_budget: crate::WorkBudget, work: &crate::NativeMaterializationWork,
