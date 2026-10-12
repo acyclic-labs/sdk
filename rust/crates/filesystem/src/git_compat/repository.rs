@@ -6,18 +6,6 @@ pub struct GitCompatRepository<S> {
     pub(super) store: S,
 }
 
-#[derive(Clone)]
-pub(super) struct GitCommitRecord {
-    pub(super) expected_head: Option<GitCommitId>,
-    pub(super) tree: GitTreeRef,
-    pub(super) workspace_tree: GitTreeRef,
-    pub(super) tracked_paths: BTreeSet<String>,
-    pub(super) capture_proof: Option<GitCaptureProof>,
-    pub(super) message: String,
-    pub(super) author: String,
-    pub(super) authored_at_seconds: i64,
-}
-
 /// Compatibility history record produced by one distributed publication.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitPublicationRecord {
@@ -223,16 +211,16 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 },
                 GitFilesystemResult::Captured { tree, tracked_paths, proof },
             ) => self
-                .record_captured_commit(GitCommitRecord {
-                    expected_head,
+                .record_captured_commit(GitCommit::new(
                     tree,
                     workspace_tree,
+                    proof,
                     tracked_paths,
-                    capture_proof: proof,
-                    message,
+                    expected_head.into_iter().collect(),
                     author,
                     authored_at_seconds,
-                })
+                    message,
+                ))
                 .await
                 .map_err(Into::into),
             (
@@ -385,16 +373,16 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         author: impl Into<String>,
         authored_at_seconds: i64,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
-        self.record_captured_commit(GitCommitRecord {
-            expected_head,
-            tree: GitGenerationRef { workspace_id: self.workspace_id, generation }.into(),
-            workspace_tree: GitGenerationRef { workspace_id: self.workspace_id, generation }.into(),
+        self.record_captured_commit(GitCommit::new(
+            GitTreeRef::exact(self.workspace_id, generation),
+            GitTreeRef::exact(self.workspace_id, generation),
+            None,
             tracked_paths,
-            capture_proof: None,
-            message: message.into(),
-            author: author.into(),
+            expected_head.into_iter().collect(),
+            author,
             authored_at_seconds,
-        })
+            message,
+        ))
         .await
     }
 
@@ -460,7 +448,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
 
     pub(super) async fn record_captured_commit(
         &self,
-        record: GitCommitRecord,
+        record: GitCommit,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;

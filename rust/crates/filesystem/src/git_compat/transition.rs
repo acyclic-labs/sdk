@@ -37,34 +37,24 @@ pub(super) fn register_branch_workspace_state<E: std::error::Error + 'static>(
 
 pub(super) fn record_captured_commit_state<E: std::error::Error + 'static>(
     state: &mut GitCompatState,
-    record: GitCommitRecord,
+    commit: GitCommit,
 ) -> Result<GitCommandOutput, GitCompatError<E>> {
     let current = state.current().map_err(|_| GitCompatError::InvalidState)?.clone();
-    if current.head != record.expected_head {
+    if commit.parents.as_slice() != current.head.as_slice() {
         return Err(GitCompatError::InvalidState);
     }
     let head_tree = current.head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
-    if head_tree == Some(record.tree) {
+    if head_tree == Some(commit.tree) {
         return Err(GitCompatError::NothingToCommit);
     }
-    if !capture_proof_valid(record.tree, record.workspace_tree, record.capture_proof.as_ref(), head_tree) {
+    if !capture_proof_valid(commit.tree, commit.workspace_tree, commit.capture_proof.as_ref(), head_tree) {
         return Err(GitCompatError::WorkspaceMismatch);
     }
-    let commit = GitCommit::new(
-        record.tree,
-        record.workspace_tree,
-        record.capture_proof,
-        record.tracked_paths.clone(),
-        current.head.into_iter().collect(),
-        record.author,
-        record.authored_at_seconds,
-        record.message,
-    );
     state.reflog.insert(0, current.head);
     state.commits.insert(commit.id, commit.clone());
     let current = state.current_mut().map_err(|_| GitCompatError::InvalidState)?;
     current.head = Some(commit.id);
-    current.tracked_paths = record.tracked_paths;
+    current.tracked_paths = commit.tracked_paths.clone();
     Ok(GitCommandOutput::Committed(commit))
 }
 
@@ -160,16 +150,16 @@ pub(super) fn complete_creation_pending<E: std::error::Error + 'static>(
             GitFilesystemResult::Captured { tree, tracked_paths, proof },
         ) => record_captured_commit_state(
             state,
-            GitCommitRecord {
-                expected_head,
-                tree: *tree,
+            GitCommit::new(
+                *tree,
                 workspace_tree,
-                tracked_paths: tracked_paths.clone(),
-                capture_proof: proof.clone(),
-                message,
+                proof.clone(),
+                tracked_paths.clone(),
+                expected_head.into_iter().collect(),
                 author,
                 authored_at_seconds,
-            },
+                message,
+            ),
         ),
         (GitPendingMutation::ForkBranch { branch, head, switch }, GitFilesystemResult::Forked { workspace_id }) => {
             register_branch_workspace_state(state, branch, *workspace_id, head, switch)
