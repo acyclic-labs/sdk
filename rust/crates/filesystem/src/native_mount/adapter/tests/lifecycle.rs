@@ -65,75 +65,55 @@ type MemorySource =
 
 #[test]
 fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std::error::Error>> {
-    let source = source(FilesystemProfile::Portable)?;
     let directory = tempfile::tempdir()?;
     std::fs::write(directory.path().join("first"), b"first")?;
     std::fs::write(directory.path().join("second"), b"other")?;
-    let first = source.path(&native_test_path("first"))?;
-    let second = source.path(&native_test_path("second"))?;
-    let options = CaptureOptions {
-        source_root: directory.path().to_path_buf(),
-        expected_root_identity: capture_root_identity(directory.path())?,
-        maximum_paths: 2,
-        maximum_extent_spans: 64,
-    };
+    let first = native_test_path("first");
+    let second = native_test_path("second");
+    let identity = capture_root_identity(directory.path())?;
     let cancellation = CancellationToken::new();
-    let mut zero_candidate = source
-        .runtime
-        .block_on(|| async { source.checkout.lock().await.private_candidate() });
-    let zero_result = source.runtime.block_on(|| {
-        capture_paths_batched_with_baseline(
-            &mut zero_candidate,
-            std::slice::from_ref(&first),
-            &options,
-            1,
-            WorkBudget::default(),
-            &cancellation,
-            None,
-        )
-    });
-    let Err(zero_failure) = zero_result else {
-        return Err(std::io::Error::other("zero budget admitted host observation").into());
+    let probe = source(FilesystemProfile::Portable)?;
+    let payer = capture_meter(WorkBudget::UNBOUNDED, &cancellation)?;
+    let denied = payer.native_volume_work(WorkBudget::default())?;
+    assert!(
+        probe
+            .capture_host_paths_with_meter(
+                directory.path(),
+                std::slice::from_ref(&first),
+                identity,
+                &denied
+            )
+            .is_err()
+    );
+    assert_eq!(denied.receipt().source_entries_visited, 0);
+    assert!(!checkout_state(&probe).1);
+
+    let single = capture_meter(WorkBudget::UNBOUNDED, &cancellation)?;
+    probe.capture_host_paths_with_meter(
+        directory.path(),
+        std::slice::from_ref(&first),
+        identity,
+        &single,
+    )?;
+    assert!(single.receipt().source_bytes_read > 0);
+    let budget = WorkBudget {
+        source_bytes_read: single.receipt().source_bytes_read,
+        ..WorkBudget::UNBOUNDED
     };
-    assert_eq!(zero_failure.work.source_entries_visited, 0);
-    assert!(!zero_candidate.has_pending_mutations());
-    let mut candidate = source
-        .runtime
-        .block_on(|| async { source.checkout.lock().await.private_candidate() });
-    let single = source.runtime.block_on(|| {
-        capture_paths_batched_with_baseline(
-            &mut candidate,
-            std::slice::from_ref(&first),
-            &options,
-            1,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            None,
-        )
-    })?;
-    assert!(single.work.source_bytes_read > 0);
-    let mut budget = WorkBudget::UNBOUNDED;
-    budget.source_bytes_read = single.work.source_bytes_read;
-    let mut candidate = source
-        .runtime
-        .block_on(|| async { source.checkout.lock().await.private_candidate() });
-    let paths = [first, second];
-    let result = source.runtime.block_on(|| {
-        capture_paths_batched_with_baseline(
-            &mut candidate,
-            &paths,
-            &options,
-            1,
-            budget,
-            &cancellation,
-            None,
-        )
-    });
-    let Err(failure) = result else {
-        return Err(std::io::Error::other("aggregate source budget was ignored").into());
-    };
-    assert!(failure.error.to_string().contains("source_bytes_read"));
-    assert!(!candidate.has_pending_mutations());
+    let batch = capture_meter(budget, &cancellation)?;
+    let source = source(FilesystemProfile::Portable)?;
+    let error = source
+        .capture_host_paths_with_meter(directory.path(), &[first, second], identity, &batch)
+        .err()
+        .ok_or("aggregate source budget was ignored")?;
+    assert!(matches!(
+        error,
+        MountSourceError::Work(WorkError::BudgetExceeded {
+            counter: "source_bytes_read",
+            ..
+        })
+    ));
+    assert!(!checkout_state(&source).1);
     Ok(())
 }
 
@@ -153,7 +133,7 @@ fn publication_policy_and_subtree_cases() -> Result<(), Box<dyn std::error::Erro
             true,
         ),
     ] {
-        let (source, _) = shared_sources_with_publication(profile, policy)?;
+        let (source, _) = sources(profile, ConsistencyMode::Pinned, policy)?;
         let work = capture_meter(boundary_budget(), source.cancellation())
             .map_err(|failure| failure.error)?;
         let before = checkout_state(&source).0;
@@ -198,7 +178,11 @@ fn refresh_preserves_overlapping_read_conflicts_and_generation()
     } else {
         FilesystemProfile::Posix
     };
-    let (reader, writer) = tracking_sources(profile)?;
+    let (reader, writer) = sources(
+        profile,
+        ConsistencyMode::Tracking,
+        MountPublication::CloseAndSync,
+    )?;
     let path = native_test_path("observed.bin");
     writer.create_file(&path, metadata())?;
     writer.write_range(&path, 0, Bytes::from_static(b"first"))?;

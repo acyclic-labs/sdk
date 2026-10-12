@@ -242,13 +242,11 @@ fn native_source_io_detached_data_and_cleanup_do_not_pin_accepted_job()
         .original_demand_work()
         .allocation_work();
     assert!(demand.source_execution_view().is_none());
-    let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(job.reserve_work(
-        crate::WorkCounters {
-            items_examined: 1,
-            ..crate::WorkCounters::UNCHARGED
-        },
-    )?)?;
-    let original_work = credit.original_work().clone();
+    let credit = job.reserve_work(crate::WorkCounters {
+        items_examined: 1,
+        ..crate::WorkCounters::UNCHARGED
+    })?;
+    let original_work = credit.work().clone();
     assert!(original_work.source_execution_view().is_none());
     assert!(original_work.shares_ledger(&root));
     assert!(original_work.shares_resource_allowance(&volume));
@@ -470,7 +468,8 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     let failure = source
         .runtime
         .block_on(|| async {
-            source.checkout
+            source
+                .checkout
                 .publish(
                     crate::PublicationPermit::Unrestricted,
                     &native,
@@ -546,7 +545,8 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     source
         .runtime
         .block_on(|| async {
-            source.checkout
+            source
+                .checkout
                 .publish(
                     crate::PublicationPermit::Unrestricted,
                     &retry_native,
