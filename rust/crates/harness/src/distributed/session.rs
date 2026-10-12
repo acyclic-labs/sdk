@@ -230,7 +230,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             if &existing != event
                 || digest
-                    != crate::contract::canonical_json_digest(
+                    != crate::executor::json::canonical_json_digest(
                         event,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         custody.work(),

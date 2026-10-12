@@ -93,9 +93,9 @@ pub(super) fn stock_json_bound<T: Serialize>(
 ) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        return crate::contract::validate_json_byte_bound_native_trusted(
+        return crate::executor::json::validate_json_byte_bound_native_trusted(
             value,
-            crate::contract::JsonBounds {
+            crate::executor::json::JsonBounds {
                 maximum_bytes: maximum,
                 maximum_items: io.remaining()?.items_examined,
                 maximum_depth: 256,
@@ -113,7 +113,7 @@ pub(super) fn stock_json_bound<T: Serialize>(
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
-    crate::contract::json_byte_length(value, maximum, &mut None).map(|_| ())
+    crate::executor::json::json_byte_length(value, maximum, &mut None).map(|_| ())
 }
 
 pub(super) fn stock_compact(

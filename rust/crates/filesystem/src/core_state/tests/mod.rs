@@ -1,5 +1,6 @@
-use super::*;
 use super::collection::content_address;
+use super::*;
+use crate::lazy_workspace::MemoryLazyNode;
 use crate::{Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceName, WorkspaceRootId};
 
 const CRASH_PARENT: WorkspaceContextId = WorkspaceContextId::from_bytes([0x41; 16]);

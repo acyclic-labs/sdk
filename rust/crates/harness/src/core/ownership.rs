@@ -227,7 +227,7 @@ pub(crate) fn inspect_metadata<T: Serialize + ?Sized>(
     if work.is_none() {
         return Ok(());
     }
-    crate::contract::json_byte_length(source, u64::MAX, work).map(|_| ())
+    crate::executor::json::json_byte_length(source, u64::MAX, work).map(|_| ())
 }
 
 #[cfg(feature = "filesystem")]

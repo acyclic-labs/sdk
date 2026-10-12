@@ -276,7 +276,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let creation_key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("fork:{}:journal", request.operation_id),
                     work,
                 )
@@ -293,7 +293,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("fork:{}:claim", request.operation_id),
                     work,
                 )
@@ -329,7 +329,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("fork:{}:report", report.request.operation_id),
                     work,
                 )
@@ -364,7 +364,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         selection: &ForkSelection,
     ) -> Result<Option<Capture>> {
         let path = crate::executor::with_history_io(self.io.as_ref(), |work| {
-            crate::contract::preparation_format(format_args!("/capture-{index}-result.json"), work)
+            crate::executor::preparation_format(format_args!("/capture-{index}-result.json"), work)
         })?;
         let Some(capture) = read_record::<A, O, Capture>(
             &self.preparer.host,
@@ -378,7 +378,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             return Ok(None);
         };
         let attempt_path = crate::executor::with_history_io(self.io.as_ref(), |work| {
-            crate::contract::preparation_format(format_args!("/capture-{index}-attempt.json"), work)
+            crate::executor::preparation_format(format_args!("/capture-{index}-attempt.json"), work)
         })?;
         read_record::<A, O, Uuid>(
             &self.preparer.host,
@@ -407,7 +407,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         index: usize,
     ) -> Result<bool> {
         let path = crate::executor::with_history_io(self.io.as_ref(), |work| {
-            crate::contract::preparation_format(format_args!("/capture-{index}-attempt.json"), work)
+            crate::executor::preparation_format(format_args!("/capture-{index}-attempt.json"), work)
         })?;
         if read_record::<A, O, Uuid>(
             &self.preparer.host,
@@ -425,7 +425,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!(
                         "fork:{}:capture-attempt:{index}:{attempt}",
                         request.operation_id
@@ -469,12 +469,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
     ) -> Result<Capture> {
         validate_capture(selection, &capture)?;
         let path = crate::executor::with_history_io(self.io.as_ref(), |work| {
-            crate::contract::preparation_format(format_args!("/capture-{index}-result.json"), work)
+            crate::executor::preparation_format(format_args!("/capture-{index}-result.json"), work)
         })?;
         let key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("fork:{}:capture-result:{index}", request.operation_id),
                     work,
                 )

@@ -107,7 +107,7 @@ pub(super) async fn sampling_messages(
                         .get("mimeType")
                         .and_then(Value::as_str)
                         .ok_or_else(|| Error::Invalid("MCP media MIME type absent".into()))?;
-                    let digest = crate::contract::canonical_json_digest(
+                    let digest = crate::executor::json::canonical_json_digest(
                         &(
                             "harness/mcp-sampling-media/v1",
                             operation,

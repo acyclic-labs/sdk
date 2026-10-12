@@ -4503,7 +4503,7 @@ mod windows_sparse_tests {
         let native = std::sync::Arc::new(native_positional_file(file.into_std(), &original).map_err(std::io::Error::other)?);
         let mut scope = CaptureWorkScope::new(&original)
             .map_err(|failure| std::io::Error::other(failure.error))?;
-        scope.native.with_original_leaf(|work| work.adopt(reported.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64))
+        scope.native.with_original_leaf(|work| work.claim_allocation(reported.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64, 0, WorkCounters::UNCHARGED))
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         let ranges = settled_sparse_ranges(&native,
     &metadata,
@@ -4584,7 +4584,7 @@ mod windows_sparse_tests {
                 let mut scope = CaptureWorkScope::new(&original)?;
                 {
                     let mut work = &scope;
-                    work.native.with_original_leaf(|work| work.adopt(reported.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64))
+                    work.native.with_original_leaf(|work| work.claim_allocation(reported.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64, 0, WorkCounters::UNCHARGED))
                         .map_err(|error| OperationFailure::new(capture_demand_error(error), work.native.receipt()))?;
                 }
                 let result = settled_sparse_ranges(&native,
