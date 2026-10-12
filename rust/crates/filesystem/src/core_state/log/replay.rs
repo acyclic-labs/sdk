@@ -84,30 +84,13 @@ impl CoreLog {
                 ..Default::default()
             })?;
             bytes.resize(size, 0);
-            let mut position = 0;
-            while position < bytes.len() {
-                let remaining = work
-                    .remaining()?
-                    .source_bytes_read
-                    .min(work.remaining()?.bytes_copied);
-                let end = bytes
-                    .len()
-                    .min(position.saturating_add(64 * 1024))
-                    .min(position.saturating_add(usize::try_from(remaining).unwrap_or(usize::MAX)));
-                if end == position {
-                    work.charge(crate::WorkCounters {
-                        source_bytes_read: 1,
-                        bytes_copied: 1,
-                        ..Default::default()
-                    })?;
-                }
-                let count =
-                    crate::native_host::read_builtin_file(&file, &mut bytes[position..end], work)?;
-                if count == 0 {
-                    return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
-                }
-                position += count;
+            MaterializationReader {
+                file: &file,
+                work,
+                remaining_file_bytes: length,
+                original_length: length,
             }
+            .read_exact(&mut bytes)?;
         } else {
             file.read_to_end(&mut bytes)?;
         }
@@ -118,8 +101,6 @@ impl CoreLog {
                     let children = match &record.value {
                         Some(RecordValue::Context(context)) => context.roots.len(),
                         Some(RecordValue::Children(children)) => children.0.len(),
-                        Some(RecordValue::FlatContext(context)) => context.roots.0.len(),
-                        Some(RecordValue::FlatChildren(children)) => children.len(),
                         _ => 0,
                     };
                     work.charge(crate::WorkCounters {
@@ -206,76 +187,54 @@ impl CoreLog {
             if blake3::hash(frame).to_hex().as_bytes() != checksum {
                 break;
             }
-            let Some(work) = work else {
-                let mut frame: LogFrame<Change> = serde_json::from_slice(frame)
-                    .map_err(|_| LocalCoreStateStoreError::Corrupt(paths.current.clone()))?;
-                if *epoch.get_or_insert(frame.epoch) != frame.epoch || frame.sequence != sequence {
-                    break;
-                }
-                for record in &mut frame.change.0 {
-                    if let Some(value) = &mut record.value {
-                        value.normalize(None)?;
-                    }
-                }
-                log.apply(frame.change);
-                sequence += 1;
-                continue;
+            let (frame, allocation): (LogFrame<Change>, _) = match work {
+                Some(work) => match measured_decode_reader(
+                    std::io::Cursor::new(frame),
+                    frame.len() as u64,
+                    work,
+                ) {
+                    Ok((frame, allocation)) => (frame, Some(allocation)),
+                    Err(error @ LocalCoreStateStoreError::LazyWork(_)) => return Err(error),
+                    Err(_) => return Err(native_corrupt_log(paths)?),
+                },
+                None => (
+                    serde_json::from_slice(frame)
+                        .map_err(|_| LocalCoreStateStoreError::Corrupt(paths.current.clone()))?,
+                    None,
+                ),
             };
-            let (frame, mut frame_allocation) = match measured_decode_slice::<
-                LogFrame<Vec<(RecordKey, Option<RecordValue>)>>,
-            >(frame, work)
-            {
-                Ok(frame) => frame,
-                Err(error @ LocalCoreStateStoreError::LazyWork(_)) => return Err(error),
-                Err(_) => return Err(native_corrupt_log(paths)?),
-            };
-            // The decoded frame's physical allocations precede their guard's drop.
+            // Payload drops before its allocation on every early exit.
             let frame = frame;
-            for (key, value) in &frame.change {
-                work.charge(crate::WorkCounters {
-                    items_examined: 1,
-                    ..Default::default()
-                })?;
-                if value.as_ref().is_some_and(|value| !value.matches(*key)) {
-                    return Err(native_corrupt_log(paths)?);
-                }
-            }
             if *epoch.get_or_insert(frame.epoch) != frame.epoch || frame.sequence != sequence {
                 break;
             }
-            for (key, mut value) in frame.change {
-                let prior_owned = value
-                    .as_ref()
-                    .map(|value| native_records::native_record_owned_bytes(value, work))
-                    .transpose()?
-                    .unwrap_or(0);
-                if let Some(value) = &mut value {
-                    value.normalize(Some(work))?;
+            if let Some(work) = work {
+                // The decoded records retire before the frame's allocation.
+                let mut frame_allocation = allocation.expect("native frame allocation");
+                for mut record in frame.change.0 {
+                    let owned_bytes = record
+                        .value
+                        .as_ref()
+                        .map(|value| native_records::native_record_owned_bytes(value, work))
+                        .transpose()?
+                        .unwrap_or(0);
+                    let (index, dirty) = log.admit_lazy_slots(record.key, work)?;
+                    let key = record.key;
+                    record.allocation = Some(frame_allocation.split_off(owned_bytes)?);
+                    let mut residents = log.residents();
+                    if let Some(index) = index {
+                        residents.0[index] = record;
+                    } else {
+                        residents.0.push(record);
+                    }
+                    drop(residents);
+                    if dirty {
+                        log.dirty.push(key);
+                    }
                 }
-                let normalized_owned = value
-                    .as_ref()
-                    .map(|value| native_records::native_record_owned_bytes(value, work))
-                    .transpose()?
-                    .unwrap_or(0);
-                frame_allocation.release(prior_owned - normalized_owned)?;
-                let (index, dirty) = log.admit_lazy_slots(key, work)?;
-                let mut residents = log.residents();
-                let record = Resident {
-                    key,
-                    value,
-                    allocation: Some(frame_allocation.split_off(normalized_owned)?),
-                };
-                if let Some(index) = index {
-                    residents.0[index] = record;
-                } else {
-                    residents.0.push(record);
-                }
-                drop(residents);
-                if dirty {
-                    log.dirty.push(key);
-                }
+            } else {
+                log.apply(frame.change, None)?;
             }
-            drop(frame_allocation);
             sequence += 1;
         }
         if length != 0 {

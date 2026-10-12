@@ -60,7 +60,7 @@ where
         receipt
             .custody
             .release(source_array_bytes as u64)
-            .map_err(materialize_native_error)?;
+            .map_err(MaterializeError::from)?;
         let host_array_bytes = vec_bytes(&attributes);
         let retained = host_array_bytes
             .checked_add(payload_bytes)
@@ -85,7 +85,7 @@ pub(super) async fn apply_host_attributes_offloaded(
     let custody = receipt
         .custody
         .split_off(retained as u64)
-        .map_err(materialize_native_error)?;
+        .map_err(MaterializeError::from)?;
     let attributes = (attributes, custody);
     if attributes.0.is_empty() {
         return Ok(());
@@ -128,8 +128,8 @@ pub(super) async fn apply_host_attributes_offloaded(
             result
         })
         .await
-        .map_err(materialize_runtime_error)?
-        .map_err(materialize_demand_error)
+        .map_err(MaterializeError::from)?
+        .map_err(MaterializeError::from)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
@@ -180,8 +180,8 @@ pub(super) async fn apply_host_metadata_offloaded(
         }
     })
     .await
-    .map_err(materialize_runtime_error)?
-    .map_err(materialize_demand_error)
+    .map_err(MaterializeError::from)?
+    .map_err(MaterializeError::from)
 }
 
 #[cfg(unix)]
@@ -276,7 +276,7 @@ pub(super) fn create_file(
             drop(file);
             error
         })
-        .map_err(materialize_runtime_error)
+        .map_err(MaterializeError::from)
 }
 
 pub(super) fn account_written(
@@ -288,9 +288,11 @@ pub(super) fn account_written(
         .written_bytes
         .checked_add(bytes)
         .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-    receipt.run(|work| {
-        work.with_original_leaf(|work| work.work.verify(work.budget).map_err(DemandError::from))
-    })
+    receipt
+        .custody
+        .work()
+        .with_original_leaf(|work| work.work.verify(work.budget))
+        .map_err(Into::into)
 }
 
 pub(super) fn account_materialization(
@@ -298,12 +300,14 @@ pub(super) fn account_materialization(
     bytes: u64,
 ) -> Result<(), MaterializeError> {
     account_written(receipt, bytes)?;
-    receipt.run(|work| {
-        work.record(WorkCounters {
+    receipt
+        .custody
+        .work()
+        .record_admitted(WorkCounters {
             materializations: 1,
             ..WorkCounters::UNCHARGED
         })
-    })
+        .map_err(Into::into)
 }
 
 pub(super) fn account_file(
@@ -324,7 +328,7 @@ pub(super) fn account_file(
     account_materialization(receipt, written)
 }
 
-pub(super) fn create_symlink_measured(
+pub(super) fn create_symlink(
     host_root: &HostRoot,
     target: &acyclic_stream::OwnedBytes,
     destination: &Vec<HostPathUnit>,
@@ -347,11 +351,9 @@ pub(super) fn create_symlink_measured(
             .ok_or_else(|| MaterializeError::UnrepresentableName)?;
         let mut units = Vec::new();
         receipt.reserve(&mut units, target.len() / 2)?;
-        receipt.run(|work| {
-            work.charge(WorkCounters {
-                bytes_copied: target.len() as u64,
-                ..WorkCounters::UNCHARGED
-            })
+        receipt.custody.work().charge(WorkCounters {
+            bytes_copied: target.len() as u64,
+            ..WorkCounters::UNCHARGED
         })?;
         units.extend(decoded);
         let result = receipt.run(|work| host_root.symlink_file_wide(&units, &destination, work));
@@ -360,7 +362,7 @@ pub(super) fn create_symlink_measured(
         receipt
             .custody
             .release(retained as u64)
-            .map_err(materialize_native_error)?;
+            .map_err(MaterializeError::from)?;
         result
     }
 }
@@ -369,7 +371,7 @@ pub(super) fn create_symlink_measured(
     clippy::useless_conversion,
     reason = "libc file-type constants have different widths on Linux and macOS"
 )]
-pub(super) fn create_special_measured(
+pub(super) fn create_special(
     host_root: &HostRoot,
     destination: &Vec<HostPathUnit>,
     kind: FileKind,
