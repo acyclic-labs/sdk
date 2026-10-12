@@ -1963,7 +1963,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> VolumeImportPlan<A, O> {
             .apply(ApplyOptions {
                 if_target: self.plan.target_head(),
                 idempotency_key: filesystem_key(key),
-            })
+            }, acyclic_fs::PublicationPermit::Unrestricted)
             .await
             .map_err(map_error)
     }
@@ -2648,7 +2648,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         };
         guard().await?;
         let plan = source_workspace.join_into(&target_workspace)
-            .plan_at(&source_generation, &target_generation).await.map_err(map_error)?;
+            .plan_at(&source_generation, &target_generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?;
         guard().await?;
         Ok(ParentMergePlan { plan, child_project: source.clone(),
             parent_project: self.project.clone(), parent_scope: self.scope.clone(),
@@ -2735,8 +2735,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         guard().await?;
         let plan_custody;
         let (plan, custody) = source_workspace.join_into(&target_workspace)
-            .plan_at_with_native_work(&source_generation, &target_generation, work, work.cancellation()).await
-            .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+            .plan_at(&source_generation, &target_generation, work, work.cancellation()).await
+            .and_then(|plan| work.claim_allocation(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map(|custody| (plan, custody)).map_err(|error| acyclic_fs::WorkspaceError::from(acyclic_fs::FsError::from(error))))
+            .map_err(|source| Error::NativeWorkspace { source, custody: None })?;
         plan_custody = custody;
         guard().await?;
         let child_project = source.copy(&mut Some(&mut io.history_io()))?;
@@ -2812,7 +2813,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
     ) -> Result<JoinOutcome<A, O>> {
         self.require_merge_plan(plan)?;
         plan.plan
-            .apply(Self::merge_options(plan, project_join_key(operation_id)?))
+            .apply(Self::merge_options(plan, project_join_key(operation_id)?), acyclic_fs::PublicationPermit::Unrestricted)
             .await
             .map_err(map_error)
     }
@@ -2837,9 +2838,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         };
         let io = PreparationIo::from_native_work(work)?;
         let filesystem_key = native_project_join_key(operation_id, work)?;
-        let (_witness, witness_custody) = plan.plan.commit_witness_with_native_work(
+        let _witness = plan.plan.commit_witness(
             application, filesystem_key, work, io.cancellation(),
-        ).map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+        ).map_err(|source| Error::NativeWorkspace { source, custody: None })?;
         let maximum_witness_bytes = (std::mem::size_of::<JoinCommitWitness>() as u64)
             .checked_mul(16).and_then(|bytes| bytes.checked_add(1024))
             .ok_or(Error::NativeBoundary {
@@ -2878,7 +2879,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         drop(statement_guard);
         drop(encoded);
         drop(encoded_guard);
-        drop(witness_custody);
         let mut observer = io.history_io();
         let child = crate::store::history::HistoryIo::clone_authority(&mut observer, child)?;
         drop(observer);
@@ -2943,8 +2943,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         let filesystem_key = project_join_key(operation_id)?;
         let witness = plan
             .plan
-            .commit_witness(application, filesystem_key)
-            .map_err(map_error)?;
+            .commit_witness(application, filesystem_key, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?;
         let receipt = ProjectMergeReceipt {
             operation_id,
             child,
@@ -3005,7 +3005,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
     ) -> Result<JoinOutcome<A, O>> {
         self.require_merge_plan(plan)?;
         plan.plan
-            .apply_candidate(Self::merge_options(plan, project_join_key(operation_id)?), candidate)
+            .apply_candidate(Self::merge_options(plan, project_join_key(operation_id)?), candidate, acyclic_fs::PublicationPermit::Unrestricted)
             .await
             .map_err(|error| Error::Storage(error.to_string()))
     }
@@ -3215,9 +3215,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let target = destination_workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?;
         source_workspace
             .join_into(&destination_workspace)
-            .plan_at(&source_generation, &target)
-            .await
-            .map_err(map_error)
+            .plan_at(&source_generation, &target, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))
     }
 
     async fn prepare_project_import(

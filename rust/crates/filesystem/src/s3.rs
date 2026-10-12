@@ -314,7 +314,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         key: &str,
         parts: &[crate::StagedContent],
     ) -> Result<(), S3Error> {
-        if transaction.workspace_id() != self.workspace.id() {
+        if transaction.checkout.volume_id() != self.workspace.id().volume_id() {
             return Err(S3Error::ForeignTransaction);
         }
         create_parent_directories(transaction, key).await?;

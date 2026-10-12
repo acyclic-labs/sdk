@@ -6853,9 +6853,9 @@ where
                 let paid = allocation.split_off(allocation.bytes())?;
                 let operations = std::mem::take(pending);
                 *pending_bytes = 0;
-                transaction.apply_authored_bulk_with_native_work(
+                transaction.checkout.apply_authored_bulk_transaction_with_native_work(
                     operations, paid, original, cancellation,
-                ).await.map_err(native_workspace_error)
+                ).await.map_err(|error| native_workspace_error(WorkspaceError::from(error)))
             }).await?;
             return Ok(work);
         }
@@ -6863,9 +6863,9 @@ where
         *retained_bytes = retained_bytes.checked_sub(*pending_bytes)
             .ok_or_else(counter_overflow)?;
         *pending_bytes = 0;
-        let applied = transaction.apply_authored_bulk_measured(
+        let applied = transaction.checkout.apply_authored_bulk_transaction(
             operations, remaining_work(work, budget, *retained_bytes)?, cancellation,
-        ).await.map_err(|mut failure| {
+        ).await.map(|receipt| receipt.work).map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), WorkspaceError::from)).map_err(|mut failure| {
             match failure.work.peak_allocation_bytes.checked_add(*retained_bytes) {
                 Some(peak) => {
                     failure.work.peak_allocation_bytes = peak;
@@ -7276,7 +7276,7 @@ where
                     } else { None }, work, cancellation,
                 ).await?;
                 if changed {
-                    let candidate = transaction.into_checkout_candidate();
+                    let candidate = transaction.checkout;
                     let actual_bytes = if portable_accounting { candidate.logical_owned_bytes() } else { 0 };
                     if portable_accounting {
                         work.release(candidate_bytes)?;
