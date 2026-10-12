@@ -103,18 +103,20 @@ pub(crate) fn reserve_copy_vector<T>(
         .ok_or_else(|| Error::Invalid("component vector ownership overflows".into()))?
         as u64;
     if bytes != 0 {
-        admit_buffer_allocation(quota.work())?;
         let io = quota
             .work()
             .as_deref_mut()
             .expect("component vector observer");
-        io.admit_owned(bytes)?;
+        if is_native(io) {
+            io.admit_allocation(bytes)?;
+        } else {
+            io.admit_owned(bytes)?;
+        }
         io.retain_owned(bytes)?;
         quota.adopt(bytes)?;
     }
     let mut output = Vec::new();
     if bytes != 0 {
-        begin_buffer_allocation(quota.work())?;
         output.try_reserve_exact(count).map_err(|cause| {
             quota
                 .work()
@@ -449,44 +451,4 @@ pub(in crate::core) fn is_native(io: &dyn HistoryIo) -> bool {
         let _ = io;
         false
     }
-}
-
-pub(in crate::core) fn admit_buffer_allocation(
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = work.as_deref_mut().filter(|io| is_native(&**io)) {
-        io.original_native_work()
-            .expect("original allocation issuer")
-            .admit(acyclic_fs::WorkCounters {
-                allocation_operations: 1,
-                ..acyclic_fs::WorkCounters::default()
-            })
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
-    }
-    let _ = work;
-    Ok(())
-}
-
-pub(in crate::core) fn begin_buffer_allocation(
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = work.as_deref_mut().filter(|io| is_native(&**io)) {
-        io.original_native_work()
-            .expect("original allocation issuer")
-            .charge(acyclic_fs::WorkCounters {
-                allocation_operations: 1,
-                ..acyclic_fs::WorkCounters::default()
-            })
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
-    }
-    let _ = work;
-    Ok(())
 }
