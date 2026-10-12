@@ -179,7 +179,7 @@ where
                 && !self
                     .authored
                     .shared_checkout()
-                    .resolve_acknowledged_original_with_native_work(
+                    .recover_publication(
                         operation,
                         generation,
                         original,

@@ -159,25 +159,31 @@ where
     pub(super) async fn dirty_detached_records(
         &self,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<Vec<DirtyDetachedRecord>, MountSourceError> {
-        let detached = self
-            .detached
-            .lock()
-            .map_err(|_| MountSourceError::Stale)?
-            .values()
-            .filter(|entry| entry.ready && entry.pending_epoch.is_none())
-            .map(|entry| (Arc::clone(&entry.file), entry.published_epoch))
-            .collect::<Vec<_>>();
-        let mut dirty = Vec::new();
-        for (file, published_epoch) in detached {
+    ) -> Result<crate::kernel::Owned<Vec<DirtyDetachedRecord>>, MountSourceError> {
+        let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
+        let detached = {
+            let entries = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
+            let mut files = crate::kernel::Owned::allocate(entries.len(), &mut accounting)
+                .map_err(mount_engine_error)?;
+            files.value.extend(
+                entries
+                    .values()
+                    .filter(|entry| entry.ready && entry.pending_epoch.is_none())
+                    .map(|entry| (Arc::clone(&entry.file), entry.published_epoch)),
+            );
+            files
+        };
+        let mut dirty = crate::kernel::Owned::allocate(detached.value.len(), &mut accounting)
+            .map_err(mount_engine_error)?;
+        for (file, published_epoch) in &detached.value {
             let (record, metadata, epoch) = file
                 .snapshot(
                     &mut adapter::NativeDemandCarrier::Native(work),
                     work.cancellation(),
                 )
                 .await?;
-            if epoch > published_epoch {
-                dirty.push((record, metadata, epoch));
+            if epoch > *published_epoch {
+                dirty.value.push((record, metadata, epoch));
             }
         }
         Ok(dirty)

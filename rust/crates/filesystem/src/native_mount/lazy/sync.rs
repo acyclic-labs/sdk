@@ -115,7 +115,7 @@ where
                     && !self
                         .authored
                         .shared_checkout()
-                        .resolve_acknowledged_original_with_native_work(
+                        .recover_publication(
                             operation,
                             generation,
                             work,
@@ -169,11 +169,13 @@ where
                     };
                     let published = self
                         .authored
-                        .sync_async_with_permit_carrier_guarded_context_with_ack(
+                        .shared_checkout()
+                        .publish(
                             permit,
                             true,
-                            &mut carrier,
+                            work,
                             cancellation,
+                            Some(self.authored.cancellation()),
                             before_publication,
                             Some(context),
                             acknowledged,
@@ -244,7 +246,7 @@ where
                 (paths, records)
             };
             let dirty = self.dirty_detached_records(work).await?;
-            if removals.is_empty() && dirty.is_empty() && selected.is_none() {
+            if removals.is_empty() && dirty.value.is_empty() && selected.is_none() {
                 let context = NativeSnapshotContext::Lazy(
                     self.lazy
                         .publication_cut(None, &mut accounting)
@@ -253,11 +255,13 @@ where
                 );
                 let published = self
                     .authored
-                    .sync_async_with_permit_carrier_guarded_context_with_ack(
+                    .shared_checkout()
+                    .publish(
                         permit,
                         false,
-                        &mut carrier,
+                        work,
                         cancellation,
+                        Some(self.authored.cancellation()),
                         before_publication,
                         Some(context),
                         acknowledged,
@@ -271,7 +275,7 @@ where
                 return Ok(published);
             }
             let (fresh_operation, mut candidate, identities, epoch, stamp) = self
-                .prepare_removed_identity_candidate(&removals, &dirty, work)
+                .prepare_removed_identity_candidate(&removals, &dirty.value, work)
                 .await?;
             let mut paths = input.vec(removals.len())?;
             paths.extend(removals.into_iter().map(|(path, _)| path));
@@ -307,11 +311,15 @@ where
             }
             records.extend(
                 dirty
+                    .value
                     .iter()
                     .map(|(record, metadata, _)| (record.file_id, (*record, *metadata))),
             );
             let records = records.into_values().collect::<Vec<_>>();
-            if let Err(error) = self.stage_detached_records(&records, &dirty, work).await {
+            if let Err(error) = self
+                .stage_detached_records(&records, &dirty.value, work)
+                .await
+            {
                 self.abort_detached_publication()?;
                 return Err(error.into());
             }
@@ -410,11 +418,13 @@ where
             }
             let published = self
                 .authored
-                .sync_async_with_permit_carrier_guarded_context_with_ack(
+                .shared_checkout()
+                .publish(
                     permit,
                     true,
-                    &mut carrier,
+                    work,
                     cancellation,
+                    Some(self.authored.cancellation()),
                     before_publication,
                     Some(context),
                     acknowledged,
