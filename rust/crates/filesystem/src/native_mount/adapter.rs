@@ -6,7 +6,7 @@ use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountPublication, MountRangeAllocation, MountSparseRange, MountSeekTarget, MountSourceError,
-    MountViewLease, NativeMountError, ViewObserver, ViewOrigin, capture_root_identity,
+    NativeMountError, ViewObserver, ViewOrigin, capture_root_identity,
     seal_checkout,
 };
 use crate::heap_future::in_heap;
@@ -17,11 +17,9 @@ use crate::kernel::{
 };
 use crate::model::{CaseSensitivity, FilesystemProfile, VolumeConfig, VolumeLimits};
 use crate::native_capture::{
-    MAX_NATIVE_EXACT_CAPTURE_PATHS, NativeViewBaseline, capture_paths_batched_with_native_work,
+    MAX_NATIVE_EXACT_CAPTURE_PATHS, NativeViewBaseline, capture_paths_batched,
     capture_subtrees_with_native_work,
 };
-#[cfg(test)]
-use crate::native_capture::capture_paths_batched_with_baseline;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
     Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, GroupedChange,
@@ -2443,7 +2441,7 @@ impl<A, O> SharedCheckout<A, O> {
         use super::lazy::{mount_demand_error, mount_engine_error, mount_items};
         let original = carrier.original_native_work();
         let Some(end) = offset.checked_add(range.logical_bytes) else {
-            return Err(MountSourceError::NativeStaticText {
+            return Err(MountSourceError::NativeText {
                 kind: super::NativeSourceTextKind::Invalid,
                 text: "sparse range overflows the file address space",
             });
@@ -2506,7 +2504,7 @@ impl<A, O> SharedCheckout<A, O> {
                 return Err(MountSourceError::Stale);
             }
             let Some(destination) = offset.checked_add(span.relative_offset) else {
-                return Err(MountSourceError::NativeStaticText {
+                return Err(MountSourceError::NativeText {
                     kind: super::NativeSourceTextKind::Invalid,
                     text: "sparse span offset overflows",
                 });
@@ -4048,7 +4046,7 @@ macro_rules! read_sparse_spans {
                 let Some(data) = $seek.await.map_err(MountSourceError::Filesystem)? else { break; };
                 if data >= $end { break; }
                 if data < cursor {
-                    return Err(MountSourceError::NativeStaticText {
+                    return Err(MountSourceError::NativeText {
                         kind: super::NativeSourceTextKind::Engine, text: $backwards,
                     });
                 }
@@ -4056,7 +4054,7 @@ macro_rules! read_sparse_spans {
                 let $target = ExtentSeekTarget::Hole;
                 let hole = $seek.await.map_err(MountSourceError::Filesystem)?.unwrap_or($end).min($end);
                 if hole <= data {
-                    return Err(MountSourceError::NativeStaticText {
+                    return Err(MountSourceError::NativeText {
                         kind: super::NativeSourceTextKind::Engine, text: "sparse seek made no forward progress",
                     });
                 }
@@ -4579,7 +4577,7 @@ where
     ) -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError> {
         let meter = work.native_read_meter();
         self.runtime.block_on_measured(|| async {
-            let end = offset.checked_add(u64::from(length)).ok_or(MountSourceError::NativeStaticText {
+            let end = offset.checked_add(u64::from(length)).ok_or(MountSourceError::NativeText {
                 kind: super::NativeSourceTextKind::Invalid,
                 text: "sparse range overflows the file address space",
             })?;
@@ -4619,7 +4617,7 @@ where
         self.runtime.block_on_measured(|| async {
             let carrier = &mut carrier;
             let range = &range.0;
-            let end = offset.checked_add(range.logical_bytes).ok_or(MountSourceError::NativeStaticText {
+            let end = offset.checked_add(range.logical_bytes).ok_or(MountSourceError::NativeText {
                 kind: super::NativeSourceTextKind::Invalid, text: "sparse range overflows the file address space",
             })?;
             let cancellation = carrier.cancellation();
@@ -4639,7 +4637,7 @@ where
                 original.charge(crate::WorkCounters {
                     items_examined: 1, ..crate::WorkCounters::UNCHARGED
                 }).map_err(MountSourceError::NativeWork)?;
-                let destination = offset.checked_add(span.relative_offset).ok_or(MountSourceError::NativeStaticText {
+                let destination = offset.checked_add(span.relative_offset).ok_or(MountSourceError::NativeText {
                     kind: super::NativeSourceTextKind::Invalid, text: "sparse span offset overflows",
                 })?;
                 self.change_content_locked_with_carrier(
@@ -5165,7 +5163,7 @@ where
         self.runtime.block_on_measured(|| async {
             use super::lazy::mount_demand_error;
             let logical_bytes = u64::from(length);
-            let end = offset.checked_add(logical_bytes).ok_or(MountSourceError::NativeStaticText {
+            let end = offset.checked_add(logical_bytes).ok_or(MountSourceError::NativeText {
                 kind: super::NativeSourceTextKind::Invalid,
                 text: "sparse range overflows the file address space",
             })?;
@@ -5266,7 +5264,7 @@ fn native_mount_name_with_scratch<S: CaptureInputScratch>(
         }
         (NameEncoding::Utf8, "windows") => {
             let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
-                MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Invalid, text: "authenticated UTF-8 name is malformed" }
+                MountSourceError::NativeText { kind: super::NativeSourceTextKind::Invalid, text: "authenticated UTF-8 name is malformed" }
             })?;
             let mut length = 0_usize;
             for scalar in text.chars() {
@@ -5286,7 +5284,7 @@ fn native_mount_name_with_scratch<S: CaptureInputScratch>(
             }
             Ok(bytes)
         }
-        _ => Err(MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Unsupported, text: "authenticated name encoding is incompatible with this native mount" }),
+        _ => Err(MountSourceError::NativeText { kind: super::NativeSourceTextKind::Unsupported, text: "authenticated name encoding is incompatible with this native mount" }),
     }
 }
 
@@ -5299,7 +5297,7 @@ fn native_attribute_name(
 ) -> Result<(AttributeName, crate::NativeAllocation), MountSourceError> {
     let mut scratch = NativeCaptureScratchAllocation::new(original)?;
     if profile != FilesystemProfile::Posix {
-        return Err(MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Unsupported, text: "native POSIX attributes require a POSIX volume profile" });
+        return Err(MountSourceError::NativeText { kind: super::NativeSourceTextKind::Unsupported, text: "native POSIX attributes require a POSIX volume profile" });
     }
     let mut owned = scratch.vec::<u8>(bytes.len())?;
     let owned_bytes = owned.capacity() as u64;
@@ -5324,7 +5322,7 @@ fn native_attribute_name(
         Ok(name) => Ok((name, scratch.retain())),
         Err(_) => {
             scratch.release(owned_bytes)?;
-            Err(MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Engine, text: "attribute name is invalid" })
+            Err(MountSourceError::NativeText { kind: super::NativeSourceTextKind::Engine, text: "attribute name is invalid" })
         }
     }
 }
@@ -5350,7 +5348,7 @@ fn native_attribute_page(
             ..crate::WorkCounters::UNCHARGED
         })?;
         if entry.name.class() != AttributeClass::PosixXattr {
-            return Err(MountSourceError::NativeStaticText {
+            return Err(MountSourceError::NativeText {
                 kind: super::NativeSourceTextKind::Unsupported,
                 text: "POSIX mount encountered a non-POSIX named attribute",
             });
@@ -6167,7 +6165,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         observer.proof_data_take_completed_work();
         let (record, metadata) = accepted.map_err(MountSourceError::Filesystem)?.ok_or(MountSourceError::NotFound)?;
         if record.kind != FileKind::Regular {
-            return Err(MountSourceError::NativeStaticText {
+            return Err(MountSourceError::NativeText {
                 kind: super::NativeSourceTextKind::Unsupported,
                 text: "only regular files can own native file handles",
             });
@@ -6190,7 +6188,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         work.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         if created.node.kind != MountNodeKind::Regular {
-            return Err(MountSourceError::NativeStaticText {
+            return Err(MountSourceError::NativeText {
                 kind: super::NativeSourceTextKind::Invalid,
                 text: "only regular files can own native file handles",
             });
@@ -6259,7 +6257,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         observer.proof_data_take_completed_work();
         let lookup = lookup?.ok_or(MountSourceError::NotFound)?;
         if lookup.record.kind != FileKind::Regular {
-            return Err(MountSourceError::NativeStaticText {
+            return Err(MountSourceError::NativeText {
                 kind: super::NativeSourceTextKind::Unsupported,
                 text: "only regular files can own detached native handles",
             });
@@ -7545,7 +7543,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             let captured = {
                 let work = native.clone();
                 match scope {
-                    HostCaptureScope::ExactPaths => capture_paths_batched_with_native_work(
+                    HostCaptureScope::ExactPaths => capture_paths_batched(
                         &mut candidate.checkout, paths, options, 64,
                         cancellation, baseline, &work,
                     ).await,
@@ -7596,7 +7594,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             ).await?;
             checkout.ensure_publication_resolved()?;
             if request.is_some() && checkout.publishes_at_native_boundary() {
-                return Err(MountSourceError::NativeStaticText {
+                return Err(MountSourceError::NativeText {
                     kind: super::NativeSourceTextKind::Invalid,
                     text: "lifecycle capture requires manual publication",
                 });
@@ -8256,14 +8254,14 @@ where
         })
     }
 
-    fn acquire_view_lease(&self) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+    fn acquire_view_lease(&self) -> Result<Box<dyn Send>, MountSourceError> {
         self.acquire_binding_lease(None)
     }
 
     fn acquire_binding_lease(
         &self,
         expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+    ) -> Result<Box<dyn Send>, MountSourceError> {
         let owner = ViewGate::callback_owner();
         let lease = self.runtime.wait(|| async {
             if !self.checkout.view_gate.reads_for_callback(owner) {
@@ -8280,7 +8278,7 @@ where
         &self,
         expected_epoch: Option<u64>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+    ) -> Result<Box<dyn Send>, MountSourceError> {
         let carrier = &mut NativeDemandCarrier::Native(work);
         let meter = work.native_read_meter();
         use super::lazy::mount_demand_error;
@@ -8307,7 +8305,7 @@ where
                 return Err(error);
             }
         }
-        let lease = Box::new(lease) as Box<dyn MountViewLease>;
+        let lease = Box::new(lease) as Box<dyn Send>;
         meter.lock().record(copied).map_err(mount_demand_error)?;
         Ok(lease)
     }
@@ -9053,7 +9051,7 @@ fn content_change_time() -> Result<i64, MountSourceError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).ok()
         .and_then(|since| i64::try_from(since.as_nanos()).ok())
-        .ok_or(MountSourceError::NativeStaticText {
+        .ok_or(MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine, text: "the clock is outside file time",
         })
 }
@@ -9873,17 +9871,12 @@ mod tests {
         let mut zero_candidate = source
             .runtime
             .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
-        let zero_result = source.runtime.block_on(|| {
-            capture_paths_batched_with_baseline(
-                &mut zero_candidate,
-                std::slice::from_ref(&first),
-                &options,
-                1,
-                WorkBudget::default(),
-                &cancellation,
-                None,
-            )
-        });
+        let zero_result = crate::NativeMaterializationWork::new(WorkBudget::default(), &cancellation)
+            .map_err(|(error, work)| OperationFailure::new(crate::CaptureError::from(error), work))
+            .and_then(|work| source.runtime.block_on(|| capture_paths_batched(
+                &mut zero_candidate, std::slice::from_ref(&first), &options, 1,
+                &cancellation, None, &work,
+            )));
         let Err(zero_failure) = zero_result else {
             return Err(std::io::Error::other("zero budget admitted host observation").into());
         };
@@ -9892,17 +9885,12 @@ mod tests {
         let mut candidate = source
             .runtime
             .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
-        let single = source.runtime.block_on(|| {
-            capture_paths_batched_with_baseline(
-                &mut candidate,
-                std::slice::from_ref(&first),
-                &options,
-                1,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-                None,
-            )
-        })?;
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let single = source.runtime.block_on(|| capture_paths_batched(
+            &mut candidate, std::slice::from_ref(&first), &options, 1,
+            &cancellation, None, &original,
+        ))?;
         assert!(single.work.source_bytes_read > 0);
         let mut budget = WorkBudget::UNBOUNDED;
         budget.source_bytes_read = single.work.source_bytes_read;
@@ -9910,17 +9898,11 @@ mod tests {
             .runtime
             .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
         let paths = [first, second];
-        let result = source.runtime.block_on(|| {
-            capture_paths_batched_with_baseline(
-                &mut candidate,
-                &paths,
-                &options,
-                1,
-                budget,
-                &cancellation,
-                None,
-            )
-        });
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let result = source.runtime.block_on(|| capture_paths_batched(
+            &mut candidate, &paths, &options, 1, &cancellation, None, &original,
+        ));
         let Err(failure) = result else {
             return Err(std::io::Error::other("aggregate source budget was ignored").into());
         };
@@ -10202,7 +10184,7 @@ mod tests {
         let meter = job.runtime_meter_owner();
         let data_guard = ReadAllocation::new(&meter, 8)?;
         let data = Box::new(*b"retained");
-        let demand = crate::demand::OriginalDemandWork::from_native_materialization_work(&job)
+        let demand = crate::demand::NativeSourceWork::from_native_materialization_work(&job).original_demand_work()
             .allocation_work();
         assert!(demand.source_execution_view().is_none());
         let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(
@@ -13294,7 +13276,7 @@ fn capture_name_layout<S: CaptureInputScratch>(
         (FilesystemProfile::Posix, "linux" | "macos") => Ok((NameEncoding::PosixBytes, bytes.len())),
         (FilesystemProfile::Windows, "windows") => Ok((NameEncoding::WindowsUtf16Le, bytes.len())),
         (FilesystemProfile::Portable | FilesystemProfile::Browser, "linux" | "macos") => {
-            let value = std::str::from_utf8(bytes).map_err(|_| MountSourceError::NativeStaticText {
+            let value = std::str::from_utf8(bytes).map_err(|_| MountSourceError::NativeText {
                 kind: super::NativeSourceTextKind::Unsupported,
                 text: "portable volume cannot represent a non-UTF-8 native name",
             })?;
@@ -13303,14 +13285,14 @@ fn capture_name_layout<S: CaptureInputScratch>(
             Ok((NameEncoding::Utf8, length))
         }
         (FilesystemProfile::Portable | FilesystemProfile::Browser, "windows") => {
-            let units = crate::kernel::types::utf16le_units(bytes).ok_or(MountSourceError::NativeStaticText {
+            let units = crate::kernel::types::utf16le_units(bytes).ok_or(MountSourceError::NativeText {
                 kind: super::NativeSourceTextKind::Invalid,
                 text: "native UTF-16 name has an odd byte length",
             })?;
             let mut length = 0_usize;
             for value in char::decode_utf16(units) {
                 scratch.items(1)?;
-                let value = value.map_err(|_| MountSourceError::NativeStaticText {
+                let value = value.map_err(|_| MountSourceError::NativeText {
                     kind: super::NativeSourceTextKind::Unsupported,
                     text: "portable volume cannot represent an unpaired UTF-16 native name",
                 })?;
@@ -13319,7 +13301,7 @@ fn capture_name_layout<S: CaptureInputScratch>(
             }
             Ok((NameEncoding::Utf8, length))
         }
-        _ => Err(MountSourceError::NativeStaticText {
+        _ => Err(MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Unsupported,
             text: "volume name profile is incompatible with this native mount",
         }),
@@ -13370,9 +13352,10 @@ fn capture_native_name<S: CaptureInputScratch>(
 
 fn capture_mount_error(error: crate::CaptureError) -> MountSourceError {
     match error {
-        crate::CaptureError::Work(error) => MountSourceError::Work(error),
-        crate::CaptureError::Allocation(error) => MountSourceError::Allocation(error),
-        crate::CaptureError::NativeKernel(error) => MountSourceError::NativeWork(error),
+        crate::CaptureError::Kernel(crate::FsError::Work(error)
+            | crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error))) => MountSourceError::Work(error),
+        crate::CaptureError::Kernel(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error))) => MountSourceError::Allocation(error),
+        crate::CaptureError::Kernel(crate::FsError::NativeKernel(error)) => MountSourceError::NativeWork(error),
         crate::CaptureError::Kernel(error) => MountSourceError::Filesystem(error),
         crate::CaptureError::Cancelled => MountSourceError::Cancelled,
         crate::CaptureError::StaleVersion => MountSourceError::Stale,

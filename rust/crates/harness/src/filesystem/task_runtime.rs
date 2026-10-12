@@ -1017,10 +1017,13 @@ where
         let (owner, request) = self.host.readonly_fork_journal_owner_with_native_work(
             &witness, query, claim, work,
         )?.await?;
-        let preparation = owner.resource_preparation_reconciliation_with_native_work(
-            query, request, work,
-        )?.await?;
-        Ok(Some(preparation))
+        let mut preparation = owner.resource_preparation_with_native_work(request, work)?.await?;
+        let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64)?;
+        preparation.native_custody.as_mut().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "native preparation has no original metadata custody",
+        })?.absorb(&mut header).map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
+        Ok(Some(Arc::new(preparation)))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1517,11 +1520,8 @@ where
             let work = io.original_native_work().ok_or_else(|| observed::boundary(
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wait context requires original observer",
             ))?;
-            let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?
-                .into_native_shared(work)?;
-            let mailbox = self.task_mailbox_with_native_work(owner, work)?;
-            let (context, custody) = self.harness.durable_context_for_read_with_native_work(
-                task, admission.operation_id, mailbox, work,
+            let (context, custody) = self.harness.durable_context_with_native_work(
+                task, admission.operation_id, work,
             ).await?;
             WorkerContext::Native(context.into_native_shared(custody, work)?)
         } else {
@@ -2184,7 +2184,7 @@ where
         if self.run_limits.deadline_epoch_ms.is_some_and(|deadline| {
             self.host.now_unix_millis() >= deadline
         }) {
-            self.host.expire_task_deadline(self.task, Some(self.fence.clone())).await?;
+            self.host.expire_task_deadline(self.task, Some(&self.fence), &mut None).await?;
         }
         self.executor = self.executor.into_reconciliation();
         self.executor.execute_progress(input, &self.journal).await

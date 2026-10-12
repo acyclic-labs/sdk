@@ -666,7 +666,7 @@ impl MemoryHarnessStorage {
                 "memory Harness file limit must be positive".into(),
             ));
         }
-        let provider = ProviderRef::new("local", "filesystem", "2")?;
+        let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host: Arc<MemoryHost> = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let volume = VolumeRef::new(
             provider,

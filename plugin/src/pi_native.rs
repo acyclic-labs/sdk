@@ -486,7 +486,7 @@ impl PiNativeHostRuntime {
             executable_prefix: &persisted.executable_prefix, extension: &persisted.extension,
             provider_extension: persisted.provider_extension.as_deref(), session_file: &persisted.session_file,
             cwd: &persisted.cwd, provider: &persisted.provider, model: &persisted.model, prompt: &persisted.prompt,
-            builtin_tools: &persisted.builtin_tools, environment: PiCallerEnvironment {
+            builtin_tools: ["read", "write", "edit"], environment: PiCallerEnvironment {
                 host: &persisted.environment, caller: caller_environment },
             timeout_ms: persisted.timeout_ms, control_timeout_ms: persisted.control_timeout_ms,
             cancellation_poll_ms: persisted.cancellation_poll_ms, maximum_output_bytes: persisted.maximum_output_bytes,
@@ -498,10 +498,10 @@ impl PiNativeHostRuntime {
 }
 
 #[derive(Serialize)]
-struct PiBoundInvocation<'a, T> {
+struct PiBoundInvocation<'a> {
     version: &'a str, executable: &'a Path, executable_prefix: &'a [String], extension: &'a Path,
     provider_extension: Option<&'a Path>, session_file: &'a Path, cwd: &'a Path, provider: &'a str,
-    model: &'a str, prompt: &'a str, builtin_tools: T, environment: PiCallerEnvironment<'a>,
+    model: &'a str, prompt: &'a str, builtin_tools: [&'static str; 3], environment: PiCallerEnvironment<'a>,
     timeout_ms: u32, control_timeout_ms: u32, cancellation_poll_ms: u32,
     maximum_output_bytes: u32, maximum_result_bytes: u32,
 }
@@ -1282,7 +1282,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
         proof.authorize_settlement_with_native_work(owner, metadata_work).await?;
         session.stop_with_meter(&volume_work)
             .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
-        if !session.cleanup_state().cleanup_complete {
+        if !session.cleanup_state().cleanup_complete() {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Indeterminate,
                 reason: "Pi source startup cleanup has not physically completed" });
         }

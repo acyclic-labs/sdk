@@ -10,7 +10,7 @@ use super::{
     MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES, MountAttributeWriteMode, MountDirectoryEntry,
     MountFilesystem, MountLookup, MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation,
     MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver,
-    ViewOrigin, ViewStamp, create_metadata, metadata_or, source_error, system_time_ns,
+    ViewOrigin, ViewStamp, create_metadata, metadata_or, system_time_ns,
 };
 use crate::FileId;
 use crate::demand::{NativeDemandReadMeter, native_demand_error};
@@ -1519,7 +1519,7 @@ impl DarwinMountSession {
             static STARTUP: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
             let _startup = STARTUP.lock().map_err(|_| NativeMountError::Lifecycle("Darwin mount startup lock is poisoned"))?;
             let root = source.lookup_with_meter(&MountPath::root(), source_work)
-                .map_err(source_error)?
+                .map_err(NativeMountError::from)?
                 .ok_or(NativeMountError::Lifecycle("volume root is absent"))?;
             if root.node.kind != MountNodeKind::Directory {
                 return Err(NativeMountError::Lifecycle("volume root is not a directory").into());
@@ -1566,7 +1566,7 @@ impl DarwinMountSession {
             };
             let _startup_meter = DarwinStartupMeterScope::new(Arc::clone(&context), source_work)?;
             let observer: Weak<DarwinMountContext> = Arc::downgrade(&context);
-            context.source.observe_view_with_meter(observer, source_work).map_err(source_error)?;
+            context.source.observe_view_with_meter(observer, source_work).map_err(NativeMountError::from)?;
             let supports_named_attributes = context.source.supports_posix_named_attributes();
             let buffers = DarwinStartupBuffers::new(
                 &request.destination, request.writable, supports_named_attributes, source_work,
@@ -1775,7 +1775,7 @@ impl DarwinMountSession {
         native.admit(crate::WorkCounters::UNCHARGED)?;
         let _active = self.begin_original_work(native)?;
         let context = &_active.context;
-        context.source.fence_changes_with_meter(native).map_err(source_error)?;
+        context.source.fence_changes_with_meter(native).map_err(NativeMountError::from)?;
         context.revalidate(native).map(|_| ())
     }
 
@@ -3318,7 +3318,7 @@ fn darwin_source_errno(error: &MountSourceError) -> i32 {
         MountSourceError::WorkspacePrefixFailure { source, .. } => super::native_workspace_errno(source),
         MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
         MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_errno(&error.source),
-        MountSourceError::NativeText { kind, .. } | MountSourceError::NativeStaticText { kind, .. } =>
+        MountSourceError::NativeText { kind, .. } =>
             super::native_source_text_errno(*kind),
         _ => libc::EIO,
     }

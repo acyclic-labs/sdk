@@ -3959,7 +3959,7 @@ async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_auth
         observed_seals.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::future::ready(Err(WorkspaceError::from(crate::FsError::MutationNotAllowed)))
     };
-    let failure = workspace.fork_with_permit_guarded_with_native_work(
+    let failure = workspace.fork_with_native_work(
         "native-guarded-fork-denied", ForkOptions::from_generation(frozen, IdempotencyKey::new())
             .inherit_paths(vec!["/selected".to_owned()]),
         crate::PublicationPermit::Unrestricted, &original, &cancellation, &mut deny,
@@ -4039,7 +4039,7 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
         expected: reservation.expected,
     };
     let mut allow = |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
-    let failed = workspace.fork_with_permit_guarded_with_native_work(
+    let failed = workspace.fork_with_native_work(
         "native-fork-reserved-destination", ForkOptions::from_generation(frozen, IdempotencyKey::new()),
         permit, &original, &cancellation, &mut allow,
     ).await.err().ok_or("a source reservation was incorrectly rebound to a new destination")?;

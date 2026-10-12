@@ -896,7 +896,7 @@ fn context_stream_error(source: StreamError, io: Option<&crate::executor::Prepar
     crate::Error::Storage(source.to_string())
 }
 
-fn decode_context_json<T: crate::executor::PreparationRecord>(
+fn decode_context_json<T: crate::executor::PreparationRecord + serde::Serialize>(
     bytes: &[u8], maximum: u64, io: Option<&crate::executor::PreparationIo>,
     reason: &'static str,
 ) -> Result<T> {
@@ -2640,7 +2640,7 @@ mod tests {
         fn new() -> Result<Self> {
             Ok(Self {
                 volume: VolumeRef::new(
-                    ProviderRef::new("test", "filesystem", "2")?,
+                    ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                     "context".into(),
                     VolumeClass::AgentPrivate,
                     VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
@@ -3321,7 +3321,7 @@ mod tests {
 
     fn message(role: ModelRole, text: &str) -> Result<ModelMessage> {
         let volume = VolumeRef::new(
-            ProviderRef::new("test", "filesystem", "2")?,
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
             "context".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([1; 16])),

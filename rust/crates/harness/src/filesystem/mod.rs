@@ -1032,7 +1032,7 @@ impl<A, O> FilesystemForkVerifier<A, O> {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "fork inherited-content limit must be positive" });
         }
-        host.provider.validate_with_native_work(work)?;
+        host.provider.validate(&mut Some(&mut crate::store::native_work_io(work)?))?;
         let binding = NativeFilesystemVerificationBinding::new(verifier, scope, work)?;
         Ok(Self { host, maximum_inherited_bytes,
             maximum_total_reference_bytes: maximum_inherited_bytes.saturating_mul(1_024),
@@ -1819,7 +1819,7 @@ impl<A, O> FilesystemProjectMergeVerifier<A, O> {
         host: Arc<FilesystemHost<A, O>>, verifier: &AuthorityVerifier,
         scope: &Scope, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        host.provider.validate_with_native_work(work)?;
+        host.provider.validate(&mut Some(&mut crate::store::native_work_io(work)?))?;
         let binding = NativeFilesystemVerificationBinding::new(verifier, scope, work)?;
         Ok(Self { host, native_binding: Some(binding) })
     }
@@ -2780,7 +2780,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         let owner = NativeParentMergePublicationOwner::new(&self.verifier, &self.scope, &self.project, work)?;
         let mut guard = move |original: &acyclic_fs::NativeMaterializationWork|
             std::future::ready(owner.check(original));
-        plan.plan.apply_with_permit_guarded_with_native_work(
+        plan.plan.apply_with_native_work(
             Self::merge_options(plan, native_project_join_key(operation, work)?),
             acyclic_fs::PublicationPermit::Unrestricted, work, work.cancellation(),
             &mut guard,
@@ -3031,7 +3031,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
 impl<A, O> FilesystemHost<A, O> {
     /// Binds one Filesystem deployment and immutable provider identity.
     pub fn new(filesystem: Fs<A, O>, provider: ProviderRef) -> Result<Self> {
-        provider.validate()?;
+        provider.validate(&mut None)?;
         if provider.family() != "filesystem" {
             return Err(Error::Invalid(
                 "Filesystem adapter requires the filesystem provider family".into(),
@@ -3051,7 +3051,7 @@ impl<A, O> FilesystemHost<A, O> {
         filesystem: Fs<A, O>, provider: &ProviderRef,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        provider.validate_with_native_work(work)?;
+        provider.validate(&mut Some(&mut crate::store::native_work_io(work)?))?;
         if provider.family() != "filesystem" {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "Filesystem adapter requires the filesystem provider family" });
@@ -4424,7 +4424,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     async fn open(&self, reference: &WorkspaceRef) -> Result<Workspace<A, O>> {
-        reference.validate()?;
+        reference.validate(&mut None)?;
         self.validate_provider(reference.as_resource().provider())?;
         let name = std::str::from_utf8(reference.as_resource().key())
             .map_err(|_| Error::Invalid("workspace reference key must be UTF-8".into()))?;
@@ -4458,7 +4458,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         workspace: &Workspace<A, O>,
         reference: &GenerationRef,
     ) -> Result<Generation<A, O>> {
-        reference.validate()?;
+        reference.validate(&mut None)?;
         self.validate_provider(reference.as_resource().provider())?;
         let bytes: [u8; 32] = reference
             .as_resource()
@@ -4521,7 +4521,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     fn validate_provider(&self, provider: &ProviderRef) -> Result<()> {
-        provider.validate()?;
+        provider.validate(&mut None)?;
         if provider != &self.provider {
             return Err(Error::Invalid(
                 "resource belongs to another Filesystem provider".into(),
@@ -4631,7 +4631,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn native_verifier_copies_authentic_scope_and_keeps_custody_until_drop() -> Result<()> {
-        let provider = ProviderRef::new("native-verifier-test", "filesystem", "1")?;
+        let provider = ProviderRef::new("native-verifier-test".into(), "filesystem".into(), "1".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(Fs::memory(), provider)?);
         let issuer = AuthorityIssuer::new("native-verifier-test", [4; 32],
             Authority { kind: AggregateKind::Conversation, id: "parent".into() });
@@ -4664,7 +4664,7 @@ mod tests {
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(map_error)?;
         let expected = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?;
-        let provider = ProviderRef::new("example", "filesystem", "1")?;
+        let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
         let host = FilesystemHost::new(filesystem, provider.clone())?;
         let reference = workspace_ref(provider, "adapter-test")?;
         let observed = host.resolve(&reference).await?;
@@ -4674,7 +4674,7 @@ mod tests {
         );
 
         let foreign = workspace_ref(
-            ProviderRef::new("other", "filesystem", "1")?,
+            ProviderRef::new("other".into(), "filesystem".into(), "1".into(), &mut None)?,
             "adapter-test",
         )?;
         assert!(matches!(
@@ -4718,7 +4718,7 @@ mod tests {
     #[tokio::test]
     async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<()> {
         let filesystem = Fs::memory();
-        let provider = ProviderRef::new("example", "filesystem", "2")?;
+        let provider = ProviderRef::new("example".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(filesystem, provider.clone())?);
         let owner = AgentId::from_bytes([3; 16]);
         let volume = VolumeRef::new(
@@ -5031,7 +5031,7 @@ mod tests {
         use std::{collections::BTreeMap, sync::Arc};
 
         let filesystem = Fs::memory();
-        let provider = ProviderRef::new("example", "filesystem", "2")?;
+        let provider = ProviderRef::new("example".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(filesystem, provider.clone())?;
         let agent = AgentId::from_bytes([7; 16]);
         let volume = VolumeRef::new(

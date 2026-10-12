@@ -234,7 +234,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         let mut work = observer.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]
         let mut work = None;
-        this.stream_provider.validate_with_work(&mut work)?;
+        this.stream_provider.validate(&mut work)?;
         if this.stream_provider.family() != "stream" || this.parent.authority().kind != crate::core::AggregateKind::Conversation {
             return Err(reject(crate::wire::ErrorCode::Invalid, "fork requires Stream history and a parent conversation"));
         }
@@ -342,7 +342,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
 
     /// Registers an exact provider-owned resource capture.
     pub fn with_capture_provider(mut self, provider: Arc<dyn ForkCaptureProvider>) -> Result<Self> {
-        provider.provider().validate()?;
+        provider.provider().validate(&mut None)?;
         if self
             .capture_providers
             .iter()
@@ -462,7 +462,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 let provider = crate::core::copy_provider(resource.provider(), &mut quota)?;
                 let key = crate::core::copy_copy_vector(resource.key(), &mut quota)?;
                 let version = resource.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
-                let copied = ResourceRef::new_with_work(resource.kind(), provider, key, version, quota.work())?;
+                let copied = ResourceRef::new(resource.kind(), provider, key, version, quota.work())?;
                 quota.transfer();
                 Ok::<_, Error>(copied)
             })?;
@@ -679,13 +679,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         }
         let future = bound.source.prepare(&self.parent, super::summary_fork::clone_selection(selection, io)?,
             bound.journal.as_ref(), self.resolver.as_ref(), io)?;
-        let _frame = match &future {
-            crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } =>
-                io.map(|io| io.guard_owned(*frame_bytes)).transpose()?,
-            #[cfg(not(target_arch = "wasm32"))]
-            crate::store::history::HistoryContentFuture::Native(_) => None,
-        };
-        future.await.map(Some)
+        match io {
+            Some(io) => io.finish_future(future).await,
+            None => future.await,
+        }.map(Some)
     }
 
     fn attempt<'a>(
@@ -1165,20 +1162,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 .first()
                 .ok_or_else(|| bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "summary fork omitted its logical prefix"))?;
             let (_, summary_references) = super::summary_fork::split_references(prepared, self.io.as_ref())?;
-            let mut planned_grants = BTreeSet::new();
+            let mut granted = BTreeSet::new();
             for grant in &reference_grants {
-                reference_selection(&mut planned_grants, &grant.file, grant.reader, self.io.as_ref())?;
+                reference_selection(&mut granted, &grant.file, grant.reader, self.io.as_ref())?;
             }
             for reader in
                 std::iter::once(request.child_agent).chain(request.attached_agents.iter().copied())
             {
                 for file in summary_references.values() {
                     if file.volume().owner() != &crate::conversation::VolumeOwner::Agent(reader) {
-                        reference_selection(&mut planned_grants, file, reader, self.io.as_ref())?;
+                        reference_selection(&mut granted, file, reader, self.io.as_ref())?;
                     }
                 }
             }
-            if planned_grants.len() > request.preparation.maximum_inherited_references as usize {
+            if granted.len() > request.preparation.maximum_inherited_references as usize {
                 return Err(bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "summary fork reader grants exceed capture allowance"));
             }
             let (capture, generation) = controller
@@ -1199,7 +1196,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     self.native_creation_guard.as_ref(),
                 )
                 .await?;
-            let mut granted = BTreeSet::new();
+            granted.clear();
             for grant in &reference_grants {
                 reference_selection(&mut granted, &grant.file, grant.reader, self.io.as_ref())?;
             }
@@ -1987,7 +1984,7 @@ mod task_origin_tests {
 
     #[tokio::test]
     async fn allocation_retains_creation_fence_and_rejects_foreign_task_origins() -> Result<()> {
-        let provider = ProviderRef::new("task-origin-test", "filesystem", "2")?;
+        let provider = ProviderRef::new("task-origin-test".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(acyclic_fs::Fs::memory(), provider.clone())?;
         let parent = Authority {
             kind: AggregateKind::Task,

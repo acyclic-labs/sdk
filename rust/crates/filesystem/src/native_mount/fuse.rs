@@ -6,7 +6,7 @@ use super::{
     ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
     MountDirectoryEntry, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest,
-    ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or, source_error,
+    ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or,
     system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
@@ -2323,7 +2323,7 @@ fn source_callback_errno(error: &MountSourceError) -> i32 {
         MountSourceError::NativeWork(error) => super::native_materialization_errno(error),
         MountSourceError::WorkspaceCause(error) => super::native_workspace_errno(error),
         MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_errno(&error.source),
-        MountSourceError::NativeText { kind, .. } | MountSourceError::NativeStaticText { kind, .. } =>
+        MountSourceError::NativeText { kind, .. } =>
             super::native_source_text_errno(*kind),
         MountSourceError::Io(error) | MountSourceError::NativeRecordIo(error, _) =>
             error.raw_os_error().unwrap_or(libc::EIO),
@@ -3094,8 +3094,8 @@ impl FuseSession {
         fuse_native_source_original(source.as_ref(), Some(source_work)).map_err(NativeMountError::from)?;
         let materialization = source_work.clone();
         materialization.admit(crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
-        let stamp = source.view_stamp_with_meter(source_work).map_err(source_error)?;
-        let root = source.lookup_with_meter(&MountPath::root(), source_work).map_err(source_error)?
+        let stamp = source.view_stamp_with_meter(source_work).map_err(NativeMountError::from)?;
+        let root = source.lookup_with_meter(&MountPath::root(), source_work).map_err(NativeMountError::from)?
             .ok_or(NativeMountError::Lifecycle("volume root is absent"))?;
         if root.node.kind != MountNodeKind::Directory {
             return Err(NativeMountError::Lifecycle("volume root is not a directory").into());
@@ -3107,7 +3107,7 @@ impl FuseSession {
             metadata.st_uid, metadata.st_gid, source_work)?;
         let _startup = FuseStartupMeterScope::new(&core, source_work)?;
         core.source.observe_view_with_meter(Arc::<ProjectionCore>::downgrade(&core), source_work)
-            .map_err(source_error)?;
+            .map_err(NativeMountError::from)?;
         let mut config = Config::default();
         config.n_threads = Some(8);
         let mount = FuseMount::prepare(&request.destination, source_work)?;
@@ -3282,7 +3282,7 @@ impl FuseSession {
         let _loan = FuseDriverLoan::take(&self.control)?;
         native.admit(crate::WorkCounters::UNCHARGED)?;
         let _active = FuseStartupMeterScope::new(&self.control.core, native)?;
-        self.control.core.source.fence_changes_with_meter(native).map_err(source_error)?;
+        self.control.core.source.fence_changes_with_meter(native).map_err(NativeMountError::from)?;
         let mut state = self.control.core.state.lock()
             .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))?;
         let target = state.invalidation.notified;
@@ -4825,8 +4825,7 @@ fn copy_open_range(
             Ok(()) => return Ok((u32::try_from(copy_length).map_err(|_| libc::EOVERFLOW)?, None)),
             Err(FuseRequestError::Native(NativeMountError::Source(
                 MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported
-                | MountSourceError::NativeText { kind: super::NativeSourceTextKind::Unsupported, .. }
-                | MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Unsupported, .. }))) => {}
+                | MountSourceError::NativeText { kind: super::NativeSourceTextKind::Unsupported, .. }))) => {}
             Err(error) => return Err(error),
         }
     }
@@ -5667,7 +5666,7 @@ mod tests {
     }
     use super::super::{
         MountAttributePage, MountAttributeWriteMode, MountDirectoryPage, MountRangeAllocation,
-        MountSourceError, MountViewLease, ViewObserver,
+        MountSourceError, ViewObserver,
     };
     use super::{
         InodeEntry, KernelCacheItem, confirm_name, name_is_bound,
@@ -7260,7 +7259,7 @@ mod tests {
             observe_view(observer: Weak<dyn ViewObserver>);
             observe_view_with_meter(observer: Weak<dyn ViewObserver>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             fence_changes_with_meter(work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
-            acquire_binding_lease_with_meter(epoch: Option<u64>, work: &crate::NativeMaterializationWork) -> Result<Box<dyn MountViewLease>, MountSourceError>;
+            acquire_binding_lease_with_meter(epoch: Option<u64>, work: &crate::NativeMaterializationWork) -> Result<Box<dyn Send>, MountSourceError>;
             capture_host_paths_with_meter(root: &Path, paths: &[MountPath], identity: crate::NativeRootIdentity, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             capture_host_subtree_with_meter(root: &Path, path: &MountPath, identity: crate::NativeRootIdentity, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             read_pinned_with_meter(path: &MountPath, pin: super::super::MountContentPin, offset: u64, length: u64, piece: u32, sink: &mut super::super::NativeMountContentSink<'_>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
@@ -7268,8 +7267,8 @@ mod tests {
             read_range_with_meter(path: &MountPath, offset: u64, length: u32, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
             read_directory_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum: u32, work: &crate::NativeMaterializationWork) -> Result<MountDirectoryPage, MountSourceError>;
             binding_epoch() -> Option<u64>;
-            acquire_view_lease() -> Result<Box<dyn MountViewLease>, MountSourceError>;
-            acquire_binding_lease(expected_epoch: Option<u64>) -> Result<Box<dyn MountViewLease>, MountSourceError>;
+            acquire_view_lease() -> Result<Box<dyn Send>, MountSourceError>;
+            acquire_binding_lease(expected_epoch: Option<u64>) -> Result<Box<dyn Send>, MountSourceError>;
             open_file(path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
             detach_file(path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
             read_link(path: &MountPath) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;

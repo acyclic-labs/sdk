@@ -1218,7 +1218,7 @@ where
                 .map_err(native_demand_lifecycle_error)?;
             session.stop_with_meter(native_work)
                 .map_err(MountLifecycleError::Native)?;
-            if !session.cleanup_state().cleanup_complete {
+            if !session.cleanup_state().cleanup_complete() {
                 return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
             }
             owner.take();
@@ -1244,7 +1244,7 @@ where
         let result = (|| {
             if let Some(session) = owner.as_mut() {
                 session.stop_with_cleanup_wait(wait).map_err(MountLifecycleError::Native)?;
-                if !session.cleanup_state().cleanup_complete {
+                if !session.cleanup_state().cleanup_complete() {
                     return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
                 }
             } else {
@@ -1844,7 +1844,7 @@ where
         &self, options: &crate::MaterializeOptions,
         work: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::MaterializationReceipt, MountLifecycleError> {
+    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, MountLifecycleError> {
         let original = work.clone();
         let mut frame_custody = None;
         let (mut future, _) = crate::heap_future::in_heap_admitted(
@@ -2314,7 +2314,7 @@ mod tests {
         };
         // The source watcher is real cleanup custody even before a driver or
         // destination fence exists.
-        assert!(!startup.owner().cleanup_state().cleanup_complete);
+        assert!(!startup.owner().cleanup_state().cleanup_complete());
         assert!(startup.owner().cleanup_state().source_retained);
         let cancelled_startup_cleanup = crate::CancellationToken::new();
         cancelled_startup_cleanup.cancel();
@@ -2322,11 +2322,11 @@ mod tests {
             crate::WorkBudget::UNBOUNDED, &cancelled_startup_cleanup,
         ).err().ok_or("cancelled startup cleanup discarded the source watcher")?;
         assert_eq!(retained.1, crate::WorkCounters::UNCHARGED);
-        assert!(!startup.owner().cleanup_state().cleanup_complete);
+        assert!(!startup.owner().cleanup_state().cleanup_complete());
         assert!(startup.owner().cleanup_state().source_retained);
         startup.owner_mut().stop_measured(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        assert!(startup.owner().cleanup_state().cleanup_complete);
+        assert!(startup.owner().cleanup_state().cleanup_complete());
         assert!(!startup.owner().cleanup_state().source_retained);
         let mounted = lazy.mount_measured(
             destination.path(), options, crate::WorkBudget::UNBOUNDED, &cancellation,
@@ -2592,7 +2592,7 @@ mod tests {
             assert!(state.driver_retained);
             assert!(state.destination_fence_retained);
             assert!(state.measured_cleanup_failed);
-            assert!(!state.cleanup_complete);
+            assert!(!state.cleanup_complete());
         }
         let original_mount_work = mount._destination_custody.work().clone();
         let denied_wait = mount.retire_with_work(&cancelled)
@@ -2603,7 +2603,7 @@ mod tests {
             let state = owner.as_ref().ok_or("cancelled wait lost physical cleanup ownership")?.cleanup_state();
             assert!(state.driver_retained);
             assert!(state.destination_fence_retained);
-            assert!(!state.cleanup_complete);
+            assert!(!state.cleanup_complete());
         }
         original_mount_work.cancellation().cancel();
         let before_retire = original_mount_work.receipt();

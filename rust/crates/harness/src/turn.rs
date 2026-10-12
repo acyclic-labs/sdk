@@ -305,7 +305,7 @@ mod tests {
 
     fn file(name: &str) -> Result<FileRef> {
         let volume = VolumeRef::new(
-            ProviderRef::new("test", "memory", "1")?,
+            ProviderRef::new("test".into(), "memory".into(), "1".into(), &mut None)?,
             "turns",
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::new()),
@@ -321,7 +321,7 @@ mod tests {
 
     fn manifest_file(name: &str) -> Result<FileRef> {
         let volume = VolumeRef::new(
-            ProviderRef::new("test", "memory", "1")?,
+            ProviderRef::new("test".into(), "memory".into(), "1".into(), &mut None)?,
             "turns",
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::new()),

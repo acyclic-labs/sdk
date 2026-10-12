@@ -533,7 +533,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
     ) -> Result<OperationReceipt<Vec<Dependency>>, ProbeFailure> {
         cancellation.check().map_err(|_| failed(AuthenticatedProbeError::Cancelled, WorkCounters::UNCHARGED))?;
         validate_capture_batch(regions.len(), maximum_regions)?;
-        for region in &regions { self.validate_region(region)?; }
+        for region in &regions { self.validate_region_shape(region).map_err(|error| failed(error, WorkCounters::UNCHARGED))?; }
         let input_bytes = capture_input_bytes(&regions, |region| region)?;
         let mut accounting = self.standalone_accounting(budget, cancellation, input_bytes)?;
         let result = self.capture_many_with_accounting(
@@ -703,7 +703,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         cancellation: &CancellationToken,
     ) -> Result<ProbeReceipt, ProbeFailure> {
         cancellation.check().map_err(|_| failed(AuthenticatedProbeError::Cancelled, WorkCounters::UNCHARGED))?;
-        self.validate_region(region)?;
+        self.validate_region_shape(region).map_err(|error| failed(error, WorkCounters::UNCHARGED))?;
         let mut accounting = self.standalone_accounting(budget, cancellation, region_owned_bytes(region))?;
         let result = self.probe_async_with_accounting(generation, region, &mut accounting, cancellation).await;
         let work = accounting.spent();

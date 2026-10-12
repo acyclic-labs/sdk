@@ -10,7 +10,7 @@ use super::{
     CheckoutMountSource, ContentSink, MountAttributePage, MountAttributeWriteMode, MountContentPin,
     MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLookup, MountNode,
     MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget,
-    MountSourceError, MountViewLease, ViewObserver, capture_root_identity,
+    MountSourceError, ViewObserver, capture_root_identity,
 };
 use crate::LazySeekTarget;
 use crate::demand::{
@@ -387,40 +387,40 @@ pub(super) fn mount_demand_error(error: DemandError) -> MountSourceError {
             MountSourceError::Stale,
         DemandError::Absent => MountSourceError::NotFound,
         DemandError::NotDirectory => MountSourceError::Filesystem(crate::FsError::NotDirectory),
-        DemandError::WorkerUnavailable => MountSourceError::NativeStaticText {
+        DemandError::WorkerUnavailable => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: native source worker failed",
         },
-        DemandError::NativeWorkUnavailable => MountSourceError::NativeStaticText {
+        DemandError::NativeWorkUnavailable => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: source does not support original native work custody",
         },
-        DemandError::OriginalWorkPoisoned => MountSourceError::NativeStaticText {
+        DemandError::OriginalWorkPoisoned => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: original native work state is poisoned",
         },
-        DemandError::CursorBusy => MountSourceError::NativeStaticText {
+        DemandError::CursorBusy => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: source directory cursor is in use",
         },
-        DemandError::SourceUnavailable => MountSourceError::NativeStaticText {
+        DemandError::SourceUnavailable => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: source root is unavailable",
         },
-        DemandError::NotRegularFile => MountSourceError::NativeStaticText {
+        DemandError::NotRegularFile => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: source node is not a regular file",
         },
-        DemandError::InvalidRequest => MountSourceError::NativeStaticText {
+        DemandError::InvalidRequest => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: source request is invalid",
         },
         #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
-        DemandError::LinuxMetadata(error) => MountSourceError::LinuxMetadata(error),
+        DemandError::LinuxMetadata(error) => MountSourceError::Metadata(error),
         #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
-        DemandError::MacMetadata(error) => MountSourceError::MacMetadata(error),
+        DemandError::MacMetadata(error) => MountSourceError::Metadata(error),
         #[cfg(all(windows, any(feature = "native-mount", test)))]
-        DemandError::WindowsMetadata(error) => MountSourceError::WindowsMetadata(error),
+        DemandError::WindowsMetadata(error) => MountSourceError::Metadata(error),
         #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
         DemandError::SourceWatchStartup(owner) => MountSourceError::SourceWatchStartup(owner),
         #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
@@ -441,12 +441,8 @@ fn mount_watch_error(error: crate::watch::NativeWatchError) -> MountSourceError 
             return MountSourceError::NativeWatchStartupFailed { cause, watch },
         WatchError::NativeWork(error) => return MountSourceError::NativeWork(error),
         WatchError::Mount(error) => return error,
-        #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
-        WatchError::Metadata(error) => return MountSourceError::LinuxMetadata(error),
-        #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
-        WatchError::Metadata(error) => return MountSourceError::MacMetadata(error),
-        #[cfg(all(windows, any(feature = "native-mount", test)))]
-        WatchError::Metadata(error) => return MountSourceError::WindowsMetadata(error),
+        #[cfg(all(any(target_os = "linux", target_os = "macos", windows), any(feature = "native-mount", test)))]
+        WatchError::Metadata(error) => return MountSourceError::Metadata(error),
         WatchError::Cancelled(_) => return MountSourceError::Cancelled,
         WatchError::Work(error) => return MountSourceError::Work(error),
         WatchError::InvalidOptions => "filesystem engine failure: source demand failed: native watcher options are invalid",
@@ -475,23 +471,23 @@ fn mount_watch_error(error: crate::watch::NativeWatchError) -> MountSourceError 
         WatchError::SequenceExhausted => "filesystem engine failure: source demand failed: native watcher sequence is exhausted",
         WatchError::AllocationFailed => "filesystem engine failure: source demand failed: native watcher output allocation failed",
     };
-    MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Engine, text: reason }
+    MountSourceError::NativeText { kind: super::NativeSourceTextKind::Engine, text: reason }
 }
 
 fn native_lazy_error(error: LazyWorkspaceError) -> MountSourceError {
     match error {
         LazyWorkspaceError::Demand(error) => mount_demand_error(error),
-        LazyWorkspaceError::NotRegularFile => MountSourceError::NativeStaticText {
+        LazyWorkspaceError::NotRegularFile => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Invalid, text: "path is not a regular file",
         },
-        LazyWorkspaceError::InvalidPageBound => MountSourceError::NativeStaticText {
+        LazyWorkspaceError::InvalidPageBound => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Invalid, text: "directory page bound must be positive",
         },
-        LazyWorkspaceError::UnsupportedNode => MountSourceError::NativeStaticText {
+        LazyWorkspaceError::UnsupportedNode => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Unsupported,
             text: "source node cannot be represented by the authored workspace",
         },
-        LazyWorkspaceError::TooLarge => MountSourceError::NativeStaticText {
+        LazyWorkspaceError::TooLarge => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine, text: "file exceeds the requested read bound",
         },
         error => lazy_error(error),
@@ -656,8 +652,8 @@ fn mount_path_text_with_carrier(
         || original.charge(crate::WorkCounters {
             items_examined: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(MountSourceError::NativeWork),
-        |text| MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Invalid, text },
-        |text| MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Unsupported, text },
+        |text| MountSourceError::NativeText { kind: super::NativeSourceTextKind::Invalid, text },
+        |text| MountSourceError::NativeText { kind: super::NativeSourceTextKind::Unsupported, text },
     )?;
     let mut copied = original.reserve_work(crate::WorkCounters { bytes_copied: length as u64, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
     let mut examined = original.reserve_work(crate::WorkCounters { items_examined: fill_items, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
@@ -2399,7 +2395,7 @@ impl NativeMountSourceWatchOwner {
         })?;
         if self.is_stopped() { return Ok(false); }
         let watch = self.watch.as_ref().expect("ordinary construction retains its original watch");
-        let result = watch.stop(budget, &cancellation);
+        let result = crate::demand::stop_watch(watch.as_ref(), budget, &cancellation);
 
         match result {
             Ok(receipt) => carrier.with_work(|work|
@@ -2421,7 +2417,8 @@ impl NativeMountSourceWatchOwner {
         let result = if let Some(failure) = &self.startup_failure {
             failure.stop_with_work(&mut work)
         } else if let Some(watch) = &self.watch {
-            return watch.stop_with_native_work(work).map_err(mount_demand_error).map(|()| true);
+            let original = work.materialization_work().map_err(mount_demand_error)?;
+            return crate::demand::stop_watch(watch.as_ref(), &original, original.cancellation()).map_err(mount_demand_error).map(|()| true);
         } else {
             return Ok(false);
         };
@@ -5597,7 +5594,7 @@ where
         let Some(watch) = &self.source_watch else { return Ok(()); };
         let cancellation = carrier.cancellation();
         let budget = carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-        let result = watch.fence(budget, &cancellation);
+        let result = crate::demand::fence_watch(&**watch, budget, &cancellation);
         carrier.with_work(|work| mount_accept(work, result, mount_demand_error))?;
         if self.authored.cancellation().is_cancelled() { return Err(MountSourceError::Stale); }
         Ok(())
@@ -5605,7 +5602,7 @@ where
 
     fn acquire_binding_lease_with_carrier(
         &self, expected: Option<u64>, carrier: &mut super::adapter::NativeDemandCarrier<'_>,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+    ) -> Result<Box<dyn Send>, MountSourceError> {
         with_native_callback_carrier(&self.runtime, carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
                 let owner = SourceViewGate::callback_owner();
@@ -5621,7 +5618,7 @@ where
                     }
                     Ok(())
                 })?;
-                let lease = Box::new(lease) as Box<dyn MountViewLease>;
+                let lease = Box::new(lease) as Box<dyn Send>;
                 carrier.with_work(|work| work.record(copied)).map_err(mount_demand_error)?;
                 Ok(lease)
             })
@@ -6059,7 +6056,7 @@ where
         if self.unstaged.checked_at(self.expected_source, revision) {
             return Ok(None);
         }
-        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| self.authored.attached_file_by_id(self.expected_source, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work)), work.native_read_meter().as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
+        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.attached_file_by_id(self.expected_source, SourceViewGate::callback_owner(), &mut carrier).await }, work.native_read_meter().as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
         if let Some(file) = file {
             *promoted = Some(Arc::clone(&file));
             return Ok(Some(file));
@@ -6354,14 +6351,14 @@ where
             let original = work.clone();
             let logical_bytes = u64::from(length);
             if offset.checked_add(logical_bytes).is_none() {
-                return Err(MountSourceError::NativeStaticText {
+                return Err(MountSourceError::NativeText {
                     kind: super::NativeSourceTextKind::Invalid,
                     text: "sparse range overflows the file address space",
                 });
             }
             let source_length = match node.logical_bytes {
                 Some(length) => length,
-                None => return Err(MountSourceError::NativeStaticText {
+                None => return Err(MountSourceError::NativeText {
                     kind: super::NativeSourceTextKind::Invalid, text: "seek requires a regular file",
                 }),
             };
@@ -6586,7 +6583,7 @@ where
 
     fn fence_changes(&self) -> Result<(), MountSourceError> {
         self.source_watch.as_ref().map_or(Ok(()), |watch| {
-            watch.fence(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| lazy_error(failure.error.into()))
+            crate::demand::fence_watch(&**watch, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| lazy_error(failure.error.into()))
         })
     }
 
@@ -6700,21 +6697,21 @@ where
         Some(self.source_view.generation())
     }
 
-    fn acquire_view_lease(&self) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+    fn acquire_view_lease(&self) -> Result<Box<dyn Send>, MountSourceError> {
         Ok(Box::new(self.view_lease(None)?))
     }
 
     fn acquire_binding_lease(
         &self,
         expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+    ) -> Result<Box<dyn Send>, MountSourceError> {
         self.view_lease(expected_epoch)
-            .map(|lease| Box::new(lease) as Box<dyn MountViewLease>)
+            .map(|lease| Box::new(lease) as Box<dyn Send>)
     }
 
     fn acquire_binding_lease_with_meter(
         &self, expected_epoch: Option<u64>, work: &crate::NativeMaterializationWork,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+    ) -> Result<Box<dyn Send>, MountSourceError> {
         self.acquire_binding_lease_with_carrier(
             expected_epoch, &mut super::adapter::NativeDemandCarrier::Native(work),
         )
@@ -7171,8 +7168,8 @@ where
                 return Err(MountSourceError::Stale);
             }
             let removed_open = if self.has_open_source_handle(authored.node.file_id)? {
-                let record = self.wait(|| async { let work = match self.authored.native_original_work()? { Some(work) => work, None => crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))? }; self.authored.record_by_id(authored.node.file_id, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(&work)).await })?;
-                let file = self.native_call(|work| self.wait(|| self.authored.detached_file_from_record(record, authored.metadata, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work))))?;
+                let record = self.wait(|| async { let work = match self.authored.native_original_work()? { Some(work) => work, None => crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))? }; self.authored.record_by_id(authored.node.file_id, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(&work)).await })?;
+                let file = self.native_call(|work| self.wait(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.detached_file_from_record(record, authored.metadata, SourceViewGate::callback_owner(), &mut carrier).await }))?;
                 Some((record, authored.metadata, file))
             } else {
                 None
@@ -7201,13 +7198,13 @@ where
             })?;
             if self.has_open_source_handle(file_id)? {
                 self.promote_locked(path)?;
-                let record = self.wait(|| async { let work = match self.authored.native_original_work()? { Some(work) => work, None => crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))? }; self.authored.record_by_id(file_id, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(&work)).await })?;
+                let record = self.wait(|| async { let work = match self.authored.native_original_work()? { Some(work) => work, None => crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))? }; self.authored.record_by_id(file_id, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(&work)).await })?;
                 let metadata = self
                     .authored
                     .lookup(path)?
                     .ok_or(MountSourceError::Stale)?
                     .metadata;
-                let file = self.native_call(|work| self.wait(|| self.authored.detached_file_from_record(record, metadata, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work))))?;
+                let file = self.native_call(|work| self.wait(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.detached_file_from_record(record, metadata, SourceViewGate::callback_owner(), &mut carrier).await }))?;
                 self.authored.remove(path, Some(file_id))?;
                 self.record_removed_identity(record, metadata, file)?;
             }
@@ -7286,8 +7283,8 @@ where
             if let Some(destination_lookup) = self.authored.lookup(destination)? {
                 let destination_id = destination_lookup.node.file_id;
                 if destination_id != source_id && self.has_open_source_handle(destination_id)? {
-                    let record = self.wait(|| async { let work = match self.authored.native_original_work()? { Some(work) => work, None => crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))? }; self.authored.record_by_id(destination_id, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(&work)).await })?;
-                    let file = self.native_call(|work| self.wait(|| self.authored.detached_file_from_record(record, destination_lookup.metadata, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work))))?;
+                    let record = self.wait(|| async { let work = match self.authored.native_original_work()? { Some(work) => work, None => crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))? }; self.authored.record_by_id(destination_id, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(&work)).await })?;
+                    let file = self.native_call(|work| self.wait(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.detached_file_from_record(record, destination_lookup.metadata, SourceViewGate::callback_owner(), &mut carrier).await }))?;
                     Some((record, destination_lookup.metadata, file))
                 } else {
                     None
@@ -7888,7 +7885,7 @@ fn mount_content_invalid_with_carrier(
     carrier: &mut super::adapter::NativeDemandCarrier<'_>, message: &'static str,
 ) -> Result<MountSourceError, MountSourceError> {
     if carrier.original_native_work().is_some() {
-        Ok(MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Invalid, text: message })
+        Ok(MountSourceError::NativeText { kind: super::NativeSourceTextKind::Invalid, text: message })
     } else {
         carrier.with_work(|work| mount_content_invalid(work, message))
     }
@@ -8454,7 +8451,7 @@ mod tests {
         assert!(failure.work.authority_records_read >= evidence[1].2 + evidence[2].2);
         assert!(failure.work.backend_read_operations >= evidence[1].3 + evidence[2].3);
         drop(evidence);
-        assert!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(original.into_bytes())).await?.is_some());
+        assert!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(original.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_some());
         assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
         assert_eq!(view.authored.shared_checkout().lock().await.retained_operation_id(), next);
         {
@@ -8480,7 +8477,7 @@ mod tests {
         ).await.expect("the original and fresh prepared publications must both finish without cleanup failure");
         assert!(checks.load(std::sync::atomic::Ordering::Relaxed) > 0);
         assert!(completed.work.authority_records_appended > 0);
-        assert!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(next.into_bytes())).await?.is_some());
+        assert!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(next.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_some());
         assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         assert_eq!(held.read_range(0, 9)?.as_ref(), b"epoch-two");
         assert_eq!(held.lookup()?.node.file_id, identity);
@@ -8530,7 +8527,7 @@ mod tests {
         assert!(receipt.work.authority_records_appended > 0);
         assert!(view.lazy.workspace().operation_generation(
             IdempotencyKey::from_bytes(operation.into_bytes()),
-        ).await?.is_some());
+        crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_some());
         assert!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_none());
         assert!(matches!(view.lazy.lookup("/source-only").await,
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)));
@@ -8611,7 +8608,7 @@ mod tests {
         assert!(completed.work.authority_records_appended >= 2);
         assert!(view.lazy.workspace().operation_generation(
             IdempotencyKey::from_bytes(original_operation.into_bytes()),
-        ).await?.is_some());
+        crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_some());
         assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         {
             let identities = view.detached.lock().map_err(|_| "poisoned identities")?;
@@ -8653,7 +8650,8 @@ mod tests {
         )?;
         work.sync_authored(&view.authored, crate::PublicationPermit::Unrestricted, true, &cancellation).await?;
         view.mark_mount_published(operation)?;
-        let result = (async { let accounting = LazyTreapWork::new(work.remaining().map_err(mount_demand_error)?, &cancellation); let result = view.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
+        let remaining = work.remaining().map_err(mount_demand_error)?;
+        let result = (async { let accounting = LazyTreapWork::new(remaining, &cancellation); let result = view.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
         assert!(work.accept(result, lazy_error)?);
         assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         let original_generation = view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("original operation was not physically published")?;
@@ -8685,7 +8683,7 @@ mod tests {
         assert!(completed.work.authority_records_appended > 0);
         assert_eq!(view.lazy.workspace().operation_generation(
             IdempotencyKey::from_bytes(operation.into_bytes()),
-        ).await?.map(|generation| generation.id()), Some(original_generation.id()));
+        crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.map(|generation| generation.id()), Some(original_generation.id()));
         assert_eq!(held.read_range(0, 9)?.as_ref(), b"epoch-two");
         assert_eq!(held.lookup()?.node.file_id, identity);
         assert_eq!(std::fs::read(root.path().join("source-only"))?, b"source");
@@ -8763,7 +8761,7 @@ mod tests {
             if let Some(operation) = original {
                 assert_eq!(lazy.workspace().operation_generation(
                     IdempotencyKey::from_bytes(operation.into_bytes()),
-                ).await?.map(|generation| generation.id()), acknowledged_generation.as_ref().map(|generation| generation.id()));
+                crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.map(|generation| generation.id()), acknowledged_generation.as_ref().map(|generation| generation.id()));
             }
             assert_eq!(view.read_range(&b, 0, 7)?.as_ref(), b"updated");
             assert_eq!(held.lookup()?.node.file_id, identity);
@@ -8991,7 +8989,7 @@ mod tests {
         let mut external = lazy
             .workspace().begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         external
-            .write("/external", Bytes::from_static(b"unrelated"))
+            .write("/external", Bytes::from_static(b"unrelated"), WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await?;
         external.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         view.sync_async().await?;
@@ -9055,7 +9053,7 @@ mod tests {
         let mut conflicting = lazy
             .workspace().begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         conflicting
-            .write("/file", Bytes::from_static(b"external"))
+            .write("/file", Bytes::from_static(b"external"), WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await?;
         conflicting.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(matches!(
@@ -9750,7 +9748,7 @@ mod tests {
             };
             scratch.reserve_final_work(final_work)?;
             let removal = PreparedMountedRemoval {
-                key: MountedRemovalPath { text: text.text, custody: None, bytes: 0, native_allocation: text.allocation },
+                key: MountedRemovalPath { text: text.value, custody: None, bytes: 0, native_allocation: text.allocation },
                 file_id, prior: None, old_paths: None, new_paths: Some(1), changed: true, final_work,
             };
             assert!(view.removals.lock().map_err(|_| "removals poisoned")?.records.is_empty());
@@ -10322,9 +10320,7 @@ mod tests {
         let mut view = mounted_view(source.path(), "installed-source-publication-guard").await?;
         let owner = crate::CancellationToken::new();
         let visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        view.authored = Arc::new(CheckoutMountSource::new(
-            Arc::clone(view.authored.shared_checkout()), view.lazy.workspace().volume_config(),
-        )?.with_native_callback_guard(Arc::new(PublicationLifetimeGuard {
+        view.authored = Arc::new(Arc::try_unwrap(view.authored).map_err(|_| "authored adapter is shared")?.with_native_callback_guard(Arc::new(PublicationLifetimeGuard {
             lifetime: owner.clone(), visits: Arc::clone(&visits),
             authored_write: true,
         })));
@@ -10375,9 +10371,8 @@ mod tests {
         let original = native_control_work(crate::WorkBudget::UNBOUNDED, &caller)?;
         guard.check(&original)?.await?;
         assert_eq!(visits.load(Ordering::Acquire), 1);
-        view.authored = Arc::new(CheckoutMountSource::new(
-            Arc::clone(view.authored.shared_checkout()), view.lazy.workspace().volume_config(),
-        )?.with_native_callback_guard(guard));
+        drop(held);
+        view.authored = Arc::new(Arc::try_unwrap(view.authored).map_err(|_| "authored adapter is shared")?.with_native_callback_guard(guard));
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
             {
