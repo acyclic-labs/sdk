@@ -259,7 +259,7 @@ impl RangeMachine {
                                 )?;
                                 accounting.admit(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
                                 self.spans.push(ExtentSlice { offset: start, length: clipped_end - start, source_end: end, kind });
-                                super::file_read::completed_read_work(accounting, WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
+                                accounting.record_completed(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
                             }
                         }
                     }

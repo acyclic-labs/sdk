@@ -585,7 +585,7 @@ async fn flatten_tree(
         TreePage::Internal(children) => {
             let mut entries = Vec::new();
             for child in children {
-                entries.extend(Box::pin(flatten_tree(store, child.page).await).await?);
+                entries.extend(Box::pin(flatten_tree(store, child.page)).await?);
             }
             entries
         }
