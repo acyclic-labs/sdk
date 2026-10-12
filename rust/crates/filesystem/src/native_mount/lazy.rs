@@ -10,7 +10,7 @@ use super::{
     CheckoutMountSource, ContentSink, MountAttributePage, MountAttributeWriteMode, MountContentPin,
     MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLookup, MountNode,
     MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget,
-    MountSourceError, MountViewLease, ViewObserver, capture_root_identity,
+    MountSourceError, ViewObserver, capture_root_identity,
 };
 use crate::LazySeekTarget;
 use crate::demand::{
@@ -387,40 +387,40 @@ pub(super) fn mount_demand_error(error: DemandError) -> MountSourceError {
             MountSourceError::Stale,
         DemandError::Absent => MountSourceError::NotFound,
         DemandError::NotDirectory => MountSourceError::Filesystem(crate::FsError::NotDirectory),
-        DemandError::WorkerUnavailable => MountSourceError::NativeStaticText {
+        DemandError::WorkerUnavailable => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: native source worker failed",
         },
-        DemandError::NativeWorkUnavailable => MountSourceError::NativeStaticText {
+        DemandError::NativeWorkUnavailable => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: source does not support original native work custody",
         },
-        DemandError::OriginalWorkPoisoned => MountSourceError::NativeStaticText {
+        DemandError::OriginalWorkPoisoned => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: original native work state is poisoned",
         },
-        DemandError::CursorBusy => MountSourceError::NativeStaticText {
+        DemandError::CursorBusy => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: source directory cursor is in use",
         },
-        DemandError::SourceUnavailable => MountSourceError::NativeStaticText {
+        DemandError::SourceUnavailable => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: source root is unavailable",
         },
-        DemandError::NotRegularFile => MountSourceError::NativeStaticText {
+        DemandError::NotRegularFile => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: source node is not a regular file",
         },
-        DemandError::InvalidRequest => MountSourceError::NativeStaticText {
+        DemandError::InvalidRequest => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: source request is invalid",
         },
         #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
-        DemandError::LinuxMetadata(error) => MountSourceError::LinuxMetadata(error),
+        DemandError::LinuxMetadata(error) => MountSourceError::Metadata(error),
         #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
-        DemandError::MacMetadata(error) => MountSourceError::MacMetadata(error),
+        DemandError::MacMetadata(error) => MountSourceError::Metadata(error),
         #[cfg(all(windows, any(feature = "native-mount", test)))]
-        DemandError::WindowsMetadata(error) => MountSourceError::WindowsMetadata(error),
+        DemandError::WindowsMetadata(error) => MountSourceError::Metadata(error),
         #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
         DemandError::SourceWatchStartup(owner) => MountSourceError::SourceWatchStartup(owner),
         #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
@@ -441,12 +441,8 @@ fn mount_watch_error(error: crate::watch::NativeWatchError) -> MountSourceError 
             return MountSourceError::NativeWatchStartupFailed { cause, watch },
         WatchError::NativeWork(error) => return MountSourceError::NativeWork(error),
         WatchError::Mount(error) => return error,
-        #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
-        WatchError::Metadata(error) => return MountSourceError::LinuxMetadata(error),
-        #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
-        WatchError::Metadata(error) => return MountSourceError::MacMetadata(error),
-        #[cfg(all(windows, any(feature = "native-mount", test)))]
-        WatchError::Metadata(error) => return MountSourceError::WindowsMetadata(error),
+        #[cfg(all(any(target_os = "linux", target_os = "macos", windows), any(feature = "native-mount", test)))]
+        WatchError::Metadata(error) => return MountSourceError::Metadata(error),
         WatchError::Cancelled(_) => return MountSourceError::Cancelled,
         WatchError::Work(error) => return MountSourceError::Work(error),
         WatchError::InvalidOptions => "filesystem engine failure: source demand failed: native watcher options are invalid",
@@ -475,23 +471,23 @@ fn mount_watch_error(error: crate::watch::NativeWatchError) -> MountSourceError 
         WatchError::SequenceExhausted => "filesystem engine failure: source demand failed: native watcher sequence is exhausted",
         WatchError::AllocationFailed => "filesystem engine failure: source demand failed: native watcher output allocation failed",
     };
-    MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Engine, text: reason }
+    MountSourceError::NativeText { kind: super::NativeSourceTextKind::Engine, text: reason }
 }
 
 fn native_lazy_error(error: LazyWorkspaceError) -> MountSourceError {
     match error {
         LazyWorkspaceError::Demand(error) => mount_demand_error(error),
-        LazyWorkspaceError::NotRegularFile => MountSourceError::NativeStaticText {
+        LazyWorkspaceError::NotRegularFile => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Invalid, text: "path is not a regular file",
         },
-        LazyWorkspaceError::InvalidPageBound => MountSourceError::NativeStaticText {
+        LazyWorkspaceError::InvalidPageBound => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Invalid, text: "directory page bound must be positive",
         },
-        LazyWorkspaceError::UnsupportedNode => MountSourceError::NativeStaticText {
+        LazyWorkspaceError::UnsupportedNode => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Unsupported,
             text: "source node cannot be represented by the authored workspace",
         },
-        LazyWorkspaceError::TooLarge => MountSourceError::NativeStaticText {
+        LazyWorkspaceError::TooLarge => MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Engine, text: "file exceeds the requested read bound",
         },
         error => lazy_error(error),
@@ -656,8 +652,8 @@ fn mount_path_text_with_carrier(
         || original.charge(crate::WorkCounters {
             items_examined: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(MountSourceError::NativeWork),
-        |text| MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Invalid, text },
-        |text| MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Unsupported, text },
+        |text| MountSourceError::NativeText { kind: super::NativeSourceTextKind::Invalid, text },
+        |text| MountSourceError::NativeText { kind: super::NativeSourceTextKind::Unsupported, text },
     )?;
     let mut copied = original.reserve_work(crate::WorkCounters { bytes_copied: length as u64, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
     let mut examined = original.reserve_work(crate::WorkCounters { items_examined: fill_items, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
@@ -5620,7 +5616,7 @@ where
 
     fn acquire_binding_lease_with_carrier(
         &self, expected: Option<u64>, carrier: &mut super::adapter::NativeDemandCarrier<'_>,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+    ) -> Result<Box<dyn Send>, MountSourceError> {
         with_native_callback_carrier(&self.runtime, carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
                 let owner = SourceViewGate::callback_owner();
@@ -5636,7 +5632,7 @@ where
                     }
                     Ok(())
                 })?;
-                let lease = Box::new(lease) as Box<dyn MountViewLease>;
+                let lease = Box::new(lease) as Box<dyn Send>;
                 carrier.with_work(|work| work.record(copied)).map_err(mount_demand_error)?;
                 Ok(lease)
             })
@@ -6371,14 +6367,14 @@ where
             let original = work.clone();
             let logical_bytes = u64::from(length);
             if offset.checked_add(logical_bytes).is_none() {
-                return Err(MountSourceError::NativeStaticText {
+                return Err(MountSourceError::NativeText {
                     kind: super::NativeSourceTextKind::Invalid,
                     text: "sparse range overflows the file address space",
                 });
             }
             let source_length = match node.logical_bytes {
                 Some(length) => length,
-                None => return Err(MountSourceError::NativeStaticText {
+                None => return Err(MountSourceError::NativeText {
                     kind: super::NativeSourceTextKind::Invalid, text: "seek requires a regular file",
                 }),
             };
@@ -6717,21 +6713,21 @@ where
         Some(self.source_view.generation())
     }
 
-    fn acquire_view_lease(&self) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+    fn acquire_view_lease(&self) -> Result<Box<dyn Send>, MountSourceError> {
         Ok(Box::new(self.view_lease(None)?))
     }
 
     fn acquire_binding_lease(
         &self,
         expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+    ) -> Result<Box<dyn Send>, MountSourceError> {
         self.view_lease(expected_epoch)
-            .map(|lease| Box::new(lease) as Box<dyn MountViewLease>)
+            .map(|lease| Box::new(lease) as Box<dyn Send>)
     }
 
     fn acquire_binding_lease_with_meter(
         &self, expected_epoch: Option<u64>, work: &crate::NativeMaterializationWork,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+    ) -> Result<Box<dyn Send>, MountSourceError> {
         self.acquire_binding_lease_with_carrier(
             expected_epoch, &mut super::adapter::NativeDemandCarrier::Native(work),
         )
@@ -7995,7 +7991,7 @@ fn mount_content_invalid_with_carrier(
     carrier: &mut super::adapter::NativeDemandCarrier<'_>, message: &'static str,
 ) -> Result<MountSourceError, MountSourceError> {
     if carrier.original_native_work().is_some() {
-        Ok(MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Invalid, text: message })
+        Ok(MountSourceError::NativeText { kind: super::NativeSourceTextKind::Invalid, text: message })
     } else {
         carrier.with_work(|work| mount_content_invalid(work, message))
     }

@@ -4541,7 +4541,7 @@ fn source_hresult(error: &MountSourceError) -> HRESULT {
         MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
         MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => HR_INVALID_DATA,
         MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => HR_NOT_SUPPORTED,
-        MountSourceError::NativeText { kind, .. } | MountSourceError::NativeStaticText { kind, .. } =>
+        MountSourceError::NativeText { kind, .. } =>
             match kind {
                 super::NativeSourceTextKind::Engine => HR_IO_DEVICE,
                 super::NativeSourceTextKind::Invalid => HR_INVALID_DATA,
@@ -5836,7 +5836,7 @@ fn resolves_to_directory(
 }
 
 struct SourceListingLease<'a> {
-    lease: Option<Box<dyn super::MountViewLease>>,
+    lease: Option<Box<dyn Send>>,
     work: &'a crate::NativeMaterializationWork,
 }
 
@@ -5968,10 +5968,9 @@ fn retain_callback_failure(projection: Projection<'_>, error: NativeMountError) 
             MountSourceError::NativeCallbackDenied { .. } => true,
             MountSourceError::NativeWorkspaceCause(cause) => !workspace_failure_is_fatal(&cause.source),
             MountSourceError::Filesystem(cause) => !filesystem_failure_is_fatal(cause),
-            MountSourceError::NativeText { .. } | MountSourceError::NativeStaticText { .. } => true,
+            MountSourceError::NativeText { .. } => true,
             #[cfg(feature = "native-watch")]
-            MountSourceError::NativeWatchIo(_) | MountSourceError::NativeWatchBackend(_)
-                | MountSourceError::NativeWatchOriginalIo(_) | MountSourceError::NativeWatchOriginalBackend(_) => true,
+            MountSourceError::NativeWatchOriginalIo(_) | MountSourceError::NativeWatchOriginalBackend(_) => true,
             _ => false,
         };
         if ordinary { return result; }
@@ -6717,11 +6716,11 @@ mod tests {
         let mut old = crate::native_mount::prepare_native_mount_start(&meter)?
             .start(request.clone(), source.clone(), &meter, None)?;
         old.stop(&CancellationToken::new())?;
-        assert!(old.cleanup_state().cleanup_complete);
+        assert!(old.cleanup_state().cleanup_complete());
         let refused = crate::native_mount::prepare_native_mount_start(&meter)?
             .restart_with_meter(old, source.clone(), &meter).err().expect("old permanently retired capture gate is denied");
         let crate::NativeMountError::StartupFailed(refused) = refused else { panic!("original preborn failure custody"); };
-        assert!(refused.retired_owner().expect("complete original outcome").cleanup_state().cleanup_complete);
+        assert!(refused.retired_owner().expect("complete original outcome").cleanup_state().cleanup_complete());
         let (_, next, old) = refused.into_parts();
         assert!(next.destination().as_os_str().is_empty(), "no adopted warm path before admission");
         assert!(next.cleanup_state().source_retained);
@@ -6750,7 +6749,7 @@ mod tests {
             .restart_with_meter(old.expect("actual original issuer retained once"), fresh, &meter)?;
         assert_eq!(restarted.destination(), destination);
         restarted.stop(&CancellationToken::new())?;
-        assert!(restarted.cleanup_state().cleanup_complete);
+        assert!(restarted.cleanup_state().cleanup_complete());
         assert!(!original.cancellation().is_cancelled(), "retirement never resets or cancels original work");
         Ok(())
     }
