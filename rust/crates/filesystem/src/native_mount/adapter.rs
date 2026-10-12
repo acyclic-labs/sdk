@@ -6481,7 +6481,7 @@ where
                 if let Some(prepared) = prepared { drop(std::mem::replace(bytes, prepared)); }
                 if shared_truncate {
                     let PendingBytes::Shared { bytes, .. } = bytes else { unreachable!("original shared body"); };
-                    bytes.truncate(length);
+                    *bytes = bytes.slice(..length);
                 } else {
                     bytes.resize(length, 0);
                 }
