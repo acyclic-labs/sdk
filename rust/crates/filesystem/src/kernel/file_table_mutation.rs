@@ -31,7 +31,10 @@ impl Format for FileTableFormat {
         limits: DecodeLimits,
         observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E> {
-        super::file_table::decode_file_table_page(bytes, limits, observe, Page::Leaf, Page::Internal, |first, page| Child { first, page }, |child| &child.first)
+        Ok(match super::file_table::decode_file_table_page(bytes, limits, observe)? {
+            super::FileTablePage::Leaf(values) => Page::Leaf(values),
+            super::FileTablePage::Internal(children) => Page::Internal(children),
+        })
     }
 
     fn decode_shape(

@@ -94,7 +94,7 @@ impl ContextAttribute {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         crate::contract::validate_trusted_json_byte_bound(
-            self, crate::model::MAX_MODEL_REQUEST_BYTES, work,
+            self, u64::MAX, work,
         )?;
         self.validate_identity(work)?;
         crate::contract::validate_json_schema_value_with_work(

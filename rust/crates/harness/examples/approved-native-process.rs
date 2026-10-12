@@ -36,7 +36,7 @@ use acyclic_harness::{
         MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
     },
 };
-use acyclic_stream::{MemoryStream, StreamClient, StreamProvider};
+use acyclic_stream::{MemoryStream, StreamProvider};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -69,7 +69,7 @@ type Runtime<P, A = acyclic_fs::MemoryAuthorityBackend, O = acyclic_fs::MemoryOb
     FilesystemTaskRuntime<P, A, O>;
 
 async fn runtime<P, A, O>(
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     files: Arc<Files<A, O>>,
     volume: VolumeRef,
     issuer: &AuthorityIssuer,
@@ -145,7 +145,7 @@ where
 async fn run(mcp: Option<McpStdioMethod>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     run_on(
         mcp,
-        StreamClient::new(Arc::new(MemoryStream::default())),
+        Arc::new(MemoryStream::default()),
         None,
         false,
     )
@@ -194,7 +194,7 @@ fn issuer() -> AuthorityIssuer {
 
 async fn run_on<P: StreamProvider>(
     mcp: Option<McpStdioMethod>,
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     receipt_fault: Option<(&str, bool)>,
     lost_response: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -230,7 +230,7 @@ async fn run_on<P: StreamProvider>(
 )]
 async fn prepare_on<P, A, O>(
     mcp: Option<McpStdioMethod>,
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     filesystem: Fs<A, O>,
     receipt_fault: Option<(&str, bool)>,
     lost_response: bool,
@@ -578,7 +578,7 @@ where
 }
 
 async fn recover_on<P, A, O>(
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     filesystem: Fs<A, O>,
     seed: &Restart,
     receipt_fault: Option<(&str, bool)>,
@@ -680,7 +680,7 @@ where
 }
 
 async fn recovered_effects<P, A, O>(
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     files: Arc<Files<A, O>>,
     runtime: &Runtime<P, A, O>,
     seed: &Restart,
@@ -734,7 +734,7 @@ where
 }
 
 fn execution_journal<P, A, O>(
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     files: Arc<Files<A, O>>,
     volume: &VolumeRef,
     issuer: &AuthorityIssuer,
@@ -756,7 +756,7 @@ where
 }
 
 fn recovered_authority<P, A, O>(
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     files: Arc<Files<A, O>>,
     volume: &VolumeRef,
     issuer: &AuthorityIssuer,

@@ -453,7 +453,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         let (request, bytes) = crate::resource_preparation::ResourcePreparationRequest::from_borrowed_value_with_work(
                             &preparation.input, request_quota.work())?;
                         request_quota.adopt(bytes)?;
-                        request.validate_with_work(request_quota.work())?;
+                        request.validate(request_quota.work())?;
                         if request.maximum_work > budget.work || request.maximum_bytes > budget.bytes {
                             return Err(admission_boundary(request_quota.work(), crate::wire::ErrorCode::Invalid,
                                 "creator verification exceeds selected source bounds"));

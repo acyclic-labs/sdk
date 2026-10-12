@@ -4,7 +4,7 @@ use crate::{
     Error, Result,
     core::{Authority, AuthorityVerifier, Event},
 };
-use acyclic_stream::{Stream, StreamClient, StreamProvider};
+use acyclic_stream::{Stream, StreamProvider};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "filesystem")]
@@ -261,7 +261,7 @@ pub struct HistoryPage {
 
 /// An owner-bound Stream handle, with no reducer, history cache or replay on open.
 pub struct HistoryReader<P> {
-    client: StreamClient<P>,
+    client: std::sync::Arc<P>,
     stream: Stream<P>,
     verifier: AuthorityVerifier,
 }
@@ -269,7 +269,7 @@ pub struct HistoryReader<P> {
 impl<P: StreamProvider> HistoryReader<P> {
     /// Binds the existing canonical Stream without reading or restoring history.
     pub fn new(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: &Authority,
         verifier: AuthorityVerifier,
     ) -> Result<Self> {
@@ -277,7 +277,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     }
 
     pub(crate) fn new_with_work(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: &Authority,
         verifier: &AuthorityVerifier,
         work: Option<&mut dyn HistoryIo>,
@@ -291,7 +291,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     /// Constructs the original authenticated reader with pre-admitted issuer and path copies on the caller's exact native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn new_with_native_work(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: &Authority,
         verifier: &AuthorityVerifier,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -309,7 +309,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     }
 
     pub(super) fn new_owned(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: &Authority,
         verifier: AuthorityVerifier,
         work: &mut Option<&mut dyn HistoryIo>,
@@ -328,7 +328,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 work.admit_allocation(path_bytes)?;
                 work.copy_bytes(path_bytes)?;
             }
-            client.stream(&path).map_err(|error|
+            acyclic_stream::Stream::new(std::sync::Arc::clone(&client), &path).map_err(|error|
                 crate::store::operations::stream_error_with_work(error, quota.work()))
         })();
         drop(path);

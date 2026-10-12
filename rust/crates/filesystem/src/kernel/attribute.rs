@@ -1,5 +1,6 @@
 //! Authenticated scalable named attributes, alternate streams, and resource forks.
 
+use crate::kernel::Child;
 use super::codec::{
     CanonicalDecodeError, DecodeLimits, DecodedPageKind, DecodedPageShape, Decoder, Encoder, ReadAllocationStep};
 use super::types::digest_object;
@@ -17,7 +18,7 @@ pub fn encode_attribute_page<E>(
 where E: From<CanonicalDecodeError> + From<crate::WorkError> {
     match page {
         AttributePage::Leaf(entries) => encode_attribute_leaf_entries(entries, maximum_items, &mut observe, allocation_error),
-        AttributePage::Internal(children) => encode_attribute_internal_children(children.iter().map(|child| (&child.first_name, child.page)), maximum_items, observe, allocation_error),
+        AttributePage::Internal(children) => encode_attribute_internal_children(children.iter().map(|child| (&child.first, child.page)), maximum_items, observe, allocation_error),
     }
 }
 
@@ -130,22 +131,13 @@ pub struct AttributeEntry {
     pub value: ObjectId,
 }
 
-/// One lower-bound-to-page attribute-tree child.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AttributeChild {
-    /// Exact first name in the child subtree.
-    pub first_name: AttributeName,
-    /// Authenticated attribute page.
-    pub page: ObjectId,
-}
-
 /// One authenticated named-attribute B+tree page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttributePage {
     /// Strictly ordered named values.
     Leaf(Vec<AttributeEntry>),
     /// Strictly ordered child lower bounds.
-    Internal(Vec<AttributeChild>),
+    Internal(Vec<Child<AttributeName>>),
 }
 
 impl AttributePage {
@@ -166,7 +158,7 @@ impl AttributePage {
             Self::Internal(children) => {
                 if children.is_empty()
                     || children.windows(2).any(
-                        |pair| matches!(pair, [left, right] if left.first_name >= right.first_name),
+                        |pair| matches!(pair, [left, right] if left.first >= right.first),
                     )
                     || children
                         .iter()
@@ -398,17 +390,12 @@ pub(crate) fn attribute_page_decode_shape(
     })
 }
 
-// Build the caller's child representation directly in the admitted vector.
 /// Decodes one canonical object with before-effect admission.
-pub fn decode_attribute_page<E, C, P>(
+pub fn decode_attribute_page<E>(
     bytes: &[u8],
     limits: DecodeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
-    leaf: impl FnOnce(Vec<AttributeEntry>) -> P,
-    internal: impl FnOnce(Vec<C>) -> P,
-    child: impl Fn(AttributeName, ObjectId) -> C,
-    child_name: impl Fn(&C) -> &AttributeName,
-) -> Result<P, E>
+) -> Result<AttributePage, E>
 where
     E: From<CanonicalDecodeError>,
 {
@@ -448,37 +435,36 @@ where
             decoder.finish()?;
             let page = AttributePage::Leaf(entries);
             page.validate(limits.maximum_page_items).map_err(invariant)?;
-            let AttributePage::Leaf(entries) = page else { unreachable!() };
-            Ok(leaf(entries))
+            Ok(page)
         }
         2 => {
             let mut children = Vec::new();
-            let admitted_bytes = usize_to_u64(capacity.checked_mul(std::mem::size_of::<C>())
+            let admitted_bytes = usize_to_u64(capacity.checked_mul(std::mem::size_of::<Child<AttributeName>>())
                 .ok_or(CanonicalDecodeError::LengthOverflow)?);
-            observe(ReadAllocationStep::Allocate { bytes: admitted_bytes, operations: u64::from(capacity != 0 && std::mem::size_of::<C>() != 0) })?;
+            observe(ReadAllocationStep::Allocate { bytes: admitted_bytes, operations: u64::from(capacity != 0) })?;
             if let Err(error) = children.try_reserve_exact(capacity) {
                 observe(ReadAllocationStep::ReserveFailed(error))?;
                 return Err(CanonicalDecodeError::AllocationFailed.into());
             }
             observe(ReadAllocationStep::Capacity {
                 admitted_bytes,
-                actual_bytes: usize_to_u64(children.capacity() * std::mem::size_of::<C>()),
+                actual_bytes: usize_to_u64(children.capacity() * std::mem::size_of::<Child<AttributeName>>()),
             })?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
-                let first_name = decode_name(&mut decoder, limits.maximum_name_bytes, observe)?;
+                let first = decode_name(&mut decoder, limits.maximum_name_bytes, observe)?;
                 let page = digest_object(ObjectKind::AttributePage, decoder.fixed::<32, E>(observe)?);
-                children.push(child(first_name, page));
+                children.push(Child { first, page });
                 observe(ReadAllocationStep::Item)?;
             }
             decoder.finish()?;
             if children.is_empty()
-                || children.windows(2).any(|pair| matches!(pair, [left, right] if child_name(left) >= child_name(right)))
+                || children.windows(2).any(|pair| matches!(pair, [left, right] if left.first >= right.first))
             {
                 return Err(invariant(AttributeError::InvalidPage).into());
             }
             // Child object kinds are fixed by the canonical constructor above.
-            Ok(internal(children))
+            Ok(AttributePage::Internal(children))
         }
         tag => Err(CanonicalDecodeError::UnknownTag { field: "attribute_page", tag }.into()),
     }

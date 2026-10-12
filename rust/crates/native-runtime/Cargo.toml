@@ -43,6 +43,8 @@ windows-sys = { version = "0.61.2", features = [
 tempfile = "3.27.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+futures-core = "0.3.31"
+pin-project-lite = "0.2.17"
 tracing.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

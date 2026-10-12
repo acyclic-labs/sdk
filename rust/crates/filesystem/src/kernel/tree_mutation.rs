@@ -31,7 +31,10 @@ impl Format for TreeFormat {
         limits: DecodeLimits,
         observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E> {
-        super::tree::decode_tree_page(bytes, limits, observe, Page::Leaf, Page::Internal, |first, page| Child { first, page }, |child| &child.first)
+        Ok(match super::tree::decode_tree_page(bytes, limits, observe)? {
+            super::TreePage::Leaf(values) => Page::Leaf(values),
+            super::TreePage::Internal(children) => Page::Internal(children),
+        })
     }
 
     fn decode_shape(

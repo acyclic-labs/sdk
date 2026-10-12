@@ -4,7 +4,7 @@ use crate::{pi_root_inputs::PiRootPreparation, pi_runtime::PiTaskRuntime};
 use acyclic_harness::{
     IdempotencyKey, OperationId, effect_host::TaskEffectPlan, workflow::WorkflowCommand,
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::sync::Arc;
 
 type Host = FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
@@ -26,11 +26,11 @@ struct Fixture {
 
 async fn open_runtime(session: &Path, owner: &PiOwnerConfig, filesystem: Arc<Host>,
     work: &acyclic_fs::NativeMaterializationWork) -> Runtime {
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(session.join("stream"), LocalStreamLimits::default())
             .await
             .unwrap(),
-    ));
+    );
     PiTaskRuntime::open_with_native_work(
         stream, filesystem, &owner.policy.journal,
         owner.authority_with_native_work(work).unwrap(), work,

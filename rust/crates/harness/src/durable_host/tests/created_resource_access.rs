@@ -197,7 +197,7 @@ impl SandboxCreator {
     ) -> Result<()> {
         preparation.verify_creation().await?;
         let request = preparation.request();
-        request.validate()?;
+        request.validate(&mut None)?;
         let proof = self.proof(preparation.origin().preparation_task)?;
         if request.provider != self.provider
             || request.creation_grant != "resource:create:custom"
@@ -272,7 +272,7 @@ impl ResourceCreationProvider for SandboxCreator {
         proof: &'a ResourceCreationProofRef,
     ) -> BoxProviderFuture<'a, Result<CreatedResourceReceipt>> {
         Box::pin(async move {
-            request.validate()?;
+            request.validate(&mut None)?;
             if request.provider != self.provider || proof != &self.proof(proof.preparation)? {
                 return Err(Error::Unauthorized("sandbox proof identity changed".into()));
             }
@@ -330,7 +330,7 @@ pub(crate) struct CreationFixture {
     pub(crate) host: Arc<CoordinatorTaskHost<MemoryStream>>,
     pub(crate) harness: Arc<AgentHarness>,
     pub(crate) filesystem: Arc<MemoryFilesystem>,
-    pub(crate) stream: StreamClient<MemoryStream>,
+    pub(crate) stream: std::sync::Arc<MemoryStream>,
     pub(crate) filesystem_provider: ProviderRef,
     pub(crate) filesystem_creator: Arc<FilesystemResourceCreationProvider<MemoryAuthorityBackend, MemoryObjectBackend>>,
     creator: Arc<SandboxCreator>,
@@ -402,7 +402,7 @@ impl CreationFixture {
         extra: &[&str],
         #[cfg(not(target_arch = "wasm32"))] bootstrap: Option<&acyclic_fs::NativeMaterializationWork>,
     ) -> Result<Self> {
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let stream = Arc::new(MemoryStream::default());
         let filesystem_provider = ProviderRef::new("created-controls", "filesystem", "2")?;
         let fs = Fs::memory();
         let filesystem = Arc::new(FilesystemHost::new(fs.clone(), filesystem_provider.clone())?);
@@ -516,8 +516,7 @@ impl CreationFixture {
             tasks.clone(), machines, Arc::new(SystemUnixMillisClock),
         )?.with_session_limits(crate::scheduler::SessionLimits {
             active_tasks: 16, total_tasks: 32, depth: 4, model_steps: 4,
-        })?.with_resource_creation_provider(creator.clone())?
-            .with_resource_creation_provider(fs_creator.clone())?);
+        })?.with_resource_creation_providers(vec![creator.clone(), fs_creator.clone()])?);
         let mut bindings = Bindings::local();
         bindings.tasks = tasks;
         bindings.scope = root_scope.clone();
@@ -1066,9 +1065,9 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
     let original_owner = fixture.host.journal_owner(task,fence.clone()).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let native_work = acyclic_fs::NativeMaterializationWork::new(
+    let native_work = test_work(
         metadata_control_budget(),&cancellation,
-    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    )?;
     let pending = original_owner.outcome_with_native_work(&native_work).await?;
     assert!(pending.0.is_none());
     assert_eq!(pending.1.bytes(),0);
@@ -1259,9 +1258,9 @@ async fn uncertain_root_choice_is_denial_only_and_rejects_identity_substitution(
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
+        let work = test_work(
             test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
-        ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+        )?;
         assert!(matches!(
             owner.authenticated_root_binding_with_native_work(&work).await,
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })
@@ -1279,9 +1278,9 @@ mod source_authorization;
 async fn native_cancel_retains_original_retry_and_never_claims_terminal_cleanup() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
+    let work = test_work(
         test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
-    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    )?;
     fixture.host.cancel_with_native_work(fixture.root, &work).await?;
     fixture.host.cancel_with_native_work(fixture.root, &work).await?;
     let state = fixture.host.observe_task(fixture.root).await?;
@@ -1299,9 +1298,9 @@ async fn native_cancel_retains_original_retry_and_never_claims_terminal_cleanup(
     let fresh_cancellation = acyclic_fs::CancellationToken::new();
     let mut minimal = test_budget(16_384, 16 * 1_024 * 1_024);
     minimal.peak_allocation_bytes = acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
-    let denied = acyclic_fs::NativeMaterializationWork::new(
+    let denied = test_work(
         minimal, &fresh_cancellation,
-    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    )?;
     assert!(matches!(
         fixture.host.cancel_with_native_work(fixture.root, &denied).await,
         Err(Error::NativeWork { .. })
@@ -1314,9 +1313,9 @@ async fn native_cancel_retains_original_retry_and_never_claims_terminal_cleanup(
 async fn canonical_root_preparation_witness_has_no_fabricated_scratch() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
+    let work = test_work(
         test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
-    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    )?;
     let witness = fixture.host.task_admission_readonly_witness_with_native_work(
         fixture.root, &work,
     ).await?;
@@ -1325,9 +1324,9 @@ async fn canonical_root_preparation_witness_has_no_fabricated_scratch() -> Resul
     assert!(witness.scratch_proof().is_none());
     assert!(witness._native_custody.bytes() > 0);
     witness.verify_with_native_work(&work).await?;
-    let foreign = acyclic_fs::NativeMaterializationWork::new(
+    let foreign = test_work(
         test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
-    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    )?;
     let before = foreign.receipt();
     assert!(matches!(witness.verify_with_native_work(&foreign).await,
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
@@ -1370,9 +1369,9 @@ async fn registered_native_root_keeps_configured_scope_and_same_ack_identity() -
         machine, fixture.schema.clone(), fixture.schema.clone(),
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
+    let work = test_work(
         test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
-    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    )?;
     let operation = OperationId::from_bytes([220; 16]);
     let expected = TaskId::from_bytes(operation.into_bytes());
     for _ in 0..2 {
@@ -1401,12 +1400,12 @@ async fn registered_native_root_rejects_foreign_input_and_child_without_fence_be
         fixture.schema.clone(), fixture.schema.clone(),
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
+    let work = test_work(
         test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
-    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
-    let foreign = acyclic_fs::NativeMaterializationWork::new(
+    )?;
+    let foreign = test_work(
         test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
-    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    )?;
     let before = foreign.receipt();
     assert!(matches!(fixture.harness.registered_root_admission_with_native_work(
         OperationId::from_bytes([221; 16]), &definition, native_registered_root_input(&work)?, &foreign,
@@ -1436,9 +1435,9 @@ async fn registered_native_root_cancellation_precedes_metadata_copy_and_io() -> 
         fixture.schema.clone(), fixture.schema.clone(),
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
+    let work = test_work(
         test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
-    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    )?;
     let input = native_registered_root_input(&work)?;
     cancellation.cancel();
     let before = work.receipt();
@@ -1458,9 +1457,9 @@ async fn authenticated_root_scope_uses_original_quota_without_created_resource_f
     use crate::store::history::HistoryIo as _;
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
+    let work = test_work(
         test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
-    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    )?;
     let (admission, admission_custody) = fixture.host.admission_with_native_work(
         fixture.root_lease.operation.operation_id, &work,
     ).await?;
@@ -1494,9 +1493,9 @@ async fn authenticated_root_scope_uses_original_quota_without_created_resource_f
 async fn original_read_source_cannot_become_native_directory_execution_owner() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
+    let work = test_work(
         test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
-    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    )?;
     let (context, custody) = fixture.harness.durable_context_with_native_work(
         fixture.root, fixture.root_lease.operation.operation_id, &work,
     ).await?;

@@ -62,12 +62,12 @@ mod materialize;
 pub use materialize::{
     HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeError,
     MaterializeOptions, materialize_checkout,
-    materialize_checkout_path, materialize_checkout_paths, restore_checkout_host_path,
+    materialize_checkout_paths, restore_checkout_host_path,
 };
 pub(crate) use materialize::{
-    MaterializeMode, materialize_checkout_paths_with_mode, materialize_checkout_with_mode,
+    MaterializeMode,
     NativeMaterializationActionPhase, materialize_checkout_host_paths_with_work_guarded,
-    materialize_checkout_paths_with_mode_and_work,
+    materialize_reader_paths,
 };
 pub use materialize::materialize_checkout_with_work;
 
@@ -736,15 +736,15 @@ pub enum MountSourceError {
     /// Original Linux metadata cause, moved without formatting a diagnostic.
     #[cfg(target_os = "linux")]
     #[error("filesystem engine failure: source demand failed: {0}")]
-    LinuxMetadata(#[source] crate::native_host::LinuxMetadataError),
+    LinuxMetadata(#[source] crate::native_host::NativeMetadataError),
     /// Original macOS metadata cause, moved without formatting a diagnostic.
     #[cfg(target_os = "macos")]
     #[error("filesystem engine failure: source demand failed: {0}")]
-    MacMetadata(#[source] crate::native_host::MacMetadataError),
+    MacMetadata(#[source] crate::native_host::NativeMetadataError),
     /// Original Windows metadata cause, moved without formatting a diagnostic.
     #[cfg(windows)]
     #[error("filesystem engine failure: source demand failed: {0}")]
-    WindowsMetadata(#[source] crate::native_host::WindowsMetadataError),
+    WindowsMetadata(#[source] crate::native_host::NativeMetadataError),
     /// Original preallocated source-watch failure and its physical owner.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     #[error("filesystem engine failure: source demand failed: {0}")]
@@ -983,7 +983,6 @@ impl From<NativeMountStartupAdmissionError> for MountSourceError {
             NativeMountStartupAdmissionError::Work(error) => Self::Work(error),
             NativeMountStartupAdmissionError::Materialization(error) => Self::NativeWork(error),
             NativeMountStartupAdmissionError::Demand(error) => lazy::mount_demand_error(error),
-            NativeMountStartupAdmissionError::Allocation(error) => Self::Allocation(error),
             NativeMountStartupAdmissionError::ServicesCold => Self::ServicesNotInitialized,
             NativeMountStartupAdmissionError::ServiceUnavailable(error) => Self::ServiceUnavailable(error),
         }
@@ -1793,9 +1792,6 @@ pub enum NativeMountStartupAdmissionError {
     /// Original cancellation or demand admission failure.
     #[error("native startup demand failed: {0}")]
     Demand(#[source] crate::DemandError),
-    /// Original fallible SDK metadata allocation failure.
-    #[error("native startup allocation failed: {0}")]
-    Allocation(#[from] std::collections::TryReserveError),
     /// Explicit process-shared services have not been initialized.
     #[error("native mount services are not initialized")]
     ServicesCold,
@@ -1819,7 +1815,6 @@ impl From<NativeMountStartupAdmissionError> for NativeMountError {
             NativeMountStartupAdmissionError::Work(error) => Self::Work(error),
             NativeMountStartupAdmissionError::Materialization(error) => Self::Materialization(error),
             NativeMountStartupAdmissionError::Demand(error) => error.into(),
-            NativeMountStartupAdmissionError::Allocation(error) => Self::Allocation(error),
             NativeMountStartupAdmissionError::ServicesCold => Self::ServicesNotInitialized,
             NativeMountStartupAdmissionError::ServiceUnavailable(error) => Self::ServiceUnavailable(error),
         }
@@ -3117,7 +3112,7 @@ impl NativeMountSession {
             if let Some(owner) = self.startup_source_watch.as_mut() {
                 let stopped = if owner.is_stopped() { Ok(false) } else {
                     match &work {
-                        NativeSessionStopWork::Meter(meter) => owner.stop_with_meter(meter),
+                        NativeSessionStopWork::Meter(meter) => owner.stop(&mut adapter::NativeDemandCarrier::Native(meter)).map_err(NativeMountError::from),
                         NativeSessionStopWork::AcceptedWait(wait) => owner.stop_with_cleanup_wait(wait).map_err(NativeMountError::from),
                     }
                 };
