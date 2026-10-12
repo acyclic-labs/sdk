@@ -108,7 +108,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if crate::contract::canonical_json_bytes(&reference)? != record.value.as_ref() {
             return Err(Error::Storage("batch manifest ref is not canonical".into()));
         }
-        self.read_json_with_work(&reference, &mut None)
+        self.read_json(&reference, &mut None)
             .await
             .map(|(value, _)| value)
             .map_err(|error| match error {
@@ -134,7 +134,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .await?;
         reference.descriptor().verify(&bytes, &mut None)?;
         if self
-            .read_json_with_work(&reference, &mut None)
+            .read_json(&reference, &mut None)
             .await
             .map(|(value, _)| value)?
             != canonical
