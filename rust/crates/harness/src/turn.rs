@@ -306,14 +306,14 @@ mod tests {
     fn file(name: &str) -> Result<FileRef> {
         let volume = VolumeRef::new(
             ProviderRef::new("test".into(), "memory".into(), "1".into(), &mut None)?,
-            "turns",
+            "turns".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::new()),
          &mut None)?;
         FileRef::new(
             volume,
             name,
-            "v1",
+            "v1".into(),
             FileDescriptor::from_bytes(b"body", "text/plain", &mut None)?,
             name,
          &mut None)
@@ -322,14 +322,14 @@ mod tests {
     fn manifest_file(name: &str) -> Result<FileRef> {
         let volume = VolumeRef::new(
             ProviderRef::new("test".into(), "memory".into(), "1".into(), &mut None)?,
-            "turns",
+            "turns".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::new()),
          &mut None)?;
         FileRef::new(
             volume,
             name,
-            "v1",
+            "v1".into(),
             FileDescriptor::from_bytes(br"[]", "application/vnd.acyclic.harness.attachments+json", &mut None)?,
             name,
          &mut None)

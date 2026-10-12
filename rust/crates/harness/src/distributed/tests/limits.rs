@@ -1,11 +1,7 @@
 use super::*;
-use super::tests::{declare, spec};
 use crate::store::history::HistoryWork;
 use acyclic_fs::{CancellationToken, WorkBudget};
-use acyclic_stream::MemoryStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
-
-type FaultStream = crate::test_stream::LostSessionAck<MemoryStream>;
 
 const BUDGET: WorkBudget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024);
 
@@ -24,7 +20,7 @@ impl ContentResidencyVerifier for UnmeasuredContent {
 }
 
 async fn append_source(
-    client: &std::sync::Arc<FaultStream>, revision: u64, key: &str, event: SchedulerEvent, time: u64,
+    client: &std::sync::Arc<LostSessionAck>, revision: u64, key: &str, event: SchedulerEvent, time: u64,
 ) -> Result<u64> {
     let canonical = crate::contract::canonical_json_bytes(&event)?;
     let bytes = encode(revision, event.operation_id(), key,
@@ -39,7 +35,7 @@ async fn append_source(
 #[tokio::test]
 async fn coordinator_quota_and_cancellation_stop_before_the_next_real_sdk_call() -> Result<()> {
     for mode in 0..3 {
-        let provider = Arc::new(FaultStream::default());
+        let provider = Arc::new(LostSessionAck::default());
         let client = provider.clone();
         let mut coordinator = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default()), None, &mut None).await?;
         let bytes = append_source(&client, 1, "measured-quota", SchedulerEvent::Declared {
@@ -65,7 +61,7 @@ async fn coordinator_quota_and_cancellation_stop_before_the_next_real_sdk_call()
 
 #[tokio::test]
 async fn declared_content_without_measured_capability_rejects_before_ordinary_content_io() -> Result<()> {
-    let provider = Arc::new(FaultStream::default());
+    let provider = Arc::new(LostSessionAck::default());
     let client = provider.clone();
     let content = Arc::new(UnmeasuredContent::default());
     let mut coordinator = DistributedCoordinator::open(&client, content.clone(), None, &mut None).await?;
@@ -87,9 +83,9 @@ async fn declared_content_without_measured_capability_rejects_before_ordinary_co
 }
 
 async fn admitted_fixture(
-    client: &std::sync::Arc<FaultStream>,
+    client: &std::sync::Arc<LostSessionAck>,
     operation: OperationId,
-) -> Result<(DistributedCoordinator<FaultStream>, WorkLease)> {
+) -> Result<(DistributedCoordinator<LostSessionAck>, WorkLease)> {
     let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default()), None, &mut None).await?;
     declare(&mut coordinator, spec(operation, 0)?, "measured-seed-0").await?;
     let lease = coordinator.pull(&Worker {
@@ -102,7 +98,7 @@ async fn admitted_fixture(
 
 #[tokio::test]
 async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified_revision() -> Result<()> {
-    let provider = Arc::new(FaultStream::default());
+    let provider = Arc::new(LostSessionAck::default());
     let client = provider.clone();
     let operation = OperationId::from_bytes([120; 16]);
     let execution = OperationId::from_bytes([121; 16]);
@@ -139,7 +135,7 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
 }
 
 async fn historical_source(
-    client: &std::sync::Arc<FaultStream>, operation: OperationId,
+    client: &std::sync::Arc<LostSessionAck>, operation: OperationId,
 ) -> Result<(Authority, crate::core::AuthorityIssuer, Scope, LeaseFence, u64)> {
     let declaration = spec(operation, 0)?;
     let owner = declaration.owner.authority().clone();
@@ -166,7 +162,7 @@ async fn historical_source(
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn original_reservation_proof_keeps_the_selected_old_origin_without_current_write_authority() -> Result<()> {
-    let provider = Arc::new(FaultStream::default());
+    let provider = Arc::new(LostSessionAck::default());
     let client = provider.clone();
     let operation = OperationId::from_bytes([128; 16]);
     let (owner, issuer, scope, original, time) = historical_source(&client, operation).await?;
@@ -201,7 +197,7 @@ async fn original_reservation_proof_keeps_the_selected_old_origin_without_curren
 #[tokio::test]
 async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selectors_without_writes() -> Result<()> {
     for duplicate in [false, true] {
-        let provider = Arc::new(FaultStream::default());
+        let provider = Arc::new(LostSessionAck::default());
         let client = provider.clone();
         let operation = OperationId::from_bytes([129; 16]);
         let (owner, issuer, scope, mut candidate, time) = historical_source(&client, operation).await?;

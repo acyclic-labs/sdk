@@ -4,7 +4,7 @@ use crate::{core::{copy_file, copy_text, copy_value, copy_vector}, wire_codec::C
 macro_rules! copy {
     ($kind:ty, $source:ident, $quota:ident, $body:expr) => {
         impl $kind {
-            pub(super) fn copy(&self, io: Option<&PreparationIo>) -> Result<Self> {
+            pub(crate) fn copy(&self, io: Option<&PreparationIo>) -> Result<Self> {
                 if io.is_none() { return Ok(self.clone()); }
                 with_history_io(io, |work| {
                     let mut quota = CodecQuota::new(work, 0)?;
@@ -18,9 +18,21 @@ macro_rules! copy {
     };
 }
 
-copy!(MachineIdentity, self, quota, Ok(Self {
-    name: copy_text(&self.name, quota)?, version: copy_text(&self.version, quota)?, digest: self.digest,
-}));
+impl MachineIdentity {
+    fn copy_fields(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
+        Ok(Self { name: copy_text(&self.name, quota)?, version: copy_text(&self.version, quota)?, digest: self.digest })
+    }
+}
+
+pub(crate) fn workflow_copy_identity(source: &MachineIdentity, io: Option<&PreparationIo>) -> Result<MachineIdentity> {
+    if io.is_none() { return Ok(source.clone()); }
+    with_history_io(io, |work| {
+        let mut quota = CodecQuota::new(work, 0)?;
+        let value = source.copy_fields(&mut quota)?;
+        quota.transfer();
+        Ok(value)
+    })
+}
 copy!(MachineCheckpoint, self, quota, Ok(Self {
     machine: self.machine.copy_fields(quota)?, revision: self.revision, state: copy_value(&self.state, quota)?,
 }));

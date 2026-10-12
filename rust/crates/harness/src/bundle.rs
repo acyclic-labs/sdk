@@ -877,14 +877,14 @@ mod tests {
         let file = FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "custom-turn",
+                "custom-turn".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes(1_u128.to_be_bytes())),
              &mut None)?,
-            "artifact.txt",
-            "version-1",
+            "artifact.txt".into(),
+            "version-1".into(),
             FileDescriptor::from_bytes(b"custom artifact", "text/plain", &mut None)?,
-            "artifact.txt",
+            "artifact.txt".into(),
          &mut None)?;
         let inputs = (1_u32..=2)
             .map(|index| {

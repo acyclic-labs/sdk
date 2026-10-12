@@ -4377,7 +4377,7 @@ mod tests {
         assert_eq!(
             host.read(&reference, Some(&updated), "/hello.txt", 16)
                 .await?,
-            Bytes::from_static(b"hello")
+            Bytes::from_static(b"hello").into()
         );
         assert!(matches!(
             host.apply(
@@ -4404,10 +4404,10 @@ mod tests {
         let owner = AgentId::from_bytes([3; 16]);
         let volume = VolumeRef::new(
             provider,
-            "agent-private-a",
+            "agent-private-a".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(owner),
-        )?;
+         &mut None)?;
         host.create_volume(&volume).await?;
         let issuer = AuthorityIssuer::new(
             "test",
@@ -4489,11 +4489,11 @@ mod tests {
         assert_ne!(first.version(), second.version());
         assert_eq!(
             host.read_content(&first, &read, 16).await?,
-            Bytes::from_static(b"one")
+            Bytes::from_static(b"one").into()
         );
         assert_eq!(
             host.read_content(&second, &read, 16).await?,
-            Bytes::from_static(b"two")
+            Bytes::from_static(b"two").into()
         );
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -4514,7 +4514,7 @@ mod tests {
             assert_eq!(bytes.as_ref(), b"two");
             drop(bytes);
             let tampered = FileRef::new(first.volume().clone(), first.path(), first.version(),
-                second.descriptor().clone(), first.display_name())?;
+                second.descriptor().clone(), first.display_name(), &mut None)?;
             assert!(host.read_pinned_io(&tampered, 16, Some(&io)).await.is_err());
             let denied_scope = issuer.issue("no-files", &Capabilities::default(), Some(owner), None, &mut None).expect("scope proof");
             let denied = FilesystemForkVerifier::new_with_native_work(
@@ -4548,8 +4548,8 @@ mod tests {
                 "messages",
                 Some(&listed_generation),
                 None,
-                10,
-            )
+                10, None,
+            )?
             .await?;
         assert_eq!(portable_page.generation, listed_generation);
         assert_eq!(
@@ -4559,16 +4559,16 @@ mod tests {
                 kind: PrivateDirectoryEntryKind::File,
             }]
         );
-        let (portable_ref, portable_bytes) = erased
+        let (portable_ref, portable_bytes, _portable_hold) = erased
             .read_private_path(
                 &volume,
                 "messages",
                 "messages/first.txt",
-                Some(&listed_generation),
-            )
+                Some(&listed_generation), 16, None,
+            )?
             .await?;
         assert_eq!(portable_ref, second);
-        assert_eq!(portable_bytes, b"two");
+        assert_eq!(portable_bytes.as_ref(), b"two");
         let (pinned, delegated_bytes) = delegated_reader
             .read_private_path(
                 &volume,
@@ -4578,7 +4578,7 @@ mod tests {
             )
             .await?;
         assert_eq!(pinned, second);
-        assert_eq!(delegated_bytes, b"two");
+        assert_eq!(delegated_bytes.as_ref(), b"two");
         host.put_content(
             &volume,
             &write,
@@ -4597,8 +4597,8 @@ mod tests {
                 "messages",
                 Some(&listed_generation),
                 None,
-                10,
-            )
+                10, None,
+            )?
             .await?;
         assert_eq!(old_generation, listed_generation);
         assert_eq!(old_page.entries, page.entries);
@@ -4615,7 +4615,7 @@ mod tests {
             )
             .await?;
         assert_eq!(old_ref, second);
-        assert_eq!(old_bytes, b"two");
+        assert_eq!(old_bytes.as_ref(), b"two");
         assert!(
             delegated_reader
                 .list_private_directory(&volume, "messages", "elsewhere", None, None, 10)
@@ -4625,7 +4625,7 @@ mod tests {
         let delegated =
             ContentGrant::verify_directory_read(&verifier, &delegated_scope, &volume, "messages", &mut None)?;
         let (discovered, bytes) = host
-            .read_private_path(&volume, &delegated, "messages/first.txt", None, 16)
+            .read_private_path(&volume, &delegated, "messages/first.txt", None, 16, None)?
             .await?;
         assert_eq!(bytes.as_ref(), b"two");
         assert_ne!(discovered.version(), second.version());
@@ -4673,9 +4673,9 @@ mod tests {
             volume.clone(),
             first.path(),
             first.version(),
-            FileDescriptor::new([0; 32], 3, "text/plain")?,
+            FileDescriptor::new([0; 32], 3, "text/plain".into())?,
             first.display_name(),
-        )?;
+         &mut None)?;
         assert!(host.read_content(&wrong_digest, &read, 16).await.is_err());
         assert!(
             host.put_content(
@@ -4694,10 +4694,10 @@ mod tests {
         assert!(host.read_content(&first, &write, 16).await.is_err());
         let other = VolumeRef::new(
             volume.provider().clone(),
-            "agent-private-b",
+            "agent-private-b".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([5; 16])),
-        )?;
+         &mut None)?;
         assert!(ContentGrant::verify(&verifier, &scope, &other, VolumeOperation::Read, u64::MAX, &mut None).is_err());
         Ok(())
     }
@@ -4717,10 +4717,10 @@ mod tests {
         let agent = AgentId::from_bytes([7; 16]);
         let volume = VolumeRef::new(
             provider,
-            "scratch",
+            "scratch".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
-        )?;
+         &mut None)?;
         host.create_volume(&volume).await?;
         let authority = Authority {
             kind: AggregateKind::Conversation,
@@ -4791,11 +4791,11 @@ mod tests {
         let mut missing = message.clone();
         missing.content = FileRef::new(
             volume,
-            "messages/missing.txt",
-            file.version(),
+            "messages/missing.txt".into(),
+            file.version().into(),
             file.descriptor().clone(),
-            "missing.txt",
-        )?;
+            "missing.txt".into(),
+         &mut None)?;
         let command = |id: u8, value: ConversationMessage| -> Result<Command> {
             Ok(Command {
                 operation_id: OperationId::from_bytes([id; 16]),
@@ -4814,11 +4814,11 @@ mod tests {
         missing_attachment.attachments = vec![Attachment {
             file: FileRef::new(
                 file.volume().clone(),
-                "attachments/missing.bin",
-                file.version(),
+                "attachments/missing.bin".into(),
+                file.version().into(),
                 file.descriptor().clone(),
-                "missing.bin",
-            )?,
+                "missing.bin".into(),
+             &mut None)?,
             label: None,
         }]
         .into();
