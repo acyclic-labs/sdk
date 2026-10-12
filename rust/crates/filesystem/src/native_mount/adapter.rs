@@ -3634,12 +3634,14 @@ impl<A, O> SharedCheckout<A, O> {
         let (accepted, released) = if let Some(original) = &original {
             let input_allocation = delivery.changes_allocation.take()
                 .expect("native grouped slots retain their original allocation");
-            let applied = candidate.checkout.apply_group_with_native_work(
-                changes, input_allocation, original, cancellation,
+            let applied = candidate.checkout.apply_group_with_accounting(
+                crate::kernel::Owned { value: changes, bytes: input_allocation.bytes(), allocation: crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(input_allocation) },
+                &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation), cancellation,
             ).await;
-            let accepted = applied.map(|(results, allocation)| {
+            let accepted = applied.map(|output| {
+                let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = output.allocation else { unreachable!("native group keeps its original custody") };
                 native_result_custody = Some(allocation);
-                results
+                output.value
             }).map_err(MountSourceError::Filesystem);
             (accepted, Ok(()))
         } else {
@@ -4525,8 +4527,8 @@ where
             let state = await_lock(
                 self.state.lock(), &mut carrier, &cancellation, Some(&self.cancellation),
             ).await?;
-            let (listing, allocation) = state.file.list_named_attributes_with_native_work(
-                cursor.as_ref(), maximum_entries, &original, &cancellation,
+            let (listing, allocation) = state.file.list_named_attributes_with_accounting(
+                cursor.as_ref(), maximum_entries, &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation,
             ).await.map_err(MountSourceError::Filesystem)?;
             native_attribute_page(
                 listing, allocation, &original, Some(&self.cancellation),
@@ -5086,9 +5088,9 @@ where
             )).transpose()?;
             let (_view, mut observer) = self.observer(work).await?;
             let cancellation = meter.lock().cancellation().clone();
-            let accepted = observer.list_named_attributes_by_id_with_native_work(
+            let accepted = observer.list_named_attributes_by_id_with_accounting(
                 self.file_id, cursor.as_ref().map(|(name, _allocation)| name),
-                maximum_entries, &original, &cancellation,
+                maximum_entries, &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation,
             ).await.map_err(MountSourceError::Filesystem);
             observer.proof_data_take_completed_work();
             let (listing, allocation) = accepted?;
@@ -5329,11 +5331,13 @@ fn native_attribute_name(
 
 fn native_attribute_page(
     page: crate::kernel::AttributeListing,
-    allocation: crate::NativeAllocation,
+    allocation: crate::kernel::allocation::KernelOwnedAllocation,
     original: &crate::NativeMaterializationWork,
     lifetime: Option<&CancellationToken>,
 ) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
-    let mut source_allocation = allocation;
+    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(mut source_allocation) = allocation else {
+        return Err(MountSourceError::Filesystem(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout)));
+    };
     let entries = page.entries;
     let has_more = page.has_more;
     let mut scratch = NativeCaptureScratchAllocation::new(original)?;
@@ -8765,8 +8769,8 @@ where
             let mut observer = observation.observer;
             original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-            let result = observer.list_named_attributes_with_native_work(
-                &namespace, cursor.as_ref(), maximum_entries, &original, &cancellation,
+            let result = observer.list_named_attributes_with_accounting(
+                &namespace, cursor.as_ref(), maximum_entries, &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation,
             ).await;
             observer.proof_data_take_completed_work();
             let listing_pair = result.map_err(MountSourceError::Filesystem)?;

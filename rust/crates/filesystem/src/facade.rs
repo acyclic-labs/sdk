@@ -11227,18 +11227,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         list_named_attributes_to_file_root_with_accounting(&self.volume, metadata, after, maximum_entries, accounting, cancellation).await
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn list_named_attributes_by_id_with_native_work(
-        &mut self, file_id: FileId, after: Option<&AttributeName>, maximum_entries: u32,
-        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(AttributeListing, crate::NativeAllocation), FsError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(work, cancellation);
-        let (page, allocation) = self.list_named_attributes_by_id_with_accounting(
-            file_id, after, maximum_entries, &mut accounting, cancellation,
-        ).await?;
-        Ok((page, native_pinned_allocation(allocation)?))
-    }
-
     /// Changes one exact named attribute atomically.
     pub async fn change_named_attribute_by_id<W: FsWork>(
         &mut self, file_id: FileId, name: &AttributeName, value: Option<(&[u8], NamedAttributeWriteMode)>,
@@ -11463,41 +11451,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .map_err(|error| OperationFailure::new(error, work))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn apply_group_with_native_work(
-        &mut self,
-        changes: Vec<GroupedChange>,
-        allocation: crate::NativeAllocation,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(Vec<Result<GroupedOutcome, FsError>>, crate::NativeAllocation), FsError> {
-        let bytes = allocation.bytes();
-        let input = crate::kernel::Owned::new(changes,
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation), bytes);
-        let expected = input.value.capacity().checked_mul(size_of::<GroupedChange>())
-            .ok_or(WorkError::Overflow)? as u64;
-        let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(guard) =
-            &input.allocation else { unreachable!("native grouped input keeps its original custody"); };
-        if bytes != expected || !guard.work().shares_ledger(original)
-            || !guard.work().shares_resource_allowance(original)
-        {
-            return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
-        }
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        let output = self.apply_group_with_accounting(input, &mut accounting, cancellation).await?;
-        match output.allocation {
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => Ok((output.value, allocation)),
-            _ => unreachable!("native group keeps its original custody"),
-        }
-    }
-
-    async fn apply_group_with_accounting(
+    pub(crate) async fn apply_group_with_accounting(
         &mut self,
         input: crate::kernel::Owned<Vec<GroupedChange>>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<crate::kernel::Owned<Vec<Result<GroupedOutcome, FsError>>>, FsError> {
         use crate::kernel::{Owned, split_allocation};
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            let expected = input.value.capacity().checked_mul(size_of::<GroupedChange>())
+                .ok_or(WorkError::Overflow)? as u64;
+            let KernelOwnedAllocation::NativeOriginal(guard) = &input.allocation else {
+                return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
+            };
+            if guard.bytes() != expected || !guard.work().shares_ledger(original)
+                || !guard.work().shares_resource_allowance(original)
+            {
+                return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
+            }
+        }
         let mut compiled = Owned::<Vec<Result<(Owned<Vec<Mutation>>, GroupedOutcome), FsError>>>::allocate(input.value.len(), accounting)?;
         let mut output = Owned::<Vec<Result<GroupedOutcome, FsError>>>::allocate(input.value.len(), accounting)?;
         let mut metadata = AuthoredMetadataCache::new();
@@ -12883,16 +12856,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         list_named_attributes_to_file_root_with_accounting(&self.volume, metadata, after, maximum_entries, accounting, cancellation).await
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn list_named_attributes_with_native_work(
-        &mut self, path: &NamespacePath, after: Option<&AttributeName>, maximum_entries: u32,
-        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(AttributeListing, crate::NativeAllocation), FsError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(work, cancellation);
-        let (page, allocation) = self.list_named_attributes_with_accounting(path, after, maximum_entries, &mut accounting, cancellation).await?;
-        Ok((page, native_pinned_allocation(allocation)?))
-    }
-
     /// Changes one exact named attribute atomically.
     pub async fn change_named_attribute(
         &mut self, path: NamespacePath, name: &AttributeName,
@@ -13326,20 +13289,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
             .map_err(|error| OperationFailure::new(error, work))
     }
 
-    /// Returns the genuine page buffers followed by their original physical guard.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn list_named_attributes_with_native_work(
-        &self, after: Option<&AttributeName>, maximum_entries: u32,
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(AttributeListing, crate::NativeAllocation), FsError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        let (listing, allocation) = self.list_named_attributes_with_accounting(
-            after, maximum_entries, &mut accounting, cancellation,
-        ).await?;
-        Ok((listing, native_pinned_allocation(allocation)?))
-    }
-
-    async fn list_named_attributes_with_accounting(
+    pub(crate) async fn list_named_attributes_with_accounting(
         &self, after: Option<&AttributeName>, maximum_entries: u32,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
