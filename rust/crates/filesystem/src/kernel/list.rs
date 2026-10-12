@@ -61,7 +61,6 @@ pub(crate) async fn list_tree_entries_async_with_custody<S: AsyncObjectStore>(
     )
     .await
     .map(to_page)
-    .map_err(map_failure)
 }
 
 pub(crate) fn list_tree_entries_async_with_accounting<'a, 'accounting, S: AsyncObjectStore>(
@@ -100,30 +99,6 @@ fn to_page(receipt: persistent_pagination::Receipt<TreeEntry>) -> DirectoryPage 
 
 /// Bounded directory-read failure retaining exact spent work.
 pub type DirectoryReadFailure = OperationFailure<DirectoryReadError>;
-
-fn map_failure(failure: persistent_pagination::Failure) -> DirectoryReadFailure {
-    OperationFailure::new(map_error(failure.error), *failure.work)
-}
-
-pub(super) fn map_error(error: persistent_pagination::Error) -> DirectoryReadError {
-    match error {
-        persistent_pagination::Error::Cancelled => DirectoryReadError::Cancelled,
-        persistent_pagination::Error::ZeroLimit => DirectoryReadError::ZeroLimit,
-        persistent_pagination::Error::LimitOverflow => DirectoryReadError::LimitOverflow,
-        persistent_pagination::Error::WrongRootKind => DirectoryReadError::WrongRootKind,
-        persistent_pagination::Error::InvalidLimits => DirectoryReadError::InvalidLimits,
-        persistent_pagination::Error::HeightExceeded => DirectoryReadError::HeightExceeded,
-        persistent_pagination::Error::CycleOrAlias => DirectoryReadError::Cycle,
-        persistent_pagination::Error::ChildBoundsMismatch => {
-            DirectoryReadError::ChildBoundsMismatch
-        }
-        persistent_pagination::Error::TraversalState => DirectoryReadError::TraversalState,
-        persistent_pagination::Error::AllocationFailed => DirectoryReadError::AllocationFailed,
-        persistent_pagination::Error::Storage(error) => error.into(),
-        persistent_pagination::Error::Decode(error) => error.into(),
-        persistent_pagination::Error::Work(error) => error.into(),
-    }
-}
 
 /// Authenticated bounded directory-read failures.
 #[derive(Debug, Error)]
