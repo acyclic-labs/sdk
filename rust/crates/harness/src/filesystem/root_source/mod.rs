@@ -1,7 +1,7 @@
 //! Authenticated same-graph source selection over the original Filesystem.
 
 use super::FilesystemHost;
-use crate::contract::{JsonBounds, canonical_json_bytes_bounded};
+use crate::contract::JsonBounds;
 use crate::conversation::{VolumeClass, VolumeRef};
 use crate::core::Authority;
 use crate::source_authorization::{

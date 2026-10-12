@@ -7,7 +7,7 @@ use acyclic_harness::{
     Error, Result, TaskId,
     conversation::{ConversationMessage, VolumeRef},
     filesystem::{ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller,
-        ConfiguredRecursiveFork, ConfiguredRecursiveMerge, ConfiguredRecursiveSourceCheckpoint,
+        ConfiguredRecursiveFork, ConfiguredRecursiveMerge,
         ConfiguredRecursiveToolSource, ConfiguredRecursiveToolsConfig, ForkPreparationLimits},
     runtime::TaskAdmissionRecord,
     store::HistoryReadLimits,
@@ -117,13 +117,6 @@ pub fn source(config: &Config, stream: std::sync::Arc<LocalStream>, files: Arc<F
         inherited_references: 64,
         content_budget: config.tools.content_budget,
         project_policy_graph_root: None,
-        original_sources: config.fork_sources.iter()
-            .filter(|source| config.tools.callers.iter().any(|caller| caller.task == source.caller))
-            .map(|source| ConfiguredRecursiveSourceCheckpoint {
-                caller: source.caller,
-                request: source.request.clone(),
-                snapshot: source.snapshot.clone(),
-            }).collect(),
     };
     Source::new(configured, stream, files, &config.filesystem_provider, config.limits)
 }
