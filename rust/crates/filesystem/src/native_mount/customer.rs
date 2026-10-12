@@ -384,8 +384,7 @@ where
         let mut acknowledged = None;
         // This is the final SDK operation. Its own ACK slot survives errors
         // after a real DATA CAS; absent metadata remains unconfirmed.
-        self.source.sync_async_with_permit_qualified_native_work_guarded_with_ack(
-            permit, work, cancellation, context, &mut acknowledged, before_publication,
+        self.source.sync_async_with_permit_carrier_guarded_context_with_ack(permit, false, &mut super::adapter::NativeDemandCarrier::Native(work), &mut super::view_ledger::ViewLedgerAdmission::default(), cancellation, &mut { before_publication }, Some(context), &mut acknowledged,
         ).await.map_err(|(cause, accounting_failure)| NativeMountPublicationFailure {
             cause, accounting_failure, source_acknowledged: acknowledged.is_some(), publication: acknowledged,
         })
@@ -398,7 +397,7 @@ where
         &self,
         wait: &crate::CancellationToken,
     ) -> Result<NativeMountDrainProof, MountLifecycleError> {
-        self.source.cancel_with_cleanup_wait(wait)?;
+        self.source.cancel_cleanup(Some(wait))?;
         if !self.source.capture_retired() {
             return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
         }
@@ -609,7 +608,7 @@ where
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async()
+            .sync_async(crate::PublicationPermit::Unrestricted)
             .await
             .map_err(MountLifecycleError::Source)?;
         Ok(())
@@ -622,7 +621,7 @@ where
     ) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async_with_permit(permit)
+            .sync_async(permit)
             .await
             .map_err(MountLifecycleError::Source)
     }
@@ -2264,7 +2263,7 @@ mod tests {
         assert!(ordinary_job.shares_resource_allowance(&job));
         assert!(!ordinary_job.shares_ledger(&work));
         drop(ordinary_job);
-        ordinary_source.cancel_with_cleanup_wait(&crate::CancellationToken::new())?;
+        ordinary_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
         let (native_source, _, _, _) = lazy.prepare_authored_mount_source(
             &options, Some(pinned), None, &work.native_mount_work(), &cancellation, Some(&work),
         ).await?;
@@ -2278,7 +2277,7 @@ mod tests {
         assert!(native_job.shares_ledger(&work));
         assert!(native_job.shares_resource_allowance(&work));
         drop(native_job);
-        native_source.cancel_with_cleanup_wait(&crate::CancellationToken::new())?;
+        native_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
         assert!(ordinary_source.capture_retired());
         assert!(native_source.capture_retired());
         work.receipt().verify(budget)?;
