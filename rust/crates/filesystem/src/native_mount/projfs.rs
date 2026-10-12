@@ -6754,7 +6754,7 @@ mod tests {
         let source = windows_checkout_source(None).await?;
         let count = super::DIRECTORY_PAGE_SIZE + 2;
         for index in 0..count {
-            source.create_file(&windows_path(&format!("entry{index:04}")), FileMetadata::default())?;
+            crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path(&format!("entry{index:04}")), FileMetadata::default(), None, work))?;
         }
         let cancellation = CancellationToken::new();
         let read = |projection: super::Projection<'_>| {
@@ -6818,7 +6818,7 @@ mod tests {
         let source = windows_checkout_source(None).await?;
         let path = windows_path("packet.bin");
         let component = windows_name("packet.bin");
-        source.create_file(&path, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         let content = vec![0x6d; super::WRITE_CHUNK_BYTES as usize + 17];
         source.write_range(&path, 0, Bytes::copy_from_slice(&content))?;
         let temporary = tempfile::tempdir()?;
@@ -6906,7 +6906,7 @@ mod tests {
     {
         let source = windows_checkout_source(None).await?;
         let target = windows_path("target.txt");
-        source.create_file(&target, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&target, FileMetadata::default(), None, work))?;
         source.write_range(&target, 0, Bytes::from_static(b"linked-data"))?;
         let link = windows_path("link");
         boundary(source.cancellation(), |work| source.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed(Bytes::from(windows_name("target.txt")).into(), 0), FileMetadata::default(), work))?;
@@ -7096,7 +7096,7 @@ mod tests {
 
         let source = windows_checkout_source(None).await?;
         let seed = windows_path("seed.txt");
-        source.create_file(&seed, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&seed, FileMetadata::default(), None, work))?;
         source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         let projected = destination.join("seed.txt");
@@ -7192,7 +7192,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source(None).await?;
         let seed = windows_path("seed.txt");
-        source.create_file(&seed, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&seed, FileMetadata::default(), None, work))?;
         source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         // ProjFS notifies the provider only of other processes' I/O.
@@ -7260,12 +7260,12 @@ mod tests {
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn listing_follows_source_and_mount_changes() -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source(None).await?;
-        source.create_file(&windows_path("a.txt"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path("a.txt"), FileMetadata::default(), None, work))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         assert_eq!(sorted_names(&destination)?, ["a.txt"]);
         assert_eq!(sorted_names(&destination)?, ["a.txt"]);
 
-        source.create_file(&windows_path("b.txt"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path("b.txt"), FileMetadata::default(), None, work))?;
         session.revalidate()?;
         assert_eq!(sorted_names(&destination)?, ["a.txt", "b.txt"]);
 
@@ -7340,7 +7340,7 @@ mod tests {
         let source = windows_checkout_source(None).await?;
         for index in 0..FILES {
             let path = windows_path(&format!("f{index}.txt"));
-            source.create_file(&path, FileMetadata::default())?;
+            crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
             source.write_range(&path, 0, Bytes::from(vec![b'x'; 4096 * (index % 2)]))?;
         }
         let (_root, destination, mut session) = mount_source(&source)?;
@@ -7397,7 +7397,7 @@ mod tests {
     async fn an_opened_file_follows_its_source() -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source(None).await?;
         let tracked = windows_path("tracked.txt");
-        source.create_file(&tracked, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&tracked, FileMetadata::default(), None, work))?;
         source.write_range(&tracked, 0, Bytes::from_static(b"before"))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         let projected = destination.join("tracked.txt");
@@ -7419,7 +7419,7 @@ mod tests {
     async fn an_opened_file_the_user_wrote_stays() -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source(None).await?;
         let kept = windows_path("kept.txt");
-        source.create_file(&kept, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&kept, FileMetadata::default(), None, work))?;
         source.write_range(&kept, 0, Bytes::from_static(b"source"))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         let projected = destination.join("kept.txt");
@@ -7448,7 +7448,7 @@ mod tests {
         let folder = windows_path("folder");
         boundary(source.cancellation(), |work| source.create_directory(&folder, FileMetadata::default(), work))?;
         let inner = folder.child(windows_name("inner.txt"));
-        source.create_file(&inner, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&inner, FileMetadata::default(), None, work))?;
         source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
         boundary(source.cancellation(), |work| source.create_symbolic_link(&windows_path("folder-link"), crate::kernel::OwnedSourceChunk::claimed(Bytes::from(windows_name("folder")).into(), 0), FileMetadata::default(), work))?;
         let (_root, destination, mut session) = mount_source(&source)?;
@@ -7486,7 +7486,7 @@ mod tests {
             if directory {
                 boundary(source.cancellation(), |work| source.create_directory(&name, FileMetadata::default(), work))?;
                 let inner = name.child(windows_name("inner.txt"));
-                source.create_file(&inner, FileMetadata::default())?;
+                crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&inner, FileMetadata::default(), None, work))?;
                 source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
             }
             let closer = std::thread::spawn(move || {
@@ -7540,7 +7540,7 @@ mod tests {
         };
 
         assert_eq!(absent("listed.txt"), Some(std::io::ErrorKind::NotFound));
-        source.create_file(&windows_path("listed.txt"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path("listed.txt"), FileMetadata::default(), None, work))?;
         source.write_range(
             &windows_path("listed.txt"),
             0,
@@ -7554,7 +7554,7 @@ mod tests {
             absent("invalidated.txt"),
             Some(std::io::ErrorKind::NotFound)
         );
-        source.create_file(&windows_path("invalidated.txt"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path("invalidated.txt"), FileMetadata::default(), None, work))?;
         session.invalidate(b"/invalidated.txt")?;
         session.revalidate()?;
         assert_eq!(

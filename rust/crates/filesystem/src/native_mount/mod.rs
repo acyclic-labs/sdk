@@ -363,7 +363,7 @@ pub trait MountOpenFile: Send + Sync + 'static {
     fn allocate_range_with_meter(&self, offset: u64, length: u64, operation: MountRangeAllocation,
         work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Mutates exact metadata and optional size through the same engine.
-    fn set_attributes_with_meter(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
+    fn set_attributes(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
         work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Reads an owned named attribute without erasing capacity.
     fn read_attribute_with_meter(&self, name: &[u8], work: &NativeMaterializationWork)
@@ -372,13 +372,13 @@ pub trait MountOpenFile: Send + Sync + 'static {
     fn list_attributes_with_meter(&self, cursor: Option<&[u8]>, maximum_entries: u32,
         work: &NativeMaterializationWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
     /// Consumes an exact already-admitted attribute value.
-    fn write_attribute_with_meter(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
+    fn write_attribute(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
         mode: MountAttributeWriteMode, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Removes the actual named attribute through the same engine.
-    fn remove_attribute_with_meter(&self, name: &[u8], work: &NativeMaterializationWork)
+    fn remove_attribute(&self, name: &[u8], work: &NativeMaterializationWork)
         -> Result<(), MountSourceError>;
     /// Settles this actual handle's queued effects before durability acknowledgement.
-    fn settle_with_meter(&self, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
+    fn settle(&self, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Returns the owned sparse range and its original producer's exact claim.
     fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &NativeMaterializationWork)
         -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError>;
@@ -405,12 +405,6 @@ pub trait MountOpenFile: Send + Sync + 'static {
         length: u64,
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError>;
-    /// Replaces complete metadata and optionally logical size atomically from the native handle's perspective.
-    fn set_attributes(
-        &self,
-        metadata: FileMetadata,
-        logical_bytes: Option<u64>,
-    ) -> Result<(), MountSourceError>;
     /// Reads one exact native named attribute.
     fn read_attribute(&self, name: &[u8]) -> Result<Option<acyclic_stream::OwnedBytes>, MountSourceError>;
     /// Lists one bounded page of native named-attribute names.
@@ -419,20 +413,6 @@ pub trait MountOpenFile: Send + Sync + 'static {
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError>;
-    /// Inserts or replaces one exact native named attribute.
-    fn write_attribute(
-        &self,
-        name: &[u8],
-        value: Bytes,
-        mode: MountAttributeWriteMode,
-    ) -> Result<(), MountSourceError>;
-    /// Removes one exact native named attribute.
-    fn remove_attribute(&self, name: &[u8]) -> Result<(), MountSourceError>;
-    /// Applies whatever this handle holds back from the view, as a durability request must; most handles hold nothing back.
-    fn settle(&self) -> Result<(), MountSourceError> {
-        Ok(())
-    }
-
     /// Reads one bounded sparse range without materializing holes.
     fn read_sparse_range(
         &self,
@@ -1300,12 +1280,9 @@ pub trait MountFilesystem: Send + Sync + 'static {
     /// Captures the actual detached open-file identity with its original claim.
     fn detach_file_with_meter(&self, path: &MountPath, work: &NativeMaterializationWork)
         -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
-    /// Creates an empty regular file through the original source engine.
-    fn create_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
-        -> Result<MountLookup, MountSourceError>;
-    /// Preserves the source's actual absent-since proof while creating.
-    fn create_absent_file(&self, path: &MountPath, metadata: FileMetadata,
-        absent_since: ViewStamp, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
+    /// Creates an empty file, preserving an optional absent-since proof.
+    fn create_file(&self, path: &MountPath, metadata: FileMetadata, absent_since: Option<ViewStamp>,
+        work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
     /// Creates an actual directory through the same source engine.
     fn create_directory(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
         -> Result<MountLookup, MountSourceError>;
@@ -1322,11 +1299,11 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn list_attributes_with_meter(&self, path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32,
         work: &NativeMaterializationWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
     /// Consumes an exact already-admitted native attribute value.
-    fn write_attribute_with_meter(&self, path: &MountPath, name: &[u8],
+    fn write_attribute(&self, path: &MountPath, name: &[u8],
         value: crate::kernel::OwnedSourceChunk, mode: MountAttributeWriteMode, work: &NativeMaterializationWork)
         -> Result<(), MountSourceError>;
     /// Removes the exact native attribute.
-    fn remove_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &NativeMaterializationWork)
+    fn remove_attribute(&self, path: &MountPath, name: &[u8], work: &NativeMaterializationWork)
         -> Result<(), MountSourceError>;
     /// Clones the actual immutable range between authenticated file identities.
     fn clone_range_by_id(&self, source_file_id: FileId, source_offset: u64,
@@ -1538,12 +1515,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError>;
 
-    /// Creates one empty regular file, failing with [`MountSourceError::AlreadyExists`] when `path` names anything.
-    fn create_file(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError>;
     /// Reads one exact native named attribute.
     fn read_attribute(
         &self,
@@ -1557,16 +1528,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError>;
-    /// Inserts or replaces one exact native named attribute.
-    fn write_attribute(
-        &self,
-        path: &MountPath,
-        name: &[u8],
-        value: Bytes,
-        mode: MountAttributeWriteMode,
-    ) -> Result<(), MountSourceError>;
-    /// Removes one exact native named attribute.
-    fn remove_attribute(&self, path: &MountPath, name: &[u8]) -> Result<(), MountSourceError>;
     /// Replaces one exact file range.
     fn write_range(
         &self,

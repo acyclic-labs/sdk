@@ -5709,9 +5709,9 @@ where
         self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.allocate_range_with_meter(offset, length, operation, work))
     }
 
-    fn set_attributes_with_meter(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
+    fn set_attributes(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
         work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.set_attributes_with_meter(metadata, logical_bytes, work))
+        self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.set_attributes(metadata, logical_bytes, work))
     }
 
     fn read_attribute_with_meter(&self, name: &[u8], work: &crate::NativeMaterializationWork)
@@ -5724,17 +5724,17 @@ where
         self.with_view(super::adapter::NativeDemandCarrier::Native(work), |file| file.list_attributes_with_meter(cursor, maximum_entries, work))
     }
 
-    fn write_attribute_with_meter(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
+    fn write_attribute(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
         mode: MountAttributeWriteMode, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.write_attribute_with_meter(name, value, mode, work))
+        self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.write_attribute(name, value, mode, work))
     }
 
-    fn remove_attribute_with_meter(&self, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.remove_attribute_with_meter(name, work))
+    fn remove_attribute(&self, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
+        self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.remove_attribute(name, work))
     }
 
-    fn settle_with_meter(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.settle_with_meter(work))
+    fn settle(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
+        self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.settle(work))
     }
 
     fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
@@ -5767,10 +5767,6 @@ where
         self.with_mutation(super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())), |file| file.write_range(offset, bytes))
     }
 
-    fn settle(&self) -> Result<(), MountSourceError> {
-        self.with_mutation(super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())), MountOpenFile::settle)
-    }
-
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
         self.with_mutation(super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())), |file| file.resize(logical_bytes))
     }
@@ -5782,14 +5778,6 @@ where
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError> {
         self.with_mutation(super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())), |file| file.allocate_range(offset, length, operation))
-    }
-
-    fn set_attributes(
-        &self,
-        metadata: FileMetadata,
-        logical_bytes: Option<u64>,
-    ) -> Result<(), MountSourceError> {
-        self.with_mutation(super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())), |file| file.set_attributes(metadata, logical_bytes))
     }
 
     fn read_attribute(&self, name: &[u8]) -> Result<Option<OwnedBytes>, MountSourceError> {
@@ -5804,18 +5792,6 @@ where
         self.with_view(super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())), |file| file.list_attributes(cursor, maximum_entries))
     }
 
-    fn write_attribute(
-        &self,
-        name: &[u8],
-        value: Bytes,
-        mode: MountAttributeWriteMode,
-    ) -> Result<(), MountSourceError> {
-        self.with_mutation(super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())), |file| file.write_attribute(name, value, mode))
-    }
-
-    fn remove_attribute(&self, name: &[u8]) -> Result<(), MountSourceError> {
-        self.with_mutation(super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())), |file| file.remove_attribute(name))
-    }
 }
 
 impl<A, O, D, S> LazyOpenFile<A, O, D, S>
@@ -6093,9 +6069,9 @@ where
         self.with_authored_with_meter(work, |file| file.allocate_range_with_meter(offset, length, operation, work))
     }
 
-    fn set_attributes_with_meter(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
+    fn set_attributes(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
         work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        self.with_authored_with_meter(work, |file| file.set_attributes_with_meter(metadata, logical_bytes, work))
+        self.with_authored_with_meter(work, |file| file.set_attributes(metadata, logical_bytes, work))
     }
 
     fn read_attribute_with_meter(&self, name: &[u8], work: &crate::NativeMaterializationWork)
@@ -6115,18 +6091,18 @@ where
         })
     }
 
-    fn write_attribute_with_meter(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
+    fn write_attribute(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
         mode: MountAttributeWriteMode, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        self.with_authored_with_meter(work, |file| file.write_attribute_with_meter(name, value, mode, work))
+        self.with_authored_with_meter(work, |file| file.write_attribute(name, value, mode, work))
     }
 
-    fn remove_attribute_with_meter(&self, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        self.with_authored_with_meter(work, |file| file.remove_attribute_with_meter(name, work))
+    fn remove_attribute(&self, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
+        self.with_authored_with_meter(work, |file| file.remove_attribute(name, work))
     }
 
-    fn settle_with_meter(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
+    fn settle(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_view_with_meter(work, false, |file, _, _| match file {
-            Some(file) => file.settle_with_meter(work),
+            Some(file) => file.settle(work),
             None => Ok(()),
         })
     }
@@ -6270,14 +6246,6 @@ where
         self.with_authored(|file| file.allocate_range(offset, length, operation))
     }
 
-    fn set_attributes(
-        &self,
-        metadata: FileMetadata,
-        logical_bytes: Option<u64>,
-    ) -> Result<(), MountSourceError> {
-        self.with_authored(|file| file.set_attributes(metadata, logical_bytes))
-    }
-
     fn read_attribute(&self, name: &[u8]) -> Result<Option<OwnedBytes>, MountSourceError> {
         let _lease = self.source_lease()?;
         // An unpromoted source file carries no named attributes.
@@ -6302,18 +6270,6 @@ where
         }
     }
 
-    fn write_attribute(
-        &self,
-        name: &[u8],
-        value: Bytes,
-        mode: MountAttributeWriteMode,
-    ) -> Result<(), MountSourceError> {
-        self.with_authored(|file| file.write_attribute(name, value, mode))
-    }
-
-    fn remove_attribute(&self, name: &[u8]) -> Result<(), MountSourceError> {
-        self.with_authored(|file| file.remove_attribute(name))
-    }
 }
 
 impl<A, O, D, S> MountFilesystem for LazyMountSource<A, O, D, S>
@@ -6696,15 +6652,10 @@ where
         )
     }
 
-    fn create_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &crate::NativeMaterializationWork)
-        -> Result<MountLookup, MountSourceError> {
-        self.native_mutation(path, None, false, true, work, |_| self.authored.create_file_with_meter(path, metadata, work))
-    }
-
-    fn create_absent_file(&self, path: &MountPath, metadata: FileMetadata, absent_since: ViewStamp,
+    fn create_file(&self, path: &MountPath, metadata: FileMetadata, absent_since: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
         self.native_mutation(path, None, false, true, work, |_|
-            self.authored.create_absent_file(path, metadata, absent_since, work))
+            self.authored.create_file(path, metadata, absent_since, work))
     }
 
     fn create_directory(&self, path: &MountPath, metadata: FileMetadata, work: &crate::NativeMaterializationWork)
@@ -6758,28 +6709,20 @@ where
         })
     }
 
-    fn write_attribute_with_meter(&self, path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk,
+    fn write_attribute(&self, path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk,
         mode: MountAttributeWriteMode, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.native_mutation(path, None, true, false, work, |file| match file {
-            Some(file) => file.write_attribute_with_meter(name, value, mode, work),
-            None => self.authored.write_attribute_with_meter(path, name, value, mode, work),
+            Some(file) => file.write_attribute(name, value, mode, work),
+            None => self.authored.write_attribute(path, name, value, mode, work),
         })
     }
 
-    fn remove_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork)
+    fn remove_attribute(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork)
         -> Result<(), MountSourceError> {
         self.native_mutation(path, None, true, false, work, |file| match file {
-            Some(file) => file.remove_attribute_with_meter(name, work),
-            None => self.authored.remove_attribute_with_meter(path, name, work),
+            Some(file) => file.remove_attribute(name, work),
+            None => self.authored.remove_attribute(path, name, work),
         })
-    }
-
-    fn create_file(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError> {
-        self.native_call(|work| self.create_file_with_meter(path, metadata, work))
     }
 
     fn open_created(&self, path: &MountPath, created: &MountLookup) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
@@ -6844,29 +6787,6 @@ where
         self.authored.list_attributes(path, cursor, maximum_entries)
     }
 
-    fn write_attribute(
-        &self,
-        path: &MountPath,
-        name: &[u8],
-        value: Bytes,
-        mode: MountAttributeWriteMode,
-    ) -> Result<(), MountSourceError> {
-        let _mutation = self.mutation_lease(None)?;
-        if let Some(file) = self.detached_for_path(path)? {
-            return file.write_attribute(name, value, mode);
-        }
-        self.promote_locked(path)?;
-        self.authored.write_attribute(path, name, value, mode)
-    }
-
-    fn remove_attribute(&self, path: &MountPath, name: &[u8]) -> Result<(), MountSourceError> {
-        let _mutation = self.mutation_lease(None)?;
-        if let Some(file) = self.detached_for_path(path)? {
-            return file.remove_attribute(name);
-        }
-        self.promote_locked(path)?;
-        self.authored.remove_attribute(path, name)
-    }
 
     fn write_range(
         &self,
@@ -8002,7 +7922,7 @@ mod tests {
         let old_a = view.lookup(&a)?.expect("source a").node.file_id;
         let old_b = view.lookup(&b)?.expect("source b").node.file_id;
         crate::native_mount::adapter::boundary(view.authored.cancellation(), |work| view.remove(&a, Some(old_a), work))?;
-        view.create_file(&a, FileMetadata::default())?;
+        view.native_call(|work| view.create_file(&a, FileMetadata::default(), None, work))?;
         view.write_range(&a, 0, Bytes::from_static(b"new-a"))?;
         crate::native_mount::adapter::boundary(view.authored.cancellation(), |work| view.remove(&b, Some(old_b), work))?;
         {
@@ -8639,7 +8559,7 @@ mod tests {
         } else {
             b"written".to_vec()
         });
-        view.create_file(&written, FileMetadata::default())?;
+        view.native_call(|work| view.create_file(&written, FileMetadata::default(), None, work))?;
         view.write_range(&written, 0, Bytes::from_static(b"fsynced"))?;
         view.flush(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, view.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)?;
         assert!(
@@ -8881,7 +8801,7 @@ mod tests {
         assert_eq!(view.lookup(&b)?, None);
 
         // A create through the view replaces the remembered absence.
-        let created = view.create_file(&b, FileMetadata::default())?;
+        let created = view.native_call(|work| view.create_file(&b, FileMetadata::default(), None, work))?;
         assert_eq!(
             view.lookup(&b)?.map(|lookup| lookup.node.file_id),
             Some(created.node.file_id)
@@ -8909,7 +8829,7 @@ mod tests {
         assert_eq!(view.lookup(&fresh)?, None);
         view.native_call(|work| view.create_directory(&fresh, FileMetadata::default(), work))?;
         assert_eq!(view.lookup(&inner)?, None);
-        let created = view.create_file(&inner, FileMetadata::default())?;
+        let created = view.native_call(|work| view.create_file(&inner, FileMetadata::default(), None, work))?;
         assert_eq!(
             view.lookup(&inner)?.map(|lookup| lookup.node.file_id),
             Some(created.node.file_id)
@@ -10209,7 +10129,7 @@ mod tests {
         assert_eq!(handle.seek_with_meter(2, MountSeekTarget::Hole, &context)?, Some(8));
         assert!(handle.read_attribute_with_meter(b"absent", &context)?.is_none());
         assert!(handle.list_attributes_with_meter(None, 2, &context)?.0.names.is_empty());
-        handle.settle_with_meter(&context)?;
+        handle.settle(&context)?;
         let (sparse, owned) = handle.read_sparse_range_with_meter(1, 3, &context)?;
         assert_eq!(sparse.logical_bytes, 3);
         assert_eq!(sparse.spans.len(), 1);
@@ -11426,7 +11346,7 @@ mod tests {
         std::fs::write(source.path().join("a"), b"a")?;
         let runtime = tokio::runtime::Runtime::new()?;
         let view = runtime.block_on(mounted_view(source.path(), "shared-finite-directory"))?;
-        view.create_file(&mounted(&["b"]), FileMetadata::default())?;
+        view.native_call(|work| view.create_file(&mounted(&["b"]), FileMetadata::default(), None, work))?;
         let caller = crate::CancellationToken::new();
         let budget = finite_directory_budget();
         let meter = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
@@ -11489,7 +11409,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new()?;
         let view = runtime.block_on(mounted_view(source.path(), "finite-directory-pages"))?;
         crate::native_mount::adapter::boundary(view.authored.cancellation(), |work| view.remove(&mounted(&["b"]), None, work))?;
-        view.create_file(&mounted(&["c"]), FileMetadata::default())?;
+        view.native_call(|work| view.create_file(&mounted(&["c"]), FileMetadata::default(), None, work))?;
         let caller = crate::CancellationToken::new();
         let budget = finite_directory_budget();
         assert!(budget.has_finite_allowances());
@@ -11539,7 +11459,7 @@ mod tests {
             &MountPath::root(), None, 1, &work,
         )?;
         let next = first.next_cursor.expect("source phase has a continuation");
-        view.create_file(&mounted(&["d"]), FileMetadata::default())?;
+        view.native_call(|work| view.create_file(&mounted(&["d"]), FileMetadata::default(), None, work))?;
         assert!(matches!(
             view.read_directory_with_meter(
                 &MountPath::root(), Some(&next), 1,
@@ -11571,7 +11491,7 @@ mod tests {
         let empty = view.read_directory(&mounted(&["empty"]), None, 64)?;
         assert!(empty.entries.is_empty());
         assert!(empty.next_cursor.is_none(), "an empty page continues");
-        view.create_file(&mounted(&["b"]), FileMetadata::default())?;
+        view.native_call(|work| view.create_file(&mounted(&["b"]), FileMetadata::default(), None, work))?;
         let mut cursor = None;
         let mut listed = 0;
         loop {
