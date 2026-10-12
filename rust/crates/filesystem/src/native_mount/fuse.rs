@@ -209,16 +209,6 @@ impl<T: Default> Default for FuseOwned<T> {
 impl PartialEq<MountPath> for FuseOwned<MountPath> {
     fn eq(&self, other: &MountPath) -> bool { **self == *other }
 }
-impl<'a, T> IntoIterator for &'a FuseOwned<Vec<T>> {
-    type Item = &'a T;
-    type IntoIter = std::slice::Iter<'a, T>;
-    fn into_iter(self) -> Self::IntoIter { self.iter() }
-}
-impl<'a, T> IntoIterator for &'a mut FuseOwned<Vec<T>> {
-    type Item = &'a mut T;
-    type IntoIter = std::slice::IterMut<'a, T>;
-    fn into_iter(self) -> Self::IntoIter { self.iter_mut() }
-}
 impl<T> IntoIterator for FuseOwned<Vec<T>> {
     type Item = T;
     type IntoIter = FuseOwned<std::vec::IntoIter<T>>;
@@ -645,7 +635,7 @@ impl InodeEntry {
     fn binding(&self, path: &MountPath, work: &super::NativeMountMeterWork)
         -> Result<Option<&Binding>, FuseRequestError>
     {
-        for binding in &self.bindings {
+        for binding in self.bindings.iter() {
             fuse_item(work)?;
             if binding.path == *path { return Ok(Some(binding)); }
         }
@@ -1114,7 +1104,7 @@ impl ProjectionState {
         let mut names = fuse_vec(0, work)?;
         let Some(entry) = self.inode_by_file.get(&file_id).and_then(|inode| self.by_inode.get(inode))
             else { return Ok(names); };
-        for binding in &entry.bindings {
+        for binding in entry.bindings.iter() {
             fuse_item(work)?;
             if binding.path == *path { continue; }
             if let Some(stamp) = binding.verified {
@@ -1135,7 +1125,7 @@ impl ProjectionState {
             let remaining = entry.lookup_references.saturating_sub(references);
             let implicit = u64::from(remaining == 0 && self.implicit.contains_key(&inode));
             if inode != ROOT_INODE && remaining == 0 && entry.open_handles <= implicit {
-                for _binding in &entry.bindings { fuse_item(work)?; }
+                for _binding in entry.bindings.iter() { fuse_item(work)?; }
             }
         }
         self.release_lookup_reference_administrative(inode, references);
@@ -1158,7 +1148,7 @@ impl ProjectionState {
             .get(&inode)
             .is_some_and(|entry| entry.lookup_references == 0 && entry.open_handles == 0);
         if remove && let Some(mut entry) = self.by_inode.remove(&inode) {
-            for binding in &entry.bindings {
+            for binding in entry.bindings.iter() {
                 if self.inode_by_path.get(&binding.path) == Some(&inode) {
                     self.inode_by_path.remove(&binding.path);
                 }
@@ -1302,7 +1292,7 @@ impl ProjectionState {
             return self.open_inode(inode, work)?.map(|file| Err(NodeFacts::Handle(file))).ok_or(libc::ESTALE.into());
         }
         let mut paths = fuse_vec(entry.bindings.len(), work)?;
-        for binding in &entry.bindings { fuse_item(work)?; paths.push(fuse_clone_path(&binding.path, work)?); }
+        for binding in entry.bindings.iter() { fuse_item(work)?; paths.push(fuse_clone_path(&binding.path, work)?); }
         Ok(Err(NodeFacts::Names { file_id: (inode != ROOT_INODE).then_some(entry.lookup.node.file_id), paths }))
     }
 
@@ -1547,7 +1537,7 @@ impl ProjectionState {
     {
         let mut affected = fuse_vec(0, work)?;
         for (inode, entry) in &self.by_inode {
-            for binding in &entry.bindings {
+            for binding in entry.bindings.iter() {
                 fuse_item(work)?;
                 if fuse_has_prefix(&binding.path, prefix, work)? {
                     let path = fuse_clone_path(&binding.path, work)?;
@@ -1747,7 +1737,7 @@ fn stale_kernel_items(
             }
         }
     }
-    for action in &actions {
+    for action in actions.iter() {
         match action {
             Action::Inode(inode) => by_inode.get_mut(inode).expect("planned inode remains locked").kernel = Some(through),
             Action::Binding { inode, index } =>
@@ -2968,32 +2958,27 @@ impl FuseRetirementHelper {
 }
 
 struct FuseSdkInput {
-    state: Mutex<FuseSdkInputState>,
+    // Outer presence makes submission one-shot.
+    state: Mutex<Option<Option<fuser::Session<FuseProjection>>>>,
     ready: Condvar,
     _allocation: crate::NativeAllocation,
-}
-
-struct FuseSdkInputState {
-    session: Option<fuser::Session<FuseProjection>>,
-    submitted: bool,
 }
 
 impl FuseSdkInput {
     fn run(&self) -> std::io::Result<()> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        while !state.submitted {
+        while state.is_none() {
             state = self.ready.wait(state).unwrap_or_else(PoisonError::into_inner);
         }
-        let session = state.session.take();
+        let session = state.as_mut().expect("SDK submission was received").take();
         drop(state);
         match session { Some(session) => session.run(), None => Ok(()) }
     }
 
     fn submit(&self, session: Option<fuser::Session<FuseProjection>>) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if state.submitted { return; }
-        state.session = session;
-        state.submitted = true;
+        if state.is_some() { return; }
+        *state = Some(session);
         self.ready.notify_all();
     }
 }
@@ -3114,14 +3099,7 @@ impl FusePhysicalSession {
         if active_root.is_some() {
             match native {
                 Some(native) => {
-                    let materialization = native.native_materialization_work();
-                    let mut host = &materialization;
-                    let cleanup = crate::native_host::NativeHostWork::reserve_cleanup_write(&mut host)?;
-                    let directory = active_root.take().expect("preadmitted root capability remains owned");
-                    let (_, recorded) = crate::native_host::NativeHostWork::attempt_cleanup_write(
-                        &mut host, cleanup, || drop(directory),
-                    );
-                    recorded.map_err(NativeMountError::from)?;
+                    close_fuse_root(active_root, native)?;
                 }
                 None => {
                     started_io(write)?;
@@ -3178,19 +3156,7 @@ impl FusePhysicalSession {
         let (directory, identity) = crate::native_host::open_root_directory_identity_with_work(destination, &mut host)?;
         self.active_root = Some(directory);
         self.native_root_identity = Some(identity);
-        self.close_root_with_meter(native)
-    }
-
-    fn close_root_with_meter(&mut self, native: &super::NativeMountMeterWork) -> Result<(), NativeMountError> {
-        if self.active_root.is_none() { return Ok(()); }
-        let materialization = native.native_materialization_work();
-        let mut host = &materialization;
-        let cleanup = crate::native_host::NativeHostWork::reserve_cleanup_write(&mut host)?;
-        let directory = self.active_root.take().expect("preadmitted root capability remains owned");
-        let (_, recorded) = crate::native_host::NativeHostWork::attempt_cleanup_write(
-            &mut host, cleanup, || drop(directory),
-        );
-        recorded.map_err(NativeMountError::from)
+        close_fuse_root(&mut self.active_root, native)
     }
 
     /// Parses and queues the real owned invalidation plan on the invoking meter.
@@ -3297,6 +3263,18 @@ impl FusePhysicalSession {
 
 }
 
+fn close_fuse_root(active_root: &mut Option<cap_std::fs::Dir>, native: &super::NativeMountMeterWork) -> Result<(), NativeMountError> {
+    if active_root.is_none() { return Ok(()); }
+    let materialization = native.native_materialization_work();
+    let mut host = &materialization;
+    let cleanup = crate::native_host::NativeHostWork::reserve_cleanup_write(&mut host)?;
+    let directory = active_root.take().expect("preadmitted root capability remains owned");
+    let (_, recorded) = crate::native_host::NativeHostWork::attempt_cleanup_write(
+        &mut host, cleanup, || drop(directory),
+    );
+    recorded.map_err(NativeMountError::from)
+}
+
 fn retire_fuse_driver(
     control: &Arc<FuseDriverControl>, wait: Option<&crate::CancellationToken>,
 ) -> Result<(), NativeMountError> {
@@ -3372,7 +3350,7 @@ impl FuseSession {
         let input_allocation = normal.claim(std::mem::size_of::<FuseSdkInput>() as u64)
             .map_err(NativeMountError::from)?;
         let input = Arc::new(FuseSdkInput {
-            state: Mutex::new(FuseSdkInputState { session: None, submitted: false }),
+            state: Mutex::new(None),
             ready: Condvar::new(), _allocation: input_allocation,
         });
         let control_allocation = normal.claim(std::mem::size_of::<FuseDriverControl>() as u64)
@@ -3447,21 +3425,14 @@ impl FuseSession {
         Ok(())
     }
 
-    fn with_physical<T>(
-        &self, operation: impl FnOnce(&mut FusePhysicalSession) -> Result<T, NativeMountError>,
-    ) -> Result<T, NativeMountError> {
-        let mut loan = FuseDriverLoan::take(&self.control)?;
-        operation(loan.physical.as_mut().expect("actual physical driver loan"))
-    }
-
     pub(super) fn begin_original_work(
         &self, work: &super::NativeMountMeterWork,
     ) -> Result<FuseStartupMeterScope, NativeMountError> {
-        self.with_physical(|physical| {
-            if physical.session.is_none() { return Err(NativeMountError::Lifecycle("session is stopped")); }
-            work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED)?;
-            FuseStartupMeterScope::new(&physical.core, work)
-        })
+        let loan = FuseDriverLoan::take(&self.control)?;
+        let physical = loan.physical.as_ref().expect("actual physical driver loan");
+        if physical.session.is_none() { return Err(NativeMountError::Lifecycle("session is stopped")); }
+        work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED)?;
+        FuseStartupMeterScope::new(&physical.core, work)
     }
     pub(super) fn native_root_identity(&self) -> Option<crate::NativeRootIdentity> {
         let state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -3469,19 +3440,20 @@ impl FuseSession {
             .and_then(|physical| physical.native_root_identity)
     }
     pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
-        self.with_physical(|physical| physical.invalidate(path))
+        let loan = FuseDriverLoan::take(&self.control)?;
+        loan.physical.as_ref().expect("actual physical driver loan").invalidate(path)
     }
     pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
-        self.with_physical(|physical| {
-            let cancellation = crate::CancellationToken::new();
-            let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-                .map_err(|(cause, _)| NativeMountError::from(cause))?;
-            physical.revalidate_with_meter(&work.native_mount_work())
-        })
+        let loan = FuseDriverLoan::take(&self.control)?;
+        let cancellation = crate::CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, _)| NativeMountError::from(cause))?;
+        loan.physical.as_ref().expect("actual physical driver loan").revalidate_with_meter(&work.native_mount_work())
     }
     pub(super) fn revalidate_with_meter(&self, work: &super::NativeMountMeterWork)
         -> Result<(), NativeMountError> {
-        self.with_physical(|physical| physical.revalidate_with_meter(work))
+        let loan = FuseDriverLoan::take(&self.control)?;
+        loan.physical.as_ref().expect("actual physical driver loan").revalidate_with_meter(work)
     }
     pub(super) fn take_callback_failure(&self) -> Option<super::NativeMountCallbackFailure> {
         self.core.take_handler_failure()
@@ -3511,7 +3483,10 @@ impl FuseSession {
         -> Result<(), NativeMountError> { self.finish_stop(Some(wait)) }
     pub(super) fn stop_with_meter(&mut self, work: &super::NativeMountMeterWork)
         -> Result<(), NativeMountError> {
-        self.with_physical(|physical| physical.stop(Some(work), None))?;
+        {
+            let mut loan = FuseDriverLoan::take(&self.control)?;
+            loan.physical.as_mut().expect("actual physical driver loan").stop(Some(work), None)?;
+        }
         self.finish_stop(None)
     }
     fn finish_stop(&mut self, wait: Option<&crate::CancellationToken>) -> Result<(), NativeMountError> {
@@ -3534,13 +3509,14 @@ impl FuseSession {
         let failure = state.failure.take();
         drop(state);
         if self.invalidator.is_some() {
-            self.with_physical(|physical| {
+            {
+                let mut driver = FuseDriverLoan::take(&self.control)?;
+                let physical = driver.physical.as_mut().expect("actual physical driver loan");
                 let loan = physical.birth_cleanup.accepted_cleanup_loan();
                 loan.started_io(crate::WorkCounters {
                     backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
                 })?;
-                Ok(())
-            })?;
+            }
             let worker = self.invalidator.take().expect("original invalidator join remains owned");
             worker.join().map_err(|panic| NativeMountError::DriverPanicked {
                 operation: "FUSE retirement producer", panic: Mutex::new(panic),
@@ -6423,7 +6399,7 @@ mod tests {
         assert!(root.remember_negative_child(b"still-absent", held, &work).expect("tracked name"));
         let entry = by_inode.get_mut(&file).ok_or(libc::ESTALE)?;
         entry.kernel = Some(held);
-        for binding in &mut entry.bindings {
+        for binding in entry.bindings.iter_mut() {
             binding.kernel = Some(held);
         }
         let changed = [name("changed"), name("appeared")];

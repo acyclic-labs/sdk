@@ -151,7 +151,7 @@ struct CacheEpochs {
 }
 
 struct DirectoryHandle {
-    path: MountPath,
+    path: DarwinOwned<MountPath>,
     binding_epoch: Option<u64>,
     epochs: Option<CacheEpochs>,
     cursor: Option<Vec<u8>>,
@@ -159,7 +159,6 @@ struct DirectoryHandle {
     exhausted: bool,
     emitted: i64,
     revision: Option<u64>,
-    path_custody: Option<DarwinOwned<()>>,
     page_custody: Option<DarwinOwned<()>>,
     page_source_ownership: Option<crate::demand::SourcePayloadOwnership>,
 }
@@ -171,7 +170,7 @@ struct DirectoryCheckpoint {
 }
 
 impl DirectoryHandle {
-    fn new(path: MountPath, binding_epoch: Option<u64>, epochs: Option<CacheEpochs>) -> Self {
+    fn new(path: DarwinOwned<MountPath>, binding_epoch: Option<u64>, epochs: Option<CacheEpochs>) -> Self {
         Self {
             path,
             binding_epoch,
@@ -181,7 +180,6 @@ impl DirectoryHandle {
             exhausted: false,
             emitted: 0,
             revision: None,
-            path_custody: None,
             page_custody: None,
             page_source_ownership: None,
         }
@@ -248,11 +246,10 @@ impl DirectoryHandle {
                 entries.push_back(MountDirectoryEntry { name, node: entry.node, metadata: entry.metadata, pin: entry.pin });
             })?;
         }
-        let (path, path_custody) = path_owned.into_parts();
         Ok(Self {
-            path, binding_epoch: self.binding_epoch, epochs: self.epochs, cursor, entries,
+            path: path_owned, binding_epoch: self.binding_epoch, epochs: self.epochs, cursor, entries,
             exhausted: self.exhausted, emitted: self.emitted, revision: self.revision,
-            path_custody: Some(path_custody), page_custody: Some(page_custody),
+            page_custody: Some(page_custody),
             page_source_ownership: None,
         })
     }
@@ -268,13 +265,9 @@ impl DirectoryHandle {
         })
     }
 
-    const fn can_reuse_pages(&self) -> bool {
-        self.epochs.is_some()
-    }
-
     fn keep_current(&mut self, context: &DarwinMountContext, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
         for _ in 0..MAXIMUM_LISTING_RESTARTS {
-            if !self.can_reuse_pages() || self.is_current(context, work)? {
+            if self.epochs.is_none() || self.is_current(context, work)? {
                 return Ok(());
             }
             if self.emitted > 2 || context.source.binding_epoch_with_meter(work.native).map_err(|error| work.source_error(error))? != self.binding_epoch {
@@ -514,9 +507,8 @@ struct IssuedLabel {
 }
 
 struct Observed {
-    path: MountPath,
+    path: DarwinOwned<MountPath>,
     lookup: MountLookup,
-    path_custody: Option<DarwinOwned<()>>,
 }
 
 impl Observed {
@@ -570,8 +562,7 @@ impl ChangeLabels {
             self.cleared.fetch_add(1, Ordering::AcqRel);
         }
         let path = work.path_with_child(path, None)?;
-        let (path, proof) = path.into_parts();
-        let observed = Observed { path, lookup, path_custody: Some(proof) };
+        let observed = Observed { path, lookup };
         let label = self.fresh();
         labels.insert(
             file_id,
@@ -604,12 +595,11 @@ impl ChangeLabels {
             for (file_id, issued) in labels.iter() {
                 work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
                 let path = work.path_with_child(&issued.observed.path, None)?;
-                let (path, proof) = path.into_parts();
                 let copied = crate::WorkCounters { bytes_copied:
                     (std::mem::size_of::<FileId>() + std::mem::size_of::<MountLookup>()) as u64,
                     ..crate::WorkCounters::UNCHARGED };
                 work.copying(copied, || rows.push((*file_id, Observed {
-                    path, lookup: issued.observed.lookup, path_custody: Some(proof),
+                    path, lookup: issued.observed.lookup,
                 })))?;
             }
             Ok(Some(rows))
@@ -1186,7 +1176,7 @@ unsafe extern "C" fn report_mounted(events: *mut c_void) {
 }
 
 struct DarwinStartupBuffers {
-    destination: Option<CString>,
+    destination: CString,
     arguments: Vec<CString>,
     pointers: Vec<usize>,
     allocation: crate::NativeAllocation,
@@ -1197,25 +1187,24 @@ impl DarwinStartupBuffers {
         destination: &Path, writable: bool, named_attributes: bool, native: &super::NativeMountMeterWork,
     ) -> Result<Self, NativeMountError> {
         let work = native.native_materialization_work();
-        let allocation = work.claim(0)?;
+        let mut allocation = work.claim(0)?;
+        let destination = darwin_startup_string(destination.as_os_str().as_bytes(), &work, &mut allocation)?;
         let mut owned = Self {
-            destination: None, arguments: Vec::new(), pointers: Vec::new(), allocation,
+            destination, arguments: Vec::new(), pointers: Vec::new(), allocation,
         };
-        let name = destination.as_os_str().as_bytes();
-        owned.destination = Some(owned.string(name, &work)?);
         let options = [Some(c"nobrowse"), (!writable).then_some(c"ro"),
             named_attributes.then_some(c"namedattr")];
         let count = 1 + 2 * (1 + usize::from(!writable) + usize::from(named_attributes));
         let bytes = (count * std::mem::size_of::<CString>()) as u64;
         owned.allocation.grow(bytes)?;
         owned.arguments.try_reserve_exact(count)?;
-        let argument = owned.string(c"acyclic-fs".to_bytes(), &work)?;
+        let argument = darwin_startup_string(c"acyclic-fs".to_bytes(), &work, &mut owned.allocation)?;
         owned.arguments.push(argument);
         for option in options.into_iter().flatten() {
             work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-            let flag = owned.string(c"-o".to_bytes(), &work)?;
+            let flag = darwin_startup_string(c"-o".to_bytes(), &work, &mut owned.allocation)?;
             owned.arguments.push(flag);
-            let argument = owned.string(option.to_bytes(), &work)?;
+            let argument = darwin_startup_string(option.to_bytes(), &work, &mut owned.allocation)?;
             owned.arguments.push(argument);
         }
         let bytes = (count * std::mem::size_of::<usize>()) as u64;
@@ -1232,31 +1221,24 @@ impl DarwinStartupBuffers {
         Ok(owned)
     }
 
-    fn string(&mut self, value: &[u8], work: &crate::NativeMaterializationWork) -> Result<CString, NativeMountError> {
-        for byte in value {
-            work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-            if *byte == 0 { return Err(std::io::Error::from_raw_os_error(libc::EINVAL).into()); }
-        }
-        let bytes = value.len().checked_add(1).ok_or(crate::WorkError::Overflow)? as u64;
-        let copied = crate::WorkCounters { bytes_copied: value.len() as u64, ..crate::WorkCounters::UNCHARGED };
-        work.admit(copied)?;
-        self.allocation.grow(bytes)?;
-        let mut vector = Vec::with_capacity(bytes as usize);
-        vector.extend_from_slice(value);
-        vector.push(0);
-        // SAFETY: every input byte was validated above and one NUL was appended.
-        let string = unsafe { CString::from_vec_with_nul_unchecked(vector) };
-        work.record_admitted(copied)?;
-        Ok(string)
-    }
 }
 
-impl Drop for DarwinStartupBuffers {
-    fn drop(&mut self) {
-        drop(self.destination.take());
-        drop(std::mem::take(&mut self.arguments));
-        drop(std::mem::take(&mut self.pointers));
+fn darwin_startup_string(value: &[u8], work: &crate::NativeMaterializationWork, allocation: &mut crate::NativeAllocation) -> Result<CString, NativeMountError> {
+    for byte in value {
+        work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        if *byte == 0 { return Err(std::io::Error::from_raw_os_error(libc::EINVAL).into()); }
     }
+    let bytes = value.len().checked_add(1).ok_or(crate::WorkError::Overflow)? as u64;
+    let copied = crate::WorkCounters { bytes_copied: value.len() as u64, ..crate::WorkCounters::UNCHARGED };
+    work.admit(copied)?;
+    allocation.grow(bytes)?;
+    let mut vector = Vec::with_capacity(bytes as usize);
+    vector.extend_from_slice(value);
+    vector.push(0);
+    // SAFETY: every input byte was validated above and one NUL was appended.
+    let string = unsafe { CString::from_vec_with_nul_unchecked(vector) };
+    work.record_admitted(copied)?;
+    Ok(string)
 }
 
 /// One process-owned high-level Darwin mount session.
@@ -1527,7 +1509,7 @@ fn run_darwin_loop(mut owned: (
                 acyclic_fs_darwin_mount_run(
                     resources.driver_session.load(Ordering::Acquire) as *mut c_void,
                     buffers.arguments.len() as c_int, buffers.pointers.as_ptr().cast::<*const c_char>(),
-                    buffers.destination.as_ref().expect("native destination retained").as_ptr(),
+                    buffers.destination.as_ptr(),
                     resources.source_context, report_mounted,
                     Arc::as_ptr(&events.0).cast_mut().cast(), &mut interrupted_before_namespace,
                 )
@@ -2525,7 +2507,7 @@ impl DarwinStopController {
     ) -> Result<(), NativeMountError> {
         let meter = state.cleanup_meter.as_ref().cloned().ok_or(NativeMountError::ControlPending)?;
         if !state.detached || state.direct.is_some() || state.diskutil.is_some() {
-            let destination = resources.startup.as_ref().and_then(|startup| startup.destination.as_ref())
+            let destination = resources.startup.as_ref().map(|startup| &startup.destination)
                 .ok_or(NativeMountError::ControlPending)?;
             let destination = Path::new(std::ffi::OsStr::from_bytes(destination.as_bytes()));
             let mut plan = state.cleanup_plan.take().ok_or(NativeMountError::ControlPending)?;
@@ -2914,7 +2896,7 @@ fn spawn_diskutil(
     if let Some(resources) = resources {
         let prepared = state.prepared_diskutil.as_mut().ok_or(NativeMountError::ControlPending)?;
         if prepared.frame.is_none() { return Err(NativeMountError::ControlPending); }
-        let path = resources.startup.as_ref().and_then(|startup| startup.destination.as_ref())
+        let path = resources.startup.as_ref().map(|startup| &startup.destination)
             .ok_or(NativeMountError::ControlPending)?;
         state.diskutil = Some(DiskutilProcess {
             tree: None, deadline: Instant::now() + DISKUTIL_UNMOUNT_TIMEOUT, failed_spawn: false,
@@ -3885,9 +3867,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
         if context.lookup(&path, work)?.node.kind != MountNodeKind::Directory {
             return Err(libc::ENOTDIR);
         }
-        let (path, path_custody) = path.into_parts();
         let mut directory = DirectoryHandle::new(path, binding_epoch, epochs);
-        directory.path_custody = Some(path_custody);
         directory.keep_current(context, work)?;
         let allocated = context.allocate_handle()?;
         let directory = work.shared(|| Mutex::new(directory))?;
@@ -3924,7 +3904,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
         if offset < 0 {
             return Err(libc::EINVAL);
         }
-        if !directory.can_reuse_pages() {
+        if directory.epochs.is_none() {
             directory.rewind();
             context
                 .directory_checkpoints
@@ -4024,7 +4004,7 @@ fn finish_directory_page(
     context: &DarwinMountContext,
     directory: &DirectoryHandle,
     checkpoint: bool, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
-    if directory.emitted > 2 && directory.can_reuse_pages() && !directory.is_current(context, work)? {
+    if directory.emitted > 2 && directory.epochs.is_some() && !directory.is_current(context, work)? {
         return Err(libc::ESTALE);
     }
     if checkpoint {
@@ -4094,7 +4074,7 @@ fn checkpoint_directory(
     context: &DarwinMountContext,
     directory: &DirectoryHandle, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
     const MAXIMUM_DIRECTORY_CHECKPOINTS: usize = 64;
-    if !directory.can_reuse_pages() {
+    if directory.epochs.is_none() {
         return Ok(());
     }
     let mut checkpoints = context
@@ -5253,7 +5233,7 @@ mod tests {
             acyclic_fs_darwin_mount_run(
                 driver_session as *mut c_void, startup.arguments.len() as c_int,
                 startup.pointers.as_ptr().cast::<*const c_char>(),
-                startup.destination.as_ref().expect("the actual original destination").as_ptr(),
+                startup.destination.as_ptr(),
                 resources.source_context, report_mounted, Arc::as_ptr(&events).cast_mut().cast(),
                 &mut interrupted_before_namespace,
             )
@@ -6146,7 +6126,7 @@ mod tests {
         )?;
         let root = MountPath::root();
         let mut directory =
-            DirectoryHandle::new(root, source.binding_epoch(), context.run_request(false, |work| context.cache_epochs(work)).map_err(os)?);
+            DirectoryHandle::new(DarwinOwned::empty(root), source.binding_epoch(), context.run_request(false, |work| context.cache_epochs(work)).map_err(os)?);
         context.run_request(false, |work| advance_directory_to_offset(&context, &mut directory, 3, work))
             .map_err(std::io::Error::from_raw_os_error)?;
         source.create_file(
@@ -6169,7 +6149,7 @@ mod tests {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let root = MountPath::root();
         let mut directory =
-            DirectoryHandle::new(root, source.binding_epoch(), context.run_request(false, |work| context.cache_epochs(work)).map_err(os)?);
+            DirectoryHandle::new(DarwinOwned::empty(root), source.binding_epoch(), context.run_request(false, |work| context.cache_epochs(work)).map_err(os)?);
         context.run_request(false, |work| ensure_directory_page(&context, &mut directory, work))
             .map_err(std::io::Error::from_raw_os_error)?;
         source.create_file(
@@ -6188,10 +6168,10 @@ mod tests {
         let nested = MountPath::root().child(b"nested".to_vec());
         source.create_directory(&nested, FileMetadata::default())?;
         let epochs = context.run_request(false, |work| context.cache_epochs(work)).map_err(os)?.ok_or("checkout has no view stamp")?;
-        let root = DirectoryHandle::new(MountPath::root(), Some(epochs.binding), Some(epochs));
-        let directory = DirectoryHandle::new(nested.clone(), Some(epochs.binding), Some(epochs));
+        let root = DirectoryHandle::new(DarwinOwned::empty(MountPath::root()), Some(epochs.binding), Some(epochs));
+        let directory = DirectoryHandle::new(DarwinOwned::empty(nested.clone()), Some(epochs.binding), Some(epochs));
         let rebound = DirectoryHandle::new(
-            nested.clone(),
+            DarwinOwned::empty(nested.clone()),
             Some(epochs.binding + 1),
             Some(CacheEpochs {
                 binding: epochs.binding + 1,
@@ -6201,7 +6181,6 @@ mod tests {
         assert!(context.run_request(false, |work| root.is_current(&context, work)).map_err(os)?);
         assert!(context.run_request(false, |work| directory.is_current(&context, work)).map_err(os)?);
         assert!(!context.run_request(false, |work| rebound.is_current(&context, work)).map_err(os)?);
-        assert!(directory.can_reuse_pages());
 
         source.create_file(
             &MountPath::root().child(b"sibling".to_vec()),
@@ -6213,7 +6192,7 @@ mod tests {
         assert!(!context.run_request(false, |work| directory.is_current(&context, work)).map_err(os)?);
 
         let unrecorded =
-            DirectoryHandle::new(nested, source.binding_epoch(), context.run_request(false, |work| context.cache_epochs(work)).map_err(os)?);
+            DirectoryHandle::new(DarwinOwned::empty(nested), source.binding_epoch(), context.run_request(false, |work| context.cache_epochs(work)).map_err(os)?);
         assert!(context.run_request(false, |work| unrecorded.is_current(&context, work)).map_err(os)?);
         context.forget_view();
         assert!(
@@ -6221,9 +6200,8 @@ mod tests {
             "a forgotten view invalidates every page"
         );
 
-        let epochless = DirectoryHandle::new(MountPath::root(), None, None);
+        let epochless = DirectoryHandle::new(DarwinOwned::empty(MountPath::root()), None, None);
         assert!(!context.run_request(false, |work| epochless.is_current(&context, work)).map_err(os)?);
-        assert!(!epochless.can_reuse_pages());
         Ok(())
     }
 
