@@ -321,7 +321,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     ) -> BoxFuture<'a, Result<crate::conversation::FileRef>> {
         Box::pin(async move {
             let (task, fence) = self.owner.as_ref().task_binding();
-            self.host.send_owned(task, fence.clone(), recipient, operation, payload).await
+            self.host.send_mail(task, fence, recipient, operation, payload, None).await
         })
     }
     fn inbox<'a>(&'a self, after: u64, maximum: usize) -> BoxFuture<'a, Result<Vec<crate::scheduler::InboxItem>>> {
@@ -538,7 +538,7 @@ where
             volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
         } else { volume.validate(&mut None)?; }
         #[cfg(target_arch = "wasm32")]
-        volume.validate()?;
+        volume.validate(&mut None)?;
         if maximum_payload_bytes == 0 {
             return Err(match io {
                 Some(_) => observed::boundary(io, crate::wire::ErrorCode::Invalid,
@@ -1002,7 +1002,7 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<crate::runtime::NativeTaskContext>> {
         let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
-        owner.verify_with_native_work(allow_settlement, work).await?;
+        owner.verify(allow_settlement, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         let owner = owner.into_native_shared(work)?;
         let mailbox: Arc<dyn OwnedTaskMailbox> = {
             if !owner.original_host_binding_matches(&self.host) {
@@ -1123,15 +1123,25 @@ where
         tool: &crate::durable_tool::ResumableTool,
         invocation: &crate::tool::ToolInvocation,
         cancellation: &acyclic_fs::CancellationToken,
+        io: Option<&super::PreparationIo>,
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
         let task = context.task().durable_task_id()
             .ok_or_else(|| Error::Unauthorized("tool has no admitted caller".into()))?;
-        let owner = self.host.journal_owner(task, context.task().owned_task_fence()?).await?
-            .for_tool_workflow(context, tool, invocation, cancellation).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let owner = match io.and_then(super::PreparationIo::original_native_work) {
+            Some(work) => {
+                let (_, fence) = context.task().owned_task_binding_with_native_work(work)?;
+                self.host.journal_owner_with_native_work(task, fence, work).await?
+            }
+            None => self.host.journal_owner(task, context.task().owned_task_fence()?).await?,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let owner = self.host.journal_owner(task, context.task().owned_task_fence()?).await?;
+        let owner = owner.for_tool_workflow(context, tool, invocation, cancellation, io).await?;
         let maximum_payload_bytes = self.maximum_payload_bytes.min(owner.input_limits().file_bytes);
         FilesystemWorkflowJournal::for_task(
             owner, self.filesystem.clone(), &self.volume,
-            &self.verifier, &self.signed, maximum_payload_bytes, None,
+            &self.verifier, &self.signed, maximum_payload_bytes, io,
         )
     }
 
@@ -1142,8 +1152,9 @@ where
         tool: &crate::durable_tool::ResumableTool,
         invocation: &crate::tool::ToolInvocation,
         cancellation: &acyclic_fs::CancellationToken,
+        io: Option<&super::PreparationIo>,
     ) -> Result<super::RecursiveToolOwner<P, A, O>> {
-        let workflow = self.workflow_journal_for_tool(context, tool, invocation, cancellation).await?;
+        let workflow = self.workflow_journal_for_tool(context, tool, invocation, cancellation, io).await?;
         let journal_owner = workflow.owner.clone()
             .ok_or_else(|| Error::Unauthorized("recursive tool lacks its original task owner".into()))?;
         Ok(super::RecursiveToolOwner { runtime:self.clone(), workflow, journal_owner })
