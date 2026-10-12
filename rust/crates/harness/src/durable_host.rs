@@ -7187,6 +7187,184 @@ pub(crate) mod tests {
 
     #[cfg(feature = "filesystem")]
     #[tokio::test]
+    async fn bounded_routing_ack_loss_redelivery_cancel_and_replacement() -> Result<()> {
+        use crate::distributed::{WorkPull, Worker};
+        use std::sync::atomic::Ordering;
+        for a in 0..4 {
+            for b in 0..4 {
+                for c in 0..4 {
+                    for d in 0..4 {
+                        if a == b || a == c || a == d || b == c || b == d || c == d
+                        {
+                            continue;
+                        }
+                        let provider =
+                            Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+                        let stream = StreamClient::new(provider.clone());
+                        let fixture = effect_task_fixture(
+                            stream.clone(),
+                            "test.routing",
+                            vec![
+                                "mail:send".into(),
+                                "mail:read".into(),
+                                "model:generate".into(),
+                            ],
+                        )
+                        .await?;
+                        let host = fixture.host;
+                        let (task, fence) = fixture.binding.task_binding();
+                        let fence = fence.clone();
+                        let message = OperationId::from_bytes([54; 16]);
+                        let payload = fixture.payloads.stage(message, "body", b"7").await?;
+                        let mut fenced = false;
+                        let mut published = false;
+                        for action in [a, b, c, d] {
+                            match action {
+                                0 | 1 => {
+                                    if !fenced {
+                                        host.claim_model_dispatch(
+                                            task,
+                                            message,
+                                            0,
+                                            [7; 32],
+                                            fence.clone(),
+                                        )
+                                        .await?;
+                                        assert!(
+                                            host.claim_model_dispatch(
+                                                task,
+                                                message,
+                                                0,
+                                                [8; 32],
+                                                fence.clone()
+                                            )
+                                            .await
+                                            .is_err()
+                                        );
+                                    }
+                                    if action == 0 && !fenced {
+                                        provider.commit_lose_ack.store(true, Ordering::SeqCst);
+                                    }
+                                    let sent = host
+                                        .send_owned(
+                                            task,
+                                            fence.clone(),
+                                            task,
+                                            message,
+                                            payload.clone(),
+                                        )
+                                        .await;
+                                    provider.commit_lose_ack.store(false, Ordering::SeqCst);
+                                    if fenced {
+                                        assert!(
+                                            sent.is_err(),
+                                            "stale or cancelled sender succeeded"
+                                        );
+                                    } else {
+                                        // A lost reply may report uncertainty after the original atomic publication.
+                                        let inbox = host.inbox(task, 0, 2).await?;
+                                        assert_eq!(inbox.len(), 1);
+                                        assert_eq!(inbox[0].message_id, message.to_string());
+                                        published = true;
+                                        assert_eq!(
+                                            host.send_owned(
+                                                task,
+                                                fence.clone(),
+                                                task,
+                                                message,
+                                                payload.clone()
+                                            )
+                                            .await?
+                                            .operation_id,
+                                            message
+                                        );
+                                        assert!(
+                                            host.send_owned(
+                                                task,
+                                                fence.clone(),
+                                                task,
+                                                message,
+                                                fixture
+                                                    .payloads
+                                                    .stage(message, "changed", b"8")
+                                                    .await?
+                                            )
+                                            .await
+                                            .is_err()
+                                        );
+                                    }
+                                }
+                                2 => {
+                                    if !host.cancellation_requested(task).await? {
+                                        let WorkPull::Claimed(lease) =
+                                            host.recover_work(task).await?
+                                        else {
+                                            return Err(Error::NotFound(
+                                                "routing original lease".into(),
+                                            ));
+                                        };
+                                        host.coordinator
+                                            .lock()
+                                            .await
+                                            .release_lease(
+                                                &lease,
+                                                IdempotencyKey::new("routing-replace")?,
+                                            )
+                                            .await?;
+                                        let WorkPull::Claimed(replacement) = host
+                                            .pull_operation(
+                                                &Worker {
+                                                    id: "replacement".into(),
+                                                    available: Default::default(),
+                                                    labels: BTreeMap::new(),
+                                                },
+                                                OperationId::from_bytes(task.into_bytes()),
+                                            )
+                                            .await?
+                                        else {
+                                            return Err(Error::NotFound(
+                                                "routing replacement lease".into(),
+                                            ));
+                                        };
+                                        host.start_task(&replacement).await?;
+                                        assert_ne!(
+                                            crate::scheduler::LeaseFence::from(
+                                                &replacement.reservation
+                                            ),
+                                            fence
+                                        );
+                                    }
+                                    fenced = true;
+                                }
+                                _ => {
+                                    host.cancel(task).await?;
+                                    fenced = true;
+                                }
+                            }
+                            assert_eq!(
+                                host.mailbox(task)?
+                                    .bounds()
+                                    .await
+                                    .map(|bounds| bounds.tail)
+                                    .unwrap_or(0),
+                                u64::from(published)
+                            );
+                        }
+                        let inbox = host.inbox(task, 0, 2).await?;
+                        assert_eq!(inbox.len(), usize::from(published));
+                        assert!(
+                            host.claim_model_dispatch(task, message, 0, [7; 32], fence)
+                                .await
+                                .is_err()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    #[cfg(feature = "filesystem")]
+    #[tokio::test]
     async fn recovery_after_pull_response_loss_keeps_original_reservation_without_writes()
     -> Result<()> {
         use crate::distributed::{WorkLease, WorkPull, Worker};

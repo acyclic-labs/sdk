@@ -141,7 +141,7 @@ async fn durable_merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes()
     let (plan, payload) = merge_plan(&fixture, effect).await?;
     let machine = RecursiveToolMachine::new(Kind::Merge, 65536);
     let initial = machine.initialize(&encode(&plan.arguments, None)?)?;
-    let command = WorkflowCommand { operation_id: derived(effect, Stage::MergeApply.label(), None)?, kind: MERGE_APPLY.into(), payload: payload.clone() };
+    let command = WorkflowCommand { operation_id: derived(effect, "merge-apply", None)?, kind: MERGE_APPLY.into(), payload: payload.clone() };
     let waiting = machine.transition(&initial, &encode(&(InitialPlan { plan: Plan::Merge(Box::new(plan.clone())), command: command.clone() }), None)?)?;
     assert!(matches!(waiting.status, MachineStatus::Suspended));
     assert_eq!(waiting.commands, vec![command.clone()]);
@@ -155,7 +155,7 @@ async fn durable_merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes()
     let receipt = controller.merge_receipt(&inspected, &outcome, plan.source.clone(), effect, plan.notice.clone())?;
     let mut foreign = receipt.clone(); foreign.operation_id = OperationId::from_bytes([98; 16]);
     assert!(validate_merge_receipt(&plan, &foreign, None).is_err());
-    let next = WorkflowCommand { operation_id: derived(effect, Stage::MergePublish.label(), None)?, kind: MERGE_PUBLISH.into(), payload };
+    let next = WorkflowCommand { operation_id: derived(effect, "merge-publish", None)?, kind: MERGE_PUBLISH.into(), payload };
     let published = machine.transition(&waiting.state, &encode(&(Receipt { operation_id: command.operation_id,
         value: Outcome::Succeeded(json!({"status":"applied","receipt":receipt})), next: Some(next) }), None)?)?;
     assert!(matches!(published.status, MachineStatus::Suspended), "Filesystem publication alone must not claim history publication");

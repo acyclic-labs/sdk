@@ -539,13 +539,7 @@ where
         creation_providers: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
         resumable_tools: crate::durable_tool::ResumableToolRegistry,
     ) -> Result<Self> {
-        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
-            filesystem.clone(),
-            volume.clone(),
-            &verifier,
-            &signed,
-            maximum_payload_bytes,
-        )?);
+        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &(volume), &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
         let mut host = CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, reader.clone())
@@ -622,9 +616,7 @@ where
                 reason: "stock runtime requires a positive payload limit" });
         }
         if let Some(policy) = &policy { policy.supports_native_policy(work)?; }
-        let payloads = FilesystemSchedulerPayloadStore::new_with_native_work(
-            filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, work,
-        )?.into_native_shared(work)?;
+        let payloads = FilesystemSchedulerPayloadStore::new(filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.into_native_shared(work)?;
         let reader = FilesystemContentVerifier::new(filesystem.clone(), verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
         let coordinator = DistributedCoordinator::open_with_native_work(
             &stream, reader.clone(), work,
@@ -1783,7 +1775,7 @@ where
             io, crate::wire::ErrorCode::Storage, "suspended workflow admission is absent",
         ))?;
         if retained.operation_id != admission.operation_id
-            || retained.request_digest != observed::digest(&admission, io)?
+            || retained.request_digest != observed::digest(&admission, io, acyclic_stream::MAX_RECORD_BYTES as u64)?
             || retained.initial.machine != admission.machine
         {
             return Err(observed::boundary(io, crate::wire::ErrorCode::Unauthorized,
