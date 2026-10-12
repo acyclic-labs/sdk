@@ -1,7 +1,6 @@
 //! One Filesystem/Stream bridge for the conversation-owned interaction ledger.
 
-use super::fork_preparer_io::preparation_slot_bytes;
-use super::{DecodeReservation, PreparationIo, PreparationRecord};
+use super::{DecodeReservation, PreparationIo};
 use super::{FilesystemContentVerifier, FilesystemHost, InternalContentClass};
 use crate::contract::capability;
 use crate::contract::next_revision;

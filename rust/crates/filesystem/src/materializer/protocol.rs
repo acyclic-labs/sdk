@@ -1,12 +1,12 @@
 use super::*;
 
-/// Coordinates the existing journal and backend.
+/// Coordinates one journal store and one host backend.
 pub struct JournaledMaterializer<S, B> {
     pub(super) store: S,
     pub(super) backend: B,
 }
 impl<S, B> JournaledMaterializer<S, B> {
-    /// Creates a journaled materializer.
+    /// Creates a materializer.
     pub const fn new(store: S, backend: B) -> Self {
         Self { store, backend }
     }
@@ -20,7 +20,7 @@ impl<S, B> JournaledMaterializer<S, B> {
     }
 }
 impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMaterializer<S, B> {
-    /// Captures all preimages before applying the original plan.
+    /// Applies an immutable plan, checking authorization before each effect.
     pub async fn apply<E, F, Fut>(
         &self,
         plan: MaterializationPlan,
@@ -50,7 +50,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         self.replay(journal, MaterializationRecovery::Complete, before_effect)
             .await
     }
-    /// Completes or restores the original journal after interruption.
+    /// Completes or restores an interrupted operation.
     pub async fn recover<E, F, Fut>(
         &self,
         operation: OperationId,
@@ -70,12 +70,23 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
             None => Ok(None),
         }
     }
-    /// Records immutable intent before any preparation effect.
+    /// Persists intent before staging or preimage capture.
     pub async fn prepare(
         &self,
         plan: MaterializationPlan,
         #[cfg(not(target_arch = "wasm32"))] custody: Option<NativeAllocation>,
     ) -> Result<MaterializationJournal, MaterializationError<S::Error, B::Error>> {
+        self.check_plan(&plan)?;
+        if let MaterializationIntent::GenerationTransition { from, .. } = plan.intent {
+            if !self
+                .backend
+                .verify_source(from)
+                .await
+                .map_err(MaterializationError::Backend)?
+            {
+                return Err(MaterializationError::PlanConflict);
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let custody = match custody {
             Some(custody) => Some(custody),
@@ -86,7 +97,6 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                 })
                 .map_err(MaterializationError::Backend)?,
         };
-        self.check_plan(&plan)?;
         let journal = MaterializationJournal {
             version: JOURNAL_VERSION,
             revision: 1,
@@ -111,19 +121,19 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         let journal = if stored {
             journal
         } else {
-            let existing = self
+            let current = self
                 .load(journal.plan.operation_id)
                 .await?
                 .ok_or(MaterializationError::Contended)?;
-            if existing.plan != journal.plan {
+            if current.plan != journal.plan {
                 return Err(MaterializationError::PlanConflict);
             }
-            existing
+            current
         };
         self.verify_allocation(&journal).await?;
         Ok(journal)
     }
-    /// Loads compatible original progress and its allocation.
+    /// Loads compatible progress on its original accounting context.
     pub async fn load(
         &self,
         operation: OperationId,
@@ -174,7 +184,29 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                 .capture(&journal.plan.edits[journal.preimages.len()])
                 .await
                 .map_err(MaterializationError::Backend)?;
-            self.append_preimage(&mut journal, preimage)?;
+            let mut preimage = Some(preimage);
+            #[cfg(not(target_arch = "wasm32"))]
+            self.backend
+                .native_work(|work| {
+                    let mut preimage = preimage.take().expect("captured preimage");
+                    let mut image = preimage
+                        .custody
+                        .take()
+                        .ok_or(NativeTreeMaterializationError::MissingCustody)?;
+                    let custody = journal
+                        .custody
+                        .as_mut()
+                        .ok_or(NativeTreeMaterializationError::MissingCustody)?;
+                    if !work.shares_allocation_context(custody.work()) {
+                        return Err(NativeTreeMaterializationError::InvalidLayout);
+                    }
+                    custody.absorb(&mut image)?;
+                    native_vec_push(&mut journal.preimages, preimage, custody)
+                })
+                .map_err(MaterializationError::Backend)?;
+            if let Some(preimage) = preimage {
+                journal.preimages.push(preimage);
+            }
             journal = self.persist(journal).await?;
             before_effect().await?;
         }
@@ -204,11 +236,6 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                 if journal.phase == MaterializationPhase::Preparing {
                     journal = self.capture_preimages(journal, before_effect).await?;
                 }
-                if journal.phase == MaterializationPhase::Applied {
-                    self.repair_applied(&journal, before_effect).await?;
-                    return Ok(journal);
-                }
-                journal.phase = MaterializationPhase::Applying;
             }
             MaterializationRecovery::RollBack => {
                 if journal.preparation_progress.is_some() {
@@ -221,39 +248,37 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                     journal.phase = MaterializationPhase::RolledBack;
                     return self.persist(journal).await.map_err(Into::into);
                 }
+                // The next edit may have completed before its progress record.
                 if journal.phase == MaterializationPhase::Applying
                     && (journal.applied as usize) < journal.plan.edits.len()
                 {
-                    journal.applied = journal.applied.saturating_add(1);
+                    journal.applied += 1;
                 }
-                journal.phase = MaterializationPhase::RollingBack;
             }
         }
-        journal = self.persist(journal).await?;
+        let repair = recovery == MaterializationRecovery::Complete
+            && journal.phase == MaterializationPhase::Applied;
+        let mut forward = if repair { 0 } else { journal.applied as usize };
+        if !repair {
+            journal.phase = match recovery {
+                MaterializationRecovery::Complete => MaterializationPhase::Applying,
+                MaterializationRecovery::RollBack => MaterializationPhase::RollingBack,
+            };
+            journal = self.persist(journal).await?;
+        }
         while match recovery {
-            MaterializationRecovery::Complete => {
-                (journal.applied as usize) < journal.plan.edits.len()
-            }
+            MaterializationRecovery::Complete => forward < journal.plan.edits.len(),
             MaterializationRecovery::RollBack => journal.restored < journal.applied,
         } {
             let index = match recovery {
-                MaterializationRecovery::Complete => Some(journal.applied),
-                MaterializationRecovery::RollBack => journal
-                    .applied
-                    .checked_sub(journal.restored.saturating_add(1)),
-            }
-            .and_then(|index| usize::try_from(index).ok())
-            .ok_or(MaterializationError::IncompatibleJournal)?;
+                MaterializationRecovery::Complete => forward,
+                MaterializationRecovery::RollBack => {
+                    (journal.applied - journal.restored - 1) as usize
+                }
+            };
             self.verify_allocation(&journal).await?;
-            let edit = journal
-                .plan
-                .edits
-                .get(index)
-                .ok_or(MaterializationError::IncompatibleJournal)?;
-            let preimage = journal
-                .preimages
-                .get(index)
-                .ok_or(MaterializationError::IncompatibleJournal)?;
+            let edit = &journal.plan.edits[index];
+            let preimage = &journal.preimages[index];
             let observation = self
                 .backend
                 .observe(edit, preimage)
@@ -262,35 +287,47 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
             if observation == MaterializationObservation::Diverged {
                 return Err(MaterializationError::ExternalMutation.into());
             }
-            before_effect().await?;
-            self.verify_effect_context(&journal).await?;
-            match (recovery, observation) {
-                (MaterializationRecovery::Complete, MaterializationObservation::Postimage)
-                | (MaterializationRecovery::RollBack, MaterializationObservation::Preimage) => self
-                    .backend
-                    .settle_observed(edit)
-                    .await
-                    .map_err(MaterializationError::Backend)?,
-                (MaterializationRecovery::Complete, _) => self
-                    .backend
-                    .apply(edit, preimage)
-                    .await
-                    .map_err(MaterializationError::Backend)?,
-                (MaterializationRecovery::RollBack, _) => self
-                    .backend
-                    .restore(edit, preimage)
-                    .await
-                    .map_err(MaterializationError::Backend)?,
-            }
-            match recovery {
-                MaterializationRecovery::Complete => {
-                    journal.applied = journal.applied.saturating_add(1)
+            let effect = !matches!(
+                (recovery, observation),
+                (
+                    MaterializationRecovery::Complete,
+                    MaterializationObservation::Postimage
+                ) | (
+                    MaterializationRecovery::RollBack,
+                    MaterializationObservation::Preimage
+                )
+            ) && !(repair && observation == MaterializationObservation::Unverified);
+            if effect || !repair {
+                before_effect().await?;
+                self.verify_effect_context(&journal).await?;
+                if !effect {
+                    self.backend
+                        .settle_observed(edit)
+                        .await
+                        .map_err(MaterializationError::Backend)?;
+                } else {
+                    match recovery {
+                        MaterializationRecovery::Complete => {
+                            self.backend.apply(edit, preimage).await
+                        }
+                        MaterializationRecovery::RollBack => {
+                            self.backend.restore(edit, preimage).await
+                        }
+                    }
+                    .map_err(MaterializationError::Backend)?;
                 }
-                MaterializationRecovery::RollBack => {
-                    journal.restored = journal.restored.saturating_add(1)
-                }
             }
-            journal = self.persist(journal).await?;
+            forward += 1;
+            if !repair {
+                match recovery {
+                    MaterializationRecovery::Complete => journal.applied += 1,
+                    MaterializationRecovery::RollBack => journal.restored += 1,
+                }
+                journal = self.persist(journal).await?;
+            }
+        }
+        if repair {
+            return Ok(journal);
         }
         journal.phase = match recovery {
             MaterializationRecovery::Complete => MaterializationPhase::Applied,
@@ -325,50 +362,13 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         &self,
         journal: &MaterializationJournal,
     ) -> Result<(), MaterializationError<S::Error, B::Error>> {
-        let current = self
-            .load(journal.plan.operation_id)
-            .await?
-            .ok_or(MaterializationError::IncompatibleJournal)?;
-        if current != *journal {
+        if self.load(journal.plan.operation_id).await?.as_ref() != Some(journal) {
             return Err(MaterializationError::PlanConflict);
         }
         self.verify_allocation(journal).await
     }
-    async fn repair_applied<E, F, Fut>(
-        &self,
-        journal: &MaterializationJournal,
-        before_effect: &mut F,
-    ) -> Result<(), E>
-    where
-        E: From<MaterializationError<S::Error, B::Error>>,
-        F: FnMut() -> Fut + Send,
-        Fut: Future<Output = Result<(), E>> + Send,
-    {
-        for (edit, preimage) in journal.plan.edits.iter().zip(&journal.preimages) {
-            self.verify_allocation(journal).await?;
-            match self
-                .backend
-                .observe(edit, preimage)
-                .await
-                .map_err(MaterializationError::Backend)?
-            {
-                MaterializationObservation::Unverified | MaterializationObservation::Postimage => {}
-                MaterializationObservation::Preimage | MaterializationObservation::Interrupted => {
-                    before_effect().await?;
-                    self.verify_effect_context(journal).await?;
-                    self.backend
-                        .apply(edit, preimage)
-                        .await
-                        .map_err(MaterializationError::Backend)?;
-                }
-                MaterializationObservation::Diverged => {
-                    return Err(MaterializationError::ExternalMutation.into());
-                }
-            }
-        }
-        Ok(())
-    }
-    pub(super) async fn persist(
+    /// Advances the journal using its current revision.
+    pub async fn persist(
         &self,
         mut journal: MaterializationJournal,
     ) -> Result<MaterializationJournal, MaterializationError<S::Error, B::Error>> {
@@ -376,8 +376,12 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
             if let Some(work) = self.observed_work()? {
                 journal.work = work;
             }
-            let (stored, replacement) =
-                compare_next_journal::<S, B::Error>(&self.store, journal).await?;
+            let expected = next_revision(&mut journal.revision);
+            let (stored, replacement) = self
+                .store
+                .compare_and_swap(journal.plan.operation_id, expected, journal)
+                .await
+                .map_err(MaterializationError::Store)?;
             journal = replacement;
             if stored {
                 return Ok(journal);
@@ -411,55 +415,21 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         #[cfg(not(target_arch = "wasm32"))]
         self.backend
             .native_work(|work| {
-                let allocation = _journal
+                let custody = _journal
                     .custody
                     .as_ref()
                     .ok_or(NativeTreeMaterializationError::MissingCustody)?;
-                if !work.shares_ledger(allocation.work())
-                    || allocation.bytes() < journal_owned_bytes(_journal)?
+                if !work.shares_allocation_context(custody.work())
+                    || custody.bytes() < journal_owned_bytes(_journal)?
                 {
-                    return Err(NativeTreeMaterializationError::InvalidLayout);
+                    return Err(NativeTreeMaterializationError::MissingCustody);
                 }
                 Ok(())
             })
             .map_err(MaterializationError::Backend)?;
         Ok(())
     }
-    fn append_preimage(
-        &self,
-        journal: &mut MaterializationJournal,
-        preimage: MaterializationPreimage,
-    ) -> Result<(), MaterializationError<S::Error, B::Error>> {
-        let mut preimage = Some(preimage);
-        #[cfg(not(target_arch = "wasm32"))]
-        self.backend
-            .native_work(|work| {
-                let mut preimage = preimage.take().expect("captured preimage");
-                let mut image = preimage
-                    .custody
-                    .take()
-                    .ok_or(NativeTreeMaterializationError::MissingCustody)?;
-                let allocation = journal
-                    .custody
-                    .as_mut()
-                    .ok_or(NativeTreeMaterializationError::MissingCustody)?;
-                if !work.shares_ledger(allocation.work()) || !allocation.shares_ledger(&image) {
-                    return Err(NativeTreeMaterializationError::MissingCustody);
-                }
-                allocation.absorb(&mut image)?;
-                native_vec_push(&mut journal.preimages, preimage, allocation)
-            })
-            .map_err(MaterializationError::Backend)?;
-        if let Some(preimage) = preimage {
-            #[cfg(not(target_arch = "wasm32"))]
-            if preimage.custody.is_some() || journal.custody.is_some() {
-                return Err(MaterializationError::IncompatibleJournal);
-            }
-            journal.preimages.push(preimage);
-        }
-        Ok(())
-    }
-    pub(super) fn check_plan(
+    fn check_plan(
         &self,
         plan: &MaterializationPlan,
     ) -> Result<(), MaterializationError<S::Error, B::Error>> {
@@ -481,23 +451,14 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                     .ok_or(MaterializationError::IncompatibleJournal)?,
             )
             .map_err(|_| MaterializationError::IncompatibleJournal)?;
-        if validate_plan(
-            plan,
-            paths,
-            || Ok::<_, ()>(()),
-            |paths| {
-                paths.sort_unstable();
-                Ok(())
-            },
-        )
-        .unwrap_or(false)
-        {
+        if validate_plan(plan, paths, || Ok::<_, ()>(())).unwrap_or(false) {
             Ok(())
         } else {
             Err(MaterializationError::IncompatibleJournal)
         }
     }
 }
+
 pub(super) async fn compare_next_journal<
     S: MaterializationJournalStore,
     B: std::error::Error + 'static,
@@ -511,15 +472,16 @@ pub(super) async fn compare_next_journal<
         .await
         .map_err(MaterializationError::Store)
 }
+
 pub(super) fn valid_journal(journal: &MaterializationJournal, operation: OperationId) -> bool {
     let count = journal.plan.edits.len();
-    let applied = usize::try_from(journal.applied).unwrap_or(usize::MAX);
-    let restored = usize::try_from(journal.restored).unwrap_or(usize::MAX);
+    let applied = journal.applied as usize;
+    let restored = journal.restored as usize;
     let allocations = journal.preparation_progress.is_none_or(|progress| {
         journal.phase == MaterializationPhase::Preparing
             && journal.preimages.is_empty()
-            && journal.preparation_identity.is_none()
             && journal.root_identity.is_some()
+            && journal.preparation_identity.is_none()
             && (progress.target.is_none() || progress.operation.is_some())
             && (progress.backup.is_none() || progress.target.is_some())
             && match progress.pending {
@@ -547,8 +509,8 @@ pub(super) fn valid_journal(journal: &MaterializationJournal, operation: Operati
         && applied <= count
         && restored <= applied
         && journal.preimages.len() <= count
-        && (journal.phase == MaterializationPhase::Preparing
-            || journal.preimages.len() == count
+        && (journal.preimages.len() == count
+            || journal.phase == MaterializationPhase::Preparing
             || journal.phase == MaterializationPhase::RolledBack && applied == 0)
         && match journal.phase {
             MaterializationPhase::Preparing | MaterializationPhase::Prepared => {
@@ -557,15 +519,13 @@ pub(super) fn valid_journal(journal: &MaterializationJournal, operation: Operati
             MaterializationPhase::Applying => restored == 0,
             MaterializationPhase::Applied => applied == count && restored == 0,
             MaterializationPhase::RollingBack => true,
-            MaterializationPhase::RolledBack => applied == restored,
+            MaterializationPhase::RolledBack => restored == applied,
         }
 }
-
 pub(super) fn validate_plan<'a, E>(
     plan: &'a MaterializationPlan,
     mut paths: Vec<&'a str>,
     mut step: impl FnMut() -> Result<(), E>,
-    sort: impl FnOnce(&mut [&str]) -> Result<(), E>,
 ) -> Result<bool, E> {
     if matches!(&plan.intent, MaterializationIntent::NativePreparation { original, .. } if original.is_empty())
     {
@@ -575,47 +535,73 @@ pub(super) fn validate_plan<'a, E>(
         step()?;
         #[cfg(not(target_arch = "wasm32"))]
         if matches!(plan.intent, MaterializationIntent::NativePreparation { .. })
-            && !matches!(edit, MaterializationEdit::Install { image, .. } if image.starts_with(NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX))
+            && !matches!(edit, MaterializationEdit::Install {image, ..} if image.starts_with(NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX))
         {
             return Ok(false);
         }
-        match edit {
+        let (path, second) = match edit {
             MaterializationEdit::Install { path, .. } | MaterializationEdit::Remove { path } => {
-                if !crate::path::is_canonical_relative_with_step(path, &mut step)? {
-                    return Ok(false);
-                }
-                paths.push(path.as_str());
+                (path, None)
             }
             MaterializationEdit::SetMetadata { path, .. } => {
                 if !crate::path::is_canonical_relative_with_step(path, &mut step)? {
                     return Ok(false);
                 }
+                continue;
             }
             MaterializationEdit::Rename { from, to } => {
-                if !crate::path::is_canonical_relative_with_step(from, &mut step)?
-                    || !crate::path::is_canonical_relative_with_step(to, &mut step)?
-                {
+                if from == to {
                     return Ok(false);
                 }
-                paths.push(from.as_str());
-                paths.push(to.as_str());
+                (from, Some(to))
             }
+        };
+        if !crate::path::is_canonical_relative_with_step(path, &mut step)? {
+            return Ok(false);
+        }
+        paths.push(path);
+        if let Some(second) = second {
+            if !crate::path::is_canonical_relative_with_step(second, &mut step)? {
+                return Ok(false);
+            }
+            paths.push(second);
         }
     }
-    sort(&mut paths)?;
-    'pairs: for pair in paths.windows(2) {
-        step()?;
-        let mut right = pair[1].bytes();
-        for byte in pair[0].bytes() {
-            step()?;
-            if right.next() != Some(byte) {
-                continue 'pairs;
+    let mut failure = None;
+    paths.sort_unstable_by(|a, b| {
+        if failure.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        for (a, b) in a.bytes().zip(b.bytes()) {
+            if let Err(error) = step() {
+                failure = Some(error);
+                return std::cmp::Ordering::Equal;
+            }
+            match a.cmp(&b) {
+                std::cmp::Ordering::Equal => {}
+                result => return result,
             }
         }
+        a.len().cmp(&b.len())
+    });
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    for pair in paths.windows(2) {
+        let [left, right] = pair else { continue };
         step()?;
-        if right.next().is_none_or(|byte| byte == b'/') {
+        if left == right
+            || right
+                .strip_prefix(*left)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+        {
             return Ok(false);
         }
     }
     Ok(true)
+}
+pub(super) fn validate_materialization_path(path: &str) -> Result<(), ()> {
+    crate::path::is_canonical_relative(path)
+        .then_some(())
+        .ok_or(())
 }

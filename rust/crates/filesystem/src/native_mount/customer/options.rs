@@ -57,6 +57,20 @@ pub struct MountOptions {
 }
 
 impl MountOptions {
+    pub(super) fn work(
+        &self,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<NativeMaterializationWork, MountLifecycleError> {
+        if let Some(work) = &self.work {
+            return Ok(work.clone());
+        }
+        acyclic_native_runtime::initialize_native_io_services().map_err(NativeMountError::from)?;
+        super::super::initialize_native_mount_services()?;
+        NativeMaterializationWork::new(budget, cancellation)
+            .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))
+    }
+
     /// Creates a writable tracking-safe sparse mount with close/fsync publication.
     #[must_use]
     pub fn read_write() -> Self {

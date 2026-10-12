@@ -172,7 +172,7 @@ pub(crate) fn copy_owned<T: Clone + Serialize>(
     if quota.work().is_none() {
         return Ok(source.clone());
     }
-    source_metadata_inspection_with_work(source, quota.work())?;
+    inspect_metadata(source, quota.work())?;
     let bytes = owned(source, quota.work())?;
     let io = quota.work().as_deref_mut().expect("observed copy");
     io.admit_copy(bytes)?;
@@ -185,6 +185,21 @@ pub(crate) fn copy_owned<T: Clone + Serialize>(
         .expect("observed copy")
         .copy_bytes(bytes)?;
     Ok(source.clone())
+}
+
+impl crate::resource_preparation::ResourceCreationProofRef {
+    pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
+        crate::wire_codec::CodecQuota::produce(work, |quota| {
+            copy_owned(self, quota, |proof, work| {
+                proof.validate(work)?;
+                owned_sum([
+                    proof.provider.logical_owned_bytes()?,
+                    proof.resource.logical_owned_bytes()?,
+                    proof.evidence.logical_owned_bytes()?,
+                ])
+            })
+        })
+    }
 }
 
 macro_rules! copy_fields {
@@ -353,12 +368,12 @@ pub(in crate::core) fn copy_message(
     })
 }
 
-pub(in crate::core) fn copy_payload(
-    source: &EventPayload,
+pub(crate) fn copy_event(
+    source: &Event,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<EventPayload> {
+) -> Result<Event> {
     copy_owned(source, quota, |value, work| {
-        match value {
+        match &value.payload {
             EventPayload::Custom { record }
             | EventPayload::ExtensionStateMigrated {
                 migration: ExtensionStateMigration { record, .. },
@@ -408,31 +423,9 @@ pub(in crate::core) fn copy_payload(
             }
             _ => {}
         }
-        owned_payload(value)
+        event_owned_bytes(value)
     })
 }
-pub(crate) fn copy_event(
-    source: &Event,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<Event> {
-    let payload = copy_payload(&source.payload, quota)?;
-    let scope = copy_owned(&source.scope, quota, |value, _| value.logical_owned_bytes())?;
-    let causal_parent = source
-        .causal_parent
-        .as_ref()
-        .map(|parent| copy_reference(parent, quota))
-        .transpose()?;
-    Ok(Event {
-        revision: source.revision,
-        operation_id: source.operation_id,
-        intent_digest: source.intent_digest,
-        attestation: source.attestation,
-        payload,
-        scope,
-        causal_parent,
-    })
-}
-
 /// Logical inline map/set payload, never an estimate of opaque allocator nodes.
 pub(in crate::core) fn retain_entry<T>(
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,

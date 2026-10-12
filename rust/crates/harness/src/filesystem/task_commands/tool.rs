@@ -1,4 +1,7 @@
 use super::*;
+use crate::filesystem::PreparationIo;
+use crate::filesystem::task_runtime::observed::boundary;
+use crate::wire::ErrorCode;
 
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
 where
@@ -14,46 +17,40 @@ where
         turn: OperationId,
         payload: Value,
         reconciliation_only: bool,
-        io: Option<&crate::filesystem::PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<TaskCommandProgress> {
-        use crate::filesystem::task_runtime::observed::boundary;
-        use crate::wire::ErrorCode;
         let input: ToolTaskCommand = mail::decode_command(payload, io)?;
         let definition = self
             .runtime
             .tool_definition(&input.name, &input.revision, io)?;
-        let (journal, operation) = 'journal: {
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = io.map(|io| io.original_native_work().expect("native dispatch observer"));
+        #[cfg(target_arch = "wasm32")]
+        let work = None;
+        let (journal, operation) = match &context {
             #[cfg(not(target_arch = "wasm32"))]
-            if let WorkerContext::Native(_) = &context {
-                let work = io
-                    .and_then(crate::filesystem::PreparationIo::original_native_work)
-                    .expect("native dispatch constructs its original observer");
-                break 'journal self
-                    .runtime
-                    .execution_journal_with_native_work(task, fence, turn, work)
-                    .await?;
+            WorkerContext::Native(_) => {
+                self.runtime
+                    .execution_journal_with_native_work(
+                        task,
+                        fence,
+                        turn,
+                        work.expect("native dispatch work"),
+                    )
+                    .await?
             }
-            break 'journal (
+            WorkerContext::Ordinary(_) => (
                 self.runtime
                     .execution_journal(task, fence.clone(), turn)
                     .await?,
                 crate::filesystem::task_runtime::execution_operation(task, turn, io)?,
-            );
+            ),
         };
         if reconciliation_only
             && !was_dispatched(journal.as_ref(), operation, TOOL_TASK_COMMAND_KIND, io).await?
         {
             return mail::reconciled(io);
         }
-        let context = match context {
-            WorkerContext::Ordinary(context) => WorkerContext::Ordinary(
-                self.runtime
-                    .bind_context_interactions(context, task, Arc::clone(&journal))?,
-            ),
-            #[cfg(not(target_arch = "wasm32"))]
-            context => context,
-        };
-        let limits = context.context().scope().limits();
         let invocation = tool_invocation(
             context.context(),
             operation,
@@ -61,12 +58,11 @@ where
             input.arguments,
             io,
         )?;
+        let limits = context.context().scope().limits();
         let context = match context {
             #[cfg(not(target_arch = "wasm32"))]
             WorkerContext::Native(context) => {
-                let work = io
-                    .and_then(crate::filesystem::PreparationIo::original_native_work)
-                    .expect("native tool has its original work");
+                let work = work.expect("native dispatch work");
                 let context = ToolContext::new_with_native_work(
                     context,
                     operation,
@@ -82,18 +78,17 @@ where
                     work,
                 )?
             }
-            WorkerContext::Ordinary(context) => {
-                ToolContext::new(context, operation, invocation.call_id.clone())?
-            }
+            WorkerContext::Ordinary(context) => ToolContext::new(
+                self.runtime
+                    .bind_context_interactions(context, task, Arc::clone(&journal))?,
+                operation,
+                invocation.call_id.clone(),
+            )?,
         };
         if !reconciliation_only || io.is_none() {
-            let _records;
-            let before = io
-                .map(crate::filesystem::PreparationIo::owned_bytes)
-                .transpose()?
-                .unwrap_or(0);
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let records = journal.replay_page(operation, 0, 1, false, io).await?;
-            _records = io
+            let hold = io
                 .map(|io| {
                     io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
                         boundary(
@@ -105,19 +100,16 @@ where
                 })
                 .transpose()?;
             let empty = records.is_empty();
-            drop(records);
-            drop(_records);
+            drop((records, hold));
             if empty {
                 let approved = 'approval: {
                     #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(work) =
-                        io.and_then(crate::filesystem::PreparationIo::original_native_work)
-                    {
+                    if let Some(work) = work {
                         break 'approval context
                             .authorize_tool(definition, &invocation, work)
                             .await;
                     }
-                    break 'approval context.task().authorize_tool(definition, &invocation).await;
+                    context.task().authorize_tool(definition, &invocation).await
                 };
                 match approved {
                     Ok(Some(_)) => return Ok(TaskCommandProgress::Pending),
@@ -127,44 +119,36 @@ where
                 }
             }
         }
+        let runner = DurableToolRunner::new(self.runtime.tool_registry(), journal, work)?
+            .with_limits(limits)?;
         let outcome = 'outcome: {
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(io) = io {
-                let work = io
-                    .original_native_work()
-                    .expect("native tool has its original work");
-                let runner =
-                    DurableToolRunner::new(self.runtime.tool_registry(), journal, Some(work))?
-                        .with_limits(limits)?;
-                let (outcome, custody) = if reconciliation_only {
-                    runner
-                        .reconcile_with_native_context(
-                            task,
-                            operation,
-                            definition,
-                            &invocation.arguments,
-                            &context,
-                            work,
-                        )?
-                        .await?
+            if let Some(work) = work {
+                let result = if reconciliation_only {
+                    runner.reconcile_with_native_context(
+                        task,
+                        operation,
+                        definition,
+                        &invocation.arguments,
+                        &context,
+                        work,
+                    )?
                 } else {
-                    runner
-                        .run_with_native_context(
-                            task,
-                            operation,
-                            definition,
-                            &invocation.arguments,
-                            &context,
-                            work,
-                        )?
-                        .await?
-                };
-                io.absorb_native_custody(custody)?;
-                break 'outcome outcome;
+                    runner.run_with_native_context(
+                        task,
+                        operation,
+                        definition,
+                        &invocation.arguments,
+                        &context,
+                        work,
+                    )?
+                }
+                .await?;
+                io.expect("native observer")
+                    .absorb_native_custody(result.1)?;
+                break 'outcome result.0;
             }
-            let runner = DurableToolRunner::new(self.runtime.tool_registry(), journal, None)?
-                .with_limits(limits)?;
-            break 'outcome runner
+            runner
                 .run_with_context(
                     task,
                     operation,
@@ -172,7 +156,7 @@ where
                     invocation.arguments,
                     context,
                 )
-                .await?;
+                .await?
         };
         match outcome {
             Outcome::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),

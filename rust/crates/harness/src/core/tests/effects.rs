@@ -53,18 +53,7 @@ fn effect_guarantees_and_attestations_control_retry() -> Result<()> {
                 effect,
                 first_attempt,
                 EffectStatus::Succeeded {
-                    result: FileRef::new(
-                        request_file(b"1")?.volume().clone(),
-                        "results/invalid.txt".into(),
-                        "generation-1".into(),
-                        crate::conversation::FileDescriptor::from_bytes(
-                            b"1",
-                            "text/plain",
-                            &mut None,
-                        )?,
-                        "invalid.txt".into(),
-                        &mut None,
-                    )?,
+                    result: schema_file(&json!({}))?,
                 },
                 &mut None,
             )?;

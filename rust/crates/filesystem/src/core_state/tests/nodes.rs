@@ -83,7 +83,7 @@ async fn state_survives_reopen() {
         Some(state)
     );
     assert!(
-        read_json::<WorkspaceLineageRecord>(&current)
+        read_json::<WorkspaceLineageRecord>(&current, None)
             .expect("written-back record")
             .is_some()
     );

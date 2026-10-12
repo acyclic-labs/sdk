@@ -1,4 +1,5 @@
 use super::*;
+use crate::executor::with_history_io;
 
 impl<P, A, O> FilesystemInteractionHost<P, A, O>
 where
@@ -12,11 +13,10 @@ where
         scope: &Scope,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        crate::executor::with_history_io(io, |work| self.verifier.verify(scope, work))?;
-        let grant_hold;
+        with_history_io(io, |work| self.verifier.verify(scope, work))?;
         let grant =
             crate::contract::preparation_format(format_args!("interaction:respond:{id}"), io)?;
-        grant_hold = io
+        let hold = io
             .map(|io| io.guard_owned(grant.capacity() as u64))
             .transpose()?;
         let examined = acyclic_fs::WorkCounters {
@@ -33,13 +33,12 @@ where
         if let Some(io) = io {
             io.charge(examined)?;
         }
-        drop(grant);
-        drop(grant_hold);
+        drop((grant, hold));
         if !allowed {
             return Err(interaction_boundary(
                 io,
                 ErrorCode::Unauthorized,
-                "responder lacks the exact interaction grant",
+                "responder lacks its exact grant",
             ));
         }
         Ok(())
@@ -62,7 +61,7 @@ where
         )
         .await
     }
-    /// Authenticates a responder, validates one typed answer against the
+    /// Validates and publishes the answer to a pinned request.
     pub async fn resolve_answer(
         &self,
         operation_id: OperationId,
@@ -97,7 +96,7 @@ where
         )
     }
 
-    /// Resolves an approval of the ticket's exact operation and argument digest.
+    /// Resolves the ticket's exact operation and argument digest.
     pub async fn resolve_approval(
         &self,
         operation_id: OperationId,
@@ -133,7 +132,7 @@ where
         )
     }
 
-    pub(super) async fn open_resolution(
+    async fn open_resolution(
         &self,
         scope: &Scope,
         id: InteractionId,
@@ -189,7 +188,7 @@ where
                 "tool installation lacks a resolved approval",
             ));
         };
-        if !matches!(&resolution.outcome, InteractionOutcome::Approved)
+        if resolution.outcome != InteractionOutcome::Approved
             || !ticket.approval.as_ref().is_some_and(|binding| {
                 binding.operation_id == operation && binding.action_digest == digest
             })
@@ -197,66 +196,28 @@ where
             return Err(interaction_boundary(
                 io,
                 ErrorCode::Unauthorized,
-                "approval does not authorize this tool definition",
+                "approval does not authorize this definition",
             ));
         }
-        let bytes_hold;
         let bytes = self.read_file(&ticket.request, io).await?;
-        bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-        let request = match io {
-            Some(io) => {
-                let request = io.decode(
-                    std::marker::PhantomData::<Interaction>,
-                    &bytes,
-                    ErrorCode::Storage,
-                )?;
-                crate::executor::with_history_io(Some(io), |work| {
-                    ticket.validate_decoded_request(&request.0, work)
-                })?;
-                (request.0, Some(request.1))
-            }
-            None => (ticket.validate_request_bytes(&bytes, &mut None)?.0, None),
-        };
-        drop(bytes);
-        drop(bytes_hold);
+        let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+        let (request, retained, custody) =
+            with_history_io(io, |work| ticket.validate_request_bytes(&bytes, work))?;
+        let request_hold = io.map(|io| io.guard_owned(retained)).transpose()?;
+        let request = (request, custody, request_hold);
+        drop((bytes, hold));
         if let Some(detail) = &resolution.detail {
-            if detail.descriptor().media_type() != "application/json" {
-                return Err(interaction_boundary(
-                    io,
-                    ErrorCode::Invalid,
-                    "approval decision artifact is invalid",
-                ));
-            }
-            let bytes_hold;
             let bytes = self.read_file(detail, io).await?;
-            bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-            match io {
-                Some(io) => {
-                    let response = io.decode(
-                        std::marker::PhantomData::<InteractionResponse>,
-                        &bytes,
-                        ErrorCode::Storage,
-                    )?;
-                    crate::executor::with_history_io(Some(io), |work| {
-                        ticket.validate_decision(
-                            &request.0,
-                            &resolution.outcome,
-                            detail,
-                            &response.0,
-                            work,
-                        )
-                    })?;
-                }
-                None => ticket.validate_decision_bytes(
+            let _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+            with_history_io(io, |work| {
+                ticket.validate_decision_bytes(
                     &request.0,
                     &resolution.outcome,
                     detail,
                     &bytes,
-                    &mut None,
-                )?,
-            }
-            drop(bytes);
-            drop(bytes_hold);
+                    work,
+                )
+            })?;
         }
         Ok(())
     }

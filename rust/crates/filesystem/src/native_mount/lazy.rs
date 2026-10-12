@@ -10191,7 +10191,7 @@ mod tests {
         let handle = view.open_file(&mounted(&["file"]))?;
         let opens = demand.opens.load(Ordering::Acquire);
         let caller = crate::CancellationToken::new();
-        let meter = native_control_work(finite_content_budget(), &caller)?.native_read_meter().clone();
+        let meter = native_control_work(finite_content_budget(), &caller)?.state.clone();
         let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
         let identity = handle.lookup_with_meter(&context)?.node.file_id;
         assert_eq!(handle.read_range_with_meter(2, 3, &context)?.bytes.as_ref(), b"cde");
@@ -10266,7 +10266,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new()?;
         let view = runtime.block_on(mounted_view(source.path(), "finite-linked-custody"))?;
         let caller = crate::CancellationToken::new();
-        let meter = native_control_work(finite_content_budget(), &caller)?.native_read_meter().clone();
+        let meter = native_control_work(finite_content_budget(), &caller)?.state.clone();
         let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
         let lookup = view.lookup_pinned_with_meter(&mounted(&["file"]), &context)?.ok_or("missing linked file")?.0;
         let bytes = {
@@ -10303,7 +10303,7 @@ mod tests {
         let link = mounted(&["link"]);
         super::super::adapter::boundary(view.authored.cancellation(), |work| view.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((Bytes::from_static(b"../target")).into(), 0), FileMetadata::default(), work))?;
         let caller = crate::CancellationToken::new();
-        let meter = native_control_work(finite_content_budget(), &caller)?.native_read_meter().clone();
+        let meter = native_control_work(finite_content_budget(), &caller)?.state.clone();
         let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
         let path = mounted(&["file"]);
         let (_, pin) = view.lookup_pinned_with_meter(&path, &context)?.ok_or("missing source file")?;

@@ -373,7 +373,7 @@ async fn native_materialization_rejects_unrepresentable_metadata()
         )?],
         limits,
     )?;
-    let host_path = GenerationHostPath::new(None, namespace.components(), &mut receipt)?;
+    let host_path = materialize_host_path(None, namespace.components(), &mut receipt)?;
     #[cfg(unix)]
     for (metadata, expected) in [
         (

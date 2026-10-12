@@ -153,7 +153,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
     assert!(callbacks.load(Ordering::SeqCst) >= 2);
     assert!(!local.has_pending_mutations());
     assert_eq!(local.live_operation_id, None);
-    assert!(local.root.same_original_scope(original.native_read_meter()));
+    assert!(local.root.same_original_scope((&original.state)));
     let left_record = crate::kernel::lookup_file_record_async_with_accounting(
         &fs.inner.objects,
         local.root.file_table,

@@ -43,7 +43,7 @@ use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFY_TYPES, PRJ_PLACEHOLDER_INFO, PRJ_STARTVIRTUALIZING_OPTIONS,
     PRJ_UPDATE_ALLOW_READ_ONLY, PRJ_UPDATE_ALLOW_TOMBSTONE, PRJ_UPDATE_TYPES, PrjDeleteFile,
     PrjFileNameCompare, PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
-    PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
+    PrjWritePlaceholderInfo2,
 };
 use windows::core::{GUID, HRESULT, HSTRING, PCWSTR};
 

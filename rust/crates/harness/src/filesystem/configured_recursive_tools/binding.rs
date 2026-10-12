@@ -183,14 +183,13 @@ where
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<StreamAggregate<P>> {
         #[cfg(not(target_arch = "wasm32"))]
-        let native = io
-            .map(|io| {
-                io.original_native_work().ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "native aggregate binding requires original work",
-                })
+        io.map(|io| {
+            io.original_native_work().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "native aggregate binding requires original work",
             })
-            .transpose()?;
+        })
+        .transpose()?;
         #[cfg(target_arch = "wasm32")]
         let io = None;
         let verifier = if io.is_some() || content.is_none() {
@@ -220,23 +219,9 @@ where
         let history = crate::executor::with_history_io(io, |work| {
             StreamHistoryForkVerifier::new(&self.config.stream_provider, work)
         })?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let history = match native {
-            Some(work) => history.into_native_shared(work)?,
-            None => Arc::new(history),
-        };
-        #[cfg(target_arch = "wasm32")]
-        let history = Arc::new(history);
         let forks = crate::executor::with_history_io(io, |work| {
             CompositeForkVerifier::new(&[filesystem, history], work)
         })?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let forks = match native {
-            Some(work) => forks.into_native_shared(work)?,
-            None => Arc::new(forks),
-        };
-        #[cfg(target_arch = "wasm32")]
-        let forks = Arc::new(forks);
         let mut aggregate = aggregate
             .with_content_verifier(content)
             .with_fork_verifier(forks)

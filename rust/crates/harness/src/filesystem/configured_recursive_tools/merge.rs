@@ -1,5 +1,9 @@
 use super::*;
-use crate::filesystem::{PreparationIo, fork_preparer_io::failure};
+use crate::executor::with_history_io;
+use crate::filesystem::{
+    PreparationIo,
+    fork_preparer_io::{failure, item},
+};
 use crate::wire::ErrorCode;
 
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
@@ -16,47 +20,28 @@ where
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
     ) -> Result<RecursiveMergeToolBinding<P, A, O>> {
+        check_cancellation(cancellation, io)?;
+        let owner = self.source_owner(context.task(), cancellation, io).await?;
+        let caller = self
+            .authenticate_caller(context.task(), Some(&owner), true, io)
+            .await?;
         #[cfg(not(target_arch = "wasm32"))]
-        if io.and_then(PreparationIo::original_native_work).is_some() {
-            cancellation
-                .check()
-                .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        let owner = if io.and_then(PreparationIo::original_native_work).is_some() {
-            Some(self.source_owner(context.task(), cancellation, io).await?)
-        } else {
-            None
-        };
-        let caller = 'caller: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(owner) = &owner {
-                let caller = self
-                    .authenticate_caller(context.task(), Some(owner), true, io)
-                    .await?;
-                let io = io.expect("native merge observer");
-                for prefix in ["volume:read:", "volume:write:"] {
-                    crate::filesystem::fork_preparer_io::item(Some(io), 0)?;
-                    if !io.contains_capability(
-                        context.effective_scope().grants(),
-                        &caller.project,
-                        prefix,
-                    )? {
-                        return Err(failure(
-                            Some(io),
-                            ErrorCode::Unauthorized,
-                            "native recursive tool effective scope denies its selected volume operation",
-                        ));
-                    }
+        if let Some(io) = io {
+            for prefix in ["volume:read:", "volume:write:"] {
+                item(Some(io), 0)?;
+                if !io.contains_capability(
+                    context.effective_scope().grants(),
+                    &caller.project,
+                    prefix,
+                )? {
+                    return Err(failure(
+                        Some(io),
+                        ErrorCode::Unauthorized,
+                        "effective scope denies its Project operation",
+                    ));
                 }
-                break 'caller caller;
             }
-            cancellation
-                .check()
-                .map_err(|error| Error::Storage(error.to_string()))?;
-            self.authenticate_caller(context.task(), None, true, None)
-                .await?
-        };
+        }
         let source = self.caller(arguments.source, io)?;
         let mut allocation = None;
         for merge in &self.config.merges {
@@ -74,13 +59,8 @@ where
                 break;
             }
         }
-        let allocation = allocation.ok_or_else(|| {
-            failure(
-                io,
-                ErrorCode::Unauthorized,
-                "configured merge has no original notice binding",
-            )
-        })?;
+        let allocation = allocation
+            .ok_or_else(|| failure(io, ErrorCode::Unauthorized, "merge has no notice binding"))?;
         let runtime = self.runtime(io)?;
         let ordinary;
         #[cfg(not(target_arch = "wasm32"))]
@@ -115,36 +95,26 @@ where
                 return Err(failure(
                     io,
                     ErrorCode::Unauthorized,
-                    "configured merge source is not its admitted Project",
+                    "merge source differs from its admitted allocation",
                 ));
             }
             ordinary.volumes()
         };
         let mut selected = None;
         for snapshot in snapshots {
-            if let Some(io) = io {
-                io.codec_charge(
-                    crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 },
-                    true,
-                )?;
-            }
-            if snapshot.volume.class() == crate::conversation::VolumeClass::Project {
-                if snapshot.volume != source.project || selected.replace(snapshot).is_some() {
-                    return Err(failure(
-                        io,
-                        ErrorCode::Unauthorized,
-                        "merge differs from its unique admitted Project",
-                    ));
-                }
+            item(io, 0)?;
+            if snapshot.volume.class() == crate::conversation::VolumeClass::Project
+                && (snapshot.volume != source.project || selected.replace(snapshot).is_some())
+            {
+                return Err(failure(
+                    io,
+                    ErrorCode::Unauthorized,
+                    "merge differs from its unique admitted Project",
+                ));
             }
         }
-        let selected = selected.ok_or_else(|| {
-            failure(
-                io,
-                ErrorCode::Unauthorized,
-                "merge source has no authenticated Project",
-            )
-        })?;
+        let selected = selected
+            .ok_or_else(|| failure(io, ErrorCode::Unauthorized, "merge source has no Project"))?;
         if let Some(original) = original
             && (original.caller != caller.task
                 || original.arguments != *arguments
@@ -156,7 +126,7 @@ where
             return Err(failure(
                 io,
                 ErrorCode::Unauthorized,
-                "configured merge retry changed its original owners",
+                "merge retry changed its original owners",
             ));
         }
         let generation =
@@ -165,49 +135,35 @@ where
             Some(io) => generation.clone_with_io(io)?,
             None => generation.clone(),
         };
-        let notice = crate::executor::with_history_io(io, |work| {
-            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let notice = original
-                .map_or(&allocation.notice, |original| &original.notice)
-                .clone_in_quota(&mut quota)?;
-            quota.transfer();
-            Ok(notice)
+        let notice = with_history_io(io, |work| {
+            crate::wire_codec::CodecQuota::produce(work, |quota| {
+                original
+                    .map_or(&allocation.notice, |original| &original.notice)
+                    .clone_in_quota(quota)
+            })
+            .map(|(notice, _)| notice)
         })?;
-        let owner = match owner {
-            Some(owner) => owner,
-            None => {
-                self.source_owner(context.task(), cancellation, None)
-                    .await?
-            }
-        };
-        let authorization = original.and_then(|plan| plan.authorized_source.as_ref());
-        let source_read = if let Some(authorization) = authorization {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                let (handle, custody) = owner
-                    .restore_project_source_authorization_with_native_work(
-                        context.task(),
-                        authorization,
-                        work,
-                    )?
-                    .await?;
-                io.expect("native merge observer")
-                    .absorb_native_custody(custody)?;
-                Some(handle)
-            } else {
-                Some(
+        let source_read = 'source: {
+            if let Some(authorization) = original.and_then(|plan| plan.authorized_source.as_ref()) {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                    let (handle, custody) = owner
+                        .restore_project_source_authorization_with_native_work(
+                            context.task(),
+                            authorization,
+                            work,
+                        )?
+                        .await?;
+                    io.expect("native merge observer")
+                        .absorb_native_custody(custody)?;
+                    break 'source Some(handle);
+                }
+                break 'source Some(
                     owner
                         .restore_project_source_authorization(context.task(), authorization)
                         .await?,
-                )
+                );
             }
-            #[cfg(target_arch = "wasm32")]
-            Some(
-                owner
-                    .restore_project_source_authorization(context.task(), authorization)
-                    .await?,
-            )
-        } else {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
                 if !io.contains_capability(
@@ -219,7 +175,7 @@ where
                         return Err(failure(
                             Some(io),
                             ErrorCode::Unauthorized,
-                            "merge lacks its original Project read authority",
+                            "merge lacks its Project read authority",
                         ));
                     }
                     io.original_native_work()
@@ -232,43 +188,42 @@ where
                     ));
                 }
             }
-            if io.is_none()
-                && original.is_none()
-                && arguments.source != caller.task
-                && !context.scope().grants().contains(
+            if io.is_some()
+                || original.is_some()
+                || arguments.source == caller.task
+                || context.scope().grants().contains(
                     &selected
                         .volume
                         .capability(VolumeOperation::Read, &mut None)?,
                 )
             {
-                let (issuer, provider) = self.project_policy.get().ok_or_else(|| {
-                    failure(
-                        None,
-                        ErrorCode::Unauthorized,
-                        "foreign merge lacks an explicit RootService Project policy",
-                    )
-                })?;
-                Some(
-                    owner
-                        .authorize_project_source(
-                            context.task(),
-                            issuer,
-                            provider.as_ref(),
-                            arguments.source,
-                            context.operation_id(),
-                            ProjectSourceSnapshot {
-                                project: selected.volume.clone(),
-                                generation: generation.clone(),
-                                native_snapshot: source.native_snapshot.clone(),
-                            },
-                            self.config.content_budget.items_examined,
-                            self.config.history_limits.maximum_bytes,
-                        )
-                        .await?,
-                )
-            } else {
-                None
+                break 'source None;
             }
+            let (issuer, provider) = self.project_policy.get().ok_or_else(|| {
+                failure(
+                    None,
+                    ErrorCode::Unauthorized,
+                    "foreign merge lacks a RootService Project policy",
+                )
+            })?;
+            Some(
+                owner
+                    .authorize_project_source(
+                        context.task(),
+                        issuer,
+                        provider.as_ref(),
+                        arguments.source,
+                        context.operation_id(),
+                        ProjectSourceSnapshot {
+                            project: selected.volume.clone(),
+                            generation: generation.clone(),
+                            native_snapshot: source.native_snapshot.clone(),
+                        },
+                        self.config.content_budget.items_examined,
+                        self.config.history_limits.maximum_bytes,
+                    )
+                    .await?,
+            )
         };
         if let Some(handle) = &source_read {
             #[cfg(not(target_arch = "wasm32"))]
@@ -299,7 +254,7 @@ where
         };
         drop(self.read(context, &notice.content, reader).await?);
         let (verifier, scope, project, source_authority, source_project) =
-            crate::executor::with_history_io(io, |work| {
+            with_history_io(io, |work| {
                 let verifier = caller.owner.issuer().verifier(work)?;
                 let source_authority = match work.as_deref_mut() {
                     Some(work) => work.clone_authority(source.owner.authority())?,

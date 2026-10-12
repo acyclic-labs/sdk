@@ -1,27 +1,37 @@
 use super::*;
-/// Constructs the portable current-caller fork from actual providers and authenticated history.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "explicit provider, owner, source and finite-bound contracts"
-)]
+use crate::conversation::ContentResidencyVerifier;
+use crate::{
+    conversation::{ContentGrant, VolumeOwner},
+    core::{AuthorityVerifier, Reducer, Scope},
+    filesystem::{FilesystemHost, PreparationIo, fork_preparer_io},
+    fork::{ForkHistoryPolicy, ForkPreparation, ForkSelection},
+    resources::{ProviderRef, ResourceKind, ResourceRef, StreamRef},
+    runtime::TaskContext,
+    source_authorization::ProjectSourceReadHandle,
+    store::{HistoryReadLimits, HistoryReader, StreamAggregate},
+};
+use acyclic_fs::CancellationToken;
+use acyclic_stream::StreamProvider;
+
+/// Selects a current-caller fork from authenticated providers and history.
 pub async fn recursive_fork_source<P, A, O>(
-    filesystem: Arc<crate::filesystem::FilesystemHost<A, O>>,
+    filesystem: Arc<FilesystemHost<A, O>>,
     stream: &Arc<P>,
-    parent: &crate::store::StreamAggregate<P>,
-    verifier: crate::core::AuthorityVerifier,
-    signed: crate::core::Scope,
-    context: &crate::runtime::TaskContext,
+    parent: &StreamAggregate<P>,
+    verifier: AuthorityVerifier,
+    signed: Scope,
+    context: &TaskContext,
     source: RecursiveSourceSnapshot,
-    stream_provider: crate::resources::ProviderRef,
+    stream_provider: ProviderRef,
     operation_id: OperationId,
     arguments: &ForkToolArguments,
     config: RecursiveForkConfig,
-    source_read: Option<crate::source_authorization::ProjectSourceReadHandle>,
-    resolver: Arc<dyn crate::conversation::ContentResidencyVerifier>,
-    cancellation: &acyclic_fs::CancellationToken,
+    source_read: Option<ProjectSourceReadHandle>,
+    resolver: Arc<dyn ContentResidencyVerifier>,
+    cancellation: &CancellationToken,
 ) -> Result<RetainedSourceBinding<A, O>>
 where
-    P: acyclic_stream::StreamProvider + 'static,
+    P: StreamProvider + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
@@ -42,21 +52,20 @@ where
         .conversation()
         .and_then(|conversation| conversation.agent)
         .ok_or_else(|| Error::Invalid("fork caller conversation has no agent".into()))?;
-    if signed.agent() != Some(agent)
-        || source.private_volume.owner() != &crate::conversation::VolumeOwner::Agent(agent)
+    if signed.agent() != Some(agent) || source.private_volume.owner() != &VolumeOwner::Agent(agent)
     {
         return Err(Error::Unauthorized(
-            "fork source is not the actual current caller agent".into(),
+            "fork source is not the current caller agent".into(),
         ));
     }
     for volume in [&source.project, &source.private_volume] {
         let read = volume.capability(VolumeOperation::Read, &mut None)?;
         if !context.scope().grants().contains(&read) {
             return Err(Error::Unauthorized(
-                "caller task lacks selected source read authority".into(),
+                "caller lacks selected source read authority".into(),
             ));
         }
-        crate::conversation::ContentGrant::verify(
+        ContentGrant::verify(
             &verifier,
             &signed,
             volume,
@@ -65,64 +74,56 @@ where
             &mut None,
         )?;
     }
-    config.limits.validate(&mut None)?;
     let selected = arguments.source_task(caller, config.limits, &mut None)?;
-    let limits = config.limits;
+    let authorization = match (selected == caller, source_read.as_ref()) {
+        (false, Some(handle)) => {
+            let authorization = handle.authorization();
+            if authorization.caller_task != caller {
+                return Err(Error::Unauthorized(
+                    "selected source approval belongs to another caller".into(),
+                ));
+            }
+            handle.require_selection(
+                operation_id,
+                selected,
+                &authorization.project,
+                &authorization.generation,
+                authorization.native_snapshot.as_ref(),
+                None,
+            )?;
+            Some(authorization)
+        }
+        (false, None) => {
+            return Err(Error::Unauthorized(
+                "foreign source requires RootService approval".into(),
+            ));
+        }
+        (true, Some(_)) => {
+            return Err(Error::Invalid(
+                "current source cannot substitute a foreign token".into(),
+            ));
+        }
+        (true, None) => None,
+    };
     let history_limits = config.history_limits;
-    let mut request = fork_request(
+    let request = fork_request(
         parent.reducer(),
         operation_id,
         arguments,
         (
             caller,
-            &source.project,
-            &source.project_generation,
+            authorization.map_or(&source.project, |authorization| &authorization.project),
+            authorization.map_or(&source.project_generation, |authorization| {
+                &authorization.generation
+            }),
             &source.private_volume,
             &source.private_generation,
         ),
         config,
         &stream_provider,
-        None,
+        authorization.cloned(),
         None,
     )?;
-    if selected != caller {
-        let source_read = source_read.as_ref().ok_or_else(|| {
-            Error::Unauthorized(
-                "foreign workspace selection requires an operation-sealed RootService approval"
-                    .into(),
-            )
-        })?;
-        let authorization = source_read.authorization();
-        if authorization.caller_task != caller {
-            return Err(Error::Unauthorized(
-                "selected source approval belongs to another caller".into(),
-            ));
-        }
-        source_read.require_selection(
-            operation_id,
-            selected,
-            &authorization.project,
-            &authorization.generation,
-            authorization.native_snapshot.as_ref(),
-            None,
-        )?;
-        arguments.select_project(
-            caller,
-            selected,
-            authorization.project.clone(),
-            authorization.generation.clone(),
-            limits,
-            &mut request,
-        )?;
-        request.authorized_source = Some(authorization.clone());
-    } else if source_read.is_some() {
-        return Err(Error::Invalid(
-            "current-source fork must not substitute a foreign-source token".into(),
-        ));
-    }
-    cancellation
-        .check()
-        .map_err(|error| Error::Storage(error.to_string()))?;
     restore_recursive_fork_source(
         filesystem,
         stream,
@@ -140,27 +141,23 @@ where
     .await
 }
 
-/// Rebinds one supported original request to its exact authenticated parent checkpoint.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "original owner/provider/source identities stay explicit"
-)]
+/// Restores the immutable request at its authenticated parent checkpoint.
 pub async fn restore_recursive_fork_source<P, A, O>(
-    filesystem: Arc<crate::filesystem::FilesystemHost<A, O>>,
+    filesystem: Arc<FilesystemHost<A, O>>,
     stream: &Arc<P>,
-    parent: &crate::core::Reducer,
-    verifier: crate::core::AuthorityVerifier,
-    signed: crate::core::Scope,
+    parent: &Reducer,
+    verifier: AuthorityVerifier,
+    signed: Scope,
     caller_project: VolumeRef,
-    stream_provider: crate::resources::ProviderRef,
+    stream_provider: ProviderRef,
     request: ForkRequest,
-    history_limits: crate::store::HistoryReadLimits,
-    source_read: Option<crate::source_authorization::ProjectSourceReadHandle>,
-    resolver: Arc<dyn crate::conversation::ContentResidencyVerifier>,
-    cancellation: &acyclic_fs::CancellationToken,
+    history_limits: HistoryReadLimits,
+    source_read: Option<ProjectSourceReadHandle>,
+    resolver: Arc<dyn ContentResidencyVerifier>,
+    cancellation: &CancellationToken,
 ) -> Result<RetainedSourceBinding<A, O>>
 where
-    P: acyclic_stream::StreamProvider + 'static,
+    P: StreamProvider + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
@@ -170,30 +167,30 @@ where
     request.validate(&mut None)?;
     if request.parent != *parent.authority() || request.parent_revision != parent.revision() {
         return Err(Error::Conflict(
-            "restored fork source is not the original admitted parent cut".into(),
+            "restored source differs from the original parent cut".into(),
         ));
     }
-    verifier.verify(&signed, &mut None)?;
-    verifier.verify_audience(parent.authority(), &mut None)?;
+    verifier.verify_scope_for_with_work(parent.authority(), &signed, &mut None)?;
     if request.authorized_source.as_ref()
-        != source_read.as_ref().map(|handle| handle.authorization())
+        != source_read
+            .as_ref()
+            .map(ProjectSourceReadHandle::authorization)
     {
         return Err(Error::Unauthorized(
-            "restored source differs from the exact admitted workspace approval".into(),
+            "restored source differs from its workspace approval".into(),
         ));
     }
     cancellation
         .check()
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let history =
-        crate::store::HistoryReader::new(stream, parent.authority(), &(verifier), &mut None)?
-            .fork_history(
-                parent,
-                request.preparation.inherited_through_sequence,
-                history_limits,
-                &mut None,
-            )
-            .await?;
+    let history = HistoryReader::new(stream, parent.authority(), &verifier, &mut None)?
+        .fork_history(
+            parent,
+            request.preparation.inherited_through_sequence,
+            history_limits,
+            &mut None,
+        )
+        .await?;
     cancellation
         .check()
         .map_err(|error| Error::Storage(error.to_string()))?;
@@ -217,7 +214,7 @@ where
 }
 
 pub(in crate::filesystem) fn fork_request(
-    parent: &crate::core::Reducer,
+    parent: &Reducer,
     operation: OperationId,
     arguments: &ForkToolArguments,
     (caller, project, generation, private, private_generation): (
@@ -228,11 +225,10 @@ pub(in crate::filesystem) fn fork_request(
         &GenerationRef,
     ),
     config: RecursiveForkConfig,
-    stream_provider: &crate::resources::ProviderRef,
+    stream_provider: &ProviderRef,
     authorized_source: Option<crate::source_authorization::ProjectSourceAuthorization>,
-    io: Option<&crate::filesystem::PreparationIo>,
+    io: Option<&PreparationIo>,
 ) -> Result<ForkRequest> {
-    let selected = arguments.source.unwrap_or(caller);
     let (authority, path, project, private) = crate::executor::with_history_io(io, |work| {
         let authority = match work.as_deref_mut() {
             Some(work) => work.clone_authority(parent.authority())?,
@@ -251,14 +247,10 @@ pub(in crate::filesystem) fn fork_request(
     };
     let version = crate::contract::preparation_format(format_args!("{}", parent.revision()), io)?;
     let reference = crate::executor::with_history_io(io, |work| {
-        let resource = crate::resources::ResourceRef::new(
-            crate::resources::ResourceKind::Stream,
-            provider,
-            path,
-            Some(version),
+        StreamRef::from_resource_with_work(
+            ResourceRef::new(ResourceKind::Stream, provider, path, Some(version), work)?,
             work,
-        )?;
-        crate::resources::StreamRef::from_resource_with_work(resource, work)
+        )
     })?;
     let generation = match io {
         Some(io) => generation.clone_with_io(io)?,
@@ -268,26 +260,24 @@ pub(in crate::filesystem) fn fork_request(
         Some(io) => private_generation.clone_with_io(io)?,
         None => private_generation.clone(),
     };
-    let mut selections = crate::filesystem::fork_preparer_io::vector(3, io)?;
-    selections.push(crate::fork::ForkSelection {
-        required: true,
-        revision: ResourceRevision::History(reference),
-    });
-    selections.push(crate::fork::ForkSelection {
-        required: true,
-        revision: ResourceRevision::Project {
+    let mut selections = fork_preparer_io::vector(3, io)?;
+    for revision in [
+        ResourceRevision::History(reference),
+        ResourceRevision::Project {
             volume: project,
             generation,
         },
-    });
-    selections.push(crate::fork::ForkSelection {
-        required: true,
-        revision: ResourceRevision::PrivateVolume {
+        ResourceRevision::PrivateVolume {
             volume: private,
             generation: private_generation,
             paths: Vec::new(),
         },
-    });
+    ] {
+        selections.push(ForkSelection {
+            required: true,
+            revision,
+        });
+    }
     crate::executor::with_history_io(io, |work| {
         ForkRequest {
             operation_id: operation,
@@ -296,7 +286,7 @@ pub(in crate::filesystem) fn fork_request(
             child: config.child,
             child_agent: arguments.id,
             attached_agents: Vec::new(),
-            preparation: crate::fork::ForkPreparation {
+            preparation: ForkPreparation {
                 child_project_volume: config.child_project,
                 child_private_volume: config.child_private,
                 child_result_volume: config.child_result_volume,
@@ -312,10 +302,10 @@ pub(in crate::filesystem) fn fork_request(
         }
         .with_history_policy(
             parent,
-            if selected == caller {
-                crate::fork::ForkHistoryPolicy::default()
+            if arguments.source.unwrap_or(caller) == caller {
+                ForkHistoryPolicy::default()
             } else {
-                crate::fork::ForkHistoryPolicy::Fresh
+                ForkHistoryPolicy::Fresh
             },
             work,
         )
