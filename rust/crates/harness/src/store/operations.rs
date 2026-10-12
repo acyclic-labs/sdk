@@ -2148,8 +2148,8 @@ mod native_only_provider_tests {
         let page = reader.read_page_with_work(&cursor,
             HistoryReadLimits { maximum_events: 1, maximum_bytes: event_bytes }, true,
             Some(&mut io)).await?;
-        assert_eq!(page.page.events.as_slice(), std::slice::from_ref(&event));
-        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.0.events.as_slice(), std::slice::from_ref(&event));
+        assert_eq!(page.1.len(), 1);
         assert_eq!(native.receipt().authority_bytes_read, event_bytes);
         assert_eq!(native.receipt().source_bytes_read, event_bytes);
         assert_eq!(native.receipt().backend_read_operations, 3,
