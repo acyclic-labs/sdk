@@ -586,14 +586,12 @@ fn record_view_change_with_carrier(
     change: &ViewChange<'_>,
     carrier: &mut NativeDemandCarrier<'_>,
 ) -> Result<(), MountSourceError> {
-    if let Some(original) = carrier.original_native_work() {
-        return ledger.record_with_native_work(
-            change, &original, &mut super::view_ledger::ViewLedgerAdmission::default(),
-        );
+    if matches!(&*carrier, NativeDemandCarrier::Native(_)) {
+        return ledger.record(change, carrier, &mut super::view_ledger::ViewLedgerAdmission::default());
     }
     let (slot, mut admission) = carrier.with_work(|work| ledger.take_for_work(work))?;
     let recorded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        ledger.record_with_carrier(change, carrier, &mut admission)
+        ledger.record(change, carrier, &mut admission)
     }));
     carrier.with_work(|work| work.restore_view_ledger_admission(slot, admission));
     match recorded {
@@ -610,8 +608,13 @@ async fn native_node_if_bound_with_carrier<A: AsyncAuthorityStore, O: AsyncObjec
 ) -> Result<Option<FileId>, MountSourceError> {
     use super::lazy::{mount_demand_error, mount_engine_error};
     let original_native = carrier.original_native_work();
-    let inspector = if let Some(original) = original_native.as_ref() {
-        checkout.inspector_with_native_work(original, cancellation).map_err(MountSourceError::Filesystem)?
+    let value = if let Some(original) = original_native.as_ref() {
+        let mut inspector = checkout.inspector_with_native_work(original, cancellation)
+            .map_err(MountSourceError::Filesystem)?;
+        let accepted = inspector.lookup_no_follow_with_native_work(path, original, cancellation)
+            .await.map_err(MountSourceError::Filesystem);
+        inspector.proof_data_take_completed_work();
+        accepted?
     } else {
         let (budget, prior_live) = carrier.with_work(|work| {
             Ok::<_, MountSourceError>((
@@ -619,14 +622,8 @@ async fn native_node_if_bound_with_carrier<A: AsyncAuthorityStore, O: AsyncObjec
             ))
         })?;
         let inspected = checkout.inspector_measured(budget, cancellation);
-        carrier.accept_with_prior_live(inspected, prior_live, mount_engine_error)?
-    };
-    let mut inspector = LookupObserverOwned::new_in(inspector, carrier.reborrow())?;
-    let accepted = if let Some(original) = original_native.as_ref() {
-        inspector.lookup_no_follow_with_native_work(
-            path, original, cancellation,
-        ).await.map_err(MountSourceError::Filesystem)
-    } else {
+        let inspector = carrier.accept_with_prior_live(inspected, prior_live, mount_engine_error)?;
+        let mut inspector = LookupObserverOwned::new_in(inspector, carrier.reborrow())?;
         let (budget, prior_live) = inspector.work.with_work(|work| {
             Ok::<_, MountSourceError>((
                 work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
@@ -635,12 +632,12 @@ async fn native_node_if_bound_with_carrier<A: AsyncAuthorityStore, O: AsyncObjec
         let lookup = inspector.lookup_no_follow(path, budget, cancellation).await;
         let accepted = inspector.work.accept_with_prior_live(lookup, prior_live, mount_engine_error);
         inspector.receipt_delivered();
-        accepted
+        let finished = inspector.finish();
+        let value = accepted?;
+        finished?;
+        value
     };
-    let finished = inspector.finish();
-    let value = accepted?;
-    finished?;
-    inspector.work.with_work(|work| {
+    carrier.with_work(|work| {
         work.check().map_err(mount_demand_error)?;
         if value.record.is_some() {
             work.charge(crate::WorkCounters {
@@ -1018,7 +1015,7 @@ impl Drop for CaptureCallerWait {
 
 struct CaptureRegistrationRetirement {
     items: crate::materializer::NativeItemReservation,
-    copied: Option<crate::materializer::NativeCopyReservation>,
+    copied: crate::materializer::NativeCopyReservation,
 }
 
 impl CaptureRegistrationRetirement {
@@ -1026,7 +1023,7 @@ impl CaptureRegistrationRetirement {
         let items = work.reserve_items(2).map_err(MountSourceError::NativeWork)?;
         let copied = work.reserve_copy(std::mem::size_of::<CaptureSourceSlot>() as u64)
             .map_err(MountSourceError::NativeWork)?;
-        Ok(Self { items, copied: Some(copied) })
+        Ok(Self { items, copied })
     }
 }
 
@@ -1067,10 +1064,9 @@ impl<A, O> Drop for CaptureRegistration<A, O> {
         drop(removed);
         if let Some(vector) = vector { retire_capture_vector(vector, allocation, native_allocation); }
         let items_error = retirement.items.consume(1 + u64::from(copied != 0)).err();
-        let copied_error = retirement.copied.take().expect("capture retirement owns its copy credit")
-            .record(copied as u64).err();
+        let copied_error = retirement.copied.record(copied as u64).err();
         // Refund unused visits before the producer lease announces quiescence.
-        drop(retirement);
+        drop(retirement.items);
         if let Some(error) = items_error.or(copied_error) {
             let mut wait = self.wait.lock().unwrap_or_else(PoisonError::into_inner);
             if wait.error.is_none() { wait.error = Some(MountSourceError::NativeWork(error)); }
@@ -1628,13 +1624,6 @@ enum PendingBytes {
 }
 
 impl PendingBytes {
-    fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Mutable { bytes, .. } => bytes,
-            Self::Shared { bytes, .. } => bytes,
-        }
-    }
-
     fn sharing_allocation(&self) -> u64 {
         match self {
             Self::Mutable { bytes, allocation } =>
@@ -1691,7 +1680,7 @@ impl PendingBytes {
         let mut scratch = NativeCaptureScratchAllocation::new(original)?;
         scratch.admit(crate::WorkCounters { bytes_copied: copied as u64, ..crate::WorkCounters::UNCHARGED })?;
         let mut grown = scratch.vec::<u8>(requested)?;
-        grown.extend_from_slice(&self.as_slice()[..copied]);
+        grown.extend_from_slice(&self[..copied]);
         scratch.record(crate::WorkCounters { bytes_copied: copied as u64, ..crate::WorkCounters::UNCHARGED })?;
         Ok(Some(Self::Mutable { bytes: grown, allocation: Some(scratch.retain()) }))
     }
@@ -1699,7 +1688,12 @@ impl PendingBytes {
 
 impl Deref for PendingBytes {
     type Target = [u8];
-    fn deref(&self) -> &Self::Target { self.as_slice() }
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Mutable { bytes, .. } => bytes,
+            Self::Shared { bytes, .. } => bytes,
+        }
+    }
 }
 
 enum PendingState {
@@ -1711,8 +1705,7 @@ enum PendingState {
         metadata: Box<FileMetadata>,
         bytes: PendingBytes,
     },
-    Applied,
-    Failed,
+    Complete,
 }
 
 impl PendingCreate {
@@ -1792,7 +1785,7 @@ impl PendingCreate {
         let PendingState::Pending { bytes, .. } = state else { return Err(MountSourceError::Stale); };
         let prepared_bytes = bytes.share(original)?;
         let PendingState::Pending { metadata, bytes } =
-            std::mem::replace(state, PendingState::Applied)
+            std::mem::replace(state, PendingState::Complete)
         else { return Err(MountSourceError::Stale); };
         let change = GroupedChange::CreateFile {
             path, metadata: prepared_metadata, file_id: self.file_id, bytes: prepared_bytes,
@@ -1803,7 +1796,7 @@ impl PendingCreate {
 
     fn restore_applying_retained(&self) {
         let mut state = self.state();
-        match std::mem::replace(&mut *state, PendingState::Applied) {
+        match std::mem::replace(&mut *state, PendingState::Complete) {
             PendingState::Applying { metadata, bytes, .. } => {
                 *state = PendingState::Pending { metadata, bytes };
             }
@@ -1812,20 +1805,16 @@ impl PendingCreate {
     }
 
     fn finish_applying(&self, applied: Result<GroupedOutcome, MountSourceError>) {
-        let next = match applied {
-            Ok(_) => PendingState::Applied,
-            Err(error) => {
-                let own_alias = matches!(&error, MountSourceError::Retained(cause)
-                    if Arc::as_ptr(cause) as *const () == self as *const Self as *const ());
-                if own_alias {
-                    assert!(self.failure.get().is_some(), "original pending error cause exists");
-                } else {
-                    assert!(self.failure.set(error).is_ok(), "original pending outcome delivered once");
-                }
-                PendingState::Failed
+        if let Err(error) = applied {
+            let own_alias = matches!(&error, MountSourceError::Retained(cause)
+                if Arc::as_ptr(cause) as *const () == self as *const Self as *const ());
+            if own_alias {
+                assert!(self.failure.get().is_some(), "original pending error cause exists");
+            } else {
+                assert!(self.failure.set(error).is_ok(), "original pending outcome delivered once");
             }
-        };
-        let old = std::mem::replace(&mut *self.state(), next);
+        }
+        let old = std::mem::replace(&mut *self.state(), PendingState::Complete);
         let metadata_dropped = matches!(&old, PendingState::Pending { .. } | PendingState::Applying { .. });
         drop(old);
         if metadata_dropped && let Some(custody) = &self.custody {
@@ -1856,7 +1845,7 @@ impl PendingCreate {
 
     fn applied(self: &Arc<Self>) -> Result<(), MountSourceError> {
         match &*self.state() {
-            PendingState::Failed => {
+            PendingState::Complete if self.failure.get().is_some() => {
                 let cause: Arc<dyn super::MountSourceFailureCause> = Arc::clone(self) as Arc<dyn super::MountSourceFailureCause>;
                 Err(MountSourceError::Retained(cause))
             }
@@ -1894,17 +1883,11 @@ impl PendingCreate {
     }
 }
 
-struct GroupedCompletion {
-    admission: Arc<GroupedAdmission>,
-    reply: Arc<PendingCreate>,
-}
-
 struct GroupedDelivery {
     changes: Vec<GroupedChange>,
-    replies: Vec<GroupedCompletion>,
-    results: Option<Vec<Result<GroupedOutcome, FsError>>>,
+    replies: Vec<(Arc<GroupedAdmission>, Arc<PendingCreate>)>,
+    results: Vec<Result<GroupedOutcome, FsError>>,
     installed: bool,
-    native_errors: bool,
     // The changes backing physically retires before its transferable ticket.
     changes_allocation: Option<crate::NativeAllocation>,
     // All other native phase backing retires before this original ticket.
@@ -1942,7 +1925,7 @@ fn prepare_grouped_buffers_with_carrier<'a, 'w>(
         let changes = change_slots.vec(requests.len())?;
         let replies = phase.vec(requests.len())?;
         let buffers = GroupedDelivery {
-            changes, replies, results: None, installed: false, native_errors: true,
+            changes, replies, results: Vec::new(), installed: false,
             changes_allocation: Some(change_slots.retain()),
             native_phase_allocation: Some(phase.retain()),
         };
@@ -1953,7 +1936,7 @@ fn prepare_grouped_buffers_with_carrier<'a, 'w>(
         let changes = scratch.vec(requests.len())?;
         let replies = scratch.vec(requests.len())?;
         let buffers = GroupedDelivery {
-            changes, replies, results: None, installed: false, native_errors: false,
+            changes, replies, results: Vec::new(), installed: false,
             changes_allocation: None, native_phase_allocation: None,
         };
         Ok::<_, MountSourceError>((buffers, scratch.retain()))
@@ -1967,13 +1950,14 @@ impl GroupedDelivery {
         let mut completed_error = completed.err();
         let mut completed_cause: Option<Arc<dyn super::MountSourceFailureCause>> = None;
         let mut batch = Ok(());
-        if let Some(results) = self.results.take() {
-            for (result, completion) in results.into_iter().zip(self.replies.drain(..))
+        let results = std::mem::take(&mut self.results);
+        if !results.is_empty() {
+            for (result, (admission, reply)) in results.into_iter().zip(self.replies.drain(..))
             {
                 let (answer, installed) = match result {
                     Ok(outcome) => {
                         if let Some(error) = completed_error.take() {
-                            let cause = completion.admission.retain_failure(error);
+                            let cause = admission.retain_failure(error);
                             batch = Err(MountSourceError::Retained(Arc::clone(&cause)));
                             completed_cause = Some(cause);
                         }
@@ -1984,7 +1968,10 @@ impl GroupedDelivery {
                         (answer, self.installed)
                     }
                     Err(error) => {
-                        let cause = completion.admission.retain_failure(grouped_error(error, self.native_errors));
+                        let error = if self.native_phase_allocation.is_some() {
+                            MountSourceError::Filesystem(error)
+                        } else { fs_error(error) };
+                        let cause = admission.retain_failure(error);
                         if batch.is_ok() && completed_error.is_none() {
                             batch = Err(MountSourceError::Retained(Arc::clone(&cause)));
                         }
@@ -1992,20 +1979,20 @@ impl GroupedDelivery {
                     }
                 };
                 match answer {
-                    Err(error) if !installed => completion.reply.reject_uninstalled(error),
-                    answer => completion.reply.finish_applying(answer),
+                    Err(error) if !installed => reply.reject_uninstalled(error),
+                    answer => reply.finish_applying(answer),
                 }
             }
-        } else if let Some(completion) = self.replies.first() {
+        } else if let Some((admission, _)) = self.replies.first() {
             let failed = completed_error.is_some();
-            let cause = completion.admission.retain_failure(
+            let cause = admission.retain_failure(
                 completed_error.take().unwrap_or(MountSourceError::Cancelled),
             );
             if failed {
                 batch = Err(MountSourceError::Retained(Arc::clone(&cause)));
             }
-            for completion in self.replies.drain(..) {
-                completion.reply.reject_uninstalled(MountSourceError::Retained(Arc::clone(&cause)));
+            for (_, reply) in self.replies.drain(..) {
+                reply.reject_uninstalled(MountSourceError::Retained(Arc::clone(&cause)));
             }
         }
         match completed_error {
@@ -2019,10 +2006,6 @@ impl Drop for GroupedDelivery {
     fn drop(&mut self) {
         let _ = self.complete(Err(MountSourceError::Cancelled));
     }
-}
-
-fn grouped_error(error: FsError, native_errors: bool) -> MountSourceError {
-    if native_errors { MountSourceError::Filesystem(error) } else { fs_error(error) }
 }
 
 struct GroupedRequest {
@@ -2701,14 +2684,15 @@ impl<A, O> SharedCheckout<A, O> {
                 ViewGate::callback_owner(), carrier, cancellation, lifetime,
             ).await?;
             let _view = observation._view;
-            let mut observer = LookupObserverOwned::new_in(
-                observation.observer, carrier.reborrow(),
-            )?;
-            let accepted = if let Some(original) = &original {
-                observer.read_file_record_by_id_with_native_work(
+            let mut observer = observation.observer;
+            if let Some(original) = &original {
+                let accepted = observer.read_file_record_by_id_with_native_work(
                     file_id, original, cancellation,
-                ).await.map_err(mount_engine_error)
+                ).await.map_err(mount_engine_error);
+                observer.proof_data_take_completed_work();
+                accepted?
             } else {
+                let mut observer = LookupObserverOwned::new_in(observer, carrier.reborrow())?;
                 let (budget, prior_live) = observer.work.with_work(|work| {
                     Ok::<_, MountSourceError>((
                         work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
@@ -2717,12 +2701,11 @@ impl<A, O> SharedCheckout<A, O> {
                 let result = observer.read_file_record_by_id(file_id, budget, cancellation).await;
                 let accepted = observer.work.accept_with_prior_live(result, prior_live, mount_engine_error);
                 observer.receipt_delivered();
-                accepted
-            };
-            let finished = observer.finish();
-            let record = accepted?;
-            finished?;
-            record
+                let finished = observer.finish();
+                let record = accepted?;
+                finished?;
+                record
+            }
         };
         if lifetime.is_some_and(CancellationToken::is_cancelled) {
             return Err(MountSourceError::Stale);
@@ -2863,14 +2846,6 @@ impl<A, O> SharedCheckout<A, O> {
         let (mut candidate, epoch, stamp) = self.prepare_native_phase_with_carrier(
             input.carrier, cancellation, lifetime,
         ).await?;
-        let map_error = |error| match error {
-            FsError::CreationRejected | FsError::NotFound | FsError::Mutation(
-                GenerationMutationError::AlreadyExists |
-                GenerationMutationError::MissingParent |
-                GenerationMutationError::MissingSource,
-            ) => fs_error(error),
-            other => mount_engine_error(other),
-        };
         let accepted = if let Some(original) = input.carrier.original_native_work() {
             let (name, value) = input.value.as_ref().expect("native attribute input is live");
             match value {
@@ -2896,7 +2871,7 @@ impl<A, O> SharedCheckout<A, O> {
                     file_id, name, budget, cancellation,
                 ).await,
             };
-            input.carrier.accept_with_prior_live(result, prior_live, map_error)
+            input.carrier.accept_with_prior_live(result, prior_live, fs_error)
         };
         drop(input);
         let installed = self.finish_native_phase_with_carrier(
@@ -3279,7 +3254,7 @@ impl<A, O> SharedCheckout<A, O> {
         }
         if let Some(stamp) = absent_since {
             let unchanged = self.view_gate.is_stable() && carrier.with_work(|work| {
-                self.ledger.binding_unchanged_since_measured(&pending.path, stamp, work)
+                self.ledger.binding_unchanged_since(&pending.path, stamp, work)
             })?;
             if !unchanged { return Ok(false); }
         }
@@ -3317,7 +3292,7 @@ impl<A, O> SharedCheckout<A, O> {
         let (slot, mut admission) = carrier.with_work(|work| self.ledger.take_for_work(work))?;
         let recorded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _origin = pending.origin.enter();
-            self.ledger.record_with_carrier(&ViewChange::Bound(&pending.path), carrier, &mut admission)
+            self.ledger.record(&ViewChange::Bound(&pending.path), carrier, &mut admission)
         }));
         carrier.with_work(|work| work.restore_view_ledger_admission(slot, admission));
         match recorded {
@@ -3435,7 +3410,7 @@ impl<A, O> SharedCheckout<A, O> {
                     let count = held.len().min(self.cleanup_reserved as usize);
                     let mut terminal = true;
                     for create in &held[..count] {
-                        terminal &= matches!(&*create.state(), PendingState::Applied | PendingState::Failed);
+                        terminal &= matches!(&*create.state(), PendingState::Complete);
                     }
                     if terminal && count == held.len() { held.clear(); }
                     count as u64
@@ -3712,7 +3687,7 @@ impl<A, O> SharedCheckout<A, O> {
         file_id: Option<FileId>,
         stamp: ViewStamp,
     ) -> bool {
-        self.view_gate.is_stable() && self.ledger.unchanged_since(path, file_id, stamp)
+        self.view_gate.is_stable() && self.ledger.unchanged_since(path, file_id, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 
     fn reported_unchanged_since(
@@ -3721,19 +3696,19 @@ impl<A, O> SharedCheckout<A, O> {
         file_id: Option<FileId>,
         stamp: ViewStamp,
     ) -> bool {
-        self.view_gate.is_stable() && self.ledger.reported_unchanged_since(path, file_id, stamp)
+        self.view_gate.is_stable() && self.ledger.reported_unchanged_since(path, file_id, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp)
+        self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 
     fn listing_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.listing_unchanged_since(path, stamp)
+        self.view_gate.is_stable() && self.ledger.listing_unchanged_since(path, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 
     fn binding_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.binding_unchanged_since(path, stamp)
+        self.view_gate.is_stable() && self.ledger.binding_unchanged_since(path, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 }
 
@@ -3874,7 +3849,10 @@ impl<A, O> SharedCheckoutState<A, O> {
 
     /// Records one change to the checkout's view.
     pub(super) fn record(&mut self, change: &ViewChange<'_>) {
-        self.ledger.record(change);
+        self.ledger.record(
+            change, &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()),
+            &mut super::view_ledger::ViewLedgerAdmission::default(),
+        ).expect("unbounded view recording");
         self.revision.fetch_add(1, Ordering::AcqRel);
         self.recorded_view = self.checkout.root().file_table;
     }
@@ -3958,7 +3936,7 @@ impl<A, O> SharedCheckout<A, O> {
         let delivery = value.as_mut().expect("grouped phase buffers are live");
         if let Err(error) = (|| {
             let copied = requests.0.len().checked_mul(
-                std::mem::size_of::<GroupedChange>() + std::mem::size_of::<GroupedCompletion>(),
+                std::mem::size_of::<GroupedChange>() + std::mem::size_of::<(Arc<GroupedAdmission>, Arc<PendingCreate>)>(),
             ).ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
             let delta = crate::WorkCounters {
                 bytes_copied: copied,
@@ -3975,10 +3953,7 @@ impl<A, O> SharedCheckout<A, O> {
         }
         for request in requests.0.drain(..) {
             delivery.changes.push(request.change);
-            delivery.replies.push(GroupedCompletion {
-                admission: request.admission,
-                reply: request.reply,
-            });
+            delivery.replies.push((request.admission, request.reply));
         }
         let captured = match &original {
             Some(original) => original.remaining().map(|budget|
@@ -4038,9 +4013,9 @@ impl<A, O> SharedCheckout<A, O> {
                 .expect("grouped outcome slots have exact custody");
             adopted
         };
-        delivery.results = Some(results);
+        delivery.results = results;
         let mut completed = released.and(adopted).and_then(|()| check_lifetime());
-        let changed = delivery.results.as_ref().into_iter().flatten().any(Result::is_ok);
+        let changed = delivery.results.iter().any(Result::is_ok);
         if completed.is_ok() && changed {
             let installed = self.finish_native_phase_with_recording(
                 candidate, epoch, stamp, carrier, cancellation, lifetime, |_| Ok(()),
@@ -4096,7 +4071,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutCandidate<A, O> {
         let installed = installed_changes_with_native_work(
             &self.base, &self.checkout, scope, work, cancellation,
         ).await?;
-        Ok((installed.value, installed._allocation))
+        Ok((installed.value, Some(installed._allocation)))
     }
 
     /// The checkout this transaction began from.
@@ -4142,7 +4117,7 @@ where
 
 struct InstalledCaptureEffect {
     value: ViewEffect,
-    _allocation: Option<crate::NativeAllocation>,
+    _allocation: crate::NativeAllocation,
 }
 
 enum InstalledCaptureAccounting<'a> {
@@ -4275,12 +4250,6 @@ impl InstalledCaptureAccounting<'_> {
         }
     }
 
-    fn into_allocation(self) -> Option<crate::NativeAllocation> {
-        match self {
-            Self::Ordinary(_) => None,
-            Self::Native(scratch) => Some(scratch.retain()),
-        }
-    }
 }
 
 fn installed_directory_position(
@@ -4328,7 +4297,10 @@ async fn installed_changes_with_native_work<A: AsyncAuthorityStore, O: AsyncObje
     let value = installed_changes_with_accounting(
         base, candidate, scope, &mut accounting, cancellation,
     ).await?;
-    Ok(InstalledCaptureEffect { value, _allocation: accounting.into_allocation() })
+    let InstalledCaptureAccounting::Native(scratch) = accounting else {
+        unreachable!("native installed effects retain their allocation");
+    };
+    Ok(InstalledCaptureEffect { value, _allocation: scratch.retain() })
 }
 
 async fn installed_changes_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -5163,7 +5135,7 @@ where
     ) -> Result<T, MountSourceError> {
         let original = match &*self.pending.state() {
             PendingState::Pending { bytes, .. } | PendingState::Applying { bytes, .. } => bytes.original_work(),
-            PendingState::Applied | PendingState::Failed => None,
+            PendingState::Complete => None,
         };
         match original {
             Some(original) => operation(&original.native_mount_work()),
@@ -5312,7 +5284,7 @@ where
                 if let Some(prepared) = prepared { drop(std::mem::replace(bytes, prepared)); }
                 if shared_truncate {
                     let PendingBytes::Shared { bytes, .. } = bytes else { unreachable!("original shared body"); };
-                    bytes.truncate(length);
+                    *bytes = bytes.slice(..length);
                 } else {
                     bytes.mutable().resize(length, 0);
                 }
