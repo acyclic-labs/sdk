@@ -74,8 +74,8 @@ impl StreamProvider for FiniteFollow {
 }
 
 fn provider_channel<S: StreamService + Clone>(service: S) -> Channel {
-    Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
-        tower::service_fn(move |_| {
+    Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(tower::service_fn(
+        move |_| {
             let service = service.clone();
             async move {
                 let (client, server) = tokio::io::duplex(64 * 1024);
@@ -88,12 +88,16 @@ fn provider_channel<S: StreamService + Clone>(service: S) -> Channel {
                 });
                 Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
             }
-        }),
-    )
+        },
+    ))
 }
 
 #[derive(Clone)]
-struct MixedFrames(Service<MemoryStream>, Option<&'static str>, Option<Arc<AckFixture>>);
+struct MixedFrames(
+    Service<MemoryStream>,
+    Option<&'static str>,
+    Option<Arc<AckFixture>>,
+);
 
 #[async_trait]
 impl StreamService for MixedFrames {
@@ -158,18 +162,28 @@ impl StreamService for MixedFrames {
                     value: Bytes::from_static(b"received"),
                     commit_id: Bytes::from(vec![1; 32]),
                     committed_at_micros: 123,
-                }).collect();
+                })
+                .collect();
             let mut frame = crate::wire_codec::zstd_read_response(records);
             frame.delivery_token = fixture.token_length.map(|length| vec![7; length].into());
             if self.1 == Some("bad_cursor") {
                 frame = read_response_wire(vec![
-                    wire::Record { commit_id: vec![1; 32].into(), ..Default::default() },
-                    wire::Record { sequence: 4, commit_id: vec![1; 32].into(), ..Default::default() },
+                    wire::Record {
+                        commit_id: vec![1; 32].into(),
+                        ..Default::default()
+                    },
+                    wire::Record {
+                        sequence: 4,
+                        commit_id: vec![1; 32].into(),
+                        ..Default::default()
+                    },
                 ]);
                 frame.delivery_token = Some(vec![7; 32].into());
             }
             return Ok(Response::new(
-                stream::once(async move { Ok(frame) }).chain(stream::pending()).boxed(),
+                stream::once(async move { Ok(frame) })
+                    .chain(stream::pending())
+                    .boxed(),
             ));
         }
         if let Some(fault) = self.1 {
@@ -179,8 +193,7 @@ impl StreamService for MixedFrames {
             }]);
             let frames: Self::ReadStream = match fault {
                 "malformed" => {
-                    stream::iter([Ok(read_response_wire(vec![wire::Record::default()]))])
-                        .boxed()
+                    stream::iter([Ok(read_response_wire(vec![wire::Record::default()]))]).boxed()
                 }
                 "error" => {
                     stream::iter([Ok(valid), Err(Status::permission_denied("denied"))]).boxed()
@@ -201,8 +214,7 @@ impl StreamService for MixedFrames {
             .await;
         let mut records = Vec::new();
         for frame in frames {
-            records
-                .extend(read_response_records(frame?).map_err(|error| error_status(&error))?);
+            records.extend(read_response_records(frame?).map_err(|error| error_status(&error))?);
         }
         let regrouped = records
             .chunks(3)
@@ -223,9 +235,13 @@ impl StreamService for MixedFrames {
     ) -> Result<Response<Self::FollowStream>, Status> {
         if self.2.is_some() {
             let request = request.into_inner();
-            return self.read(Request::new(wire::ReadRequest {
-                path: request.path, from: request.from, limit: wire::StreamLimit::MaxItems as u32,
-            })).await;
+            return self
+                .read(Request::new(wire::ReadRequest {
+                    path: request.path,
+                    from: request.from,
+                    limit: wire::StreamLimit::MaxItems as u32,
+                }))
+                .await;
         }
         self.0.follow(request).await
     }
@@ -271,7 +287,8 @@ struct AckFixture {
 impl AckFixture {
     fn new(token_length: Option<usize>, fail: bool) -> Arc<Self> {
         Arc::new(Self {
-            token_length, fail,
+            token_length,
+            fail,
             entered: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
             changed: tokio::sync::Notify::new(),
@@ -294,10 +311,16 @@ async fn ack_loopback(
 ) -> Result<(Channel, tokio::task::JoinHandle<()>), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("http://{}", listener.local_addr()?);
-    let service = MixedFrames(Service::new(Arc::new(MemoryStream::default())), fault, Some(fixture));
+    let service = MixedFrames(
+        Service::new(Arc::new(MemoryStream::default())),
+        fault,
+        Some(fixture),
+    );
     let server = tokio::spawn(async move {
-        let _ = Server::builder().add_service(StreamServiceServer::new(service))
-            .serve_with_incoming(TcpListenerStream::new(listener)).await;
+        let _ = Server::builder()
+            .add_service(StreamServiceServer::new(service))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await;
     });
     let channel = Endpoint::from_shared(endpoint)?.connect().await?;
     Ok((channel, server))
@@ -311,37 +334,21 @@ async fn wait_for_ack_count(
         while counter.load(Ordering::SeqCst) == 0 {
             fixture.changed.notified().await;
         }
-    }).await
-}
-
-#[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one adversarial matrix compares filtered and visible lifecycle evidence across body boundaries"
-)]
-
-fn unavailable_channel() -> Channel {
-    Endpoint::from_static("http://unavailable.invalid").connect_with_connector_lazy(
-        tower::service_fn(|_| async {
-            Err::<hyper_util::rt::TokioIo<tokio::io::DuplexStream>, _>(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                "unavailable",
-            ))
-        }),
-    )
+    })
+    .await
 }
 
 fn stalled_channel() -> Channel {
-    Endpoint::from_static("http://stalled.invalid").connect_with_connector_lazy(
-        tower::service_fn(|_| async {
+    Endpoint::from_static("http://stalled.invalid").connect_with_connector_lazy(tower::service_fn(
+        |_| async {
             let (client, server) = tokio::io::duplex(64 * 1024);
             tokio::spawn(async move {
                 let _server = server;
                 std::future::pending::<()>().await;
             });
             Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
-        }),
-    )
+        },
+    ))
 }
 
 async fn assert_unary_retry(
@@ -359,11 +366,15 @@ async fn assert_unary_retry(
     let mut first = Some(error);
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        client.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, body.clone(), |_, request| {
-            attempts.push(request.into_inner());
-            let result = first.take().map_or_else(|| Ok(Response::new(())), Err);
-            Box::pin(async move { result })
-        }),
+        client.unary(
+            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+            body.clone(),
+            |_, request| {
+                attempts.push(request.into_inner());
+                let result = first.take().map_or_else(|| Ok(Response::new(())), Err);
+                Box::pin(async move { result })
+            },
+        ),
     )
     .await?
     .and_then(|response| decode_response(response, Ok));
@@ -377,8 +388,8 @@ async fn assert_unary_retry(
     Ok(())
 }
 
-mod observation;
-mod delivery;
-mod retry;
 mod contract;
+mod delivery;
+mod observation;
+mod retry;
 mod tls;

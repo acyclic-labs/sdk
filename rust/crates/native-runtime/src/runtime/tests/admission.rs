@@ -6,7 +6,9 @@ fn saturated_host_transactions_do_not_starve_native_file_io() -> io::Result<()> 
     impl Drop for GateRelease {
         fn drop(&mut self) {
             let (lock, ready) = &*self.0;
-            *lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+            *lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
             ready.notify_all();
         }
     }
@@ -27,27 +29,44 @@ fn saturated_host_transactions_do_not_starve_native_file_io() -> io::Result<()> 
             move || {
                 let _ = entered_tx.send(());
                 let (lock, ready) = &*gate;
-                let mut released = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut released = lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 while !*released {
-                    released = ready.wait(released).unwrap_or_else(std::sync::PoisonError::into_inner);
+                    released = ready
+                        .wait(released)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                 }
                 let _ = finished_tx.send(());
             },
             None,
         )
         .expect("unmetered task construction cannot fail");
-        assert!(matches!(Pin::new(&mut task).poll(&mut Context::from_waker(&waker)), Poll::Pending));
+        assert!(matches!(
+            Pin::new(&mut task).poll(&mut Context::from_waker(&waker)),
+            Poll::Pending
+        ));
         observers.push(task);
     }
     for _ in 0..count {
-        entered_rx.recv_timeout(Duration::from_secs(10)).map_err(|error| io::Error::other(error.to_string()))?;
+        entered_rx
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| io::Error::other(error.to_string()))?;
     }
     let temporary = tempfile::NamedTempFile::new()?;
     let file = temporary.reopen()?;
-    complete(read_batch_async(file, vec![OwnedRead { offset: 0, length: 1 }]))?;
+    complete(read_batch_async(
+        file,
+        vec![OwnedRead {
+            offset: 0,
+            length: 1,
+        }],
+    ))?;
     drop(release);
     for _ in 0..count {
-        finished_rx.recv_timeout(Duration::from_secs(10)).map_err(|error| io::Error::other(error.to_string()))?;
+        finished_rx
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| io::Error::other(error.to_string()))?;
     }
     drop(observers);
     Ok(())
@@ -65,8 +84,12 @@ fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io:
     }
     impl Drop for HeldFile {
         fn drop(&mut self) {
-            self.entered.send(()).expect("actual payload-drop observer remains owned");
-            self.release.recv().expect("actual destructor release remains owned");
+            self.entered
+                .send(())
+                .expect("actual payload-drop observer remains owned");
+            self.release
+                .recv()
+                .expect("actual destructor release remains owned");
             drop(self.file.take());
         }
     }
@@ -75,7 +98,11 @@ fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io:
     let fd = file.as_raw_fd();
     let (entered, entered_drop) = mpsc::sync_channel(1);
     let (release, released) = mpsc::sync_channel(1);
-    let held = HeldFile { file: Some(file), entered, release: released };
+    let held = HeldFile {
+        file: Some(file),
+        entered,
+        release: released,
+    };
     let policy = ReadBudgetMeter::new(0, 0);
     let observer = Arc::new(policy);
     let mut task = run_blocking_io(
@@ -85,11 +112,20 @@ fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io:
         Some((observer.clone(), true)),
     )?;
     let prepared = observer.memory.load(Ordering::Acquire);
-    let job = task.pending.take().expect("same canonical prepared ingress");
+    let job = task
+        .pending
+        .take()
+        .expect("same canonical prepared ingress");
     observer.cancelled.store(true, Ordering::Release);
     let worker = std::thread::spawn(move || wake_capacity_waiter(job.run()));
-    entered_drop.recv_timeout(Duration::from_secs(10)).map_err(io::Error::other)?;
-    assert!(Pin::new(&mut task).poll(&mut Context::from_waker(Waker::noop())).is_pending());
+    entered_drop
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(io::Error::other)?;
+    assert!(
+        Pin::new(&mut task)
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
     assert_eq!(
         observer.memory.load(Ordering::Acquire),
         prepared,
@@ -101,12 +137,17 @@ fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io:
         "the original held file remains physically open before destructor release"
     );
     release.send(()).map_err(io::Error::other)?;
-    worker.join().map_err(|_| io::Error::from(io::ErrorKind::Other))?;
+    worker
+        .join()
+        .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
     match Pin::new(&mut task).poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(Err(error)) => assert_eq!(error.kind(), io::ErrorKind::Interrupted),
         _ => panic!("the actual terminal admission error must now be observable"),
     }
-    assert!(observer.memory.load(Ordering::Acquire) < prepared, "job backing retires before terminal publication");
+    assert!(
+        observer.memory.load(Ordering::Acquire) < prepared,
+        "job backing retires before terminal publication"
+    );
     drop(task);
     assert_eq!(observer.memory.load(Ordering::Acquire), 0);
     Ok(())
@@ -128,22 +169,40 @@ fn inactive_admission_waiter_cannot_strand_other_files() -> io::Result<()> {
     }
 
     let (sender, receiver) = mpsc::sync_channel(1);
-    let workers = NativeWorkers { sender, admission: Arc::new(Mutex::new(AdmissionState::new())) };
+    let workers = NativeWorkers {
+        sender,
+        admission: Arc::new(Mutex::new(AdmissionState::new())),
+    };
     let job = || NativeJob::Task {
         operation: Box::new(|| ()),
         meter: None,
-        terminal: Arc::new(Mutex::new(CompletionState::<()> { task_pending: true, ..CompletionState::default() })),
+        terminal: Arc::new(Mutex::new(CompletionState::<()> {
+            task_pending: true,
+            ..CompletionState::default()
+        })),
         _allocation: None,
         health: None,
         completion: None,
     };
-    workers.sender.try_send(job()).map_err(|_| io::Error::other("failed to saturate admission queue"))?;
-    workers.admission.lock().map_err(|_| io::Error::other("admission mutex poisoned"))?.queued_jobs += 1;
+    workers
+        .sender
+        .try_send(job())
+        .map_err(|_| io::Error::other("failed to saturate admission queue"))?;
+    workers
+        .admission
+        .lock()
+        .map_err(|_| io::Error::other("admission mutex poisoned"))?
+        .queued_jobs += 1;
 
     let mut inactive = Some(job());
     let mut inactive_waiter = None;
     assert!(matches!(
-        poll_submission_with(&workers, &mut inactive, &mut inactive_waiter, &Context::from_waker(Waker::noop()),),
+        poll_submission_with(
+            &workers,
+            &mut inactive,
+            &mut inactive_waiter,
+            &Context::from_waker(Waker::noop()),
+        ),
         Poll::Pending
     ));
     let wakes = Arc::new(CountWake(AtomicUsize::new(0)));
@@ -151,16 +210,27 @@ fn inactive_admission_waiter_cannot_strand_other_files() -> io::Result<()> {
     let context = Context::from_waker(&active_waker);
     let mut active = Some(job());
     let mut active_waiter = None;
-    assert!(matches!(poll_submission_with(&workers, &mut active, &mut active_waiter, &context), Poll::Pending));
+    assert!(matches!(
+        poll_submission_with(&workers, &mut active, &mut active_waiter, &context),
+        Poll::Pending
+    ));
 
     let _ = receiver.recv().map_err(io::Error::other)?;
     notify_capacity_released(&workers.admission);
     assert!(wakes.0.load(Ordering::Relaxed) > 0);
-    assert!(matches!(poll_submission_with(&workers, &mut active, &mut active_waiter, &context), Poll::Ready(Ok(()))));
+    assert!(matches!(
+        poll_submission_with(&workers, &mut active, &mut active_waiter, &context),
+        Poll::Ready(Ok(()))
+    ));
     let _ = receiver.recv().map_err(io::Error::other)?;
     notify_capacity_released(&workers.admission);
     assert!(matches!(
-        poll_submission_with(&workers, &mut inactive, &mut inactive_waiter, &Context::from_waker(Waker::noop()),),
+        poll_submission_with(
+            &workers,
+            &mut inactive,
+            &mut inactive_waiter,
+            &Context::from_waker(Waker::noop()),
+        ),
         Poll::Ready(Ok(()))
     ));
     let _ = receiver.recv().map_err(io::Error::other)?;

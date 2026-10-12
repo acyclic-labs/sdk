@@ -15,9 +15,9 @@ use crate::kernel::{FileMetadata, MetadataField};
 use fuser::{
     BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
     FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags, KernelConfig, LockOwner,
-    MountOption, Notifier, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData,
-    ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyWrite,
-    ReplyXattr, Request, TimeOrNow, WriteFlags,
+    Notifier, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyWrite, ReplyXattr,
+    Request, TimeOrNow, WriteFlags,
 };
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -103,8 +103,6 @@ mod invalidation;
 use invalidation::*;
 mod state;
 use state::*;
-mod test_support;
-use test_support::*;
 mod core;
 pub use core::NativeMountWorkScope;
 use core::*;

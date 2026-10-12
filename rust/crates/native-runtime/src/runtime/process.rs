@@ -49,7 +49,10 @@ impl ServiceReadySignal {
 
 /// Takes a service's readiness channel from its standard output, which then
 pub fn take_service_ready_signal() -> io::Result<Option<ServiceReadySignal>> {
-    if !std::env::args_os().skip(2).any(|argument| argument == SERVICE_READY_ARGUMENT) {
+    if !std::env::args_os()
+        .skip(2)
+        .any(|argument| argument == SERVICE_READY_ARGUMENT)
+    {
         return Ok(None);
     }
     #[cfg(windows)]
@@ -67,7 +70,10 @@ pub fn take_service_ready_signal() -> io::Result<Option<ServiceReadySignal>> {
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-#[allow(unsafe_code, reason = "dup2 replaces one descriptor number with an open one")]
+#[allow(
+    unsafe_code,
+    reason = "dup2 replaces one descriptor number with an open one"
+)]
 pub(crate) fn take_standard_output() -> io::Result<File> {
     use std::os::fd::{AsFd as _, AsRawFd as _};
 
@@ -82,7 +88,12 @@ pub(crate) fn take_standard_output() -> io::Result<File> {
 
 /// Starts the current executable's `__service` mode without inheriting host standard-I/O handles, and returns the channel on which the service signals that it answers requests.
 pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> {
-    let operation = obs::span!(INFO, "acyclic.runtime.spawn_service", outcome = obs::Empty, error.kind = obs::Empty);
+    let operation = obs::span!(
+        INFO,
+        "acyclic.runtime.spawn_service",
+        outcome = obs::Empty,
+        error.kind = obs::Empty
+    );
     operation.in_scope(|| {
         operation.finish((|| {
             #[cfg(windows)]
@@ -101,9 +112,13 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
                     .stderr(std::process::Stdio::null());
                 command.process_group(0);
                 let mut child = command.spawn()?;
-                let readiness =
-                    child.stdout.take().ok_or_else(|| io::Error::other("service readiness channel is missing"))?;
-                Ok(ServiceReadiness(File::from(std::os::fd::OwnedFd::from(readiness))))
+                let readiness = child
+                    .stdout
+                    .take()
+                    .ok_or_else(|| io::Error::other("service readiness channel is missing"))?;
+                Ok(ServiceReadiness(File::from(std::os::fd::OwnedFd::from(
+                    readiness,
+                ))))
             }
         })())
     })
@@ -134,7 +149,15 @@ pub fn process_output(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     spawn_process_tree(command)?
-        .wait_with_output(timeout, max_bytes, None, || Ok(()), |_| Ok(ProcessInput::default()), None, None)
+        .wait_with_output(
+            timeout,
+            max_bytes,
+            None,
+            || Ok(()),
+            |_| Ok(ProcessInput::default()),
+            None,
+            None,
+        )
         .map_err(|failure| failure.error)
 }
 

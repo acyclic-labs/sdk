@@ -49,8 +49,12 @@ pub(crate) fn namespace_path(
         meter.record_examination(1, 0)?;
     }
     let capacity = length.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
-    let bytes = capacity.checked_mul(std::mem::size_of::<NamespacePathUnit>()).ok_or(io::ErrorKind::InvalidInput)?;
-    let mut allocation = meter.map(|meter| ReadAllocation::new(meter, bytes)).transpose()?;
+    let bytes = capacity
+        .checked_mul(std::mem::size_of::<NamespacePathUnit>())
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    let mut allocation = meter
+        .map(|meter| ReadAllocation::new(meter, bytes))
+        .transpose()?;
     let mut buffer = Vec::new();
     if let Err(error) = buffer.try_reserve_exact(capacity) {
         return Err(match meter {
@@ -59,7 +63,8 @@ pub(crate) fn namespace_path(
         });
     }
     if let Some(allocation) = &mut allocation {
-        allocation.reconcile_capacity(buffer.capacity() * std::mem::size_of::<NamespacePathUnit>())?;
+        allocation
+            .reconcile_capacity(buffer.capacity() * std::mem::size_of::<NamespacePathUnit>())?;
     }
     #[cfg(unix)]
     let (encoded, copied) = (0, length);
@@ -87,7 +92,11 @@ pub(crate) fn namespace_path(
 
 /// Publishes a new entry without replacing an existing one.
 #[allow(unsafe_code)]
-pub fn publish_new(from: &Path, to: &Path, meter: Option<&Arc<dyn NativeReadMeter>>) -> io::Result<()> {
+pub fn publish_new(
+    from: &Path,
+    to: &Path,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<()> {
     #[cfg(any(unix, windows))]
     {
         let from_path = namespace_path(from, meter)?;
@@ -98,7 +107,8 @@ pub fn publish_new(from: &Path, to: &Path, meter: Option<&Arc<dyn NativeReadMete
                 meter.admit_write(0)?;
             }
             #[cfg(unix)]
-            let failed = unsafe { libc::link(from_path.0.as_ptr().cast(), to_path.0.as_ptr().cast()) } != 0;
+            let failed =
+                unsafe { libc::link(from_path.0.as_ptr().cast(), to_path.0.as_ptr().cast()) } != 0;
             #[cfg(windows)]
             let failed = unsafe {
                 windows_sys::Win32::Storage::FileSystem::CreateHardLinkW(
@@ -154,7 +164,11 @@ pub fn durable_rename(
                     from_path.0.as_ptr(),
                     libc::AT_FDCWD,
                     to_path.0.as_ptr(),
-                    if mode == RenameMode::NoReplace { libc::RENAME_NOREPLACE } else { 0 },
+                    if mode == RenameMode::NoReplace {
+                        libc::RENAME_NOREPLACE
+                    } else {
+                        0
+                    },
                 )
             } != 0;
             #[cfg(target_os = "macos")]
@@ -162,7 +176,11 @@ pub fn durable_rename(
                 libc::renamex_np(
                     from_path.0.as_ptr().cast(),
                     to_path.0.as_ptr().cast(),
-                    if mode == RenameMode::NoReplace { libc::RENAME_EXCL } else { 0 },
+                    if mode == RenameMode::NoReplace {
+                        libc::RENAME_EXCL
+                    } else {
+                        0
+                    },
                 )
             } != 0;
             #[cfg(windows)]
@@ -173,7 +191,12 @@ pub fn durable_rename(
                 MoveFileExW(
                     from_path.0.as_ptr(),
                     to_path.0.as_ptr(),
-                    MOVEFILE_WRITE_THROUGH | if mode == RenameMode::Replace { MOVEFILE_REPLACE_EXISTING } else { 0 },
+                    MOVEFILE_WRITE_THROUGH
+                        | if mode == RenameMode::Replace {
+                            MOVEFILE_REPLACE_EXISTING
+                        } else {
+                            0
+                        },
                 )
             } == 0;
             if !failed {
@@ -196,9 +219,15 @@ pub fn durable_rename(
 }
 
 #[cfg(unix)]
-pub(crate) fn sync_rename_parents(from: &Path, to: &Path, meter: Option<&Arc<dyn NativeReadMeter>>) -> io::Result<()> {
+pub(crate) fn sync_rename_parents(
+    from: &Path,
+    to: &Path,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<()> {
     fn namespace_parent(path: &Path) -> &Path {
-        path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."))
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
     }
     let synchronize = |parent: &Path| -> io::Result<()> {
         if let Some(meter) = meter {

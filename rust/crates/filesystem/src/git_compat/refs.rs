@@ -48,7 +48,12 @@ impl GitCompatState {
         let mut branches = BTreeMap::new();
         branches.insert(
             branch.clone(),
-            GitBranch { name: branch.clone(), workspace_id, head: None, tracked_paths: BTreeSet::new() },
+            GitBranch {
+                name: branch.clone(),
+                workspace_id,
+                head: None,
+                tracked_paths: BTreeSet::new(),
+            },
         );
         Self {
             version: STATE_VERSION,
@@ -66,15 +71,22 @@ impl GitCompatState {
     }
 
     pub(super) fn current(&self) -> Result<&GitBranch, GitCompatStateError> {
-        self.branches.get(&self.current_branch).ok_or(GitCompatStateError::Invalid)
+        self.branches
+            .get(&self.current_branch)
+            .ok_or(GitCompatStateError::Invalid)
     }
 
     pub(super) fn current_mut(&mut self) -> Result<&mut GitBranch, GitCompatStateError> {
-        self.branches.get_mut(&self.current_branch).ok_or(GitCompatStateError::Invalid)
+        self.branches
+            .get_mut(&self.current_branch)
+            .ok_or(GitCompatStateError::Invalid)
     }
 }
 
-uuid_identity!(GitTransitionId, "Stable identity for one prepared compatibility filesystem transition.");
+uuid_identity!(
+    GitTransitionId,
+    "Stable identity for one prepared compatibility filesystem transition."
+);
 
 impl GitTransitionId {
     /// Returns the underlying operation identity.

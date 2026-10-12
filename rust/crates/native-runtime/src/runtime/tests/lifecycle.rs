@@ -15,11 +15,19 @@ fn a_process_not_started_as_a_signalled_service_has_no_readiness_channel() -> io
 
 #[test]
 fn exclusive_lock_contention_is_not_a_generic_io_failure() {
-    assert!(is_exclusive_lock_contention(&io::Error::from(io::ErrorKind::WouldBlock)));
-    assert!(!is_exclusive_lock_contention(&io::Error::from(io::ErrorKind::PermissionDenied)));
-    assert!(!is_exclusive_lock_contention(&io::Error::from(io::ErrorKind::Unsupported)));
+    assert!(is_exclusive_lock_contention(&io::Error::from(
+        io::ErrorKind::WouldBlock
+    )));
+    assert!(!is_exclusive_lock_contention(&io::Error::from(
+        io::ErrorKind::PermissionDenied
+    )));
+    assert!(!is_exclusive_lock_contention(&io::Error::from(
+        io::ErrorKind::Unsupported
+    )));
     #[cfg(windows)]
-    assert!(is_exclusive_lock_contention(&io::Error::from_raw_os_error(33)));
+    assert!(is_exclusive_lock_contention(&io::Error::from_raw_os_error(
+        33
+    )));
 }
 
 #[test]
@@ -58,7 +66,12 @@ fn durable_rename_accepts_relative_sibling_paths() -> io::Result<()> {
     std::env::set_current_dir(temporary.path())?;
     let result = (|| {
         std::fs::write("from", b"relative")?;
-        durable_rename(Path::new("from"), Path::new("to"), RenameMode::NoReplace, None)?;
+        durable_rename(
+            Path::new("from"),
+            Path::new("to"),
+            RenameMode::NoReplace,
+            None,
+        )?;
         assert_eq!(std::fs::read("to")?, b"relative");
         Ok(())
     })();

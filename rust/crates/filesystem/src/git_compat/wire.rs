@@ -19,11 +19,17 @@ pub const GIT_COMPAT_BYTE_WIRE_FIELDS: &[(&str, Option<usize>)] = &[
     ("source_workspace", Some(std::mem::size_of::<WorkspaceId>())),
     ("generation", Some(std::mem::size_of::<GenerationId>())),
     ("id", Some(std::mem::size_of::<GenerationId>())),
-    ("authored_generation", Some(std::mem::size_of::<GenerationId>())),
+    (
+        "authored_generation",
+        Some(std::mem::size_of::<GenerationId>()),
+    ),
     ("identity", Some(std::mem::size_of::<WorkspaceId>())),
     ("overlay", Some(std::mem::size_of::<GenerationId>())),
     ("shadows", Some(std::mem::size_of::<GenerationId>())),
-    ("initial_generation", Some(std::mem::size_of::<GenerationId>())),
+    (
+        "initial_generation",
+        Some(std::mem::size_of::<GenerationId>()),
+    ),
     ("patch", None),
 ];
 
@@ -31,13 +37,18 @@ pub const GIT_COMPAT_BYTE_WIRE_FIELDS: &[(&str, Option<usize>)] = &[
 pub const GIT_COMPAT_TIMESTAMP_WIRE_FIELDS: &[&str] = &["authored_at_seconds"];
 
 /// Paths whose values are UUID encoded operation identities.
-pub const GIT_COMPAT_UUID_WIRE_PATHS: &[&str] = &["Prepared.transition", "pending.id", "capture_proof.operation_id"];
+pub const GIT_COMPAT_UUID_WIRE_PATHS: &[&str] = &[
+    "Prepared.transition",
+    "pending.id",
+    "capture_proof.operation_id",
+];
 
 /// Tagged Rust variants containing opaque executor-owned JSON.
 pub const GIT_COMPAT_OPAQUE_WIRE_PATHS: &[&str] = &["Filesystem.Data"];
 
 /// Public spelling aliases applied by generated binding projections.
-pub const GIT_COMPAT_PUBLIC_WIRE_ALIASES: &[(&str, &str)] = &[("Status.all_changes_staged", "allChangesStaged")];
+pub const GIT_COMPAT_PUBLIC_WIRE_ALIASES: &[(&str, &str)] =
+    &[("Status.all_changes_staged", "allChangesStaged")];
 
 /// Required fields of the durable pending-transition JSON object.
 pub const GIT_COMPAT_PENDING_WIRE_FIELDS: &[&str] = &["id", "action", "mutation"];
@@ -80,25 +91,32 @@ pub const GIT_COMPAT_PUBLIC_COMMAND_KINDS: &[(&str, &str)] = &[
 ];
 
 pub(super) fn public_git_command_variant(kind: &str) -> Option<&'static str> {
-    GIT_COMPAT_PUBLIC_COMMAND_KINDS.iter().find_map(|(public, wire)| (*public == kind).then_some(*wire))
+    GIT_COMPAT_PUBLIC_COMMAND_KINDS
+        .iter()
+        .find_map(|(public, wire)| (*public == kind).then_some(*wire))
 }
 
 /// Parses natural JavaScript command JSON into the canonical command.
 pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
-    let mut value: serde_json::Value =
-        serde_json::from_str(value).map_err(|error| format!("invalid Git command JSON: {error}"))?;
-    let object = value.as_object_mut().ok_or_else(|| "Git command must be an object".to_owned())?;
+    let mut value: serde_json::Value = serde_json::from_str(value)
+        .map_err(|error| format!("invalid Git command JSON: {error}"))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "Git command must be an object".to_owned())?;
     let kind = object
         .remove("kind")
         .and_then(|value| value.as_str().map(str::to_owned))
         .ok_or_else(|| "Git command kind must be a string".to_owned())?;
-    let variant = public_git_command_variant(&kind).ok_or_else(|| format!("unknown Git command kind: {kind}"))?;
+    let variant = public_git_command_variant(&kind)
+        .ok_or_else(|| format!("unknown Git command kind: {kind}"))?;
     if object.values().any(|value| value.is_null()) {
         object.retain(|_, value| !value.is_null());
     }
     if let Some(mut value) = object.remove("authoredAtSeconds") {
         if let Some(text) = value.as_str() {
-            let number = text.parse::<i64>().map_err(|_| "Git authoredAtSeconds must be an i64".to_owned())?;
+            let number = text
+                .parse::<i64>()
+                .map_err(|_| "Git authoredAtSeconds must be an i64".to_owned())?;
             if number.unsigned_abs() > 9_007_199_254_740_991 {
                 return Err("Git authoredAtSeconds must fit a safe JSON integer".to_owned());
             }
@@ -107,7 +125,9 @@ pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
         object.insert("authored_at_seconds".to_owned(), value);
     }
     if let Some(value) = object.get("authored_at_seconds") {
-        let number = value.as_i64().ok_or_else(|| "Git authoredAtSeconds must be an i64".to_owned())?;
+        let number = value
+            .as_i64()
+            .ok_or_else(|| "Git authoredAtSeconds must be an i64".to_owned())?;
         if number.unsigned_abs() > 9_007_199_254_740_991 {
             return Err("Git authoredAtSeconds must fit a safe JSON integer".to_owned());
         }
@@ -141,10 +161,15 @@ pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
             "hard" => "Hard",
             _ => return Err(format!("unsupported Git reset mode: {mode}")),
         };
-        object.insert("mode".to_owned(), serde_json::Value::String(mode.to_owned()));
+        object.insert(
+            "mode".to_owned(),
+            serde_json::Value::String(mode.to_owned()),
+        );
     }
-    let unit_variant =
-        matches!(variant, "Status" | "MergeContinue" | "MergeAbort" | "StashPush" | "StashPop" | "LsFiles");
+    let unit_variant = matches!(
+        variant,
+        "Status" | "MergeContinue" | "MergeAbort" | "StashPush" | "StashPop" | "LsFiles"
+    );
     let wire = if unit_variant && object.is_empty() {
         serde_json::Value::String(variant.to_owned())
     } else {
@@ -157,16 +182,18 @@ pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
 
 /// Validates and reserializes canonical command output JSON.
 pub fn canonicalize_git_output_json(value: &str) -> Result<String, String> {
-    let output: GitCommandOutput =
-        serde_json::from_str(value).map_err(|error| format!("invalid Git command output JSON: {error}"))?;
-    serde_json::to_string(&output).map_err(|error| format!("failed to serialize Git command output: {error}"))
+    let output: GitCommandOutput = serde_json::from_str(value)
+        .map_err(|error| format!("invalid Git command output JSON: {error}"))?;
+    serde_json::to_string(&output)
+        .map_err(|error| format!("failed to serialize Git command output: {error}"))
 }
 
 /// Validates and reserializes one durable pending transition.
 pub fn canonicalize_git_pending_transition_json(value: &str) -> Result<String, String> {
-    let pending: GitPendingTransition =
-        serde_json::from_str(value).map_err(|error| format!("invalid Git pending transition JSON: {error}"))?;
-    serde_json::to_string(&pending).map_err(|error| format!("failed to serialize Git pending transition: {error}"))
+    let pending: GitPendingTransition = serde_json::from_str(value)
+        .map_err(|error| format!("invalid Git pending transition JSON: {error}"))?;
+    serde_json::to_string(&pending)
+        .map_err(|error| format!("failed to serialize Git pending transition: {error}"))
 }
 
 /// Defines one canonical enum tag inventory and its exhaustive Rust matcher.
@@ -285,38 +312,107 @@ git_compat_scalar_contract! {
 /// Natural TypeScript projection for each canonical command variant.
 pub const GIT_COMPAT_COMMAND_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     ("Status", r#"{ readonly kind: "status" }"#),
-    ("Diff", r#"{ readonly kind: "diff"; readonly cached?: boolean }"#),
-    ("Log", r#"{ readonly kind: "log"; readonly maximum: number }"#),
-    ("Show", r#"{ readonly kind: "show"; readonly object?: string }"#),
-    ("Add", r#"{ readonly kind: "add"; readonly paths: readonly string[] }"#),
+    (
+        "Diff",
+        r#"{ readonly kind: "diff"; readonly cached?: boolean }"#,
+    ),
+    (
+        "Log",
+        r#"{ readonly kind: "log"; readonly maximum: number }"#,
+    ),
+    (
+        "Show",
+        r#"{ readonly kind: "show"; readonly object?: string }"#,
+    ),
+    (
+        "Add",
+        r#"{ readonly kind: "add"; readonly paths: readonly string[] }"#,
+    ),
     (
         "Commit",
         r#"{ readonly kind: "commit"; readonly message: string; readonly author: string; readonly authoredAtSeconds: bigint }"#,
     ),
-    ("Branch", r#"{ readonly kind: "branch"; readonly create?: string }"#),
-    ("Switch", r#"{ readonly kind: "switch"; readonly branch: string; readonly create?: boolean }"#),
-    ("Restore", r#"{ readonly kind: "restore"; readonly source?: string; readonly paths: readonly string[] }"#),
-    ("Reset", r#"{ readonly kind: "reset"; readonly target: string; readonly mode: GitResetMode }"#),
-    ("Merge", r#"{ readonly kind: "merge"; readonly branch: string }"#),
+    (
+        "Branch",
+        r#"{ readonly kind: "branch"; readonly create?: string }"#,
+    ),
+    (
+        "Switch",
+        r#"{ readonly kind: "switch"; readonly branch: string; readonly create?: boolean }"#,
+    ),
+    (
+        "Restore",
+        r#"{ readonly kind: "restore"; readonly source?: string; readonly paths: readonly string[] }"#,
+    ),
+    (
+        "Reset",
+        r#"{ readonly kind: "reset"; readonly target: string; readonly mode: GitResetMode }"#,
+    ),
+    (
+        "Merge",
+        r#"{ readonly kind: "merge"; readonly branch: string }"#,
+    ),
     ("MergeContinue", r#"{ readonly kind: "merge-continue" }"#),
     ("MergeAbort", r#"{ readonly kind: "merge-abort" }"#),
-    ("Rebase", r#"{ readonly kind: "rebase"; readonly branch: string }"#),
+    (
+        "Rebase",
+        r#"{ readonly kind: "rebase"; readonly branch: string }"#,
+    ),
     ("StashPush", r#"{ readonly kind: "stash-push" }"#),
     ("StashPop", r#"{ readonly kind: "stash-pop" }"#),
-    ("CherryPick", r#"{ readonly kind: "cherry-pick"; readonly object: string }"#),
-    ("Revert", r#"{ readonly kind: "revert"; readonly object: string }"#),
-    ("Tag", r#"{ readonly kind: "tag"; readonly name?: string; readonly target?: string; readonly delete?: boolean }"#),
-    ("Blame", r#"{ readonly kind: "blame"; readonly path: string }"#),
-    ("Grep", r#"{ readonly kind: "grep"; readonly pattern: string; readonly path?: string }"#),
-    ("Clean", r#"{ readonly kind: "clean"; readonly dryRun: boolean }"#),
-    ("Archive", r#"{ readonly kind: "archive"; readonly object?: string }"#),
-    ("Apply", r#"{ readonly kind: "apply"; readonly patch: Uint8Array }"#),
-    ("Bisect", r#"{ readonly kind: "bisect"; readonly arguments: readonly string[] }"#),
-    ("RevParse", r#"{ readonly kind: "rev-parse"; readonly argument: string }"#),
-    ("SymbolicRef", r#"{ readonly kind: "symbolic-ref"; readonly short?: boolean }"#),
-    ("MergeBase", r#"{ readonly kind: "merge-base"; readonly left: string; readonly right: string }"#),
+    (
+        "CherryPick",
+        r#"{ readonly kind: "cherry-pick"; readonly object: string }"#,
+    ),
+    (
+        "Revert",
+        r#"{ readonly kind: "revert"; readonly object: string }"#,
+    ),
+    (
+        "Tag",
+        r#"{ readonly kind: "tag"; readonly name?: string; readonly target?: string; readonly delete?: boolean }"#,
+    ),
+    (
+        "Blame",
+        r#"{ readonly kind: "blame"; readonly path: string }"#,
+    ),
+    (
+        "Grep",
+        r#"{ readonly kind: "grep"; readonly pattern: string; readonly path?: string }"#,
+    ),
+    (
+        "Clean",
+        r#"{ readonly kind: "clean"; readonly dryRun: boolean }"#,
+    ),
+    (
+        "Archive",
+        r#"{ readonly kind: "archive"; readonly object?: string }"#,
+    ),
+    (
+        "Apply",
+        r#"{ readonly kind: "apply"; readonly patch: Uint8Array }"#,
+    ),
+    (
+        "Bisect",
+        r#"{ readonly kind: "bisect"; readonly arguments: readonly string[] }"#,
+    ),
+    (
+        "RevParse",
+        r#"{ readonly kind: "rev-parse"; readonly argument: string }"#,
+    ),
+    (
+        "SymbolicRef",
+        r#"{ readonly kind: "symbolic-ref"; readonly short?: boolean }"#,
+    ),
+    (
+        "MergeBase",
+        r#"{ readonly kind: "merge-base"; readonly left: string; readonly right: string }"#,
+    ),
     ("LsFiles", r#"{ readonly kind: "ls-files" }"#),
-    ("CheckIgnore", r#"{ readonly kind: "check-ignore"; readonly paths: readonly string[] }"#),
+    (
+        "CheckIgnore",
+        r#"{ readonly kind: "check-ignore"; readonly paths: readonly string[] }"#,
+    ),
 ];
 
 /// Natural TypeScript projections for executor actions, results, and outputs.
@@ -329,7 +425,10 @@ pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
         "ForkBranch",
         r#"{ readonly ForkBranch: { readonly branch: string; readonly source_tree: GitTreeRef; readonly head: GitCommitIdentity | undefined; readonly switch: boolean } }"#,
     ),
-    ("SwitchWorkspace", r#"{ readonly SwitchWorkspace: { readonly workspace_id: WorkspaceIdentity } }"#),
+    (
+        "SwitchWorkspace",
+        r#"{ readonly SwitchWorkspace: { readonly workspace_id: WorkspaceIdentity } }"#,
+    ),
     (
         "Diff",
         r#"{ readonly Diff: { readonly from: GitTreeRef | undefined; readonly to: GitTreeRef; readonly tracked_paths: readonly string[] } }"#,
@@ -338,7 +437,10 @@ pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
         "RestoreGeneration",
         r#"{ readonly RestoreGeneration: { readonly tree: GitTreeRef; readonly paths: readonly string[] | undefined } }"#,
     ),
-    ("RestorePaths", r#"{ readonly RestorePaths: { readonly tree: GitTreeRef; readonly paths: readonly string[] } }"#),
+    (
+        "RestorePaths",
+        r#"{ readonly RestorePaths: { readonly tree: GitTreeRef; readonly paths: readonly string[] } }"#,
+    ),
     (
         "Join",
         r#"{ readonly Join: { readonly target_tree: GitTreeRef; readonly source_workspace: WorkspaceIdentity; readonly rebase: boolean; readonly tracked_paths: readonly string[] } }"#,
@@ -347,7 +449,10 @@ pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
         "ApplyCommit",
         r#"{ readonly ApplyCommit: { readonly commit: GitCommitIdentity; readonly reverse: boolean; readonly base: GitTreeRef | undefined; readonly source: GitTreeRef | undefined; readonly paths: readonly string[]; readonly tracked_paths: readonly string[] } }"#,
     ),
-    ("Blame", r#"{ readonly Blame: { readonly path: string; readonly commits: readonly GitCommit[] } }"#),
+    (
+        "Blame",
+        r#"{ readonly Blame: { readonly path: string; readonly commits: readonly GitCommit[] } }"#,
+    ),
     (
         "Grep",
         r#"{ readonly Grep: { readonly pattern: string; readonly path: string | undefined; readonly tree: GitTreeRef } }"#,
@@ -356,9 +461,18 @@ pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
         "Clean",
         r#"{ readonly Clean: { readonly dry_run: boolean; readonly tree: GitTreeRef; readonly tracked_paths: readonly string[] } }"#,
     ),
-    ("Archive", r#"{ readonly Archive: { readonly tree: GitTreeRef } }"#),
-    ("ApplyPatch", r#"{ readonly ApplyPatch: { readonly patch: Uint8Array } }"#),
-    ("CheckIgnore", r#"{ readonly CheckIgnore: { readonly paths: readonly string[]; readonly tree: GitTreeRef } }"#),
+    (
+        "Archive",
+        r#"{ readonly Archive: { readonly tree: GitTreeRef } }"#,
+    ),
+    (
+        "ApplyPatch",
+        r#"{ readonly ApplyPatch: { readonly patch: Uint8Array } }"#,
+    ),
+    (
+        "CheckIgnore",
+        r#"{ readonly CheckIgnore: { readonly paths: readonly string[]; readonly tree: GitTreeRef } }"#,
+    ),
 ];
 
 /// Natural TypeScript projections for executor result variants.
@@ -367,20 +481,32 @@ pub const GIT_COMPAT_RESULT_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
         "Captured",
         r#"{ readonly Captured: { readonly tree: GitTreeRef; readonly tracked_paths: readonly string[]; readonly proof: GitCaptureProof | undefined } }"#,
     ),
-    ("Forked", r#"{ readonly Forked: { readonly workspace_id: WorkspaceIdentity } }"#),
+    (
+        "Forked",
+        r#"{ readonly Forked: { readonly workspace_id: WorkspaceIdentity } }"#,
+    ),
     (
         "Applied",
         r#"{ readonly Applied: { readonly tree: GitTreeRef | undefined; readonly tracked_paths: readonly string[] | undefined } }"#,
     ),
-    ("Data", r#"{ readonly Data: { readonly kind: string; readonly value: unknown } }"#),
+    (
+        "Data",
+        r#"{ readonly Data: { readonly kind: string; readonly value: unknown } }"#,
+    ),
 ];
 
 /// Natural TypeScript projections for command output variants.
 pub const GIT_COMPAT_OUTPUT_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     ("Status", r#"{ readonly Status: GitCompatStatus }"#),
     ("Commits", r#"{ readonly Commits: readonly GitCommit[] }"#),
-    ("Branches", r#"{ readonly Branches: { readonly current: string; readonly branches: readonly GitBranch[] } }"#),
-    ("Tags", r#"{ readonly Tags: Readonly<Record<string, GitCommitIdentity>> }"#),
+    (
+        "Branches",
+        r#"{ readonly Branches: { readonly current: string; readonly branches: readonly GitBranch[] } }"#,
+    ),
+    (
+        "Tags",
+        r#"{ readonly Tags: Readonly<Record<string, GitCommitIdentity>> }"#,
+    ),
     ("Committed", r#"{ readonly Committed: GitCommit }"#),
     ("Bisect", r#"{ readonly Bisect: GitBisectResult }"#),
     ("Action", r#"{ readonly Action: GitFilesystemAction }"#),
@@ -388,7 +514,10 @@ pub const GIT_COMPAT_OUTPUT_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
         "Prepared",
         r#"{ readonly Prepared: { readonly transition: OperationIdentity; readonly action: GitFilesystemAction } }"#,
     ),
-    ("Filesystem", r#"{ readonly Filesystem: GitFilesystemResult }"#),
+    (
+        "Filesystem",
+        r#"{ readonly Filesystem: GitFilesystemResult }"#,
+    ),
     ("Text", r#"{ readonly Text: string }"#),
     ("Paths", r#"{ readonly Paths: readonly string[] }"#),
 ];
@@ -415,8 +544,14 @@ pub const GIT_COMPAT_NESTED_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
         "GitTreeRefLazy",
         r#"export type GitTreeRefLazy = { readonly kind: "lazy"; readonly id: Uint8Array; readonly workspace_id: WorkspaceIdentity; readonly authored_generation: GenerationIdentity; readonly source: GitLazySource; readonly overlay: Uint8Array; readonly shadows: Uint8Array };"#,
     ),
-    ("GitLazySource", r#"export interface GitLazySource { readonly identity: Uint8Array; readonly epoch: bigint; }"#),
-    ("GitTreeRef", r#"export type GitTreeRef = GitTreeRefExact | GitTreeRefLazy;"#),
+    (
+        "GitLazySource",
+        r#"export interface GitLazySource { readonly identity: Uint8Array; readonly epoch: bigint; }"#,
+    ),
+    (
+        "GitTreeRef",
+        r#"export type GitTreeRef = GitTreeRefExact | GitTreeRefLazy;"#,
+    ),
     (
         "GitCaptureProof",
         r#"export interface GitCaptureProof { readonly fork_parent: GitTreeRef; readonly initial_generation: GenerationIdentity; readonly operation_id: OperationIdentity; }"#,

@@ -2,6 +2,18 @@ use super::*;
 
 /// Stable public failures. CAS and absence conflicts are values instead.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[cfg_attr(
+    all(feature = "wasm", target_arch = "wasm32"),
+    derive(serde::Deserialize, serde::Serialize, tsify::Tsify)
+)]
+#[cfg_attr(
+    all(feature = "wasm", target_arch = "wasm32"),
+    serde(rename_all = "snake_case")
+)]
+#[cfg_attr(
+    all(feature = "wasm", target_arch = "wasm32"),
+    tsify(rename = "StreamErrorCode")
+)]
 pub enum StreamError {
     /// Invalid path syntax.
     #[error("invalid stream path")]

@@ -3,30 +3,32 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     ops::Bound,
-    sync::{Arc, atomic::{AtomicU64, AtomicUsize, Ordering}},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
 };
 
-use async_trait::async_trait;
 use crate::OwnedBytes;
+use crate::wire_codec::WireMeter;
+use async_trait::async_trait;
 use futures::{StreamExt as _, stream};
 use sha2::{Digest, Sha256};
-use crate::wire_codec::WireMeter;
 use tokio::sync::{RwLock, watch};
 
 #[cfg(test)]
 impl crate::UnixMillisClock for AtomicU64 {
-    fn now_unix_millis(&self) -> u64 { self.load(Ordering::SeqCst) }
+    fn now_unix_millis(&self) -> u64 {
+        self.load(Ordering::SeqCst)
+    }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{NativeProviderFuture, NativeRecordStream, NativeStreamResult};
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::{
     NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
     ReadAllocation,
-};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::{
-    NativeProviderFuture, NativeRecordStream, NativeStreamOutput,
-    NativeStreamResult,
 };
 
 use crate::{
@@ -40,33 +42,38 @@ use crate::{
 };
 
 mod accounting;
-mod state;
 mod capacity;
-mod reads;
 mod commit;
-mod prepared;
-mod publication;
-mod provider;
-mod history;
-mod digest;
-mod validation;
 mod copying;
+mod digest;
+mod history;
+mod prepared;
+mod provider;
+mod publication;
+mod reads;
+#[cfg(not(target_arch = "wasm32"))]
+mod recovery;
 #[cfg(feature = "local")]
 mod snapshot;
+mod state;
 #[cfg(test)]
 mod tests;
+mod validation;
+pub use accounting::NativeStreamOutput;
 pub(crate) use accounting::*;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use prepared::NativeMemoryPreparedCommit;
-use state::*;
 use capacity::*;
 use copying::*;
-use history::*;
-pub(crate) use digest::{append_digest, fork_digest, commit_digest};
 use digest::*;
+pub(crate) use digest::{append_digest, commit_digest, fork_digest};
+use history::*;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use prepared::NativeMemoryPreparedCommit;
 use publication::*;
-pub(crate) use validation::{normalize_commit, validate_commit_shape, validate_limit, validate_records, validate_append_size, validate_fork_size};
-use validation::*;
+use state::*;
+pub(crate) use validation::{
+    normalize_commit, validate_append_size, validate_commit_shape, validate_fork_size,
+    validate_limit, validate_records,
+};
 /// Explicit fail-closed process-memory ceilings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MemoryLimits {
@@ -80,7 +87,7 @@ pub struct MemoryLimits {
     pub payload_bytes: usize,
     /// Maximum immutable commit envelopes.
     pub commits: usize,
-    /// Maximum indefinitely retained replay identities. New identities fail
+    /// Maximum indefinitely retained replay identities.
     pub idempotency_results: usize,
 }
 
@@ -100,7 +107,7 @@ impl Default for MemoryLimits {
 /// Deterministic process-local provider.
 #[derive(Clone)]
 pub struct MemoryStream {
-    state: Arc<RwLock<State>>,
+    pub(crate) state: Arc<RwLock<State>>,
     limits: MemoryLimits,
     /// The trusted clock that deadlines are checked against.
     pub(crate) clock: Arc<dyn UnixMillisClock>,
@@ -133,7 +140,10 @@ impl MemoryStream {
     /// Constructs a provider with an injected trusted clock.
     #[must_use]
     pub fn new_with_clock(limits: MemoryLimits, clock: Arc<dyn UnixMillisClock>) -> Self {
-        Self { state: Arc::new(RwLock::new(State::default())), limits, clock }
+        Self {
+            state: Arc::new(RwLock::new(State::default())),
+            limits,
+            clock,
+        }
     }
-
 }

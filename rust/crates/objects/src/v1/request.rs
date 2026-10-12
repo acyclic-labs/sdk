@@ -73,12 +73,18 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
             put(&decode!(PutObjectHeader))?;
             upload_length(body_length)?;
         }
-        "objects/get" => { get(&decode!(GetObjectRequest))?; }
-        "objects/head" => { head(&decode!(HeadObjectRequest))?; }
+        "objects/get" => {
+            get(&decode!(GetObjectRequest))?;
+        }
+        "objects/head" => {
+            head(&decode!(HeadObjectRequest))?;
+        }
         "objects/delete" => {
             delete_digest(&decode!(DeleteObjectRequest))?;
         }
-        "objects/list" => { list(&decode!(ListObjectsRequest))?; }
+        "objects/list" => {
+            list(&decode!(ListObjectsRequest))?;
+        }
         "multipart/create" => {
             create_multipart_digest(&decode!(CreateMultipartRequest))?;
         }
@@ -86,7 +92,9 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
             upload_part(&decode!(UploadPartHeader))?;
             upload_length(body_length)?;
         }
-        "multipart/list-parts" => { list_parts(&decode!(ListPartsRequest))?; }
+        "multipart/list-parts" => {
+            list_parts(&decode!(ListPartsRequest))?;
+        }
         "multipart/complete" => {
             complete_multipart_digest(&decode!(CompleteMultipartRequest))?;
         }
@@ -98,7 +106,9 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
     Ok(())
 }
 pub(crate) fn head(query: &wire::HeadObjectRequest) -> Result<&str, Error> {
-    if query.encoded_len() > 16 * 1024 * 1024 { return Err(wire::ErrorCode::QuotaExceeded.into()); }
+    if query.encoded_len() > 16 * 1024 * 1024 {
+        return Err(wire::ErrorCode::QuotaExceeded.into());
+    }
     let name = bucket(&query.bucket)?;
     key(&query.object_key)?;
     read_filters(&query.if_match, &query.if_none_match)?;
@@ -106,29 +116,41 @@ pub(crate) fn head(query: &wire::HeadObjectRequest) -> Result<&str, Error> {
 }
 
 pub(crate) fn list(query: &wire::ListObjectsRequest) -> Result<(&str, usize), Error> {
-    if query.encoded_len() > 16 * 1024 * 1024 { return Err(wire::ErrorCode::QuotaExceeded.into()); }
+    if query.encoded_len() > 16 * 1024 * 1024 {
+        return Err(wire::ErrorCode::QuotaExceeded.into());
+    }
     let name = bucket(&query.bucket)?;
     let limit = page_size(query.page_size)?;
-    if query.prefix.len() > 1024 || query.delimiter.len() > 1024
-        || query.prefix.contains('\0') || query.delimiter.contains('\0')
-        || query.continuation_token.len() > 8192 || query.continuation_token.contains('\0') {
+    if query.prefix.len() > 1024
+        || query.delimiter.len() > 1024
+        || query.prefix.contains('\0')
+        || query.delimiter.contains('\0')
+        || query.continuation_token.len() > 8192
+        || query.continuation_token.contains('\0')
+    {
         return Err(InvalidArgument.into());
     }
     Ok((name, limit))
 }
 
 pub(crate) fn list_parts(query: &wire::ListPartsRequest) -> Result<(&str, usize), Error> {
-    if query.encoded_len() > 16 * 1024 * 1024 { return Err(wire::ErrorCode::QuotaExceeded.into()); }
+    if query.encoded_len() > 16 * 1024 * 1024 {
+        return Err(wire::ErrorCode::QuotaExceeded.into());
+    }
     let name = bucket(&query.bucket)?;
     key(&query.object_key)?;
     upload_id(&query.upload_id)?;
     let limit = page_size(query.page_size)?;
-    if query.after_part_number > 10_000 { return Err(InvalidArgument.into()); }
+    if query.after_part_number > 10_000 {
+        return Err(InvalidArgument.into());
+    }
     Ok((name, limit))
 }
 
 pub(crate) fn get(query: &wire::GetObjectRequest) -> Result<&str, Error> {
-    if prost::Message::encoded_len(query) > 16 * 1024 * 1024 { return Err(wire::ErrorCode::QuotaExceeded.into()); }
+    if prost::Message::encoded_len(query) > 16 * 1024 * 1024 {
+        return Err(wire::ErrorCode::QuotaExceeded.into());
+    }
     let name = bucket(&query.bucket)?;
     key(&query.object_key)?;
     read_filters(&query.if_match, &query.if_none_match)?;
@@ -143,7 +165,12 @@ pub(crate) fn get(query: &wire::GetObjectRequest) -> Result<&str, Error> {
     Ok(name)
 }
 
-pub(crate) fn finish_digest(operation: &str, header: &[u8], length: u64, body: [u8; 32]) -> [u8; 32] {
+pub(crate) fn finish_digest(
+    operation: &str,
+    header: &[u8],
+    length: u64,
+    body: [u8; 32],
+) -> [u8; 32] {
     let mut digest = blake3::Hasher::new();
     digest.update(b"acyclic.objects.v1.mutation\0");
     digest.update(&(operation.len() as u64).to_le_bytes());
@@ -176,8 +203,12 @@ pub fn put_digest(header: &wire::PutObjectHeader, body: &[u8]) -> Result<[u8; 32
     upload_length(body.len() as u64)?;
     let mut normalized = header.clone();
     normalized.mutation = None;
-    Ok(finish_digest("put", &prost::Message::encode_to_vec(&normalized),
-        body.len() as u64, *blake3::hash(body).as_bytes()))
+    Ok(finish_digest(
+        "put",
+        &prost::Message::encode_to_vec(&normalized),
+        body.len() as u64,
+        *blake3::hash(body).as_bytes(),
+    ))
 }
 
 pub(crate) fn upload_part(header: &wire::UploadPartHeader) -> Result<(), Error> {
@@ -185,7 +216,9 @@ pub(crate) fn upload_part(header: &wire::UploadPartHeader) -> Result<(), Error> 
     key(&header.object_key)?;
     upload_id(&header.upload_id)?;
     identity(&header.mutation)?;
-    if !(1..=10_000).contains(&header.part_number) { return Err(InvalidArgument.into()); }
+    if !(1..=10_000).contains(&header.part_number) {
+        return Err(InvalidArgument.into());
+    }
     Ok(())
 }
 /// Validates a multipart publication and hashes its decoded body without the retry key.
@@ -194,8 +227,12 @@ pub fn upload_part_digest(header: &wire::UploadPartHeader, body: &[u8]) -> Resul
     upload_length(body.len() as u64)?;
     let mut normalized = header.clone();
     normalized.mutation = None;
-    Ok(finish_digest("upload_part", &prost::Message::encode_to_vec(&normalized),
-        body.len() as u64, *blake3::hash(body).as_bytes()))
+    Ok(finish_digest(
+        "upload_part",
+        &prost::Message::encode_to_vec(&normalized),
+        body.len() as u64,
+        *blake3::hash(body).as_bytes(),
+    ))
 }
 /// Validates and hashes logical bucket creation, excluding the caller retry key.
 pub fn create_bucket_digest(value: &wire::CreateBucketRequest) -> Result<[u8; 32], Error> {
@@ -482,7 +519,9 @@ mod tests {
         changed_identity.object_key = "different".into();
         assert_ne!(put_digest(&changed_identity, b"whole-body")?, expected);
         assert_eq!(
-            upload_length(5 * 1024 * 1024 * 1024 + 1).err().map(|error| error.code),
+            upload_length(5 * 1024 * 1024 * 1024 + 1)
+                .err()
+                .map(|error| error.code),
             Some(wire::ErrorCode::QuotaExceeded)
         );
         Ok(())
