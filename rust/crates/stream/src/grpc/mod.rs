@@ -28,10 +28,11 @@ use tracing::instrument::WithSubscriber as _;
 
 use crate::obs;
 use crate::wire_codec::{
-    append_outcome_from_wire, append_outcome_to_wire, commit_id, commit_outcome_from_wire,
-    commit_outcome_to_wire, append_from_wire, commit_from_wire, condition_wire, envelope_from_wire, envelope_to_wire,
-    fork_receipt_to_wire, mutation_wire, observation_from_wire, observation_wire,
-    optional_key, path, read_response_records, read_response_wire, record, record_wire,
+    append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,
+    commit_id, commit_outcome_from_wire, commit_outcome_to_wire, condition_wire,
+    envelope_from_wire, envelope_to_wire, fork_receipt_to_wire, mutation_wire,
+    observation_from_wire, observation_wire, optional_key, path, read_response_records,
+    read_response_wire, record, record_wire,
 };
 use crate::{
     AppendOutcome, AppendRequest, Child, ChildStream, ChildrenPage, ChildrenPageRequest,
@@ -115,14 +116,14 @@ fn check_command_size<T: Message>(request: &T) -> Result<(), Status> {
     }
 }
 
-mod connection;
 mod calls;
-mod provider;
-mod records;
+mod connection;
 mod delivery;
-mod server;
 mod observation;
 mod protocol;
+mod provider;
+mod records;
+mod server;
 use delivery::DeliveryAcknowledgements;
 use observation::{Completion, decode_response, observe_body};
 use protocol::*;

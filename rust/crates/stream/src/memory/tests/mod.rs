@@ -1,8 +1,7 @@
-
-use futures::TryStreamExt as _;
-use bytes::Bytes;
-use prost::Message;
 use super::*;
+use bytes::Bytes;
+use futures::TryStreamExt as _;
+use prost::Message;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_controls;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,7 +47,8 @@ async fn committed_record_times_never_regress_with_the_clock() -> Result<(), Str
             limit: 3,
         })
         .await?
-        .try_collect::<Vec<_>>().await?;
+        .try_collect::<Vec<_>>()
+        .await?;
     assert_eq!(
         records
             .iter()
@@ -110,24 +110,57 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
 async fn sibling_names_before_the_slash_do_not_hide_children() -> Result<(), StreamError> {
     let provider = MemoryStream::default();
     for name in ["a-/other", "a/first", "a/second", "a0/other"] {
-        provider.append(AppendRequest {
-            path: path(name)?, records: vec![OwnedBytes::from_static(b"record")],
-            if_tail: None, idempotency_key: None,
-        }).await?;
+        provider
+            .append(AppendRequest {
+                path: path(name)?,
+                records: vec![OwnedBytes::from_static(b"record")],
+                if_tail: None,
+                idempotency_key: None,
+            })
+            .await?;
     }
     let mut request = ChildrenPageRequest {
-        parent: Some(path("a")?), after: None, hierarchy_version: None, limit: 1,
+        parent: Some(path("a")?),
+        after: None,
+        hierarchy_version: None,
+        limit: 1,
     };
     let first = provider.children_page(request.clone()).await?;
-    assert_eq!(first.children, vec![Child { path: path("a/first")? }]);
+    assert_eq!(
+        first.children,
+        vec![Child {
+            path: path("a/first")?
+        }]
+    );
     request.after = first.next_after;
     request.hierarchy_version = Some(first.hierarchy_version);
     let second = provider.children_page(request).await?;
-    assert_eq!(second.children, vec![Child { path: path("a/second")? }]);
+    assert_eq!(
+        second.children,
+        vec![Child {
+            path: path("a/second")?
+        }]
+    );
     assert!(second.next_after.is_none());
-    let children = provider.children(ChildrenRequest { parent: Some(path("a")?), limit: 2 }).await?
-        .try_collect::<Vec<_>>().await?;
-    assert_eq!(children, vec![Child { path: path("a/first")? }, Child { path: path("a/second")? }]);
+    let children = provider
+        .children(ChildrenRequest {
+            parent: Some(path("a")?),
+            limit: 2,
+        })
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert_eq!(
+        children,
+        vec![
+            Child {
+                path: path("a/first")?
+            },
+            Child {
+                path: path("a/second")?
+            }
+        ]
+    );
     Ok(())
 }
 
@@ -173,8 +206,7 @@ async fn paginates_more_children_than_one_wire_page_without_gaps() -> Result<(),
 }
 
 #[tokio::test]
-async fn deep_fork_history_is_dropped_without_recursive_stack_growth() -> Result<(), StreamError>
-{
+async fn deep_fork_history_is_dropped_without_recursive_stack_growth() -> Result<(), StreamError> {
     let provider = MemoryStream::default();
     let mut source = path("deep/root")?;
     provider
@@ -452,7 +484,8 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
                 limit: 4,
             })
             .await?
-            .try_collect::<Vec<_>>().await?;
+            .try_collect::<Vec<_>>()
+            .await?;
         let expected = (from..cut + 2)
             .take(4)
             .map(|sequence| {
