@@ -144,27 +144,12 @@ impl Scope {
         self.agent
     }
 
-    /// Copies the original immutable grant on the caller's admitted ledger.
-    pub fn copy(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        if work.is_none() {
-            return Ok(self.clone());
-        }
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let id = copying::copy_text(&self.id, &mut custody)?;
-        let issuer = copying::copy_text(&self.issuer, &mut custody)?;
-        let capabilities = copying::copy_capabilities(&self.capabilities, &mut custody)?;
-        custody.transfer();
-        Ok(Self {
-            id,
-            capabilities,
-            agent: self.agent,
-            issuer,
-            parent_proof: self.parent_proof,
-            proof: self.proof,
+    /// Copies the immutable grant under the caller's optional ledger.
+    pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
+        crate::wire_codec::CodecQuota::produce(work, |quota| {
+            copy_owned(self, quota, |scope, _| scope.logical_owned_bytes())
         })
+        .map(|(scope, _)| scope)
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
