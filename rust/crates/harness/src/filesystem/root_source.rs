@@ -152,10 +152,7 @@ where for<'source> &'source LazyWorkspace<A, O, D, S>: Send
                     let lease = Arc::clone(&lease);
                     async move { lease.verify_with_native_work(&original)?.await }
                 };
-                let (commit, snapshot) = self.lazy.write_at_snapshot_with_native_work_guarded(
-                    snapshot, root_lazy_mutations(mutations), key, permit, original,
-                    io.cancellation(), &mut before_mutation,
-                ).await?;
+                let (commit, snapshot) = (async { let cancellation = io.cancellation(); let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(original, cancellation)?; let mut guard = self.lazy.native_write_guard(&mut before_mutation, &accounting)?; self.lazy.write_at_snapshot(snapshot, root_lazy_mutations(mutations), key, permit, &accounting, &mut guard).await }).await?;
                 Ok((generation(commit)?, snapshot))
             }).map(crate::store::history::HistoryContentFuture::Native);
         }
@@ -171,16 +168,10 @@ where for<'source> &'source LazyWorkspace<A, O, D, S>: Send
                         Err(error) => Err(acyclic_fs::OperationFailure::new(error, callback.receipt())),
                     }
                 };
-                io.receive_content(self.lazy.write_at_snapshot_measured_guarded(
-                    snapshot, root_lazy_mutations(mutations), key, permit,
-                    allowance, io.cancellation(), &mut before_mutation,
-                ).await)?
+                io.receive_content((async { let cancellation = io.cancellation(); let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(allowance, cancellation); let result = self.lazy.write_at_snapshot(snapshot, root_lazy_mutations(mutations), key, permit, &accounting, &mut before_mutation).await; accounting.measured(result, |error, spent| acyclic_fs::OperationFailure::new(error, spent)) }).await)?
             } else {
                 let mut before_mutation = || async move { lease.verify().await };
-                self.lazy.write_at_snapshot_guarded(
-                    snapshot, root_lazy_mutations(mutations), key, permit,
-                    io.cancellation(), &mut before_mutation,
-                ).await?
+                (async { let cancellation = io.cancellation(); let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(acyclic_fs::WorkBudget::UNBOUNDED, cancellation); let before_mutation = &mut before_mutation; let mut guard = |_| { let future = before_mutation(); async move { future.await.map(|()| acyclic_fs::OperationReceipt { value: (), work: Default::default() }).map_err(acyclic_fs::OperationFailure::before_work) } }; self.lazy.write_at_snapshot(snapshot, root_lazy_mutations(mutations), key, permit, &accounting, &mut guard).await }).await?
             };
             Ok((generation(commit)?, snapshot))
         })
