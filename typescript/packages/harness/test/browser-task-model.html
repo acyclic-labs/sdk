@@ -3,13 +3,13 @@
 <title>Durable browser model reconciliation</title>
 <pre id="result" data-status="pending">initializing</pre>
 <script type="module">
-import { taskFixture, modelCapacity, modelTokenCount } from "./browser-task-fixture.mjs";
-const result = document.querySelector("#result");
+import { qualifyBrowserTask, taskFixture, modelCapacity, modelTokenCount } from "./browser-task-fixture.mjs";
 const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 let fixture;
 let runtime;
-try {
+await qualifyBrowserTask(async phase => {
+  try {
   fixture = await taskFixture(crypto.randomUUID(), "acyclic.stock_turn");
   fixture.registry.registerStockTurn();
   let duplicateRegistrationRejected = false;
@@ -42,7 +42,6 @@ try {
     assert(attempt.request_digest.length === 32, "reconciliation lost canonical request identity");
     assert(attempt.operation_id === dispatch.operation_id && attempt.step === dispatch.step
       && describe(attempt.request_digest) === describe(dispatch.request_digest), "fresh and recovered dispatch identities differ");
-    // Reconciliation returns only the unobserved suffix; Rust retains prefix.
     return [{ kind: "completed", metadata: {} }];
   }, modelCapacity, modelTokenCount, { kind: "disabled" });
   runtime = await fixture.open();
@@ -61,7 +60,7 @@ try {
   catch { changedAdmissionRejected = true; }
   assert(changedAdmissionRejected, "stock admission accepted a changed model command");
   const worker = { id: "model-worker", available: {}, labels: {} };
-  result.dataset.waiting = "retain interrupted model prefix";
+  phase("retain interrupted model prefix");
   const first = await runtime.workerTick(worker, null, 128, 4);
   assert(first.work?.lease != null, `interrupted request lost original lease: ${describe(first)}`);
   assert(requests === 1 && signal.aborted && returns === 1, "dropping interrupted iterator did not abort and close transport");
@@ -70,7 +69,7 @@ try {
   runtime.free();
   runtime = await fixture.open();
   bind(runtime);
-  result.dataset.waiting = "reconcile original model attempt after reopen";
+  phase("reconcile original model attempt after reopen");
   const recovered = await runtime.resume(first.work.lease, 4);
   assert(recovered.kind === "completed", `model recovery did not complete: ${describe(recovered)}`);
   assert(requests === 1 && reconciliations === 1, "recovery repeated model generation or reconciliation");
@@ -78,13 +77,9 @@ try {
   assert(output?.text === "committed" && output.steps === 1n, `durable stock model result differs: ${describe(output)}`);
   const duplicate = await runtime.workerTick(worker, null, 128, 4);
   assert(duplicate.work === null && requests === 1 && reconciliations === 1, "duplicate wake repeated model dispatch");
-  result.dataset.status = "passed";
-  result.textContent = "canonical request, observed prefix, abort, reopen and exact model reconciliation passed";
-} catch (error) {
-  result.dataset.status = "failed";
-  result.textContent = String(error.stack ?? error);
-} finally {
+  } finally {
   runtime?.free();
   fixture?.free();
 }
+});
 </script>

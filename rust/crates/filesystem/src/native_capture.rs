@@ -83,7 +83,7 @@ impl NativeViewBaseline {
         read_only: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>, crate::NativeTreeMaterializationError> {
-        let allocation = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1)?;
+        let allocation = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(std::sync::Arc::new(Self {
             root_identity, read_only, _allocation: Some(allocation),
         }))
@@ -403,14 +403,9 @@ mod capture_policy_tests {
         std::fs::write(temporary.path().join("sub/changed.txt"), b"changed")?;
         std::fs::write(temporary.path().join("sub/unrelated.txt"), b"unrelated")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-ancestor")
-            .await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+            .create_workspace("watch-ancestor", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let changed = path("/sub/changed.txt")?;
         capture_watch_batch(
             &mut checkout,
@@ -459,14 +454,9 @@ mod capture_policy_tests {
         std::fs::create_dir(temporary.path().join("pkg"))?;
         std::fs::write(temporary.path().join("pkg/shared.rs"), b"VALUE = 1")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-directory")
-            .await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+            .create_workspace("watch-directory", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let options = CaptureOptions {
             source_root: temporary.path().to_path_buf(),
             expected_root_identity: capture_root_identity(temporary.path())?,
@@ -515,15 +505,10 @@ mod capture_policy_tests {
         std::fs::create_dir(temporary.path().join("sub"))?;
         std::fs::write(temporary.path().join("old.txt"), b"old")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-rename-parent")
-            .await?;
+            .create_workspace("watch-rename-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/old.txt", "old").await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         std::fs::rename(
             temporary.path().join("old.txt"),
             temporary.path().join("sub/new.txt"),
@@ -579,20 +564,13 @@ mod capture_policy_tests {
         std::fs::create_dir(temporary.path().join("old"))?;
         std::fs::write(temporary.path().join("old/file.txt"), b"old")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-renamed-directory")
-            .await?;
-        let mut transaction = workspace
-            .begin_transaction(crate::IdempotencyKey::new())
-            .await?;
+            .create_workspace("watch-renamed-directory", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.create_dir_all("/old").await?;
         transaction.write_text("/old/file.txt", "old").await?;
-        transaction.commit().await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(
             checkout
                 .lookup_no_follow(
@@ -678,14 +656,9 @@ mod capture_policy_tests {
             std::fs::write(temporary.path().join(directory).join("inner.txt"), b"x")?;
         }
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-expansion")
-            .await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+            .create_workspace("watch-expansion", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         capture_watch_batch_with_policy(
             &mut checkout,
             WatchBatch::Changes {
@@ -738,15 +711,10 @@ mod capture_policy_tests {
         std::fs::create_dir(temporary.path().join("sub"))?;
         std::fs::write(temporary.path().join("sub/new.txt"), b"new")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-stale-ancestor")
-            .await?;
+            .create_workspace("watch-stale-ancestor", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/sub", "old").await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let child = path("/sub/new.txt")?;
         capture_watch_batch_with_policy(
             &mut checkout,
@@ -796,15 +764,10 @@ mod capture_policy_tests {
         std::fs::create_dir(temporary.path().join("sub"))?;
         std::fs::write(temporary.path().join("final.txt"), b"old")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-rename-chain")
-            .await?;
+            .create_workspace("watch-rename-chain", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/old.txt", "old").await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
@@ -3509,7 +3472,7 @@ mod host_observation_tests {
         let paths = [path(b"first")?, path(b"second")?];
         let cancellation = CancellationToken::new();
         let mut probe = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        root.stat_measured(Path::new("first"), &mut probe)?;
+        root.stat_with_work(Path::new("first"), &mut probe)?;
         let mut budget = WorkBudget::UNBOUNDED;
         budget.backend_read_operations = probe.work.backend_read_operations;
         let mut meter = DemandWork::new(budget, &cancellation);
@@ -5037,12 +5000,9 @@ mod shared_watch_capture_tests {
             },
             crate::EmbeddedCapabilities::MEMORY,
         );
-        let workspace = fs.create_workspace("shared-watch-reentry").await?;
+        let workspace = fs.create_workspace("shared-watch-reentry", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/file", "prior watch value").await?;
-        let mut checkout = workspace.checkout(
-            crate::model::GenerationSelector::Head,
-            crate::model::CheckoutMode::tracking_transaction(),
-        ).await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let cancellation = CancellationToken::new();
         let budget = WorkBudget::UNBOUNDED;
         let native = crate::NativeMaterializationWork::new(budget, &cancellation)
@@ -6407,13 +6367,13 @@ fn ensure_current_host_node<W: CaptureNativeWork>(
 #[cfg(test)]
 fn test_host_stat(root: &HostRoot, path: &Path) -> Result<HostStat, CaptureError> {
     let mut meter = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-    root.stat_measured(path, &mut meter).map_err(capture_demand_error)
+    root.stat_with_work(path, &mut meter).map_err(capture_demand_error)
 }
 
 #[cfg(test)]
 fn test_held_stat(root: &HostRoot, file: &cap_std::fs::File) -> Result<HostStat, CaptureError> {
     let mut meter = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-    root.stat_file_measured(&file.try_clone()?.into_std(), &mut meter).map_err(capture_demand_error)
+    root.stat_file_with_work(&file.try_clone()?.into_std(), &mut meter).map_err(capture_demand_error)
 }
 
 #[cfg(test)]
@@ -6591,7 +6551,7 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         );
         let stage_cancellation = meter.native().cancellation().clone();
         let content = capture_sdk_in_heap_with_meter(
-            |original| stager.stage_with_native_work(&mut bounded, range.length, original, &stage_cancellation),
+            |original| stager.stage(&mut bounded, range.length, original, &stage_cancellation),
             meter, &stage_cancellation,
         ).await;
         drop(bounded);
@@ -6675,7 +6635,7 @@ async fn settled_sparse_ranges(
                 meter.native().admit(WorkCounters { source_bytes_read: wanted,
                     ..WorkCounters::UNCHARGED })
                     .map_err(|error| OperationFailure::new(CaptureError::NativeKernel(error), capture_meter(meter).completed()))?;
-                let runtime = meter.native().runtime_meter_owner_with_capture_custody(
+                let runtime = crate::native_capture::capture_runtime_meter_owner(&meter.native(),
                     meter.custody.as_ref().expect("capture scope is live"))
                     .map_err(|error| OperationFailure::new(CaptureError::NativeKernel(error), capture_meter(meter).completed()))?;
                 let value = reader.read(wanted as usize, runtime, true)
@@ -6875,7 +6835,7 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
             ..WorkCounters::UNCHARGED })?;
         let copy = original.reserve_copy(maximum as u64)?;
         let runtime = match &self.capture_custody {
-            Some(custody) => original.runtime_meter_owner_with_capture_custody(custody)?,
+            Some(custody) => crate::native_capture::capture_runtime_meter_owner(&original, custody)?,
             None => original.runtime_meter_owner(),
         };
         let result = reader.read(maximum, runtime, true).await
@@ -6983,7 +6943,7 @@ mod native_range_tests {
             .map_err(|(error, _)| error)?;
         let mut scope = CaptureWorkScope::new(&original)?;
         let native = std::sync::Arc::new(native_positional_file_measured(fixture_file(&path)?, &scope)?);
-        let meter = original.runtime_meter_owner_with_capture_custody(
+        let meter = crate::native_capture::capture_runtime_meter_owner(&original,
             scope.custody.as_ref().expect("live scope"))?;
         let base = meter.allocation_owner().expect("capture allocations use the original base");
         assert!(std::sync::Arc::ptr_eq(&base, &original.runtime_meter_owner()));
@@ -7050,7 +7010,7 @@ mod native_range_tests {
             .map_err(|(error, _)| error)?;
         let mut scope = CaptureWorkScope::new(&original)?;
         let native = std::sync::Arc::new(native_positional_file_measured(fixture_file(&path)?, &scope)?);
-        let meter = original.runtime_meter_owner_with_capture_custody(
+        let meter = crate::native_capture::capture_runtime_meter_owner(&original,
             scope.custody.as_ref().expect("live scope"))?;
         let (started, start) = std::sync::mpsc::channel();
         let (resume, resumed) = std::sync::mpsc::channel();
@@ -8084,14 +8044,9 @@ mod root_capture_regression {
         std::fs::set_permissions(source.path(), std::fs::Permissions::from_mode(0o750))?;
         std::fs::write(source.path().join("binary"), [0, 255, 10])?;
         let workspace = crate::Fs::memory()
-            .create_workspace("root-capture-regression")
-            .await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+            .create_workspace("root-capture-regression", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits)?;
         let cancellation = CancellationToken::new();
         capture_subtree(
@@ -8115,12 +8070,7 @@ mod root_capture_regression {
         )
         .await?;
         let output = tempfile::tempdir()?;
-        let mut reader = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::read_only_pinned(),
-            )
-            .await?;
+        let mut reader = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         crate::materialize_checkout(
             &mut reader,
             &crate::MaterializeOptions {
@@ -8227,14 +8177,9 @@ mod capture_span_tests {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("private-name"), b"private-body")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("capture-spans")
-            .await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+            .create_workspace("capture-spans", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let limits = crate::model::VolumeLimits::default();
         let path = NamespacePath::from_portable(
             &crate::path::PortablePath::parse("/private-name", limits)?,
@@ -8371,14 +8316,9 @@ mod capture_span_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let workspace = crate::Fs::memory()
-            .create_workspace("filtered-capture")
-            .await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+            .create_workspace("filtered-capture", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let options = CaptureOptions {
             source_root: directory.path().to_path_buf(),
             expected_root_identity: capture_root_identity(directory.path())?,

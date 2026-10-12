@@ -10,10 +10,8 @@ pub mod conformance;
 pub mod grpc;
 pub mod http_response;
 pub mod persistence;
-pub mod preparation;
+mod preparation;
 pub mod request;
-// The WASM adapter consumes this module on browser builds; native builds keep
-// it available for contract tests without pulling in JS bindings.
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
 // Request projection is shared by the native HTTP client and the browser adapter.
@@ -79,8 +77,6 @@ const REPLAY_PAGE: u32 = 1_024;
 const _: () = assert!(REPLAY_PAGE as usize == MAX_ITEMS);
 /// Maximum canonical application command, including metadata.
 pub const MAX_COMMAND_BYTES: usize = wire::StreamLimit::MaxCommandBytes as usize;
-/// Historical minimum replay window, preserved for source compatibility.
-pub const MIN_IDEMPOTENCY_RETENTION_SECS: u64 = 24 * 60 * 60;
 /// Maximum caller retry-identity width.
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = wire::StreamLimit::MaxIdempotencyKeyBytes as usize;
 /// Maximum canonical path text accepted by the single-command wire format.
@@ -215,7 +211,7 @@ impl StreamPath {
 
     /// Produces an implicit parent without an unmetered path allocation.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn parent_native(
+    pub(crate) fn parent_native(
         &self,
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<Option<Self>> {
@@ -716,14 +712,10 @@ impl std::error::Error for NativeStreamFailure {
 pub type NativeStreamResult<T, E = NativeStreamFailure> =
     std::io::Result<Result<NativeStreamOutput<T>, E>>;
 
-/// One original-native record and the storage actually produced for it.
-#[cfg(not(target_arch = "wasm32"))]
-pub type NativeObservedRecord = NativeStreamOutput<Record>;
-
 /// A finite cursor preserves late original failures after its actual prefix.
 #[cfg(not(target_arch = "wasm32"))]
 pub type NativeRecordStream =
-    BoxProviderStream<'static, std::io::Result<Result<NativeObservedRecord, NativeStreamFailure>>>;
+    BoxProviderStream<'static, std::io::Result<Result<NativeStreamOutput<Record>, NativeStreamFailure>>>;
 
 /// Object-safe provider future whose real heap frame is admitted before boxing.
 #[cfg(not(target_arch = "wasm32"))]
@@ -778,8 +770,6 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
     }
 }
 
-// Only the boxed producer is pinned. The inline terminal result is not a
-// structurally pinned field and is moved out exactly once by poll.
 #[cfg(not(target_arch = "wasm32"))]
 impl<T, E> Unpin for NativeProviderFuture<'_, T, E> {}
 
@@ -943,10 +933,6 @@ pub(crate) struct CommitInput {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl CommitInput {
-    pub(crate) fn ordinary(request: CommitRequest) -> Self {
-        Self { request, _allocation: None }
-    }
-
     pub(crate) fn capture(
         source: &CommitRequest,
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
@@ -1208,7 +1194,8 @@ pub trait StreamProvider: ProviderPlatform + 'static {
 
 /// Minimal provider-bound client.
 pub struct StreamClient<P> {
-    provider: Arc<P>,
+    /// The bound provider.
+    pub provider: Arc<P>,
 }
 
 impl<P> Clone for StreamClient<P> {
@@ -1234,17 +1221,9 @@ impl<P: StreamProvider> StreamClient<P> {
     /// Opens one path handle after local validation.
     pub fn stream(&self, path: impl AsRef<str>) -> Result<Stream<P>, StreamError> {
         Ok(Stream {
-            client: Self::new(Arc::clone(&self.provider)),
+            provider: Arc::clone(&self.provider),
             path: StreamPath::new(path)?,
         })
-    }
-
-    /// Reads the retained terminal result for one caller-owned retry identity.
-    pub async fn inspect_idempotency(
-        &self,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.provider.inspect_idempotency(idempotency_key).await
     }
 
     /// Lists direct children from one fixed snapshot.
@@ -1279,98 +1258,6 @@ impl<P: StreamProvider> StreamClient<P> {
             .await
     }
 
-    /// Executes a coordinated commit.
-    pub async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.provider.commit(request).await
-    }
-
-    /// Executes one coordinated commit under the provider's trusted deadline.
-    pub async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.provider
-            .commit_before(request, deadline_unix_millis)
-            .await
-    }
-
-    /// Reads a committed envelope.
-    pub async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        self.provider.read_commit(commit_id).await
-    }
-
-    /// Forwards an admitted canonical native inspection without another box.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn native_inspect_idempotency(
-        &self,
-        key: IdempotencyKey,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, Option<IdempotencyObservation>> {
-        self.provider.native_inspect_idempotency(key, meter)
-    }
-
-    /// Forwards genuine native append without changing its recovery family.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn native_append(
-        &self,
-        request: AppendRequest,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, AppendOutcome> {
-        self.provider.native_append(request, meter)
-    }
-
-    /// Forwards an already owned path to the original canonical tail producer.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn native_tail(
-        &self,
-        path: StreamPath,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, u64> {
-        self.provider.native_tail(path, meter)
-    }
-
-    /// Forwards a canonical original-native retained-window request.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn native_bounds(
-        &self,
-        path: StreamPath,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, StreamBounds> {
-        self.provider.native_bounds(path, meter)
-    }
-
-    /// Opens the same finite canonical producer with original custody.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn native_read(
-        &self,
-        request: ReadRequest,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, NativeRecordStream> {
-        self.provider.native_read(request, meter)
-    }
-
-    /// Forwards a canonical commit funded by the original work owner.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn native_commit(
-        &self,
-        request: CommitRequest,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, CommitOutcome> {
-        self.provider.native_commit(request, meter)
-    }
-
-
-    /// Prepares the real provider's canonical Commit before physical action.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn native_prepare_commit(
-        &self,
-        request: CommitRequest,
-        maximum_record_bytes: usize,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, PreparedNativeCommit> {
-        self.provider.native_prepare_commit(request, maximum_record_bytes, meter)
-    }
 
 }
 
@@ -1427,14 +1314,14 @@ impl StreamClient<grpc::Client> {
 
 /// Handle to one permanent Stream path.
 pub struct Stream<P> {
-    client: StreamClient<P>,
+    provider: Arc<P>,
     path: StreamPath,
 }
 
 impl<P> Clone for Stream<P> {
     fn clone(&self) -> Self {
         Self {
-            client: self.client.clone(),
+            provider: Arc::clone(&self.provider),
             path: self.path.clone(),
         }
     }
@@ -1449,12 +1336,12 @@ impl<P: StreamProvider> Stream<P> {
 
     /// Current tail.
     pub async fn tail(&self) -> Result<u64, StreamError> {
-        self.client.provider.tail(self.path.clone()).await
+        self.provider.tail(self.path.clone()).await
     }
 
     /// Exact retained replay window observed atomically by the provider.
     pub async fn bounds(&self) -> Result<StreamBounds, StreamError> {
-        self.client.provider.bounds(self.path.clone()).await
+        self.provider.bounds(self.path.clone()).await
     }
 
     /// Unconditionally appends one record.
@@ -1479,8 +1366,7 @@ impl<P: StreamProvider> Stream<P> {
         if_tail: Option<u64>,
         idempotency_key: Option<IdempotencyKey>,
     ) -> Result<AppendOutcome, StreamError> {
-        self.client
-            .provider
+        self.provider
             .append(AppendRequest {
                 path: self.path.clone(),
                 records,
@@ -1497,8 +1383,7 @@ impl<P: StreamProvider> Stream<P> {
         at_tail: Option<u64>,
         idempotency_key: Option<IdempotencyKey>,
     ) -> Result<ForkReceipt, StreamError> {
-        self.client
-            .provider
+        self.provider
             .fork(ForkRequest {
                 source: self.path.clone(),
                 destination: StreamPath::new(destination)?,
@@ -1510,8 +1395,7 @@ impl<P: StreamProvider> Stream<P> {
 
     /// Reads at most `limit` records from `from`.
     pub async fn read(&self, from: u64, limit: u32) -> Result<RecordStream, StreamError> {
-        self.client
-            .provider
+        self.provider
             .read(ReadRequest {
                 path: self.path.clone(),
                 from,
@@ -1532,7 +1416,7 @@ impl<P: StreamProvider> Stream<P> {
 
     /// Replays from `from`, then remains live.
     pub async fn follow(&self, from: u64) -> Result<RecordStream, StreamError> {
-        self.client.provider.follow(self.path.clone(), from).await
+        self.provider.follow(self.path.clone(), from).await
     }
 }
 
@@ -1727,7 +1611,6 @@ mod replay_tests {
     use super::*;
     use futures::StreamExt as _;
 
-    /// Delegates to memory but drops one sequence from every read, as a faulty provider would.
     struct Gapped {
         inner: MemoryStream,
         missing: u64,

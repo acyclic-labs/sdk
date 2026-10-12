@@ -8,7 +8,6 @@ repository.workspace = true
 publish.workspace = true
 description = "Hierarchical append-only Streams contract, clients, and local provider"
 readme = "README.md"
-exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-stream"
 keywords = ["streams", "events", "grpc"]
 categories = ["api-bindings", "data-structures"]
@@ -20,15 +19,6 @@ crate-type = ["cdylib", "rlib"]
 [[example]]
 name = "http-conformance"
 required-features = ["http"]
-
-[[example]]
-name = "local-contention"
-required-features = ["local"]
-
-[[bench]]
-name = "stream"
-harness = false
-required-features = ["local"]
 
 [features]
 default = ["grpc"]

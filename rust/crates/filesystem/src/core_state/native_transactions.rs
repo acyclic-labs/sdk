@@ -43,7 +43,7 @@ fn copy_path(root: &Path, leaf: Option<&Path>, work: &NativeMaterializationWork)
     let capacity = copied.checked_add(usize::from(leaf.is_some())).ok_or_else(overflow)?;
     let copy = crate::WorkCounters { bytes_copied: u64::try_from(copied).map_err(|_| overflow())?, ..crate::WorkCounters::UNCHARGED };
     work.admit(copy)?;
-    let allocation = work.claim_allocation(u64::try_from(capacity).map_err(|_| overflow())?, u64::from(capacity != 0))?;
+    let allocation = work.claim_allocation(u64::try_from(capacity).map_err(|_| overflow())?, u64::from(capacity != 0), crate::WorkCounters::UNCHARGED)?;
     let mut owned = NativeCorePath { path: PathBuf::new(), allocation };
     owned.path.try_reserve_exact(capacity).map_err(NativeTreeMaterializationError::AllocationFailed)?;
     // Keep custody of the real allocator capacity before any late refusal.
@@ -82,7 +82,7 @@ impl<F> NativeCoreLogSource<F> {
         let root = self.frame.root.take().ok_or(LocalCoreStateStoreError::Integrity)?;
         let admission = match &self.frame.ownership {
             Ownership::Shared => {
-                crate::native_host::create_directories_materialization_measured(&root.path, &self.frame.work)?;
+                crate::native_host::create_directories(&root.path, &mut &self.frame.work)?;
                 let lock_path = copy_path(&root.path, Some(Path::new(OWNER_LOCK)), &self.frame.work)?;
                 let lock = materialization_open_options(&lock_path.path, &crate::native_host::NativeOpenOptions::ReadWriteCreate, &self.frame.work)?;
                 let cleanup = self.frame.work.reserve_cleanup_write()?;
@@ -130,7 +130,7 @@ impl LocalCoreStateStore {
     where F: FnOnce(&Namespace, &mut CoreLog, &NativeMaterializationWork, &crate::CancellationToken) -> Result<T, LocalCoreStateStoreError> + Send + 'static {
         check(original, cancellation)?;
         let root = copy_path(&self.root, None, original)?;
-        let allocation = original.claim_allocation(u64::try_from(std::mem::size_of::<NativeCoreLogFrame<F>>()).map_err(|_| overflow())?, 1)?;
+        let allocation = original.claim_allocation(u64::try_from(std::mem::size_of::<NativeCoreLogFrame<F>>()).map_err(|_| overflow())?, 1, crate::WorkCounters::UNCHARGED)?;
         let source = NativeCoreLogSource {
             frame: Box::new(NativeCoreLogFrame {
                 operation: Some(operation), root: Some(root), ownership: self.ownership.clone(),

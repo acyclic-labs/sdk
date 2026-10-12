@@ -63,7 +63,7 @@ fn staged_owned_bytes(
         .map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => native.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+            =>
                 ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout),
         })
 }
@@ -82,7 +82,7 @@ async fn staged_native_read(
     ).map_err(|failure| match failure.into_error() {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => native.runtime_error(error).into(),
         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-        | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+        =>
             ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout),
     })?;
     let (prepared, filled) = file.read_prepared_bounded_async(
@@ -676,11 +676,11 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         };
         if truncate {
             if let Some(native) = native {
-                self.spill.set_len_bounded_async(0, native.runtime_meter_owner())
+                self.spill.set_len_async(0, Some(native.runtime_meter_owner()))
                     .map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?
                     .await.map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?;
             } else {
-                self.spill.set_len_async(0).await.map_err(|error| ObjectFailure::new(error.into(), work))?;
+                self.spill.set_len_async(0, None).expect("unmetered unit construction cannot fail").await.map_err(|error| ObjectFailure::new(error.into(), work))?;
             }
             self.index_mut().spill_end = 0;
         }

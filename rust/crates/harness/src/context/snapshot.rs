@@ -39,7 +39,7 @@ impl PinnedContextStage {
         reference.descriptor().verify(&bytes)?;
         let context: Context = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(format!("context snapshot is invalid: {error}")))?;
-        super::validate_projected_context(&context, limits)?;
+        super::validate_projected_context_with_io(&context, limits, None)?;
         if context.current_input_index.is_some() {
             return Err(Error::Invalid(
                 "context snapshot still marks a historical input as active".into(),
@@ -48,7 +48,7 @@ impl PinnedContextStage {
         if crate::contract::canonical_json_bytes(&context)?.as_slice() != bytes.as_ref() {
             return Err(Error::Invalid("context snapshot is not canonical".into()));
         }
-        super::validate_context_refs(&context, reader.as_ref(), limits).await?;
+        super::validate_context_refs(&context, reader.as_ref(), limits, None).await?;
         Ok(Self {
             name,
             revision,
@@ -84,7 +84,7 @@ fn validate_reference_native(
     if reference.descriptor().media_type() != "application/json"
         || reference.descriptor().byte_length() > limits.render_bytes
     {
-        return Err(super::native_context_boundary(crate::wire::ErrorCode::Invalid,
+        return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Invalid,
             "context snapshot file exceeds JSON/render bounds"));
     }
     Ok(())
@@ -99,7 +99,7 @@ impl ContextStage for PinnedContextStage {
         crate::contract::validate_component_label(&self.name, "context snapshot")?;
         crate::contract::validate_component_label(&self.revision, "context snapshot revision")?;
         validate_reference(&self.reference, self.limits)?;
-        super::validate_projected_context(&self.context, self.limits)
+        super::validate_projected_context_with_io(&self.context, self.limits, None)
     }
 
     fn contract(&self) -> Value {
@@ -125,7 +125,7 @@ impl ContextStage for PinnedContextStage {
                 super::selection::place_snapshot(context, &self.context, self.placement, limits)?;
             // A new admission still requires the original bound reader's current authority and retained content.
             self.reader.verify(&self.reference).await?;
-            super::validate_context_refs(&self.context, self.reader.as_ref(), limits).await?;
+            super::validate_context_refs(&self.context, self.reader.as_ref(), limits, None).await?;
             Ok(composed)
         })
     }
@@ -136,15 +136,15 @@ impl ContextStage for PinnedContextStage {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn validate_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         if !crate::is_valid_component_label(&self.name) || !crate::is_valid_component_label(&self.revision) {
-            return Err(super::native_context_boundary(crate::wire::ErrorCode::Invalid,
+            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Invalid,
                 "context snapshot identity is invalid"));
         }
         validate_reference_native(&self.reference, self.limits, work)?;
         if !self.reader.supports_native_read(self.reference.volume(), work)? {
-            return Err(super::native_context_boundary(crate::wire::ErrorCode::Unsupported,
+            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
                 "context snapshot reader has no original native capability"));
         }
-        super::validate_projected_context_native(&self.context, self.limits, work)
+        super::validate_projected_context_with_io(&self.context, self.limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -172,8 +172,8 @@ impl ContextStage for PinnedContextStage {
             validate_reference_native(&self.reference, limits, work)?;
             let composed = super::selection::place_snapshot_native(
                 context, &self.context, self.placement, limits, work)?;
-            super::verify_context_file_native(&self.reference, self.reader.as_ref(), work).await?;
-            super::validate_context_refs_native(&self.context, self.reader.as_ref(), limits, work).await?;
+            super::verify_context_file(&self.reference, self.reader.as_ref(), Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
+            super::validate_context_refs(&self.context, self.reader.as_ref(), limits, Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
             Ok(composed)
         })
     }

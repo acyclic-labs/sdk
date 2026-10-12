@@ -7,28 +7,6 @@ fn request(io: PiBuiltinIo) -> PiBuiltinRequest {
         path: "file.txt".into(), io }
 }
 
-#[test]
-fn builtin_shared_executor_charges_its_real_arc_attempt_before_allocation() {
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
-    let before = work.receipt().allocation_operations;
-    let executor = builtin_tool_executor_with_native_work(&work).unwrap();
-    assert_eq!(work.receipt().allocation_operations, before + 1);
-    drop(executor);
-    let remaining = work.remaining().unwrap().allocation_operations;
-    work.charge(WorkCounters { allocation_operations: remaining, ..WorkCounters::default() }).unwrap();
-    let before = work.receipt().allocation_operations;
-    assert!(matches!(builtin_tool_executor_with_native_work(&work), Err(Error::NativeWork { .. })));
-    assert_eq!(work.receipt().allocation_operations, before);
-
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
-    cancellation.cancel();
-    let before = work.receipt().allocation_operations;
-    assert!(matches!(builtin_tool_executor_with_native_work(&work), Err(Error::NativeWork { .. })));
-    assert_eq!(work.receipt().allocation_operations, before);
-}
-
 async fn original_native_actor(
     fixture: &crate::pi_fork::tests::Fixture, work: &NativeMaterializationWork,
 ) -> (std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>, std::sync::Arc<Owner>) {
@@ -320,7 +298,7 @@ async fn actual_child_result_identity_cannot_be_labeled_as_a_native_builtin_volu
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let (context, owner) = original_native_actor(&fixture, &work).await;
     let plan = fixture.plan_with_native_work(&work).await;
-    let coordinator = crate::pi_fork::PiForkCoordinator::new_with_native_work(
+    let coordinator = crate::pi_fork::PiForkCoordinator::new(
         fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
         &fixture.resources, fixture.owner.clone(), &work).unwrap();
     let prepared = fixture.advance_with(&coordinator, context.context(), &owner, &fixture.fence,

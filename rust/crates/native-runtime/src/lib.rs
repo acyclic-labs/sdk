@@ -508,33 +508,18 @@ impl NativeFile {
         Ok(native)
     }
 
-    /// Changes the logical file length without blocking the caller's executor.
-    #[must_use]
-    pub fn set_len_async(&self, size: u64) -> NativeCompletion<()> {
-        NativeCompletion::<()>::submit(
-            Arc::clone(&self.file),
-            NativeUnitOperation::SetLen(size),
-            Some(Arc::clone(&self.health)),
-            obs::file_span!(DEBUG, "acyclic.runtime.set_len"),
-            #[cfg(windows)]
-            self.overlapped,
-        )
+    /// Changes logical file length in this file's operation order.
+    pub fn set_len_async(&self, size: u64, meter: Option<Arc<dyn NativeReadMeter>>) -> io::Result<NativeCompletion<()>> {
+        self.submit_unit(NativeUnitOperation::SetLen(size), meter)
     }
 
     /// Runs a platform-specific handle control in this file's operation order.
     #[must_use]
     pub fn control_async(
-        &self,
-        operation: impl FnOnce(&File) -> io::Result<()> + Send + 'static,
+        &self, operation: impl FnOnce(&File) -> io::Result<()> + Send + 'static,
     ) -> NativeCompletion<()> {
-        NativeCompletion::<()>::submit(
-            Arc::clone(&self.file),
-            NativeUnitOperation::Control(Box::new(operation)),
-            Some(Arc::clone(&self.health)),
-            obs::file_span!(DEBUG, "acyclic.runtime.control"),
-            #[cfg(windows)]
-            self.overlapped,
-        )
+        self.submit_unit(NativeUnitOperation::Control(Box::new(operation)), None)
+            .expect("unmetered unit construction cannot fail")
     }
 
     /// Borrows the already-held file for measured scalar metadata operations.
@@ -612,27 +597,13 @@ impl NativeFile {
     /// Submits owned writes while retaining this handle for later operations.
     #[must_use]
     pub fn write_all_batch_async(&self, writes: Vec<OwnedWrite>) -> NativeCompletion<()> {
-        NativeCompletion::<()>::submit(
-            Arc::clone(&self.file),
-            NativeUnitOperation::Write(writes),
-            Some(Arc::clone(&self.health)),
-            obs::file_span!(DEBUG, "acyclic.runtime.write_batch"),
-            #[cfg(windows)]
-            self.overlapped,
-        )
+        self.submit_unit(NativeUnitOperation::Write(writes), None)
+            .expect("unmetered unit construction cannot fail")
     }
 
-    /// Flushes file contents and metadata without blocking the caller's executor.
-    #[must_use]
-    pub fn sync_async(&self, durability: Durability) -> NativeCompletion<()> {
-        NativeCompletion::<()>::submit(
-            Arc::clone(&self.file),
-            NativeUnitOperation::Sync(durability),
-            Some(Arc::clone(&self.health)),
-            obs::file_span!(DEBUG, "acyclic.runtime.sync"),
-            #[cfg(windows)]
-            self.overlapped,
-        )
+    /// Flushes in this file's operation order.
+    pub fn sync_async(&self, durability: Durability, meter: Option<Arc<dyn NativeReadMeter>>) -> io::Result<NativeCompletion<()>> {
+        self.submit_unit(NativeUnitOperation::Sync(durability), meter)
     }
 
     /// Writes an already-accounted owned payload through this file's ordered native queue.
@@ -643,7 +614,7 @@ impl NativeFile {
         meter: Arc<dyn NativeReadMeter>,
     ) -> io::Result<NativeCompletion<()>> {
         self.validate_bounded_write(offset, bytes.len(), meter.as_ref())?;
-        self.submit_bounded_unit(NativeUnitOperation::BoundedWrite { offset, bytes }, meter)
+        self.submit_unit(NativeUnitOperation::BoundedWrite { offset, bytes }, Some(meter))
     }
 
     /// Writes a caller-accounted payload on this same ordered native driver.
@@ -673,20 +644,6 @@ impl NativeFile {
         Ok(())
     }
 
-    /// Changes length with one actual, preadmitted native operation.
-    pub fn set_len_bounded_async(
-        &self, size: u64, meter: Arc<dyn NativeReadMeter>,
-    ) -> io::Result<NativeCompletion<()>> {
-        self.submit_bounded_unit(NativeUnitOperation::SetLen(size), meter)
-    }
-
-    /// Flushes at the existing file fence, charging only a supported OS flush.
-    pub fn sync_bounded_async(
-        &self, durability: Durability, meter: Arc<dyn NativeReadMeter>,
-    ) -> io::Result<NativeCompletion<()>> {
-        self.submit_bounded_unit(NativeUnitOperation::Sync(durability), meter)
-    }
-
     /// Executes measured held-handle controls in this file's native order.
     pub fn control_bounded_async<F>(
         &self, operation: F, meter: Arc<dyn NativeReadMeter>,
@@ -694,30 +651,38 @@ impl NativeFile {
     where F: FnOnce(&File, &dyn NativeReadMeter) -> io::Result<()> + Send + 'static {
         meter.check()?;
         let allocation = ReadAllocation::new(&meter, std::mem::size_of::<F>())?;
-        self.submit_bounded_unit(
+        self.submit_unit(
             NativeUnitOperation::MeasuredControl {
                 operation: Box::new(operation), _allocation: allocation,
-            }, meter,
+            }, Some(meter),
         )
     }
 
-    fn submit_bounded_unit(
-        &self, operation: NativeUnitOperation, meter: Arc<dyn NativeReadMeter>,
+    fn submit_unit(
+        &self, operation: NativeUnitOperation, meter: Option<Arc<dyn NativeReadMeter>>,
     ) -> io::Result<NativeCompletion<()>> {
-        meter.check()?;
-        let allocation = ReadAllocation::new(
-            &meter, arc_allocation_bytes::<Mutex<CompletionState<()>>>(),
-        )?;
-        let state = Arc::new(Mutex::new(CompletionState { _allocation: Some(allocation), ..CompletionState::default() }));
+        if let Some(meter) = &meter { meter.check()?; }
+        let allocation = meter.as_ref().map(|meter| ReadAllocation::new(
+            meter, arc_allocation_bytes::<Mutex<CompletionState<()>>>(),
+        )).transpose()?;
+        let state = Arc::new(Mutex::new(CompletionState { _allocation: allocation, ..CompletionState::default() }));
+        let span = if meter.is_some() { obs::file_span!(DEBUG, "acyclic.runtime.bounded_unit") }
+            else { match &operation {
+                NativeUnitOperation::Write(writes) => obs::file_span!(DEBUG, "acyclic.runtime.write_batch")
+                    .sized(writes.len(), || writes.iter().map(|write| write.bytes.len()).sum()),
+                NativeUnitOperation::SetLen(_) => obs::file_span!(DEBUG, "acyclic.runtime.set_len"),
+                NativeUnitOperation::Sync(_) => obs::file_span!(DEBUG, "acyclic.runtime.sync"),
+                _ => obs::file_span!(DEBUG, "acyclic.runtime.control"),
+            } };
         Ok(NativeCompletion::pending(NativeJob::Unit {
-                file: Arc::clone(&self.file), operation, meter: Some(meter),
-                span: obs::file_span!(DEBUG, "acyclic.runtime.bounded_unit"),
-                #[cfg(windows)]
-                overlapped: self.overlapped,
-                state: Arc::clone(&state), completion: None,
-                health: Some(Arc::clone(&self.health)),
-            }, state, &NATIVE_WORKERS))
+            file: Arc::clone(&self.file), operation, meter, span,
+            #[cfg(windows)]
+            overlapped: self.overlapped,
+            state: Arc::clone(&state), completion: None,
+            health: Some(Arc::clone(&self.health)),
+        }, state, &NATIVE_WORKERS))
     }
+
 }
 
 #[cfg(target_vendor = "apple")]
@@ -2400,35 +2365,6 @@ impl<T> NativeCompletion<T> {
         let meter = measured_completion_meter(self.state.as_ref().expect("pending native completion"))?;
         let wake = self.prepared_wake.take();
         wait_measured_completion(self, meter, wake, deadline, cancellation, on_deadline)
-    }
-}
-
-impl NativeCompletion<()> {
-    fn submit(
-        file: Arc<NativeFilePayload>,
-        operation: NativeUnitOperation,
-        health: Option<Arc<FileHealth>>,
-        span: obs::OperationSpan,
-        #[cfg(windows)] overlapped: bool,
-    ) -> Self {
-        let mut span = span;
-        if let NativeUnitOperation::Write(writes) = &operation {
-            span = span.sized(writes.len(), || {
-                writes.iter().map(|write| write.bytes.len()).sum()
-            });
-        }
-        let state = Arc::new(Mutex::new(CompletionState::default()));
-        Self::pending(NativeJob::Unit {
-                file,
-                operation,
-                meter: None,
-                span,
-                #[cfg(windows)]
-                overlapped,
-                state: Arc::clone(&state),
-                completion: None,
-                health,
-            }, state, &NATIVE_WORKERS)
     }
 }
 
@@ -4466,7 +4402,7 @@ mod tests {
             .write(true)
             .open(&path)?;
         let native = NativeFile::from_file(file, None).map_err(|(error, _)| error)?;
-        let resize = native.set_len_async(64);
+        let resize = native.set_len_async(64, None).expect("unmetered unit construction cannot fail");
         drop(native);
         complete(resize)?;
         assert_eq!(std::fs::metadata(&path)?.len(), 64);
@@ -4543,7 +4479,7 @@ mod tests {
         assert!(Arc::ptr_eq(&first.health.uncertain, &second.health.uncertain));
         poison_file_health(&first.file, &first.health.uncertain);
         drop(first);
-        let result = complete(second.set_len_async(1));
+        let result = complete(second.set_len_async(1, None).expect("unmetered unit construction cannot fail"));
         assert!(result.is_err(), "an alias bypassed an uncertain completion");
         drop(second);
         let bare_result = complete(read_batch_async(
@@ -4570,7 +4506,7 @@ mod tests {
                 .read(true)
                 .write(true)
                 .open(temporary.path().join("clean"))?, None).map_err(|(error, _)| error)?;
-        complete(independent.set_len_async(1))?;
+        complete(independent.set_len_async(1, None).expect("unmetered unit construction cannot fail"))?;
         Ok(())
     }
 
@@ -4632,7 +4568,7 @@ mod tests {
             offset: 0,
             bytes: Bytes::from_static(b"ordered"),
         }]);
-        let mut sync = native.sync_async(Durability::Full);
+        let mut sync = native.sync_async(Durability::Full, None).expect("unmetered unit construction cannot fail");
         let waker = completion_waker();
         match Pin::new(&mut sync).poll(&mut Context::from_waker(&waker)) {
             Poll::Ready(result) => result?,
@@ -4645,7 +4581,7 @@ mod tests {
             offset: 0,
             bytes: Bytes::from_static(b"discarded"),
         }]);
-        let resize = native.set_len_async(16);
+        let resize = native.set_len_async(16, None).expect("unmetered unit construction cannot fail");
         drop(discarded);
         complete(resize)?;
         assert_eq!(std::fs::metadata(&path)?.len(), 16);
@@ -4677,7 +4613,7 @@ mod tests {
             Some(prior),
             Some(&poisoned.health.uncertain),
         );
-        let Err(error) = complete(poisoned.set_len_async(4)) else {
+        let Err(error) = complete(poisoned.set_len_async(4, None).expect("unmetered unit construction cannot fail")) else {
             return Err(io::Error::other(
                 "an uncertain prior operation did not fence its successor",
             ));
@@ -4691,7 +4627,7 @@ mod tests {
                 .read(true)
                 .write(true)
                 .open(&unrelated_path)?, None).map_err(|(error, _)| error)?;
-        complete(unrelated.set_len_async(4))?;
+        complete(unrelated.set_len_async(4, None).expect("unmetered unit construction cannot fail"))?;
         assert_eq!(std::fs::metadata(unrelated_path)?.len(), 4);
         Ok(())
     }
@@ -4749,8 +4685,8 @@ mod tests {
                 .read(true)
                 .write(true)
                 .open(&path)?, None).map_err(|(error, _)| error)?;
-        let never_polled = native.set_len_async(8);
-        let last = native.set_len_async(32);
+        let never_polled = native.set_len_async(8, None).expect("unmetered unit construction cannot fail");
+        let last = native.set_len_async(32, None).expect("unmetered unit construction cannot fail");
         complete(last)?;
         assert_eq!(std::fs::metadata(&path)?.len(), 32);
         drop(never_polled);

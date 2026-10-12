@@ -3,10 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
-import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
-
-// Cursor transport is deliberately opaque to the SDK extension. Every page and
-// rejection below goes through the real registered tools and authenticated service.
+import { installedNativeFixture } from "./pi-native-fixture.ts";
 const provider = `
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 export default function directoryPages(pi) {
@@ -57,7 +54,7 @@ export default function directoryPages(pi) {
 
 test("native directory selection preserves opaque continuations and rejects cross-directory or cross-tool cursors", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-context-pages-", import.meta.url)));
-  let fixture: InstalledNativeFixture | undefined;
+  let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   try {
     fixture = await installedNativeFixture(directory, provider, {});
     for (const name of ["nested", "other"]) {

@@ -8,8 +8,7 @@ pub(crate) const PI_BUILTIN_COMMAND_KIND: &str = "acyclic.pi.builtin";
 pub(crate) const MAXIMUM_BUILTIN_BYTES: u64 = 262_144;
 pub(crate) const PI_BUILTIN_TOOL_REVISION: &str = "1.1.0";
 
-/// Static contracts are decoded by the original guarded SDK constructor, not
-/// assembled as unobserved JSON values and adopted after allocation.
+/// Static contracts are decoded by the original guarded SDK constructor, not assembled as unobserved JSON values and adopted after allocation.
 pub(crate) fn builtin_tool_definition_with_native_work(
     work: &NativeMaterializationWork,
 ) -> Result<(acyclic_harness::tool::ToolDefinition, NativeAllocation)> {
@@ -117,14 +116,14 @@ impl PiBuiltinRequest {
         Ok(())
     }
 
-    pub(crate) fn operation(&self, root: TaskId) -> OperationId {
-        crate::pi_fork::derived(crate::pi_fork::original_operation(root, self.caller, &self.sdk_operation),
-            match self.io {
-                PiBuiltinIo::Read { .. } => "builtin-read",
-                PiBuiltinIo::Write { .. } => "builtin-write",
-                PiBuiltinIo::EditRead { .. } => "builtin-edit-read",
-                PiBuiltinIo::EditWrite { .. } => "builtin-edit-write",
-            })
+    pub(crate) fn operation(&self, root: TaskId, work: &NativeMaterializationWork) -> Result<OperationId> {
+        let original = crate::pi_fork::original_operation(root, self.caller, &self.sdk_operation, work)?;
+        crate::pi_fork::derived(original, match self.io {
+            PiBuiltinIo::Read { .. } => "builtin-read",
+            PiBuiltinIo::Write { .. } => "builtin-write",
+            PiBuiltinIo::EditRead { .. } => "builtin-edit-read",
+            PiBuiltinIo::EditWrite { .. } => "builtin-edit-write",
+        }, work)
     }
 
     pub(crate) fn require_root_source_read(&self, original_root: TaskId) -> Result<()> {
@@ -159,8 +158,6 @@ pub(crate) fn expected_digest(value: &str) -> Result<[u8; 32]> {
 }
 
 fn validate_path(value: &str) -> Result<()> {
-    // Reject foreign separators/drive syntax too: native Path parsing alone
-    // must not turn a Windows escape into a Unix filename (or vice versa).
     if value.is_empty() || value.len() > 4096 || value.as_bytes().contains(&0)
         || (value.starts_with("\\\\") && !windows_local_verbatim(value)) || value.starts_with("//")
         || value.split(['/', '\\']).any(|part| part == "..")
@@ -171,8 +168,7 @@ fn validate_path(value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Lexical selection only. Success is NOT IO authority: the original held-root
-/// SDK producer independently rejects symlinks and replaced native roots.
+/// Lexical selection only.
 pub(crate) fn relative_path<'a>(path: &'a str, root: &Path) -> Result<&'a Path> {
     validate_path(path)?;
     if !root.is_absolute() {
@@ -275,13 +271,10 @@ fn decoded_tool_request(
     if context.task().durable_task_id() != Some(decoded.0.caller) {
         return Err(denied("builtin input substitutes its original accepted task actor"));
     }
-    // The canonical runner binds these immutable arguments to the operation's
-    // prepared digest. A provider call string alone never conveys authority.
     Ok(decoded)
 }
 
 /// This executor owns no session, runtime, provider, credentials, or view.
-/// The canonical SDK runner supplies the sole accepted owner-bound context.
 struct PiBuiltinToolExecutor;
 
 pub(crate) fn builtin_tool_executor_with_native_work(
@@ -363,8 +356,6 @@ async fn accepted_builtin_io(
     let decoded = decoded_tool_request(context, invocation, work)?;
     let _request_custody = decoded.1;
     let request = decoded.0;
-    // This producer requires the actual protected ToolStarted marker, dispatch
-    // purpose, original task/fence and original ledger; no session can mint it.
     let admission = context.original_admission_with_native_work(work)?.await?;
     let encoded = crate::pi_root_provider::guarded_pi_bytes(
         &admission.0.input, crate::MAXIMUM_ADAPTER_STATE_BYTES, work)?;
@@ -453,8 +444,6 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
     fn authorize_with_native_context(&self, context: &acyclic_harness::runtime::ToolContext,
         invocation: &acyclic_harness::tool::ToolInvocation, work: &NativeMaterializationWork,
     ) -> Result<()> {
-        // Canonical authorization precedes ToolStarted. Only pure original
-        // invocation and bounded-input checks belong in this phase.
         let decoded = decoded_tool_request(context, invocation, work)?;
         drop(decoded.0);
         drop(decoded.1);
@@ -480,9 +469,6 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
             drop(decoded.1);
             drop(admission.0);
             drop(admission.1);
-            // Only the canonical completed checkpoint proves a result. An
-            // uncertain started effect is not reexecuted or inferred from bytes;
-            // None preserves its existing ToolStarted reservation.
             let custody = work.retain_owned(std::mem::size_of::<Option<acyclic_harness::tool::ToolResult>>() as u64)
                 .map_err(native_error)?;
             Ok((None, custody))
@@ -492,8 +478,7 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
 
 type Owner = acyclic_harness::durable_host::TaskJournalOwner<acyclic_stream::LocalStream>;
 
-/// Borrows original providers and creator handles; it owns no second journal,
-/// route registry, root credential, or independent filesystem.
+/// Borrows original providers and creator handles; it owns no second journal, route registry, root credential, or independent filesystem.
 pub(crate) struct PiBuiltinHost<'a> {
     runtime: std::sync::Arc<crate::pi_native_host::PiNativeRuntime>,
     filesystem: std::sync::Arc<crate::pi_native_host::PiNativeFilesystem>,
@@ -528,7 +513,7 @@ impl<'a> PiBuiltinHost<'a> {
         request.require_root_source_read(self.protected.policy().root_task)?;
         let context = native_context.context();
         authorize_owner(context, &owner, request.caller, &self.work).await?;
-        let selected = crate::pi_selected_host::PiSelectedHost::new_with_native_work(
+        let selected = crate::pi_selected_host::PiSelectedHost::new(
             self.runtime.clone(), self.filesystem.clone(), self.stream.clone(), self.resources,
             std::sync::Arc::clone(&self.protected), self.retained, self.roots,
             self.native.clone(), &self.work)?;
@@ -548,11 +533,9 @@ impl<'a> PiBuiltinHost<'a> {
         let (key, relative) = select_root_path(&request.path, paths, root_id)?;
         let root = Path::new(&paths[key]);
         let PiBuiltinIo::Read { maximum_bytes, variants } = &request.io else { unreachable!("read checked") };
-        // Every alternative is proved inside the SAME root before any bytes are
-        // read. A missing file cannot redirect fallback to another host root.
         let relatives = scoped_variants(variants, root)?;
-        let selection = selected.selected(context, Some(&native_context), &owner, request.caller,
-            Some(key), None, request.operation(self.protected.policy().root_task),
+        let selection = selected.selected(context, &native_context, &owner, request.caller,
+            Some(key), None, request.operation(self.protected.policy().root_task, work)?,
             self.work.cancellation(), &self.work).await?;
         let (_, volume, workspace, frozen, inspection, _) = &selection;
         let reader = crate::pi_inspection::PiNativeSelectedSource::select(inspection, request.caller,
@@ -597,7 +580,7 @@ impl<'a> PiBuiltinHost<'a> {
             return Err(denied("builtin command differs from its original native task actor"));
         }
         if command.kind != PI_BUILTIN_COMMAND_KIND
-            || command.operation_id != request.operation(self.protected.policy().root_task) {
+            || command.operation_id != request.operation(self.protected.policy().root_task, work)? {
             return Err(denied("builtin command changed its original SDK operation"));
         }
         let owner = self.runtime.runtime.task_host()
@@ -730,8 +713,6 @@ impl acyclic_harness::filesystem::TaskCommandHost for PiBuiltinHost<'_> {
         fence: acyclic_harness::scheduler::LeaseFence, command: acyclic_harness::workflow::WorkflowCommand,
         payload: serde_json::Value, work: &'a NativeMaterializationWork,
     ) -> Result<acyclic_harness::NativeFutureBundle<'a, acyclic_harness::filesystem::TaskCommandProgress>> {
-        // Root builtins are READ-only. The shared original workflow checkpoint
-        // owns replay; a missing retained command cannot reseed another effect.
         self.execute_with_native_work(context, fence, command, payload, work)
     }
 }
