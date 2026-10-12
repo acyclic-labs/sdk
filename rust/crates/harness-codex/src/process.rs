@@ -177,7 +177,7 @@ impl CodexProcess {
                 .as_mut()
                 .ok_or_else(|| Error::Storage("codex process ownership absent".into()))?;
             if let Some(status) = tree
-                .try_wait()
+                .try_wait(None)
                 .map_err(|error| Error::Storage(error.to_string()))?
             {
                 let mut tree = self
@@ -185,7 +185,7 @@ impl CodexProcess {
                     .take()
                     .ok_or_else(|| Error::Storage("codex process ownership absent".into()))?;
                 let (tree, result) = acyclic_native_runtime::run_blocking_io(move || {
-                    let result = tree.terminate();
+                    let result = tree.terminate(None);
                     (tree, result)
                 }, None).expect("unmetered task construction cannot fail")
                 .await

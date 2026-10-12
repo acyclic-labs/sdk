@@ -342,7 +342,7 @@ impl AsyncObjectStore for CountingStore {
     async fn read_with_native_work(
         &self, object_id: ObjectId, maximum_bytes: u64,
         work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<NativeObjectRead, ObjectStoreError> {
+    ) -> Result<ObjectRead, ObjectStoreError> {
         self.scalar_reads.fetch_add(1, Ordering::AcqRel);
         self.inner.read_with_native_work(object_id, maximum_bytes, work, cancellation).await
     }
@@ -361,7 +361,7 @@ impl AsyncObjectStore for CountingStore {
     async fn read_many_with_native_work(
         &self, requests: &[ObjectReadRequest],
         work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<NativeObjectReadBatch, ObjectStoreError> {
+    ) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
         self.batch_reads.fetch_add(1, Ordering::AcqRel);
         self.inner.read_many_with_native_work(requests, work, cancellation).await
     }
@@ -955,7 +955,7 @@ mod native_cache {
         source: &[u8], work: &NativeMaterializationWork,
     ) -> Result<OwnedBytes, ObjectStoreError> {
         let mut allocation = work.claim(source.len() as u64)?;
-        let copy = work.reserve_copy(source.len() as u64)?;
+        let copy = work.reserve_work(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(source.len())
             .map_err(|error| ObjectStoreError::Native(NativeTreeMaterializationError::AllocationFailed(error)))?;
@@ -970,7 +970,7 @@ mod native_cache {
                 ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout),
         })?;
         prepared.writable()[..source.len()].copy_from_slice(source);
-        copy.record(source.len() as u64)?;
+        { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED }) }?;
         prepared.freeze(source.len()).map_err(|_| ObjectStoreError::Corrupt)
     }
 
@@ -1009,11 +1009,11 @@ mod native_cache {
 
         async fn read_with_native_work(
             &self, id: ObjectId, maximum: u64, work: &NativeMaterializationWork, token: &CancellationToken,
-        ) -> Result<NativeObjectRead, ObjectStoreError> {
+        ) -> Result<ObjectRead, ObjectStoreError> {
             let source = self.inner.read_with_native_work(id, maximum, work, token).await?;
-            let bytes = copied_native_bytes(&source.read().bytes, work)?;
+            let bytes = copied_native_bytes(&source.bytes, work)?;
             let logical_bytes = bytes.retained_capacity().ok_or(ObjectStoreError::Corrupt)? as u64;
-            let read = NativeObjectRead::intrinsic(ObjectRead {
+            let read = crate::async_storage::owned_read(ObjectRead {
                 bytes,
                 retention: ObjectReadRetention::Owned { logical_bytes },
             }, work)?;
@@ -1028,7 +1028,7 @@ mod native_cache {
 
         async fn read_many_with_native_work(
             &self, requests: &[ObjectReadRequest], work: &NativeMaterializationWork, token: &CancellationToken,
-        ) -> Result<NativeObjectReadBatch, ObjectStoreError> {
+        ) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
             let source = self.inner.read_many_with_native_work(requests, work, token).await?;
             let (values, allocation) = source.into_parts();
             let mut buffer = BatchBuffer {
@@ -1037,10 +1037,10 @@ mod native_cache {
             for value in &mut buffer.values {
                 let bytes = copied_native_bytes(&value.bytes, work)?;
                 let logical_bytes = bytes.retained_capacity().ok_or(ObjectStoreError::Corrupt)? as u64;
-                *value = NativeObjectRead::intrinsic(ObjectRead {
+                *value = crate::async_storage::owned_read(ObjectRead {
                     bytes,
                     retention: ObjectReadRetention::Owned { logical_bytes },
-                }, work)?.into_read();
+                }, work)?;
             }
             match self.finish {
                 Finish::Return => {}
@@ -1050,7 +1050,7 @@ mod native_cache {
             }
             let BatchBuffer { values, allocation } = buffer;
             match allocation {
-                Some(KernelOwnedAllocation::NativeOriginal(allocation)) => NativeObjectReadBatch::new(values, allocation),
+                Some(KernelOwnedAllocation::NativeOriginal(allocation)) => crate::async_storage::native_read_batch(values, allocation),
                 _ => {
                     drop(values);
                     Err(ObjectStoreError::Corrupt)
@@ -1074,7 +1074,7 @@ mod native_cache {
         let (cached, id) = owned_cache(Finish::Return, &token).await?;
         let work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
         let read = cached.read_with_native_work(id, 5, &work, &token).await?;
-        let alias = read.read().bytes.clone();
+        let alias = read.bytes.clone();
         let held = work.live_allocation_bytes();
         assert!(held > NativeMaterializationWork::accounting_state_bytes() + 5);
         drop(read);
@@ -1133,7 +1133,7 @@ mod native_cache {
         let requests = [ObjectReadRequest { object_id: id, maximum_bytes: 5 }; 2];
         let work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
         let batch = cached.read_many_with_native_work(&requests, &work, &token).await?;
-        let alias = batch.reads()[0].bytes.clone();
+        let alias = batch.0[0].bytes.clone();
         drop(batch);
         let held = work.live_allocation_bytes();
         assert!(held > NativeMaterializationWork::accounting_state_bytes() + 5);

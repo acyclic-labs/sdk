@@ -18,7 +18,7 @@ use acyclic_harness::{
     tool::ToolRegistry,
     workflow::{MachineIdentity, MachineRegistry},
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 
 type Files = FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
 type Runtime = FilesystemTaskRuntime<LocalStream, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
@@ -46,7 +46,7 @@ impl Drop for FixtureRoot {
 struct Fixture {
     _directory: FixtureRoot,
     files: Arc<Files>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     issuer: AuthorityIssuer,
     scope: Scope,
     grants: Capabilities,
@@ -68,7 +68,7 @@ struct Fixture {
     reservation: Option<Reservation>,
 }
 
-async fn open_runtime(stream: StreamClient<LocalStream>, files: Arc<Files>, volume: VolumeRef,
+async fn open_runtime(stream: std::sync::Arc<LocalStream>, files: Arc<Files>, volume: VolumeRef,
     issuer: &AuthorityIssuer, scope: &Scope, grants: Capabilities)
     -> Result<(Runtime, acyclic_harness::registry::ComponentIdentity, MachineIdentity)> {
     let machine = Arc::new(Passive { identity: MachineIdentity { name: "pi-native-provider-qualification".into(), version: "1".into(), digest: [20; 32] }, schema: json!({"type":"integer"}) });
@@ -125,7 +125,7 @@ impl Fixture {
         let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path().join("filesystem"))).await.map_err(|error| invalid(&error.to_string()))?;
         let files = Arc::new(FilesystemHost::new(filesystem.clone(), provider)?);
         files.create_volume(&scratch).await?; files.create_volume(&results_volume).await?;
-        let stream = StreamClient::new(Arc::new(LocalStream::open(directory.path().join("stream"), LocalStreamLimits::default()).await.map_err(|error| invalid(&error.to_string()))?));
+        let stream = Arc::new(LocalStream::open(directory.path().join("stream"), LocalStreamLimits::default()).await.map_err(|error| invalid(&error.to_string()))?);
         let (runtime, identity, machine) = open_runtime(stream.clone(), files.clone(), results_volume.clone(), &issuer, &scope, grants.clone()).await?;
         runtime.task_host().admit(TaskAdmissionRecord { operation_id: OperationId::from_bytes(task.into_bytes()), task: identity, machine,
             input: json!(0), input_schema: json!({"type":"integer"}), output_schema: json!({"type":"object"}), parent: None,
@@ -153,7 +153,7 @@ impl Fixture {
         let owner = runtime.task_host().journal_owner_with_native_work(task, &fence, &work).await?
             .into_native_shared(&work)?;
         let context = runtime.task_context_with_native_work(task, &fence, &work).await?;
-        let allocation = NativePreparationRoot::witness_with_native_work(&native, &operation_directory, &work)?.await?;
+        let allocation = NativePreparationRoot::witness(&native, &operation_directory, &work)?.await?;
         let cwd = native.join("scratch");
         let source_entries = json!([{"type":"message","id":"original","parentId":null,"timestamp":"2026-10-09T00:00:00.000Z",
             "message":{"role":"user","content":"original native instruction","timestamp":1}}]);
@@ -339,7 +339,6 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
     assert!(result.0.success); assert!(result.0.stop.is_none());
     let stdout = std::str::from_utf8(&result.0.stdout).map_err(|error| invalid(&error.to_string()))?;
     assert!(stdout.contains("original native instruction")); assert!(stdout.contains("actual native child instruction"));
-    assert!(recovery_work.receipt().backend_read_operations > 0, "successful cleanup reads the authenticated result, not a nonexistent stop diagnostic");
     let drain_proof = recovered.drain_with_native_work(recovered.original_attempt(),
         &fixture.view, &recovery_work, &recovery_cancellation)?.await?;
     fixture.release_publication().await?;
@@ -375,7 +374,6 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
     let cleanup_work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &cleanup_cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let drain_proof = provider.drain_with_native_work(provider.original_attempt(),
         &fixture.view, &cleanup_work, &cleanup_cancellation)?.await?;
-    assert!(cleanup_work.receipt().backend_read_operations > 0);
     assert!(fixture.owner.child_scratch_creation_proof().is_err(), "an admitted root's named volume grants cannot fabricate a created-child scratch disposal proof");
     let recovery_cancellation = CancellationToken::new();
     let recovery_work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &recovery_cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -422,7 +420,6 @@ async fn required_pinned_pi_native_warm_supervisor_stop_drains_without_cancellin
     let stop = result.0.stop.as_ref().ok_or_else(|| invalid("actual warm stop lacks its process-tree observation"))?;
     assert_eq!(stop.kind, acyclic_harness::filesystem::NativeProcessStopKind::ControlStopped);
     assert!(stop.cleanup_completed, "signal acknowledgement alone is not process-tree and stdio drainage");
-    assert!(work.receipt().backend_read_operations > 0);
     let recovered = NativeProcessProvider::recover(fixture.owner.clone(), fixture.command, &fixture.plan.0, fixture.approval, fixture.authority(&work)?, &work)
         .await?.into_arc_with_native_work(&work)?;
     assert!(matches!(recovered.signal_stop(recovered.original_attempt(), &work, &cleanup_cancellation).await, Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported, .. })),

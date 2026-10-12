@@ -12,45 +12,13 @@ use crate::performance::{MeasuredResult, OperationReceipt, WorkCounters};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use tracing::field::Empty;
 
-/// One operation owns its span and originating dispatcher, even if filtered.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use acyclic_native_runtime::obs::OperationSpan;
+
+/// WASM records no spans.
+#[cfg(target_arch = "wasm32")]
 #[derive(Clone)]
-pub(crate) struct OperationSpan {
-    #[cfg(not(target_arch = "wasm32"))]
-    span: tracing::Span,
-    #[cfg(not(target_arch = "wasm32"))]
-    context: tracing::Span,
-    #[cfg(not(target_arch = "wasm32"))]
-    dispatch: tracing::Dispatch,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl OperationSpan {
-    pub(crate) fn new(span: tracing::Span) -> Self {
-        let dispatch = dispatch_for(&span);
-        let context = if span.is_disabled() {
-            tracing::Span::current()
-        } else {
-            span.clone()
-        };
-        Self {
-            span,
-            context,
-            dispatch,
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for OperationSpan {
-    fn drop(&mut self) {
-        // Subscriber registries can close a retained parent via the current
-        // dispatcher when their last child is destroyed.
-        tracing::dispatcher::with_default(&self.dispatch, || {
-            drop(std::mem::replace(&mut self.span, tracing::Span::none()));
-            drop(std::mem::replace(&mut self.context, tracing::Span::none()));
-        });
-    }
-}
+pub(crate) struct OperationSpan {}
 
 /// Creates an explicitly owned operation span without evaluating fields on WASM.
 macro_rules! span {
@@ -72,12 +40,7 @@ pub(crate) use span;
 pub(crate) async fn in_span<F: std::future::Future>(span: &OperationSpan, future: F) -> F::Output {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use tracing::{Instrument as _, instrument::WithSubscriber as _};
-        let dispatch = span.dispatch.clone();
-        future
-            .instrument(span.context.clone())
-            .with_subscriber(dispatch)
-            .await
+        span.scope(future).await
     }
     #[cfg(target_arch = "wasm32")]
     future.await
@@ -94,15 +57,9 @@ pub(crate) async fn in_span<F: std::future::Future>(span: &OperationSpan, future
 )]
 pub(crate) fn scope<T>(span: &OperationSpan, job: impl FnOnce() -> T) -> T {
     #[cfg(not(target_arch = "wasm32"))]
-    return tracing::dispatcher::with_default(&span.dispatch, || span.context.in_scope(job));
+    return span.in_scope(job);
     #[cfg(target_arch = "wasm32")]
     job()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn dispatch_for(span: &tracing::Span) -> tracing::Dispatch {
-    span.with_subscriber(|(_, dispatch)| dispatch.clone())
-        .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone))
 }
 
 /// Captures ancestry at a boundary with no operation span of its own.
@@ -154,21 +111,8 @@ pub(crate) fn outcome_on<T, E: ErrorKind>(
     result: Result<T, E>,
 ) -> Result<T, E> {
     #[cfg(not(target_arch = "wasm32"))]
-    record_outcome(&span.span, result.as_ref().err().map(E::kind));
+    record_outcome(span, result.as_ref().err().map(E::kind));
     result
-}
-
-/// Records a plain receipt result; failed APIs without receipts have no work totals.
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-pub(crate) fn receipt_on<T, E: ErrorKind>(
-    span: &OperationSpan,
-    result: Result<OperationReceipt<T>, E>,
-) -> Result<OperationReceipt<T>, E> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Ok(receipt) = &result {
-        record_work(&span.span, &receipt.work);
-    }
-    outcome_on(span, result)
 }
 
 /// Summary on an explicitly owned span: a filtered child cannot mutate its parent.
@@ -193,13 +137,13 @@ pub(crate) fn measured_on_with_kind<T, E>(
     kind: impl FnOnce(&E) -> &'static str,
 ) -> MeasuredResult<T, E> {
     #[cfg(not(target_arch = "wasm32"))]
-    if !span.span.is_disabled() {
+    if !span.is_disabled() {
         let (work, kind) = match &result {
             Ok(value) => (work(value), None),
             Err(failure) => (&*failure.work, Some(kind(&failure.error))),
         };
-        record_outcome(&span.span, kind);
-        record_work(&span.span, work);
+        record_outcome(span, kind);
+        record_work(span, work);
     }
     result
 }
@@ -216,13 +160,13 @@ pub(crate) fn measured_inline_on<T, E: ErrorKind>(
     work: impl FnOnce(&T) -> &WorkCounters,
 ) -> Result<T, (E, WorkCounters)> {
     #[cfg(not(target_arch = "wasm32"))]
-    if !span.span.is_disabled() {
+    if !span.is_disabled() {
         let (work, kind) = match &result {
             Ok(value) => (work(value), None),
             Err((error, spent)) => (spent, Some(error.kind())),
         };
-        record_outcome(&span.span, kind);
-        record_work(&span.span, work);
+        record_outcome(span, kind);
+        record_work(span, work);
     }
     result
 }
@@ -255,8 +199,8 @@ impl<T, E: ErrorKind> Observe for MeasuredResult<OperationReceipt<T>, E> {
         let result = measured_on(span, self, |receipt| &receipt.work);
         #[cfg(not(target_arch = "wasm32"))]
         scope(span, || match &result {
-            Ok(receipt) => receipt.work.emit(&span.span, op, "ok"),
-            Err(failure) => failure.work.emit(&span.span, op, "err"),
+            Ok(receipt) => receipt.work.emit(span, op, "ok"),
+            Err(failure) => failure.work.emit(span, op, "err"),
         });
         result
     }

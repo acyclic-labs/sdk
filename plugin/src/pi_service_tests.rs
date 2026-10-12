@@ -6,7 +6,7 @@ use crate::{
     load_saved_state, save_state,
 };
 use acyclic_harness::distributed::{WorkPull, Worker};
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use serde_json::Value;
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -28,11 +28,11 @@ async fn prepare_service(data: &Path, reserve: bool) -> (crate::service_process:
         .await
         .unwrap();
     let filesystem = Arc::new(filesystem);
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(directory.join("stream"), LocalStreamLimits::default())
             .await
             .unwrap(),
-    ));
+    );
     let runtime = crate::pi_runtime::PiTaskRuntime::open_with_native_work(
         stream,
         filesystem,

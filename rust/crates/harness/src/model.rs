@@ -12,10 +12,9 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 #[cfg(feature = "filesystem")]
 pub(crate) const fn model_serde_diagnostic_label_bytes() -> u64 {
     crate::contract::preparation_serde_diagnostic_label_bytes() + concat!(
-        "ModelPrefix", "version", "parent", "binding_digest", "message_digest", "total_messages",
-        "messages", "ModelRequestManifest", "version", "request_digest", "wire_bytes",
-        "binding_digest", "message_digests",
-    ).len() as u64 + 13 * 4
+        "ModelPrefix", "version", "parent", "message_digest", "total_messages",
+        "messages",
+    ).len() as u64 + 6 * 4
 }
 
 #[cfg(feature = "filesystem")]
@@ -56,7 +55,7 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
 
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for ToolResultContent {
     fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
@@ -80,8 +79,7 @@ impl crate::filesystem::PreparationRecord for NativeMediaPolicy {
     }
 }
 
-// This only allocates concrete Vec backing; every caller copies its known DTO fields directly.
-fn model_vec_with_capacity<T>(
+pub(crate) fn vec_with_capacity<T>(
     capacity: usize, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<T>> {
     let mut values = Vec::new();
@@ -256,7 +254,7 @@ pub(crate) fn clone_messages(
     messages: &[ModelMessage], io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<ModelMessage>> {
     if io.is_none() { return Ok(messages.to_vec()); }
-    let mut copied = model_vec_with_capacity(messages.len(), io)?;
+    let mut copied = vec_with_capacity(messages.len(), io)?;
     for message in messages { crate::executor::stock_vec_push(&mut copied, clone_message(message, io)?, io)?; }
     Ok(copied)
 }
@@ -296,7 +294,7 @@ pub(crate) fn clone_request(
     model_step(io, 1)?;
     let model = clone_model(&request.model, io)?;
     let messages = clone_messages(&request.messages, io)?;
-    let mut tools = model_vec_with_capacity(request.tools.len(), io)?;
+    let mut tools = vec_with_capacity(request.tools.len(), io)?;
     for tool in &request.tools { crate::executor::stock_vec_push(&mut tools, clone_tool_definition(tool, io)?, io)?; }
     Ok(ModelRequest { model, messages, tools, max_output_tokens: request.max_output_tokens })
 }
@@ -602,17 +600,15 @@ impl ModelContent {
         Ok(())
     }
 
-    pub(crate) fn visit_file_bindings<'a>(
-        &'a self, mut visit: impl FnMut(&'a FileRef, Option<&'a NativeConfigurationBinding>) -> Result<()>,
-    ) -> Result<()> {
-        for (file, policy) in self.file_parts() {
-            visit(file, None)?;
-            if let FileProjectionPolicy::Native(policy) = policy
-                && let Some(binding) = &policy.configuration {
-                visit(&binding.configuration.content, Some(binding))?;
-            }
-        }
-        Ok(())
+    pub(crate) fn file_bindings(&self) -> impl Iterator<Item = (&FileRef, Option<&NativeConfigurationBinding>)> {
+        self.file_parts().flat_map(|(file, policy)| {
+            let binding = match policy {
+                FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
+                _ => None,
+            };
+            std::iter::once((file, None)).chain(binding.map(|binding|
+                (&binding.configuration.content, Some(binding))))
+        })
     }
 
     fn file_parts(&self) -> impl Iterator<Item = (&FileRef, &FileProjectionPolicy)> {
@@ -635,14 +631,7 @@ impl ModelContent {
     /// Returns ordered media refs followed by their immutable option refs.
     #[must_use]
     pub fn file_refs(&self) -> impl Iterator<Item = &FileRef> {
-        self.file_parts().flat_map(|(file, policy)| {
-            let configuration = match policy {
-                FileProjectionPolicy::Native(policy) => policy.configuration.as_ref()
-                    .map(|binding| &binding.configuration.content),
-                _ => None,
-            };
-            std::iter::once(file).chain(configuration)
-        })
+        self.file_bindings().map(|(file, _)| file)
     }
 
     /// Detects native media in ordinary data and paired result data.
@@ -654,10 +643,7 @@ impl ModelContent {
     /// Claims that the original authenticated host must verify before dispatch.
     #[must_use]
     pub fn native_configurations(&self) -> impl Iterator<Item = &NativeConfigurationBinding> {
-        self.file_parts().filter_map(|(_, policy)| match policy {
-            FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
-            _ => None,
-        })
+        self.file_bindings().filter_map(|(_, binding)| binding)
     }
 
 }
@@ -824,8 +810,8 @@ impl NativeConfigurationBinding {
         })?;
         let expected = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => schemas.implementation_digest_with_io(&extension.name, extension.version, io)?,
-            _ => schemas.implementation_digest(&extension.name, extension.version)?,
+            Some(io) => crate::executor::with_history_io(Some(io), |work| schemas.implementation_digest(&extension.name, extension.version, work))?,
+            _ => schemas.implementation_digest(&extension.name, extension.version, &mut None)?,
         };
         if linked.digest != expected || self.implementation_digest != expected {
             return Err(Error::Conflict(
@@ -1109,9 +1095,6 @@ fn model_request_payload_bytes(request: &ModelRequest) -> Result<u64> {
     Ok(bytes)
 }
 
-/// Largest byte count representable by a model request manifest.
-pub const MAX_MODEL_REQUEST_BYTES: u64 = u64::MAX;
-
 /// Complete immutable request to a model provider.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelRequest {
@@ -1130,23 +1113,7 @@ pub struct ModelRequest {
 pub struct PreparedModelRequest {
     request: ModelRequest,
     bytes: acyclic_stream::OwnedBytes,
-    manifest: ModelRequestManifest,
-}
-
-/// Versioned identity of ordered provider input; counters bound wire bytes, not heap use.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelRequestManifest {
-    /// Canonical construction version.
-    pub version: u32,
-    /// BLAKE3 digest of the exact supplied bytes.
-    pub request_digest: [u8; 32],
-    /// Serialized byte count.
-    pub wire_bytes: u64,
-    /// Exact model and ordered tool definitions, including pinned revisions and schemas.
-    pub binding_digest: [u8; 32],
-    /// Ordered role and content identities.
-    pub message_digests: Vec<[u8; 32]>,
+    request_digest: [u8; 32],
 }
 
 impl ModelRequest {
@@ -1287,9 +1254,7 @@ impl ModelRequest {
 impl PreparedModelRequest {
     /// Returned graph excluding the independently guarded encoded bytes.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        let bytes = model_owned_add(std::mem::size_of::<Self>() as u64,
-            model_request_payload_bytes(&self.request)?)?;
-        model_owned_add(bytes, model_owned_mul(self.manifest.message_digests.capacity(), std::mem::size_of::<[u8; 32]>())?)
+        model_owned_add(std::mem::size_of::<Self>() as u64, model_request_payload_bytes(&self.request)?)
     }
 
     /// Decodes exact canonical bytes on the optional preparation ledger.
@@ -1365,35 +1330,9 @@ impl PreparedModelRequest {
             bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         }
         let request_digest = hash_bytes(&bytes, io)?;
-        let binding_digest = crate::executor::preparation_digest(&(&request.model, &request.tools), io)?;
-        #[cfg(feature = "filesystem")]
-        let capacity = request.messages.len().checked_mul(std::mem::size_of::<[u8; 32]>())
-            .ok_or_else(|| Error::Invalid("model message digest capacity overflow".into()))?;
-        #[cfg(feature = "filesystem")]
-        let mut digest_hold = if let Some(io) = io {
-            io.claim(capacity as u64)?;
-            let hold = io.guard_owned(capacity as u64)?;
-            io.allocation_attempt(capacity as u64)?;
-            Some(hold)
-        } else { None };
-        let mut message_digests = Vec::with_capacity(request.messages.len());
-        for message in &request.messages {
-            model_step(io, 1)?;
-            message_digests.push(crate::executor::preparation_digest(message, io)?);
-        }
-        let manifest = ModelRequestManifest {
-            version: 1, request_digest, wire_bytes: bytes.len() as u64,
-            binding_digest, message_digests,
-        };
         #[cfg(feature = "filesystem")]
         if let Some(hold) = bytes_hold { hold.into_retained(); }
-        #[cfg(feature = "filesystem")]
-        if let Some(hold) = digest_hold.take() { hold.into_retained(); }
-        Ok(Self {
-            request,
-            bytes,
-            manifest,
-        })
+        Ok(Self { request, bytes, request_digest })
     }
 
     /// Read-only admitted values for provider-specific encoding.
@@ -1408,10 +1347,10 @@ impl PreparedModelRequest {
         &self.bytes
     }
 
-    /// Versioned identity of these bytes and ordered content.
+    /// BLAKE3 digest of the exact admitted request bytes.
     #[must_use]
-    pub fn manifest(&self) -> &ModelRequestManifest {
-        &self.manifest
+    pub const fn request_digest(&self) -> [u8; 32] {
+        self.request_digest
     }
 
     /// Byte-additive token bound including every pinned immutable file.
@@ -1440,7 +1379,7 @@ impl PreparedModelRequest {
         let fixed_tokens = u32::try_from(self.bytes.len())
             .map_err(|_| Error::Invalid("deterministic framing exceeds u32".into()))?;
         let count = crate::context::ModelTokenCount {
-            request_digest: self.manifest.request_digest, fixed_tokens, message_tokens,
+            request_digest: self.request_digest, fixed_tokens, message_tokens,
         };
         let retained = model_owned_add(std::mem::size_of::<crate::context::ModelTokenCount>() as u64,
             model_owned_mul(count.message_tokens.capacity(), std::mem::size_of::<u32>())?)?;
@@ -1455,7 +1394,6 @@ impl PreparedModelRequest {
 pub struct ModelPrefix {
     version: u32,
     parent: Option<FileRef>,
-    binding_digest: [u8; 32],
     message_digest: [u8; 32],
     total_messages: usize,
     messages: Vec<ModelMessage>,
@@ -1484,10 +1422,10 @@ impl ModelPrefix {
         if messages.is_empty() {
             return Err(Error::Invalid("model prefix must advance its parent".into()));
         }
-        let message_digest = ordered_message_digest(&request.manifest.message_digests)?;
+        let message_digest = ordered_message_digest(&request.request.messages)?;
         Ok(Self {
             version: 1, parent: parent.cloned(),
-            binding_digest: request.manifest.binding_digest, message_digest,
+            message_digest,
             total_messages: request.request.messages.len(), messages: messages.to_vec(),
         })
     }
@@ -1503,10 +1441,10 @@ impl ModelPrefix {
 
 }
 
-fn ordered_message_digest(digests: &[[u8; 32]]) -> Result<[u8; 32]> {
+fn ordered_message_digest(messages: &[ModelMessage]) -> Result<[u8; 32]> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"harness:model-prefix:ordered:v1");
-    for digest in digests { hasher.update(digest); }
+    for message in messages { hasher.update(&crate::contract::canonical_json_digest(message)?); }
     Ok(*hasher.finalize().as_bytes())
 }
 
@@ -2045,8 +1983,8 @@ mod tests {
         }
         let changed = PreparedModelRequest::prepare(original, Limits::default(), None)?;
         assert_ne!(
-            prepared.manifest().request_digest,
-            changed.manifest().request_digest
+            prepared.request_digest(),
+            changed.request_digest()
         );
         Ok(())
     }
@@ -2221,10 +2159,6 @@ mod tests {
             assert_eq!(
                 changed_request.request().messages,
                 inherited.request().messages
-            );
-            assert_ne!(
-                changed_request.manifest().binding_digest,
-                inherited.manifest().binding_digest
             );
             // Inherited tool exchanges must still validate against the new schema set.
             let mut incompatible = local.clone();

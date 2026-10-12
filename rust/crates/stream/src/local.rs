@@ -23,7 +23,7 @@ use tokio::sync::{OwnedRwLockWriteGuard, RwLock, mpsc, watch};
 use tracing::Instrument as _;
 use tracing::field::Empty;
 
-use crate::journal::{Command, CommandRef, decode_command, replay};
+use crate::journal::{Command, decode_command, replay};
 use crate::obs;
 use crate::memory::MemoryOutput;
 use crate::{
@@ -68,7 +68,7 @@ fn publication_error(error: LocalStreamError) -> MemoryFailure {
 }
 
 fn finish_native<T>(
-    span: &obs::OwnedSpan,
+    span: &obs::OperationSpan,
     result: NativeStreamResult<T>,
 ) -> NativeStreamResult<T> {
     match &result {
@@ -352,7 +352,7 @@ impl JournalPersistWork {
 /// The SAME persist and flush jobs are accepted on one blocking submission before issuing the late-input packet.
 struct PreparedLocalWork {
     persist: FundedLocalTask<JournalPersistWork>,
-    input: MemoryOutput<CommitRequest>,
+    input: MemoryOutput<Command>,
     prepared: crate::memory::NativeMemoryPreparedCommit,
     record: Arc<crate::NativeCommitRecordSlot>,
     runtime: tokio::runtime::Handle,
@@ -369,7 +369,8 @@ impl PreparedLocalWork {
         };
         let result: MemoryResult<NativeStreamOutput<CommitOutcome>> = (|| {
             // Input was supplied before taking any provider lock.
-            let [crate::CommitMutation::Append { records, .. }] = self.input.value.mutations.as_mut_slice()
+            let Command::Commit(request) = &mut self.input.value else { return Err(StreamError::InvalidArgument.into()); };
+            let [crate::CommitMutation::Append { records, .. }] = request.mutations.as_mut_slice()
                 else { return Err(StreamError::InvalidArgument.into()); };
             let Some(record) = records.first_mut() else { return Err(StreamError::InvalidArgument.into()); };
             *record = body;
@@ -377,7 +378,7 @@ impl PreparedLocalWork {
             let visibility = self.stream.inner.visibility.blocking_write();
             self.stream.check_available()?;
             let committed_at = self.stream.inner.commit_clock.source.now_unix_millis();
-            let wire = crate::wire_codec::CanonicalWire::Journal(CommandRef::Commit(&self.input.value));
+            let wire = crate::wire_codec::CanonicalWire::Journal(&self.input.value);
             let encoded_length = wire.encoded_len(None, None)?;
             keep_observation(&mut work.late, self.meter.record_examination(1, 0));
             write_frame(&mut self.persist.operation.frame.value, &wire, committed_at, encoded_length, &mut work)
@@ -386,9 +387,10 @@ impl PreparedLocalWork {
                 .map_err(|_| MemoryFailure::Provider(self.stream.inner.poison()))?
                 .admit_bytes(self.persist.operation.frame.value.len() as u64).map_err(publication_error)?;
             self.stream.inner.commit_clock.pin(committed_at);
+            let Command::Commit(request) = &mut self.input.value else { unreachable!("prepared Commit input") };
             let completion = self.runtime.block_on(
                 self.stream.inner.provider.finish_commit(
-                    self.prepared, &mut self.input.value,
+                    self.prepared, request,
                 ),
             );
             self.stream.inner.commit_clock.unpin();
@@ -515,7 +517,7 @@ impl LocalStream {
         clock: Arc<dyn UnixMillisClock>,
         ownership_anchor: Option<OwnershipAnchor>,
     ) -> Result<Self, LocalStreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.open", outcome = Empty, error.kind = Empty,
         ));
         let operation = span.clone();
@@ -527,7 +529,7 @@ impl LocalStream {
                     let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
                     #[cfg(test)]
                     let submitted_root = root.clone();
-                    let span = obs::OwnedSpan::new(tracing::debug_span!(
+                    let span = obs::OperationSpan::new(tracing::debug_span!(
                         "acyclic.stream.recover",
                         frames = Empty,
                         bytes = Empty
@@ -623,27 +625,15 @@ impl LocalStream {
 
     fn prepare(
         &self,
-        command: CommandRef<'_>,
+        command: &Command,
         meter: Option<&Arc<dyn NativeReadMeter>>,
         pin: bool,
     ) -> MemoryResult<(MemoryOutput<Vec<u8>>, u64)> {
         let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
         if let Some(meter) = meter {
-            let length = match command {
-                CommandRef::Append(request) =>
-                    Some(crate::wire_codec::CanonicalWire::Append(request).encoded_len(None, Some(&MemoryObserver { meter: Some(Arc::clone(meter)) }))?),
-                CommandRef::Commit(request) =>
-                    Some(crate::wire_codec::CanonicalWire::Commit(request).encoded_len(None, Some(&MemoryObserver { meter: Some(Arc::clone(meter)) }))?),
-                CommandRef::Fork(_) => None,
-            };
-            if let Some(length) = length {
-                // One length-delimited JournalCommand operation wraps the request.
-                let mut rest = length;
-                let mut prefix = 1;
-                while rest >= 128 { rest >>= 7; prefix += 1; }
-                if length.checked_add(prefix + 1).is_none_or(|length| length > MAX_COMMAND_BYTES) {
-                    return Err(StreamError::Capacity.into());
-                }
+            let observer = MemoryObserver { meter: Some(Arc::clone(meter)) };
+            if crate::wire_codec::CanonicalWire::Journal(command).encoded_len(None, Some(&observer))? > MAX_COMMAND_BYTES {
+                return Err(StreamError::Capacity.into());
             }
         }
         let frame = encode_frame(command, committed_at_millis, meter)
@@ -658,7 +648,7 @@ impl LocalStream {
 
     /// Flushes every frame written without waiting for the storage device (see [`deferring_durability`]), blocking the calling thread.
     pub fn flush(&self) -> Result<(), StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.flush",
             batch_len = Empty,
             outcome = Empty,
@@ -743,7 +733,7 @@ impl LocalStream {
         let state = self.inner.provider.encode_state(meter).await?;
         let inner = Arc::clone(&self.inner);
         let observer = meter.cloned();
-        let span = obs::OwnedSpan::new(tracing::debug_span!(
+        let span = obs::OperationSpan::new(tracing::debug_span!(
             "acyclic.stream.compact",
             bytes = state.value.len()
         ));
@@ -890,7 +880,7 @@ impl LocalStream {
         F: Future<Output = MemoryResult<CommitCompletion<T>>> + Send + 'static,
     {
         let is_commit = matches!(&input.value, Command::Commit(_));
-        let span = obs::OwnedSpan::new(match &input.value {
+        let span = obs::OperationSpan::new(match &input.value {
             Command::Commit(request) => tracing::info_span!(
                 "acyclic.stream.commit", items = request.mutations.len(),
                 outcome = Empty, error.kind = Empty,
@@ -932,7 +922,7 @@ impl LocalStream {
                         }
                     }
                     let result = async {
-                        let command = CommandRef::from(&input.value);
+                        let command = &input.value;
                         let (frame, committed_at) = stream.prepare(
                             command, observer.as_ref(),
                             matches!(visibility, MutationVisibility::BeforeMutation),
@@ -1142,7 +1132,7 @@ impl StreamProvider for LocalStream {
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.read",
             rev = request.from,
             items = request.limit,
@@ -1156,7 +1146,7 @@ impl StreamProvider for LocalStream {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.follow",
             rev = from,
             terminal = Empty,
@@ -1275,10 +1265,10 @@ impl StreamProvider for LocalStream {
                 input, None, Some(observer), MutationVisibility::BeforeMutation,
                 move |provider, input, _, _, _| async move {
                     let MemoryOutput { value, allocation } = input;
-                    let Command::Append(mut request) = value else { unreachable!() };
+                    let Command::Append(request) = value else { unreachable!() };
                     let retain_conflict = request.idempotency_key.is_some();
                     let (outcome, error) = provider.apply_append(
-                        &mut request, &MemoryObserver { meter: Some(Arc::clone(&execute_meter)) },
+                        &request, &MemoryObserver { meter: Some(Arc::clone(&execute_meter)) },
                     ).await?;
                     let value = crate::memory::native(Ok(outcome), &execute_meter)?
                         .expect("successful append completion");
@@ -1328,7 +1318,7 @@ impl StreamProvider for LocalStream {
     ) -> NativeProviderFuture<'_, NativeRecordStream> {
         let observer = Arc::clone(&meter);
         NativeProviderFuture::new(&meter, async move {
-            let span = obs::OwnedSpan::new(tracing::info_span!(
+            let span = obs::OperationSpan::new(tracing::info_span!(
                 "acyclic.stream.read",
                 rev = request.from,
                 items = request.limit,
@@ -1392,8 +1382,9 @@ impl StreamProvider for LocalStream {
                 ).await.map_err(MemoryFailure::Observer)?
                     .map_err(MemoryFailure::Provider)?;
                 let recovery = self.inner.provider.prepare_recovery(&prepared)?;
+                let input = input.map(Command::Commit);
                 meter.admit_examination(1, 0)?;
-                let maximum = crate::wire_codec::CanonicalWire::Journal(CommandRef::Commit(&input.value))
+                let maximum = crate::wire_codec::CanonicalWire::Journal(&input.value)
                     .encoded_len(Some(maximum_record_bytes), None)?;
                 meter.record_examination(1, 0)?;
                 meter.check()?;
@@ -1480,7 +1471,7 @@ struct FollowState {
     path: StreamPath,
     next: u64,
     changed: watch::Receiver<u64>,
-    span: Option<obs::OwnedSpan>,
+    span: Option<obs::OperationSpan>,
 }
 impl FollowState {
     fn failed(&mut self, error: &StreamError) {
@@ -1555,7 +1546,7 @@ impl FrameWork<'_> {
     }
 }
 fn encode_frame(
-    command: CommandRef<'_>,
+    command: &Command,
     committed_at_millis: u64,
     meter: Option<&Arc<dyn NativeReadMeter>>,
 ) -> Result<MemoryOutput<Vec<u8>>, LocalStreamError> {
@@ -3611,7 +3602,7 @@ mod tests {
             if_tail: Some(0),
             idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"partial"))?),
         });
-        let frame = encode_frame((&command).into(), 42, None)?;
+        let frame = encode_frame(&command, 42, None)?;
         for cut in 0..=frame.value.len() {
             let mut bytes = encode_header(limits, 0)?.to_vec();
             bytes.extend_from_slice(&frame.value[..cut]);
@@ -3637,7 +3628,7 @@ mod tests {
         }
         // A whole checksummed noncanonical command is never a torn append.
         let mut payload = 42_u64.to_le_bytes().to_vec();
-        payload.extend_from_slice(&crate::wire_codec::CanonicalWire::Journal((&command).into()).encode_to_vec()?);
+        payload.extend_from_slice(&crate::wire_codec::CanonicalWire::Journal(&command).encode_to_vec()?);
         payload.extend_from_slice(&[0x78, 0]);
         let length = u32::try_from(payload.len())?.to_le_bytes();
         let mut bytes = encode_header(limits, 0)?.to_vec();
@@ -3742,7 +3733,7 @@ mod tests {
         };
         let path = directory.path().join(JOURNAL_FILE);
         let before = std::fs::read(&path)?;
-        let frame = encode_frame((&Command::Append(second)).into(), 1, None)?;
+        let frame = encode_frame(&Command::Append(second), 1, None)?;
         let mut damaged = before.clone();
         damaged.extend_from_slice(&frame.value);
         damaged.extend_from_slice(&[9, 8, 7]);
@@ -4015,7 +4006,7 @@ mod tests {
             let mut records = tracing::subscriber::with_default(
                 tracing_subscriber::Registry::default().with(captured.clone()),
                 || {
-                    let parent = obs::OwnedSpan::new(tracing::info_span!("origin_parent"));
+                    let parent = obs::OperationSpan::new(tracing::info_span!("origin_parent"));
                     parent.scope(async { provider.follow(path, 1).await })
                 },
             )
@@ -4073,7 +4064,7 @@ mod tests {
         let future = tracing::subscriber::with_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
             || {
-                let parent = obs::OwnedSpan::new(tracing::info_span!("origin_parent"));
+                let parent = obs::OperationSpan::new(tracing::info_span!("origin_parent"));
                 parent.scope(async {
                     provider
                         .read(ReadRequest {
@@ -4247,22 +4238,22 @@ mod tests {
 
         let path = StreamPath::new("failed-replay")?;
         let invalid = encode_frame(
-            (&Command::Fork(ForkRequest {
+            &Command::Fork(ForkRequest {
                 source: StreamPath::new("missing-source")?,
                 destination: path.clone(),
                 at_tail: None,
                 idempotency_key: None,
-            })).into(),
+            }),
             0,
             None,
         )?;
         let valid = encode_frame(
-            (&Command::Append(AppendRequest {
+            &Command::Append(AppendRequest {
                 path,
                 records: vec![OwnedBytes::from_static(b"later")],
                 if_tail: Some(0),
                 idempotency_key: None,
-            })).into(),
+            }),
             0,
             None,
         )?;

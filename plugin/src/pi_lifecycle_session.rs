@@ -482,7 +482,7 @@ fn validate_created_native_report(
 }
 
 async fn original_native_first_dispatch_pending(
-    runtime: &PiRuntime, stream: &StreamClient<LocalStream>,
+    runtime: &PiRuntime, stream: &std::sync::Arc<LocalStream>,
     protected: &pi_owner::PiOwnerConfig, plan: &pi_fork::PiForkPlan,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> RootResult<bool> {

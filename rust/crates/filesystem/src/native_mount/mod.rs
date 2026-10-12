@@ -2,7 +2,7 @@
 
 use crate::NativeMaterializationWork;
 use crate::kernel::FileMetadata;
-use crate::demand::{NativeMountAllocationCustody, NativeMountControlAllocation};
+use crate::demand::NativeMountAllocationCustody;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::kernel::MetadataField;
 use crate::{FileId, MountId, VolumeId};
@@ -62,12 +62,12 @@ mod materialize;
 pub use materialize::{
     HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeError,
     MaterializeOptions, materialize_checkout,
-    materialize_checkout_path, materialize_checkout_paths, restore_checkout_host_path,
+    materialize_checkout_paths, restore_checkout_host_path,
 };
 pub(crate) use materialize::{
-    MaterializeMode, materialize_checkout_paths_with_mode, materialize_checkout_with_mode,
+    MaterializeMode,
     NativeMaterializationActionPhase, materialize_checkout_host_paths_with_work_guarded,
-    materialize_checkout_paths_with_mode_and_work,
+    materialize_reader_paths,
 };
 pub use materialize::materialize_checkout_with_work;
 
@@ -983,7 +983,6 @@ impl From<NativeMountStartupAdmissionError> for MountSourceError {
             NativeMountStartupAdmissionError::Work(error) => Self::Work(error),
             NativeMountStartupAdmissionError::Materialization(error) => Self::NativeWork(error),
             NativeMountStartupAdmissionError::Demand(error) => lazy::mount_demand_error(error),
-            NativeMountStartupAdmissionError::Allocation(error) => Self::Allocation(error),
             NativeMountStartupAdmissionError::ServicesCold => Self::ServicesNotInitialized,
             NativeMountStartupAdmissionError::ServiceUnavailable(error) => Self::ServiceUnavailable(error),
         }
@@ -1211,25 +1210,18 @@ impl NativeMountMeterActivation {
     }
 }
 
-/// Actual SDK callback failure record.
-#[derive(Debug)]
-pub(crate) struct NativeMountCallbackFailure {
-    pub(crate) cause: NativeMountError,
-    pub(crate) work: crate::WorkCounters,
-}
-
 /// Executes one installed SDK handler request with the original constructor's copied full grants and cancellation, through the existing native queue.
 pub(crate) fn run_native_mount_handler<T>(
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
     operation: impl FnOnce(&NativeMaterializationWork) -> Result<T, NativeMountError>,
-) -> Result<crate::OperationReceipt<T>, NativeMountCallbackFailure> {
+) -> Result<crate::OperationReceipt<T>, (NativeMountError, crate::WorkCounters)> {
     let work = crate::NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(cause, work)| NativeMountCallbackFailure { cause: cause.into(), work })?;
+        .map_err(|(cause, work)| (cause.into(), work))?;
     let result = run_native_mount_handler_on_meter(&work, operation);
     match result {
         Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
-        Err(cause) => Err(NativeMountCallbackFailure { cause, work: work.receipt() }),
+        Err(cause) => Err((cause, work.receipt())),
     }
 }
 
@@ -1243,33 +1235,6 @@ pub(crate) fn run_native_mount_handler_on_meter<T>(
     })).unwrap_or_else(|panic| Err(NativeMountError::DriverPanicked {
         operation: "SDK callback", panic: std::sync::Mutex::new(panic),
     }))
-}
-
-impl NativeMountAllocationCustody {
-    /// Metadata-only admission on the original shared ledger.
-    pub(crate) fn new_with_meter(
-        work: &NativeMaterializationWork,
-    ) -> Result<Self, NativeMountStartupAdmissionError> {
-        Self::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&work))
-            .map_err(Into::into)
-    }
-
-    pub(crate) fn claim_with_meter(
-        &self, bytes: u64, work: &NativeMaterializationWork,
-    ) -> Result<(), NativeMountStartupAdmissionError> {
-        work.original_demand_work()
-            .with_original_leaf(|original| self.claim(bytes, original))?
-            .map_err(Into::into)
-    }
-
-    pub(crate) fn attach_known_control_with_meter(
-        &self, owner: NativeMountControlAllocation, work: &NativeMaterializationWork,
-    ) -> Result<(), NativeMountStartupAdmissionError> {
-        work.original_demand_work()
-            .with_original_leaf(|original| self.attach_known_control(owner, original))?
-            .map_err(Into::into)
-    }
-
 }
 
 /// Borrowed stock-source consistency data, not namespace or task authority.
@@ -1793,9 +1758,6 @@ pub enum NativeMountStartupAdmissionError {
     /// Original cancellation or demand admission failure.
     #[error("native startup demand failed: {0}")]
     Demand(#[source] crate::DemandError),
-    /// Original fallible SDK metadata allocation failure.
-    #[error("native startup allocation failed: {0}")]
-    Allocation(#[from] std::collections::TryReserveError),
     /// Explicit process-shared services have not been initialized.
     #[error("native mount services are not initialized")]
     ServicesCold,
@@ -1819,7 +1781,6 @@ impl From<NativeMountStartupAdmissionError> for NativeMountError {
             NativeMountStartupAdmissionError::Work(error) => Self::Work(error),
             NativeMountStartupAdmissionError::Materialization(error) => Self::Materialization(error),
             NativeMountStartupAdmissionError::Demand(error) => error.into(),
-            NativeMountStartupAdmissionError::Allocation(error) => Self::Allocation(error),
             NativeMountStartupAdmissionError::ServicesCold => Self::ServicesNotInitialized,
             NativeMountStartupAdmissionError::ServiceUnavailable(error) => Self::ServiceUnavailable(error),
         }
@@ -2802,7 +2763,7 @@ pub struct NativeMountSession {
     // Separate actual detach evidence from an unresolved, ownerless control.
     namespace_control_pending: bool,
     completed_future_callback_work: crate::WorkCounters,
-    retired_callback_failure: std::sync::Mutex<Option<NativeMountCallbackFailure>>,
+    retired_callback_failure: std::sync::Mutex<Option<(NativeMountError, crate::WorkCounters)>>,
     // SDK namespace DATA can outlive physical retirement without retaining
     // a source, context, root handle, or provider callback.
     #[cfg(windows)]
@@ -2943,12 +2904,11 @@ impl NativeMountSession {
         let retained = self.retired_callback_failure.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner).take();
         if let Some(failure) = retained {
-            return Some((failure.cause, failure.work));
+            return Some(failure);
         }
-        let failure = self.driver.as_ref().and_then(|driver| {
+        self.driver.as_ref().and_then(|driver| {
             with_driver!(driver, session, session.take_callback_failure(), None)
-        });
-        failure.map(|failure| (failure.cause, failure.work))
+        })
     }
 
     /// Completed future SDK request work, including ordinary errno answers.
@@ -3089,9 +3049,7 @@ impl NativeMountSession {
                 }
                 self.namespace_detach_confirmed = with_driver!(&*driver, session, session.namespace_detach_confirmed(), false);
                 self.namespace_control_pending = false;
-                // The physical driver has settled callbacks before this copy.
-                // Preserve both totals and the original fault before SDK data
-                // and their context are actually dropped.
+                // Copy settled callback totals and faults before dropping the driver context.
                 self.completed_future_callback_work = with_driver!(&*driver, session, session.completed_callback_work(), crate::WorkCounters::UNCHARGED);
                 *self.retired_callback_failure.get_mut()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -3152,9 +3110,7 @@ enum NativeSessionStopWork<'a> {
 
 impl Drop for NativeMountSession {
     fn drop(&mut self) {
-        // Each accepted driver loop retains the source, destination fence and
-        // native handles through physical retirement. Its own Drop only sends
-        // the already admitted stop signal, including failed startup.
+        // Accepted loops retain source, fence and handles until physical retirement.
         drop(self.driver.take());
         // Before driver acceptance no destination fence has been acquired.
         // Source/watch birth producers retain their own physical retirement.
@@ -3438,9 +3394,7 @@ struct MountDestinationGuard {
     file: Option<File>,
     lock_path: PathBuf,
     registry_path: PathBuf,
-    // Finite constructors retain physical parent authority, not a spelling
-    // that may later resolve through a replaced alias. The leaf name is fixed
-    // stack data; no long-lived path allocation is invented.
+    // Retain the physical parent and fixed leaf so replacing an alias cannot redirect cleanup.
     parent_directory: Option<cap_std::fs::Dir>,
     fence_name: Option<[u8; NATIVE_FENCE_NAME_BYTES]>,
     registry_file: Option<File>,
@@ -3752,10 +3706,7 @@ impl MountDestinationGuard {
         let registry = self.registry_file.as_ref().ok_or_else(invalid)?;
         let name = self.cleanup_name.as_ref().ok_or_else(invalid)?;
         let credit = self.birth_cleanup.as_mut().ok_or_else(invalid)?;
-        let loan = match wait {
-            Some(wait) => credit.cleanup_loan(wait),
-            None => credit.accepted_cleanup_loan(),
-        };
+        let loan = credit.loan(wait);
         let mut work = NativeFenceReleaseWork { loan: &loan, pending: None };
         // A contended registry is a real pending control. Do not spend an
         // unbounded sequence of new lock attempts after cancellation.
@@ -4580,7 +4531,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         while readiness.iter().any(|path| !path.is_file()) {
             for child in &mut children {
-                if let Some(status) = child.try_wait()? {
+                if let Some(status) = child.try_wait(None)? {
                     return Err(format!("reclaim child exited before release: {status}").into());
                 }
             }
@@ -4637,7 +4588,7 @@ mod tests {
         let mut child = child;
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ready.is_file() {
-            if let Some(status) = child.try_wait()? {
+            if let Some(status) = child.try_wait(None)? {
                 return Err(format!("lock child exited before readiness: {status}").into());
             }
             if Instant::now() >= deadline {
@@ -5643,10 +5594,7 @@ mod tests {
         Ok(())
     }
 
-    // FSEvents can replay creation hints for paths that existed before the
-    // watcher's baseline. Stale created hints must not replace a directory
-    // that is still a directory: that remove is illegal while the directory
-    // has children, and hints only select which paths to authenticate.
+    // Stale creation hints must preserve existing directories and their children.
     #[tokio::test]
     async fn stale_created_hints_for_existing_directory_capture_exactly()
     -> Result<(), Box<dyn std::error::Error>> {

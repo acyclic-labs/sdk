@@ -9,7 +9,7 @@ use acyclic_harness::{Error, Result, TaskId, OperationId, durable_host::TaskJour
     filesystem::{TaskCommandProgress, TaskSourceInspection},
     runtime::{TaskContext, NativeTaskContext}, scheduler::LeaseFence, workflow::WorkflowCommand,
     conversation::VolumeRef};
-use acyclic_stream::{LocalStream, StreamClient};
+use acyclic_stream::{LocalStream};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -51,7 +51,7 @@ pub(crate) struct PiSelectedCommand<S = String, P = Vec<String>> {
 pub(crate) struct PiControlHost<'a> {
     pub(crate) runtime: Arc<PiNativeRuntime>,
     pub(crate) filesystem: Arc<PiNativeFilesystem>,
-    pub(crate) stream: StreamClient<LocalStream>,
+    pub(crate) stream: std::sync::Arc<LocalStream>,
     pub(crate) resources: &'a ServiceResources,
     pub(crate) protected: Arc<PiOwnerConfig>,
     pub(crate) retained: &'a AdapterState,
@@ -66,7 +66,7 @@ pub(crate) struct PiControlHost<'a> {
 impl<'a> PiControlHost<'a> {
     #[allow(clippy::too_many_arguments, reason = "original providers and invocation work are independent")]
     pub(crate) fn new(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
-        stream: StreamClient<LocalStream>, resources: &'a ServiceResources, protected: Arc<PiOwnerConfig>,
+        stream: std::sync::Arc<LocalStream>, resources: &'a ServiceResources, protected: Arc<PiOwnerConfig>,
         retained: &'a AdapterState, roots: &'a BTreeMap<String, PiRootHandle>,
         native: Arc<PiNativeCommandHost>, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         runtime.verify_owner_with_native_work(&protected, work)?;
@@ -832,8 +832,8 @@ pub(crate) async fn read_imported_selected_files(
             break;
         }
         let count = (length - offset).min(remaining);
-        let bytes = generation.read_range_with_native_work(&absolute.0, offset, count, work, cancellation)
-            .await.map_err(native_workspace_error)?;
+        let bytes = generation.read_range(&absolute.0, offset, count, work, cancellation)
+            .await.map(|chunk| chunk.bytes).map_err(|error| native_workspace_error((error, None)))?;
         if bytes.len() as u64 != count { return Err(denied("candidate evidence range differs from its authenticated immutable length")); }
         let encoded_length = count.checked_add(2).and_then(|size| size.checked_div(3))
             .and_then(|size| size.checked_mul(4)).ok_or_else(|| invalid("file evidence encoded size overflow"))?;

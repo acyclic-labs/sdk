@@ -87,7 +87,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         .fork_volume(
             &parent_private,
             &ContentGrant::verify(
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &scope,
                 &parent_private,
                 VolumeOperation::Read,
@@ -95,7 +95,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
             &parent_private_head.generation,
             &child_private,
             &ContentGrant::verify(
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &child_scope,
                 &child_private,
                 VolumeOperation::Write,
@@ -104,7 +104,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
             &IdempotencyKey::new("fork-private")?,
         )
         .await?;
-    let mut reducer = Reducer::new(parent.clone(), issuer.verifier(), SchemaRegistry::new());
+    let mut reducer = Reducer::new(parent.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     reducer.apply(Command {
         operation_id: OperationId::from_bytes([1; 16]),
         idempotency_key: IdempotencyKey::new("bind-parent")?,
@@ -119,7 +119,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
     let workspaces = FilesystemProjectWorkspaces::new(
         &host,
         &reducer,
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         project.clone(),
     )?;
@@ -134,7 +134,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         .await?;
     let history = StreamRef::new(
         stream_provider.clone(),
-        parent.stream_path()?.into_bytes(),
+        parent.stream_path(&mut None)?.into_bytes(),
         Some(reducer.revision().to_string()),
     )?;
     let seed = ForkSeed { history_witness: None, summary: None,

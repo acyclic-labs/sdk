@@ -42,7 +42,7 @@ pub(crate) use native_stock::{
 /// Internal replay batch size; callers may request any positive page allowance.
 pub(crate) const EXECUTION_REPLAY_PAGE_RECORDS: u32 = 64;
 
-pub(crate) fn validate_execution_page(_after: u64, maximum: u32) -> Result<()> {
+pub(crate) fn validate_execution_page(maximum: u32) -> Result<()> {
     if maximum == 0 {
         return Err(Error::Invalid(
             "execution replay page bound is invalid".into(),
@@ -562,7 +562,7 @@ impl ExecutionReplay {
         journal: &dyn ExecutionJournal,
         io: Option<&PreparationIo>,
     ) -> Result<Option<Vec<ExecutionRecord>>> {
-        validate_execution_page(self.after, EXECUTION_REPLAY_PAGE_RECORDS)?;
+        validate_execution_page(EXECUTION_REPLAY_PAGE_RECORDS)?;
         let page = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => {
@@ -579,21 +579,13 @@ impl ExecutionReplay {
                     io.absorb_native_custody(custody)?;
                     page
                 } else {
-                    let receipt = journal.replay_measured(self.operation_id, self.after,
-                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await;
-                    let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
-                    let page = io.receive_content(receipt)?;
-                    io.retain_owned(held)?;
-                    page
+                    receive_preparation(io, journal.replay_measured(self.operation_id, self.after,
+                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await)?
                 }
                 #[cfg(target_arch = "wasm32")]
                 {
-                    let receipt = journal.replay_measured(self.operation_id, self.after,
-                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await;
-                    let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
-                    let page = io.receive_content(receipt)?;
-                    io.retain_owned(held)?;
-                    page
+                    receive_preparation(io, journal.replay_measured(self.operation_id, self.after,
+                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await)?
                 }
             }
             _ => journal.replay(self.operation_id, self.after, EXECUTION_REPLAY_PAGE_RECORDS).await?,
@@ -1223,7 +1215,7 @@ impl StockExecution<'_> {
         let prepared = executor.prepare_request(input, step, &[]).await?;
         self.verify_model_request_content(journal, &prepared)
             .await?;
-        let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?.validate(&prepared)?;
+        let count = with_history_io(self.io(), |work| stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?.validate(&prepared, work))?;
         if count + u64::from(output) > u64::from(capacity.context_tokens) {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary input exceeds selected model capacity"));
         }
@@ -1744,7 +1736,7 @@ impl StockExecution<'_> {
         let accounting = if let Some(capacity) = self.model_capacity()? {
             let prepared = crate::model::PreparedModelRequest::prepare(self.request_from_context(&projection)?, self.stock.limits, self.io())?;
             let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?;
-            count.validate(&prepared)?;
+            with_history_io(self.io(), |work| count.validate(&prepared, work))?;
             Some(ContextAccounting { capacity, count })
         } else {
             None
@@ -1856,7 +1848,7 @@ impl StockExecution<'_> {
                 if self.model_capacity()? != Some(accounting.capacity) {
                     return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict, "selected capacity differs from captured accounting"));
                 }
-                let input_tokens = accounting.count.validate(&prepared)?;
+                let input_tokens = with_history_io(self.io(), |work| accounting.count.validate(&prepared, work))?;
                 if let Some(retained) = self
                     .retained_compacted_response(journal, input, step, &projection, &records)
                     .await?
@@ -1971,7 +1963,7 @@ impl StockExecution<'_> {
             )?;
             if policy.needs_compaction(
                 final_accounting.capacity,
-                final_accounting.count.validate(&request)?,
+                with_history_io(self.io(), |work| final_accounting.count.validate(&request, work))?,
             )? {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "retained compacted context exceeds selected capacity"));
             }
@@ -2009,7 +2001,7 @@ impl StockExecution<'_> {
         } else {
             accounting.count
         };
-        count.validate(&canonical_request)?;
+        with_history_io(self.io(), |work| count.validate(&canonical_request, work))?;
         let (through, maximum) = crate::context::checked_compaction_budget(
             policy,
             &context,
@@ -2085,7 +2077,7 @@ impl StockExecution<'_> {
             self.io(),
         )?;
         let count = stock_count_tokens(self.stock.provider.as_ref(), &request, self.io())?;
-        let final_count = count.validate(&request)?;
+        let final_count = with_history_io(self.io(), |work| count.validate(&request, work))?;
         if policy.needs_compaction(accounting.capacity, final_count)? {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "compacted mandatory content exceeds selected model capacity"));
         }
@@ -2244,7 +2236,7 @@ impl StockExecution<'_> {
         let request = if let Some(recorded) = retained_request {
             if purpose == ModelPurpose::Summary {
                 let current = self.prepare_request(input, step, prior_messages).await?;
-                if current.manifest().request_digest != recorded.manifest().request_digest {
+                if current.request_digest() != recorded.request_digest() {
                     return Err(Error::Conflict(
                         "summary source or instruction differs from retained admission".into(),
                     ));
@@ -2261,7 +2253,7 @@ impl StockExecution<'_> {
             }
         };
         self.verify_model_request_content(journal, &request).await?;
-        let request_digest = request.manifest().request_digest;
+        let request_digest = request.request_digest();
         let purpose_key = match purpose {
             ModelPurpose::Response => "model",
             ModelPurpose::Summary => "summary",
@@ -3151,7 +3143,7 @@ pub(crate) async fn retained_model_step(
     }
     let request = if let Some((digest, reference)) = started {
         let recorded = load_model_request(journal, reference, limits, io).await?;
-        if recorded.manifest().request_digest != digest {
+        if recorded.request_digest() != digest {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Conflict,
                 "recorded model request digest differs from admission"));
         }
@@ -3203,7 +3195,7 @@ fn validate_model_content_scope(
     }
     let schemas = scope.and_then(RuntimeScope::extension_schema_registry_ref);
     let runtime = scope.and_then(RuntimeScope::extension_runtime);
-    content.visit_file_bindings(|file, binding| {
+    for (file, binding) in content.file_bindings() {
         if let Some(scope) = scope
             && !preparation_read_granted(scope.grants(), file, io)? {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read model content"));
@@ -3212,8 +3204,8 @@ fn validate_model_content_scope(
             let scope = scope.ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Unsupported, "original native task scope is unavailable"))?;
             binding.verify_original(scope.extensions(), schemas, runtime.as_deref(), io)?;
         }
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 /// Finds the canonical base published by this execution's first response step.
@@ -3266,34 +3258,8 @@ pub async fn canonical_checkpoint_for_operation(
     Ok(Some(crate::model::clone_file(reference, io)?))
 }
 
-/// Imports a published checkpoint whose canonical selection is attested within the supplied owner's event interval.
+/// Imports a checkpoint and returns its owning selection's consumed history bytes.
 pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
-    journal: &dyn ExecutionJournal,
-    reference: &FileRef,
-    limits: Limits,
-    scope: &RuntimeScope,
-    history: &crate::store::HistoryReader<P>,
-    cursor: &crate::store::HistoryCursor,
-    maximum_history_bytes: u64,
-) -> Result<(
-    crate::context::CanonicalContextCheckpoint,
-    crate::context::Context,
-)> {
-    let (envelope, retained, _) = load_canonical_checkpoint_at_counted(
-        journal,
-        reference,
-        limits,
-        scope,
-        history,
-        cursor,
-        maximum_history_bytes,
-        None,
-    )
-    .await?;
-    Ok((envelope, retained))
-}
-
-async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
     limits: Limits,
@@ -3422,7 +3388,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
     if history_limits.maximum_events == 0 || history_limits.maximum_bytes == 0 {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid, "checkpoint delta bounds are invalid"));
     }
-    let (envelope, mut retained, consumed) = load_canonical_checkpoint_at_counted(
+    let (envelope, mut retained, consumed) = load_canonical_checkpoint_at(
         journal,
         reference,
         limits,
@@ -3466,7 +3432,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
             let records = history.conversation_range_with_work(
                 cursor, after_sequence, through_sequence, range_limits, &mut work,
             ).await?;
-            let (view, _) = crate::conversation::ConversationState::selected_view(records, &mut work)?;
+            let (view, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut work)?;
             observer.return_staged_output()?;
             io.absorb_native_custody(observer.into_custody())?;
             _records_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
@@ -3494,16 +3460,15 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
             if let Some(io) = io {
                 let before = io.owned_bytes()?;
                 let mut observer = io.history_io();
-                let (view, _) = crate::conversation::ConversationState::selected_view(
-                    records, &mut Some(&mut observer))?;
+                let (view, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut observer))?;
                 _view_workspace = Some(io.guard_owned(io.owned_bytes()? - before)?);
                 view
             } else {
                 _view_workspace = None;
-                crate::conversation::ConversationState::selected_view(records, &mut None).map(|(state, _)| state)?
+                crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).map(|(state, _)| state)?
             }
             #[cfg(not(feature = "filesystem"))]
-            crate::conversation::ConversationState::selected_view(records, &mut None).map(|(state, _)| state)?
+            crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).map(|(state, _)| state)?
         }
     };
     #[cfg(feature = "filesystem")]
@@ -4142,7 +4107,7 @@ mod tests {
                 })
                 .collect::<Result<Vec<_>>>()?;
             let mut count = crate::context::ModelTokenCount {
-                request_digest: request.manifest().request_digest,
+                request_digest: request.request_digest(),
                 fixed_tokens: 100,
                 message_tokens,
             };
@@ -4955,7 +4920,7 @@ mod tests {
             request: &crate::model::PreparedModelRequest,
         ) -> Result<crate::context::ModelTokenCount> {
             Ok(crate::context::ModelTokenCount {
-                request_digest: request.manifest().request_digest,
+                request_digest: request.request_digest(),
                 fixed_tokens: u32::try_from(request.bytes().len())
                     .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
                 message_tokens: vec![0; request.request().messages.len()],
@@ -4972,7 +4937,7 @@ mod tests {
                 crate::contract::canonical_json_bytes(request.request()).unwrap_or_default()
             );
             assert_eq!(
-                request.manifest().request_digest,
+                request.request_digest(),
                 *blake3::hash(request.bytes()).as_bytes()
             );
             let request = request.request().clone();
@@ -5025,7 +4990,7 @@ mod tests {
             request: &crate::model::PreparedModelRequest,
         ) -> Result<crate::context::ModelTokenCount> {
             Ok(crate::context::ModelTokenCount {
-                request_digest: request.manifest().request_digest,
+                request_digest: request.request_digest(),
                 fixed_tokens: u32::try_from(request.bytes().len())
                     .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
                 message_tokens: vec![0; request.request().messages.len()],
@@ -5037,7 +5002,7 @@ mod tests {
             request: crate::model::PreparedModelRequest,
             dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-            assert_eq!(dispatch.request_digest, request.manifest().request_digest);
+            assert_eq!(dispatch.request_digest, request.request_digest());
             self.dispatches.lock().unwrap().push(dispatch);
             self.generate_calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::iter(
@@ -5592,7 +5557,7 @@ mod tests {
         ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
             async move {
                 self.3.fetch_add(1, Ordering::SeqCst);
-                validate_execution_page(after, maximum)?;
+                validate_execution_page(maximum)?;
                 self.0
                     .lock()
                     .map(|records| {
@@ -7487,7 +7452,7 @@ mod tests {
                 request: &crate::model::PreparedModelRequest,
             ) -> Result<crate::context::ModelTokenCount> {
                 Ok(crate::context::ModelTokenCount {
-                    request_digest: request.manifest().request_digest,
+                    request_digest: request.request_digest(),
                     fixed_tokens: u32::try_from(request.bytes().len())
                         .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
                     message_tokens: vec![0; request.request().messages.len()],
@@ -7500,7 +7465,7 @@ mod tests {
                 dispatch: crate::model::ModelDispatch,
             ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
                 Box::pin(stream::once(async move {
-                    assert_eq!(dispatch.request_digest, request.manifest().request_digest);
+                    assert_eq!(dispatch.request_digest, request.request_digest());
                     self.0
                         .lock()
                         .map_err(|_| Error::Storage("capture lock poisoned".into()))?

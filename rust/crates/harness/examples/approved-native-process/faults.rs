@@ -115,7 +115,7 @@ pub(super) async fn run() -> std::result::Result<(), Box<dyn std::error::Error>>
         *stream.fault.lock().await = Some((kind, lost_reply));
         super::run_on(
             Some(McpStdioMethod::CallTool),
-            StreamClient::new(stream.clone()),
+            stream.clone(),
             Some((kind, lost_reply)),
             false,
         )
@@ -127,7 +127,7 @@ pub(super) async fn run() -> std::result::Result<(), Box<dyn std::error::Error>>
     }
     super::run_on(
         Some(McpStdioMethod::CallTool),
-        StreamClient::new(Arc::new(MemoryStream::default())),
+        Arc::new(MemoryStream::default()),
         None,
         true,
     )
@@ -173,7 +173,7 @@ async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let weak_stream = Arc::downgrade(&stream);
         let evidence = super::prepare_on(
             Some(method),
-            StreamClient::new(stream.clone()),
+            stream.clone(),
             filesystem,
             receipt_fault,
             lost_response,
@@ -199,7 +199,7 @@ async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .await?,
         );
         super::recover_on(
-            StreamClient::new(stream),
+            stream,
             filesystem,
             &evidence.restart,
             receipt_fault,
@@ -224,7 +224,7 @@ pub(super) async fn host_child() -> std::result::Result<(), Box<dyn std::error::
     );
     let _ = super::prepare_on(
         Some(McpStdioMethod::CallTool),
-        StreamClient::new(stream),
+        stream,
         filesystem,
         None,
         true,
@@ -262,10 +262,10 @@ async fn host_death() -> std::result::Result<(), Box<dyn std::error::Error>> {
         storage.path().join("filesystem"),
     ))
     .await?;
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         acyclic_stream::LocalStream::open(storage.path().join("coordinator"), Default::default())
             .await?,
-    ));
+    );
     let before = launch_only(&stream, &seed).await?;
     super::recover_on(stream.clone(), filesystem.clone(), &seed, None, true).await?;
     if launch_only(&stream, &seed).await? != before {
@@ -300,7 +300,7 @@ async fn host_ready(
             {
                 return Ok(seed);
             }
-            if let Some(status) = host.try_wait()? {
+            if let Some(status) = host.try_wait(None)? {
                 return Err(format!("test host exited before MCP application: {status}").into());
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -311,7 +311,7 @@ async fn host_ready(
 
 #[cfg(feature = "filesystem-local")]
 async fn launch_only(
-    stream: &StreamClient<acyclic_stream::LocalStream>,
+    stream: &std::sync::Arc<acyclic_stream::LocalStream>,
     seed: &super::Restart,
 ) -> std::result::Result<
     (acyclic_stream::StreamPath, acyclic_stream::Record),
@@ -327,7 +327,7 @@ async fn launch_only(
         return Err("host death did not retain exactly one native attempt".into());
     }
     let child = children.pop().ok_or("missing native attempt")?;
-    let receipt = stream.stream(child.path.as_str())?;
+    let receipt = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), child.path.as_str())?;
     if receipt.bounds().await?.tail != 1 {
         return Err("host death did not retain a launch-only receipt".into());
     }
@@ -355,7 +355,7 @@ async fn launch_only(
 
 #[cfg(feature = "filesystem-local")]
 async fn verify_pending_task(
-    stream: StreamClient<acyclic_stream::LocalStream>,
+    stream: std::sync::Arc<acyclic_stream::LocalStream>,
     filesystem: Fs<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>,
     seed: &super::Restart,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {

@@ -306,7 +306,7 @@ where
         cancellation: &crate::CancellationToken,
     ) -> Result<(), MountLifecycleError> {
         cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-        self.source.capture_host_with_identity_with_native_work(
+        self.source.capture_host(
             &self.source_root, paths, self.source_identity, scope,
             Some(Arc::clone(&self.baseline)), work,
         ).await?;
@@ -2064,7 +2064,7 @@ where
                         .map_err(WorkspaceError::from)?;
                     let reader = candidate.into_pinned_reader_with_native_work(original, cancellation)
                         .map_err(WorkspaceError::from)?;
-                    super::materialize_checkout_paths_with_mode_and_work(
+                    super::materialize_reader_paths(
                         &reader, std::slice::from_ref(&root.0), options,
                         super::MaterializeMode::ReconstructibleView, meter,
                     ).await.map_err(MountLifecycleError::Materialize)?;
@@ -2097,7 +2097,7 @@ where
                 if expected_root_identity.is_some() {
                     let capture = original.native_volume_work(capture_budget)?;
                     let capture_meter = capture.clone();
-                    source.capture_host_with_identity_with_native_work(
+                    source.capture_host(
                         &source_root.0, &[MountPath::root()], source_identity,
                         HostCaptureScope::Subtree, Some(Arc::clone(&baseline)), &capture_meter,
                     ).await?;
