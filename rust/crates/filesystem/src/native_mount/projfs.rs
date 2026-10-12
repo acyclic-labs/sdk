@@ -2701,110 +2701,189 @@ fn remove_vacated(projection: Projection<'_>, path: &MountPath) -> Result<(), Na
 }
 
 fn write_ordinary(
-    projection: Projection<'_>, path: &MountPath, entry: &ProjectedEntry,
-    replacing: Option<(HostWindowsMetadata, &PhysicalEntry)>, placed: &mut Option<Owned>,
+    projection: Projection<'_>,
+    path: &MountPath,
+    entry: &ProjectedEntry,
+    replacing: Option<(HostWindowsMetadata, &PhysicalEntry)>,
+    placed: &mut Option<Owned>,
     record: &mut impl FnMut(&Owned) -> Result<(), NativeMountError>,
 ) -> Result<Placed, NativeMountError> {
     verify_projection_namespace_work(projection)?;
-    let result = with_projection_parent(projection.root, projection.root_identity, path, projection.work, |parent, leaf| {
-        if projection.starting && replacing.is_none() {
-            return write_directly(projection, path, parent, leaf, entry, placed, record);
-        }
-        // No source allocation, staging allocation or native writer is made for an existing user name.
-        if replacing.is_none() {
-            match crate::native_host::stat_windows_leaf_with_work(
-                parent, leaf, &mut { projection.work },
-            ) {
-                Ok(_) => return Ok(Placed::Nothing),
-                Err(crate::NativeTreeMaterializationError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(detach_work_error(error)),
+    let result = with_projection_parent(
+        projection.root,
+        projection.root_identity,
+        path,
+        projection.work,
+        |parent, leaf| {
+            if projection.starting && replacing.is_none() {
+                return write_directly(projection, path, parent, leaf, entry, placed, record);
             }
-        }
-        static NEXT_STAGING_NAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let sequence = NEXT_STAGING_NAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let process = unsafe { windows::Win32::System::Threading::GetCurrentProcessId() };
-        let mut name = [0_u16; 37];
-        let encoded = crate::WorkCounters { bytes_encoded: 74, ..crate::WorkCounters::UNCHARGED };
-        let mut host_work = projection.work;
-        host_work.admit(encoded).map_err(detach_work_error)?;
-        for (slot, byte) in name.iter_mut().zip(b".acyclic-copy-") { *slot = u16::from(*byte); }
-        for index in 0..8 {
-            name[13 + index] = u16::from(b"0123456789abcdef"[((process >> ((7 - index) * 4)) & 15) as usize]);
-        }
-        for index in 0..16 {
-            name[21 + index] = u16::from(b"0123456789abcdef"[((sequence >> ((15 - index) * 4)) & 15) as usize]);
-        }
-        host_work.record(encoded).map_err(detach_work_error)?;
-        let mut writer = ProjectedNativeWriter::create(projection.work,
-            |owner| record(&Owned::ProvisionalFile(owner.clone())),
-            || with_staging_directory(projection.root, projection.work, projection.root_identity, projection.staging_custody,
-                |staging| crate::native_host::create_windows_provisional_overlapped_file_with_work(
-                    staging, &name, &mut { projection.work },
-                ).map_err(detach_work_error)))?;
-        let written = (|| {
-            let file = writer.file();
-            if !write_listed_content(projection, path, entry, file)? { return Ok(Placed::Retry); }
-            finish_projected_file(file, entry, projection.work)?;
-            let held = match replacing {
-                Some((expected, original)) => {
-                    if has_pending_capture(projection.captures, path, projection)? { return Ok(Placed::Retry); }
-                    original.retain_metadata_control(projection.work)?;
-                    match held_original_while(original, expected, projection.work)? {
-                        Some(held) => Some((held, original)),
-                        None => return Ok(Placed::Nothing),
-                    }
+            // No source allocation, staging allocation or native writer is made for an existing user name.
+            if replacing.is_none() {
+                match crate::native_host::stat_windows_leaf(parent, leaf, &mut { projection.work })
+                {
+                    Ok(_) => return Ok(Placed::Nothing),
+                    Err(crate::NativeTreeMaterializationError::Io(error))
+                        if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(detach_work_error(error)),
                 }
-                None => None,
+            }
+            static NEXT_STAGING_NAME: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(1);
+            let sequence = NEXT_STAGING_NAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let process = unsafe { windows::Win32::System::Threading::GetCurrentProcessId() };
+            let mut name = [0_u16; 37];
+            let encoded = crate::WorkCounters {
+                bytes_encoded: 74,
+                ..crate::WorkCounters::UNCHARGED
             };
-            verify_projection_namespace_work(projection)?;
-            if let Some((_, original)) = held.as_ref() {
-                // A genuine SDK placeholder is deleted through its live namespace with flags NONE.
-                let sdk = with_projection_relative_name(path, projection.work, |relative|
-                    prj_delete(projection, relative, PRJ_UPDATE_TYPES(0)));
-                match sdk {
-                    Ok(()) => {}
-                    Err(error) if native_mount_error_code(&error).is_some_and(|code|
-                        [HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND, HR_VIRTUALIZATION_INVALID_OPERATION].contains(&code)) => {}
-                    Err(error) if native_mount_error_code(&error) == Some(HR_SHARING_VIOLATION) =>
-                        return Ok(Placed::Retry),
-                    Err(error) => return Err(error),
-                }
-                if has_pending_capture(projection.captures, path, projection)? { return Ok(Placed::Retry); }
-                retire_physical_entry(original, projection.work,
-                    Some(projection.work.cancellation()))?;
+            let mut host_work = projection.work;
+            host_work.admit(encoded).map_err(detach_work_error)?;
+            for (slot, byte) in name.iter_mut().zip(b".acyclic-copy-") {
+                *slot = u16::from(*byte);
             }
-            crate::native_host::keep_windows_created_file_with_work(
-                file.as_file(), &mut { projection.work },
-            ).map_err(detach_work_error)?;
-            writer.owner.delete_on_close.store(false, std::sync::atomic::Ordering::Release);
-            let published = publish_projected_file(file, parent, leaf, projection.work);
-            match published {
-                Ok(()) => {
-                    writer.retire()?;
-                    writer.owner.retain_metadata_control(projection.work)?;
-                    let owned = Owned::File(writer.owner.final_state(projection.work)?, writer.owner.clone());
-                    record(&owned)?;
-                    *placed = Some(owned.clone());
-                    crate::native_host::sync_directory_held(
-                        parent, &mut { projection.work },
-                    ).map_err(detach_work_error)?;
-                    Ok(Placed::Owned(owned))
+            for index in 0..8 {
+                name[13 + index] =
+                    u16::from(b"0123456789abcdef"[((process >> ((7 - index) * 4)) & 15) as usize]);
+            }
+            for index in 0..16 {
+                name[21 + index] = u16::from(
+                    b"0123456789abcdef"[((sequence >> ((15 - index) * 4)) & 15) as usize],
+                );
+            }
+            host_work.record(encoded).map_err(detach_work_error)?;
+            let mut writer = ProjectedNativeWriter::create(
+                projection.work,
+                |owner| record(&Owned::ProvisionalFile(owner.clone())),
+                || {
+                    with_staging_directory(
+                        projection.root,
+                        projection.work,
+                        projection.root_identity,
+                        projection.staging_custody,
+                        |staging| {
+                            crate::native_host::create_windows_wide_at(
+                                staging,
+                                &name,
+                                false,
+                                true,
+                                false,
+                                true,
+                                &mut { projection.work },
+                            )
+                            .map_err(detach_work_error)
+                        },
+                    )
+                },
+            )?;
+            let written = (|| {
+                let file = writer.file();
+                if !write_listed_content(projection, path, entry, file)? {
+                    return Ok(Placed::Retry);
                 }
-                Err(NativeMountError::Io(error)) if matches!(error.kind(),
-                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound) => Ok(Placed::Nothing),
-                Err(NativeMountError::Io(error)) if error.raw_os_error() == Some(SHARING_VIOLATION) => Ok(Placed::Retry),
+                finish_projected_file(file, entry, projection.work)?;
+                let held = match replacing {
+                    Some((expected, original)) => {
+                        if has_pending_capture(projection.captures, path, projection)? {
+                            return Ok(Placed::Retry);
+                        }
+                        original.retain_metadata_control(projection.work)?;
+                        match held_original_while(original, expected, projection.work)? {
+                            Some(held) => Some((held, original)),
+                            None => return Ok(Placed::Nothing),
+                        }
+                    }
+                    None => None,
+                };
+                verify_projection_namespace_work(projection)?;
+                if let Some((_, original)) = held.as_ref() {
+                    // A genuine SDK placeholder is deleted through its live namespace with flags NONE.
+                    let sdk = with_projection_relative_name(path, projection.work, |relative| {
+                        prj_delete(projection, relative, PRJ_UPDATE_TYPES(0))
+                    });
+                    match sdk {
+                        Ok(()) => {}
+                        Err(error)
+                            if native_mount_error_code(&error).is_some_and(|code| {
+                                [
+                                    HR_FILE_NOT_FOUND,
+                                    HR_PATH_NOT_FOUND,
+                                    HR_VIRTUALIZATION_INVALID_OPERATION,
+                                ]
+                                .contains(&code)
+                            }) => {}
+                        Err(error)
+                            if native_mount_error_code(&error) == Some(HR_SHARING_VIOLATION) =>
+                        {
+                            return Ok(Placed::Retry);
+                        }
+                        Err(error) => return Err(error),
+                    }
+                    if has_pending_capture(projection.captures, path, projection)? {
+                        return Ok(Placed::Retry);
+                    }
+                    retire_physical_entry(
+                        original,
+                        projection.work,
+                        Some(projection.work.cancellation()),
+                    )?;
+                }
+                crate::native_host::keep_windows_created_file(file.as_file(), &mut {
+                    projection.work
+                })
+                .map_err(detach_work_error)?;
+                writer
+                    .owner
+                    .delete_on_close
+                    .store(false, std::sync::atomic::Ordering::Release);
+                let published = publish_projected_file(file, parent, leaf, projection.work);
+                match published {
+                    Ok(()) => {
+                        writer.retire()?;
+                        writer.owner.retain_metadata_control(projection.work)?;
+                        let owned = Owned::File(
+                            writer.owner.final_state(projection.work)?,
+                            writer.owner.clone(),
+                        );
+                        record(&owned)?;
+                        *placed = Some(owned.clone());
+                        crate::native_host::sync_directory_held(parent, &mut { projection.work })
+                            .map_err(detach_work_error)?;
+                        Ok(Placed::Owned(owned))
+                    }
+                    Err(NativeMountError::Io(error))
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound
+                        ) =>
+                    {
+                        Ok(Placed::Nothing)
+                    }
+                    Err(NativeMountError::Io(error))
+                        if error.raw_os_error() == Some(SHARING_VIOLATION) =>
+                    {
+                        Ok(Placed::Retry)
+                    }
+                    Err(error) => Err(error),
+                }
+            })();
+            let retired = writer.retire();
+            match written {
                 Err(error) => Err(error),
+                Ok(placed) => retired.map(|()| placed),
             }
-        })();
-        let retired = writer.retire();
-        match written {
-            Err(error) => Err(error),
-            Ok(placed) => retired.map(|()| placed),
-        }
-    });
+        },
+    );
     match result {
-        Err(NativeMountError::Io(error)) if placed.is_none() && matches!(error.kind(),
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => Ok(Placed::Nothing),
+        Err(NativeMountError::Io(error))
+            if placed.is_none()
+                && matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+        {
+            Ok(Placed::Nothing)
+        }
         result => result,
     }
 }
