@@ -452,12 +452,11 @@ impl NativeWorkspace {
         maximum_changes: NapiU32,
     ) -> Result<NativeChangeSet> {
         let maximum_changes = maximum_changes.into_inner();
-
-        self.inner
-            .diff(&from.inner, &to.inner, maximum_changes)
-            .await
-            .map(|inner| NativeChangeSet { inner })
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner,
+            diff(&from.inner, &to.inner, maximum_changes)
+        ))
+        .map(|inner| NativeChangeSet { inner })
     }
 
     /// Builds one immutable side-effect-free plan for joining this workspace into a target.
@@ -503,9 +502,12 @@ impl NativeWorkspace {
                     ))?,
                     None => sdk_value!(unbounded_future!(target.inner, head()))?,
                 },
-                acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
             )
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
             .map(|inner| NativeJoinPlan { inner })
             .map_err(napi_error)
     }
