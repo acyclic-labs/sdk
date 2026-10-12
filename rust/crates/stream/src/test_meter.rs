@@ -29,6 +29,7 @@ pub(crate) struct Meter {
     pub(crate) held_cleanup: AtomicU64,
     pub(crate) cleanup_tokens: AtomicU64,
     pub(crate) held: AtomicU64,
+    pub(crate) memory_limit: u64,
     pub(crate) limit: AtomicU64,
     pub(crate) allocations: AtomicU64,
     pub(crate) read: AtomicU64,
@@ -62,6 +63,7 @@ impl Default for Meter {
             held_cleanup: AtomicU64::new(0),
             cleanup_tokens: AtomicU64::new(0),
             held: AtomicU64::new(0),
+            memory_limit: u64::MAX,
             limit: AtomicU64::new(u64::MAX),
             allocations: AtomicU64::new(0),
             read: AtomicU64::new(0),
@@ -135,6 +137,16 @@ impl Meter {
             NativeOperationKind::Write => &self.pending_write,
             NativeOperationKind::Durability => unreachable!("durability carries no bytes"),
         }
+    }
+
+    fn retain(&self, bytes: u64) -> std::io::Result<()> {
+        self.held
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
+                held.checked_add(bytes)
+                    .filter(|next| *next <= self.memory_limit)
+            })
+            .map(|_| ())
+            .map_err(|_| std::io::ErrorKind::OutOfMemory.into())
     }
 }
 
@@ -230,8 +242,8 @@ impl NativeReadMeter for Meter {
             return Err(Self::denial("allocation"));
         }
         self.admit_allocation(true)?;
+        self.retain(bytes)?;
         self.allocations.fetch_add(1, Ordering::SeqCst);
-        self.held.fetch_add(bytes, Ordering::SeqCst);
         Ok(())
     }
     fn reserve_allocation(&self, _: u64) -> std::io::Result<()> {
@@ -250,7 +262,7 @@ impl NativeReadMeter for Meter {
     fn adopt(&self, bytes: u64) -> std::io::Result<()> {
         self.check()?;
         self.admit_allocation(false)?;
-        self.held.fetch_add(bytes, Ordering::SeqCst);
+        self.retain(bytes)?;
         Ok(())
     }
     fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
@@ -289,6 +301,9 @@ impl NativeReadMeter for Meter {
     }
     fn record_examination(&self, _: u64, copied: u64) -> std::io::Result<()> {
         self.copied.fetch_add(copied, Ordering::SeqCst);
+        if copied != 0 && self.cancel_on_copy.swap(false, Ordering::SeqCst) {
+            self.cancelled.store(true, Ordering::SeqCst);
+        }
         self.recorded()
     }
     fn release(&self, bytes: u64) {

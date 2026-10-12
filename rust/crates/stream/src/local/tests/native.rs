@@ -159,7 +159,6 @@ async fn native_request_copy_cancellation_precedes_detached_publication()
         .err()
         .ok_or("cancelled capture escaped into publication")?;
     assert_original_denial(&error, "cancelled");
-    assert_eq!(meter.hashed.load(Ordering::SeqCst), 0);
     assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
     assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
@@ -199,117 +198,7 @@ async fn native_durability_denial_precedes_semantic_cas() -> Result<(), Box<dyn 
     assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
     assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-    assert!(meter.hashed.load(Ordering::SeqCst) > 0);
     meter.assert_refunded();
-    Ok(())
-}
-
-#[tokio::test]
-async fn borrowed_persisted_outcomes_match_unchanged_generated_schema()
--> Result<(), Box<dyn std::error::Error>> {
-    use crate::wire_codec::CanonicalWire;
-    use prost::Message as _;
-    let provider = MemoryStream::default();
-    let append_key = IdempotencyKey::new(OwnedBytes::from_static(b"wire-append"))?;
-    let fork_key = IdempotencyKey::new(OwnedBytes::from_static(b"wire-fork"))?;
-    let commit_key = IdempotencyKey::new(OwnedBytes::from_static(b"wire-commit"))?;
-    provider
-        .append(AppendRequest {
-            path: StreamPath::new("wire/source")?,
-            records: vec![OwnedBytes::new(), OwnedBytes::from_static(b"body")],
-            if_tail: Some(0),
-            idempotency_key: Some(append_key.clone()),
-        })
-        .await?;
-    provider
-        .fork(ForkRequest {
-            source: StreamPath::new("wire/source")?,
-            destination: StreamPath::new("wire/fork")?,
-            at_tail: Some(1),
-            idempotency_key: Some(fork_key.clone()),
-        })
-        .await?;
-    let outcome = provider
-        .commit(CommitRequest {
-            conditions: vec![
-                crate::CommitCondition::Tail {
-                    path: StreamPath::new("wire/source")?,
-                    expected: 2,
-                },
-                crate::CommitCondition::Tail {
-                    path: StreamPath::new("wire/fork")?,
-                    expected: 1,
-                },
-                crate::CommitCondition::Absent {
-                    path: StreamPath::new("wire/new-fork")?,
-                },
-            ],
-            mutations: vec![
-                crate::CommitMutation::Append {
-                    path: StreamPath::new("wire/fork")?,
-                    records: vec![OwnedBytes::from_static(b"append")],
-                },
-                crate::CommitMutation::Fork {
-                    source: StreamPath::new("wire/source")?,
-                    destination: StreamPath::new("wire/new-fork")?,
-                    at_tail: 2,
-                    records: vec![OwnedBytes::from_static(b"forked")],
-                },
-            ],
-            idempotency_key: commit_key.clone(),
-        })
-        .await?;
-    let CommitOutcome::Committed(envelope) = outcome else {
-        return Err("fixture conflict".into());
-    };
-    assert_eq!(
-        CanonicalWire::Envelope(&envelope).encode_to_vec()?,
-        crate::wire_codec::envelope_to_wire(envelope.clone()).encode_to_vec()
-    );
-    for key in [append_key, fork_key, commit_key] {
-        let observation = provider
-            .inspect_idempotency(key)
-            .await?
-            .ok_or("missing wire identity")?;
-        assert_eq!(
-            CanonicalWire::Observation(
-                &observation.idempotency_key.0,
-                &observation.request_digest,
-                &observation.outcome,
-            )
-            .encode_to_vec()?,
-            crate::wire_codec::observation_wire(observation).encode_to_vec()
-        );
-    }
-    let key = IdempotencyKey::new(OwnedBytes::from_static(b"wire-conflicts"))?;
-    let observation = IdempotencyObservation {
-        idempotency_key: key,
-        request_digest: [7; 32],
-        outcome: crate::IdempotencyOutcome::Commit(CommitOutcome::Conflict(vec![
-            crate::CommitConflict::Tail {
-                path: StreamPath::new("wire/source")?,
-                expected: 0,
-                actual: Some(0),
-            },
-            crate::CommitConflict::Tail {
-                path: StreamPath::new("wire/missing")?,
-                expected: u64::MAX,
-                actual: None,
-            },
-            crate::CommitConflict::Exists {
-                path: StreamPath::new("wire/source")?,
-            },
-        ])),
-    };
-    assert_eq!(
-        CanonicalWire::Observation(
-            &observation.idempotency_key.0,
-            &observation.request_digest,
-            &observation.outcome,
-        )
-        .encode_to_vec()?,
-        crate::wire_codec::observation_wire(observation).encode_to_vec()
-    );
     Ok(())
 }
 
@@ -405,12 +294,13 @@ fn prepared_partial_write_stops_at_exact_accepted_boundary()
         }
     }
     let meter = Arc::new(Meter::local());
-    let mut plan = AdmittedFrameWrite::new(&meter.original(), 6)?.close_plan();
+    let work = crate::memory::Work::new(meter.original())?;
+    let mut plan =
+        PreparedFrame::encode(&Command::Commit(keyed_commit("partial", 0)?), 0, Some(work))?;
     let mut writer = Partial { bytes: Vec::new() };
-    let (physical, observed) = plan.write_all(&mut writer, b"abcdef");
+    let physical = plan.write(&mut writer);
     assert!(matches!(physical, Err(LocalStreamError::IncompleteFrame)));
-    observed?;
-    assert_eq!(writer.bytes, b"abc");
+    assert_eq!(writer.bytes.len(), 3);
     assert_eq!(meter.write_bytes.load(Ordering::SeqCst), 3);
     drop(plan);
     meter.assert_refunded();
@@ -461,7 +351,7 @@ async fn prepared_reply_drop_keeps_accepted_durability_and_input_custody()
     *JOURNAL_PERSIST_BLOCKER
         .lock()
         .map_err(|_| "poisoned fixture seam")? = Some((
-        Arc::as_ptr(&provider.inner) as usize,
+        Arc::as_ptr(&provider.inner.journal) as usize,
         started_send,
         release_receive,
     ));

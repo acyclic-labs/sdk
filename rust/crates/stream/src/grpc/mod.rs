@@ -1,13 +1,14 @@
 //! Authenticated gRPC adapter for the canonical Stream provider contract.
 
 use std::{
+    collections::VecDeque,
     future::Future,
     pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    task::Poll,
+    task::{Context, Poll},
 };
 
 use async_trait::async_trait;
@@ -28,9 +29,9 @@ use tracing::instrument::WithSubscriber as _;
 
 use crate::obs;
 use crate::wire_codec::{
-    append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,
-    commit_id, commit_outcome_from_wire, commit_outcome_to_wire, condition_wire,
-    envelope_from_wire, envelope_to_wire, fork_receipt_to_wire, mutation_wire,
+    append_outcome_from_wire, append_outcome_to_wire, commit_id, commit_outcome_from_wire,
+    commit_outcome_to_wire, condition_from_wire, condition_wire, envelope_from_wire,
+    envelope_to_wire, fork_receipt_to_wire, mutation_from_wire, mutation_wire,
     observation_from_wire, observation_wire, optional_key, path, read_response_records,
     read_response_wire, record, record_wire,
 };
@@ -52,80 +53,27 @@ pub const MAX_ENDPOINT_URI_BYTES: usize = 2_048;
 pub use crate::MAX_BEARER_TOKEN_BYTES;
 pub use crate::MAX_CA_CERTIFICATE_BYTES;
 
-/// Connection configuration failure.
-#[derive(Debug, Error)]
-pub enum ConnectError {
-    /// Endpoint URI was invalid or the TLS connection failed.
-    #[error("invalid or unavailable Stream endpoint: {0}")]
-    Endpoint(#[from] tonic::transport::Error),
-    /// Customer endpoints must use authenticated TLS.
-    #[error("Stream endpoints must use https")]
-    InsecureEndpoint,
-    /// Bearer credential cannot be represented as HTTP metadata.
-    #[error("invalid Stream bearer credential")]
-    InvalidCredential,
-    /// Caller-supplied private CA bundle is empty or exceeds its fixed bound.
-    #[error("invalid Stream private CA certificate")]
-    InvalidCaCertificate,
-    /// The platform certificate verifier could not be initialized.
-    #[error("Stream platform certificate verifier: {0}")]
-    PlatformVerifier(#[source] rustls::Error),
-    /// At least one independently reachable endpoint is required.
-    #[error("at least one Stream endpoint is required")]
-    NoEndpoints,
-    /// Endpoint count or URI bytes exceed the fixed client bound.
-    #[error("Stream endpoint pool exceeds its fixed bound")]
-    EndpointLimit,
-}
-
-/// Authenticated remote provider.
-#[derive(Clone)]
-pub struct Client {
-    channels: Arc<[Channel]>,
-    authorization: MetadataValue<Ascii>,
-    preferred: Arc<AtomicUsize>,
-    acknowledge_deliveries: bool,
-}
-
-/// Thin server adapter from the canonical wire service to one provider.
-pub struct Service<P> {
-    provider: Arc<P>,
-}
-
-impl<P> Service<P> {
-    /// Binds the generated server to one semantic provider.
-    #[must_use]
-    pub fn new(provider: Arc<P>) -> Self {
-        Self { provider }
-    }
-}
-
-impl<P> Clone for Service<P> {
-    fn clone(&self) -> Self {
-        Self {
-            provider: Arc::clone(&self.provider),
-        }
-    }
-}
-
-fn check_command_size<T: Message>(request: &T) -> Result<(), Status> {
-    if request.encoded_len() > crate::MAX_COMMAND_BYTES {
-        Err(error_status(&StreamError::LimitExceeded))
-    } else {
-        Ok(())
-    }
-}
-
-mod calls;
-mod connection;
-mod delivery;
-mod observation;
-mod protocol;
-mod provider;
-mod records;
-mod server;
-use delivery::DeliveryAcknowledgements;
-use observation::{Completion, decode_response, observe_body};
-use protocol::*;
 #[cfg(test)]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "fixture indexes and captured field lookups intentionally fail the test if expected evidence is absent"
+)]
 mod tests;
+
+include!("connect_error.rs");
+
+include!("client.rs");
+
+include!("service.rs");
+
+include!("protocol.rs");
+
+include!("record_cursor.rs");
+
+include!("active_records.rs");
+
+include!("completion.rs");
+
+include!("rpc_response.rs");
+
+include!("observed_body.rs");

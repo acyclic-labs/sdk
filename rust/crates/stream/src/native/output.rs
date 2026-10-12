@@ -1,16 +1,13 @@
 use super::*;
 
 /// Preserves original observer failure separately from the provider's error.
-#[cfg(not(target_arch = "wasm32"))]
 pub type NativeStreamResult<T, E = StreamError> = std::io::Result<Result<NativeStreamOutput<T>, E>>;
 
 /// A finite cursor preserves late original failures after its actual prefix.
-#[cfg(not(target_arch = "wasm32"))]
 pub type NativeRecordStream =
     BoxProviderStream<'static, std::io::Result<Result<NativeStreamOutput<Record>, StreamError>>>;
 
 /// Object-safe provider future whose real heap frame is admitted before boxing.
-#[cfg(not(target_arch = "wasm32"))]
 pub enum NativeProviderFuture<'a, T, E = StreamError> {
     /// No physical future frame was allocated.
     Ready(Option<NativeStreamResult<T, E>>),
@@ -23,7 +20,6 @@ pub enum NativeProviderFuture<'a, T, E = StreamError> {
     },
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl<'a, T, E> NativeProviderFuture<'a, T, E> {
     /// Admits the exact concrete frame before its sole physical allocation.
     pub fn new<F>(meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>, future: F) -> Self
@@ -62,10 +58,8 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl<T, E> Unpin for NativeProviderFuture<'_, T, E> {}
 
-#[cfg(not(target_arch = "wasm32"))]
 impl<T, E> Future for NativeProviderFuture<'_, T, E> {
     type Output = NativeStreamResult<T, E>;
 
@@ -80,6 +74,36 @@ impl<T, E> Future for NativeProviderFuture<'_, T, E> {
                     .expect("native provider future polled after completion"),
             ),
             Self::Funded { future, .. } => future.as_mut().poll(context),
+        }
+    }
+}
+
+/// A value retaining its original native allocation until storage retires.
+pub struct NativeStreamOutput<T> {
+    pub(crate) value: T,
+    pub(crate) allocation: acyclic_native_runtime::ReadAllocation,
+}
+impl<T> NativeStreamOutput<T> {
+    /// Transfers an admitted value and its allocation owner.
+    pub fn new(value: T, allocation: acyclic_native_runtime::ReadAllocation) -> Self {
+        Self { value, allocation }
+    }
+    /// Borrows the retained value.
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+    /// Borrows the retained value mutably.
+    pub fn value_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+    /// Transfers the value and its original allocation owner.
+    pub fn into_parts(self) -> (T, acyclic_native_runtime::ReadAllocation) {
+        (self.value, self.allocation)
+    }
+    pub(crate) fn map<U>(self, convert: impl FnOnce(T) -> U) -> NativeStreamOutput<U> {
+        NativeStreamOutput {
+            value: convert(self.value),
+            allocation: self.allocation,
         }
     }
 }

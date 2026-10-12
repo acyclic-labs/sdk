@@ -1,9 +1,24 @@
-use super::*;
+fn check_command_size<T: Message>(request: &T) -> Result<(), Status> {
+    if request.encoded_len() > crate::MAX_COMMAND_BYTES {
+        Err(error_status(&StreamError::LimitExceeded))
+    } else {
+        Ok(())
+    }
+}
 
-pub(super) fn retryable(error: &Status) -> bool {
+fn bounded_ca_certificate(value: &[u8]) -> Result<&[u8], ConnectError> {
+    if value.is_empty() || value.len() > MAX_CA_CERTIFICATE_BYTES {
+        Err(ConnectError::InvalidCaCertificate)
+    } else {
+        Ok(value)
+    }
+}
+
+fn retryable(error: &Status) -> bool {
     if matches!(error.code(), Code::Unavailable | Code::DeadlineExceeded) {
         return true;
     }
+    // Missing final trailers become Unknown without a retained transport cause.
     if error.code() == Code::Unknown && std::error::Error::source(error).is_none() {
         return true;
     }
@@ -13,7 +28,6 @@ pub(super) fn retryable(error: &Status) -> bool {
     let mut cause = std::error::Error::source(error);
     while let Some(current) = cause {
         // Hyper cancels queued dispatch when its connection driver disappears. This is
-        // transport uncertainty, unlike a peer's application-level Cancelled status.
         if error.code() == Code::Cancelled
             && current
                 .downcast_ref::<hyper::Error>()
@@ -53,15 +67,7 @@ pub(super) fn retryable(error: &Status) -> bool {
     false
 }
 
-pub(super) fn bounded_ca_certificate(value: &[u8]) -> Result<&[u8], ConnectError> {
-    if value.is_empty() || value.len() > MAX_CA_CERTIFICATE_BYTES {
-        Err(ConnectError::InvalidCaCertificate)
-    } else {
-        Ok(value)
-    }
-}
-
-pub(super) fn bind_observation(
+fn bind_observation(
     requested: &IdempotencyKey,
     observation: Option<wire::IdempotencyObservation>,
 ) -> Result<Option<IdempotencyObservation>, StreamError> {
@@ -75,7 +81,27 @@ pub(super) fn bind_observation(
     Ok(observation)
 }
 
-pub(super) fn error_status(error: &StreamError) -> Status {
+fn finish_served<T>(
+    completion: &mut Completion,
+    result: Result<T, Status>,
+    streaming: bool,
+) -> Result<T, Status> {
+    match &result {
+        Err(error) => completion.status(error),
+        // The returned body guard now owns this same span. Headers are not terminal success.
+        Ok(_) if streaming => completion.finished = true,
+        Ok(_) => completion.ok(),
+    }
+    result
+}
+
+fn observe_body<S>(span: &tracing::Span, body: S) -> ObservedBody<S> {
+    let completion = Completion::new(span.clone());
+    let body = completion.span.scope(body);
+    ObservedBody { body, completion }
+}
+
+fn error_status(error: &StreamError) -> Status {
     match error {
         StreamError::InvalidPath => Status::invalid_argument("invalid_path"),
         StreamError::InvalidArgument => Status::invalid_argument("invalid_argument"),
@@ -94,7 +120,7 @@ pub(super) fn error_status(error: &StreamError) -> Status {
     }
 }
 
-pub(super) fn status(error: &tonic::Status) -> StreamError {
+fn status(error: &tonic::Status) -> StreamError {
     match error.code() {
         Code::InvalidArgument if error.message() == "invalid_path" => StreamError::InvalidPath,
         Code::InvalidArgument if error.message() == "limit_exceeded" => StreamError::LimitExceeded,
@@ -121,4 +147,11 @@ pub(super) fn status(error: &tonic::Status) -> StreamError {
         }
         _ => StreamError::Unavailable,
     }
+}
+
+fn read_response(value: wire::ReadResponse) -> Result<VecDeque<Record>, StreamError> {
+    read_response_records(value)?
+        .into_iter()
+        .map(record)
+        .collect()
 }

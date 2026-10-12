@@ -1,9 +1,16 @@
 use super::*;
-use crate::wire_codec::observation_wire;
-use crate::{AppendRequest, IdempotencyObservation, MemoryLimits, ReadRequest, StreamProvider};
+use crate::{AppendRequest, MemoryLimits, ReadRequest, StreamProvider, UnixMillisClock};
 use futures::StreamExt as _;
-use prost::Message as _;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[derive(Default)]
+struct TestClock(AtomicU64);
+
+impl UnixMillisClock for TestClock {
+    fn now_unix_millis(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
 
 #[tokio::test]
 async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError> {
@@ -14,33 +21,23 @@ async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError
     let stream = MemoryStream::new(limits);
     let request = AppendRequest {
         path: StreamPath::new("snapshot/retained")?,
-        records: vec![OwnedBytes::from_static(b"once")],
+        records: vec![Bytes::from_static(b"once")],
         if_tail: None,
-        idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(
-            b"snapshot-once",
-        ))?),
+        idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"snapshot-once"))?),
     };
     let first = stream.append(request.clone()).await?;
     let restored = MemoryStream::new(limits);
-    restored
-        .install_state(
-            &stream
-                .encode_state(None)
-                .await
-                .expect("unmetered snapshot encoding")
-                .value,
-        )
-        .await?;
+    restored.install_state(&stream.encode_state().await).await?;
     assert_eq!(restored.append(request.clone()).await?, first);
     assert_eq!(restored.tail(request.path.clone()).await?, 1);
     let mut changed = request.clone();
-    changed.records = vec![OwnedBytes::from_static(b"different")];
+    changed.records = vec![Bytes::from_static(b"different")];
     assert_eq!(
         restored.append(changed).await,
         Err(StreamError::IdempotencyMismatch)
     );
     let mut fresh = request;
-    fresh.idempotency_key = Some(IdempotencyKey::new(OwnedBytes::from_static(b"fresh"))?);
+    fresh.idempotency_key = Some(IdempotencyKey::new(Bytes::from_static(b"fresh"))?);
     assert_eq!(restored.append(fresh).await, Err(StreamError::Capacity));
     Ok(())
 }
@@ -53,19 +50,16 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
     let destination = StreamPath::new("roundtrip/fork")?;
     let appended = AppendRequest {
         path: source.clone(),
-        records: vec![
-            OwnedBytes::from_static(b"first"),
-            OwnedBytes::from_static(b"second"),
-        ],
+        records: vec![Bytes::from_static(b"first"), Bytes::from_static(b"second")],
         if_tail: Some(0),
-        idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"append"))?),
+        idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"append"))?),
     };
     let append_result = stream.append(appended.clone()).await?;
     let forked = crate::ForkRequest {
         source: source.clone(),
         destination: destination.clone(),
         at_tail: Some(1),
-        idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"fork"))?),
+        idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"fork"))?),
     };
     let fork_result = stream.fork(forked.clone()).await?;
     let committed = crate::CommitRequest {
@@ -75,21 +69,13 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
         }],
         mutations: vec![crate::CommitMutation::Append {
             path: destination.clone(),
-            records: vec![OwnedBytes::from_static(b"third")],
+            records: vec![Bytes::from_static(b"third")],
         }],
-        idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"commit"))?,
+        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"commit"))?,
     };
     let commit_result = stream.commit(committed.clone()).await?;
     let restored = MemoryStream::default();
-    restored
-        .install_state(
-            &stream
-                .encode_state(None)
-                .await
-                .expect("unmetered snapshot encoding")
-                .value,
-        )
-        .await?;
+    restored.install_state(&stream.encode_state().await).await?;
     assert_eq!(restored.append(appended).await?, append_result);
     assert_eq!(restored.fork(forked).await?, fork_result);
     assert_eq!(restored.commit(committed).await?, commit_result);
@@ -132,7 +118,7 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
     let destination = StreamPath::new("writer/destination")?;
     let append = |path: StreamPath, value: &'static [u8]| AppendRequest {
         path,
-        records: vec![OwnedBytes::from_static(value)],
+        records: vec![Bytes::from_static(value)],
         if_tail: None,
         idempotency_key: None,
     };
@@ -178,28 +164,20 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
         mutations: vec![
             crate::CommitMutation::Append {
                 path: source.clone(),
-                records: vec![OwnedBytes::from_static(b"after")],
+                records: vec![Bytes::from_static(b"after")],
             },
             crate::CommitMutation::Fork {
                 source: source.clone(),
                 destination: destination.clone(),
                 at_tail: 1,
-                records: vec![OwnedBytes::from_static(b"forked")],
+                records: vec![Bytes::from_static(b"forked")],
             },
         ],
-        idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"atomic-fork"))?,
+        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"atomic-fork"))?,
     };
     let outcome = stream.commit(request.clone()).await?;
     let restored = MemoryStream::default();
-    restored
-        .install_state(
-            &stream
-                .encode_state(None)
-                .await
-                .expect("unmetered snapshot encoding")
-                .value,
-        )
-        .await?;
+    restored.install_state(&stream.encode_state().await).await?;
     assert_eq!(restored.commit(request).await?, outcome);
     assert_eq!(restored.tail(empty).await?, 0);
     assert_eq!(restored.tail(no_history).await?, 0);
@@ -240,29 +218,18 @@ async fn malformed_and_over_capacity_snapshots_leave_live_state_unchanged()
     stream
         .append(AppendRequest {
             path: StreamPath::new("snapshot/atomic")?,
-            records: vec![OwnedBytes::from_static(b"kept")],
+            records: vec![Bytes::from_static(b"kept")],
             if_tail: None,
-            idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"kept"))?),
+            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"kept"))?),
         })
         .await?;
-    let valid = stream
-        .encode_state(None)
-        .await
-        .expect("unmetered snapshot encoding")
-        .value;
+    let valid = stream.encode_state().await;
     for length in 0..valid.len() {
         assert_eq!(
             stream.install_state(&valid[..length]).await,
             Err(StreamError::InvalidArgument)
         );
-        assert_eq!(
-            stream
-                .encode_state(None)
-                .await
-                .expect("unmetered snapshot encoding")
-                .value,
-            valid
-        );
+        assert_eq!(stream.encode_state().await, valid);
     }
     let mut impossible_decision = valid.clone();
     impossible_decision[MAGIC.len()..MAGIC.len() + 8].copy_from_slice(&u64::MAX.to_le_bytes());
@@ -292,14 +259,7 @@ async fn malformed_and_over_capacity_snapshots_leave_live_state_unchanged()
             stream.install_state(&obsolete).await,
             Err(StreamError::InvalidArgument)
         );
-        assert_eq!(
-            stream
-                .encode_state(None)
-                .await
-                .expect("unmetered snapshot encoding")
-                .value,
-            valid
-        );
+        assert_eq!(stream.encode_state().await, valid);
     }
     for limits in [
         MemoryLimits {
@@ -328,32 +288,14 @@ async fn malformed_and_over_capacity_snapshots_leave_live_state_unchanged()
         },
     ] {
         let constrained = MemoryStream::new(limits);
-        let empty = constrained
-            .encode_state(None)
-            .await
-            .expect("unmetered snapshot encoding")
-            .value;
+        let empty = constrained.encode_state().await;
         assert_eq!(
             constrained.install_state(&valid).await,
             Err(StreamError::Capacity)
         );
-        assert_eq!(
-            constrained
-                .encode_state(None)
-                .await
-                .expect("unmetered snapshot encoding")
-                .value,
-            empty
-        );
+        assert_eq!(constrained.encode_state().await, empty);
     }
-    assert_eq!(
-        stream
-            .encode_state(None)
-            .await
-            .expect("unmetered snapshot encoding")
-            .value,
-        valid
-    );
+    assert_eq!(stream.encode_state().await, valid);
     Ok(())
 }
 
@@ -394,7 +336,7 @@ fn current_codec_rejects_duplicate_entries_and_impossible_history() {
 fn current_codec_rejects_duplicate_retry_identity_and_unknown_wire_fields()
 -> Result<(), StreamError> {
     let observation = observation_wire(IdempotencyObservation {
-        idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"conflict"))?,
+        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"conflict"))?,
         request_digest: [0; 32],
         outcome: crate::IdempotencyOutcome::Append(crate::AppendOutcome::TailConflict {
             actual_tail: 0,
@@ -427,30 +369,23 @@ fn current_codec_rejects_duplicate_retry_identity_and_unknown_wire_fields()
 async fn retained_facts_reject_impossible_receipts_records_and_phantom_payloads()
 -> Result<(), StreamError> {
     let stream = MemoryStream::default();
-    let key = IdempotencyKey::new(OwnedBytes::from_static(b"inventory"))?;
+    let key = IdempotencyKey::new(Bytes::from_static(b"inventory"))?;
     stream
         .append(AppendRequest {
             path: StreamPath::new("inventory/path")?,
-            records: vec![OwnedBytes::from_static(b"real")],
+            records: vec![Bytes::from_static(b"real")],
             if_tail: Some(0),
             idempotency_key: Some(key.clone()),
         })
         .await?;
     let mut state = stream.state.write().await;
-    let cached = state
+    let index = *state
         .replays
-        .get_mut(key.as_bytes())
+        .get(key.as_bytes())
         .ok_or(StreamError::Unavailable)?;
-    *cached = Arc::new(Replay {
-        digest: cached.digest,
-        result: cached.result.clone(),
-        envelope: cached.envelope.clone(),
-        _allocation: crate::memory::Allocation::default(),
-    });
     let replay = state
-        .replays
-        .get_mut(key.as_bytes())
-        .and_then(Arc::get_mut)
+        .retained
+        .get_mut(index)
         .ok_or(StreamError::Unavailable)?;
     let original_result = replay.result.clone();
     let crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) =
@@ -459,24 +394,15 @@ async fn retained_facts_reject_impossible_receipts_records_and_phantom_payloads(
         return Err(StreamError::Unavailable);
     };
     receipt.start = receipt.end;
-    assert!(
-        decode(
-            &encode(&state, None)
-                .expect("unmetered encoding cannot fail")
-                .value
-        )
-        .is_none()
-    );
+    assert!(decode(&encode(&state)).is_none());
     state
-        .replays
-        .get_mut(key.as_bytes())
-        .and_then(Arc::get_mut)
+        .retained
+        .get_mut(index)
         .ok_or(StreamError::Unavailable)?
         .result = original_result.clone();
     let replay = state
-        .replays
-        .get_mut(key.as_bytes())
-        .and_then(Arc::get_mut)
+        .retained
+        .get_mut(index)
         .ok_or(StreamError::Unavailable)?;
     let crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) =
         &mut replay.result
@@ -486,64 +412,36 @@ async fn retained_facts_reject_impossible_receipts_records_and_phantom_payloads(
     receipt.start = 1;
     receipt.end = 2;
     receipt.tail = 2;
-    assert!(
-        decode(
-            &encode(&state, None)
-                .expect("unmetered encoding cannot fail")
-                .value
-        )
-        .is_none()
-    );
+    assert!(decode(&encode(&state)).is_none());
     state
-        .replays
-        .get_mut(key.as_bytes())
-        .and_then(Arc::get_mut)
+        .retained
+        .get_mut(index)
         .ok_or(StreamError::Unavailable)?
         .result = original_result;
-    let commit_id = *state
-        .commits
-        .keys()
-        .next()
-        .ok_or(StreamError::Unavailable)?;
+    let commit_index = index;
     let envelope = state
-        .commits
-        .get_mut(&commit_id)
-        .and_then(Arc::get_mut)
-        .and_then(Replay::envelope_mut)
+        .retained
+        .get_mut(commit_index)
+        .and_then(|entry| entry.envelope.as_mut())
         .ok_or(StreamError::Unavailable)?;
     let Some(crate::CommittedMutation::Append(append)) = envelope.mutations.first_mut() else {
         return Err(StreamError::Unavailable);
     };
     let record = append.records.first_mut().ok_or(StreamError::Unavailable)?;
     record.sequence = 9;
-    assert!(
-        decode(
-            &encode(&state, None)
-                .expect("unmetered encoding cannot fail")
-                .value
-        )
-        .is_none()
-    );
+    assert!(decode(&encode(&state)).is_none());
     let envelope = state
-        .commits
-        .get_mut(&commit_id)
-        .and_then(Arc::get_mut)
-        .and_then(Replay::envelope_mut)
+        .retained
+        .get_mut(commit_index)
+        .and_then(|entry| entry.envelope.as_mut())
         .ok_or(StreamError::Unavailable)?;
     let Some(crate::CommittedMutation::Append(append)) = envelope.mutations.first_mut() else {
         return Err(StreamError::Unavailable);
     };
     let record = append.records.first_mut().ok_or(StreamError::Unavailable)?;
     record.sequence = 0;
-    record.value = OwnedBytes::from_static(b"phantom payload absent from immutable history");
-    assert!(
-        decode(
-            &encode(&state, None)
-                .expect("unmetered encoding cannot fail")
-                .value
-        )
-        .is_none()
-    );
+    record.value = Bytes::from_static(b"phantom payload absent from immutable history");
+    assert!(decode(&encode(&state)).is_none());
     Ok(())
 }
 
@@ -556,7 +454,7 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
     stream
         .append(AppendRequest {
             path: StreamPath::new("chronology/seed")?,
-            records: vec![OwnedBytes::from_static(b"seed")],
+            records: vec![Bytes::from_static(b"seed")],
             if_tail: None,
             idempotency_key: None,
         })
@@ -577,35 +475,22 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
             idempotency_key: None,
         })
         .await?;
-    assert!(
-        decode(
-            &stream
-                .encode_state(None)
-                .await
-                .expect("unmetered snapshot encoding")
-                .value
-        )
-        .is_some()
-    );
+    assert!(decode(&stream.encode_state().await).is_some());
     let mut state = stream.state.write().await;
-    let envelope = state
+    let index = *state
         .commits
-        .get_mut(&receipt.commit_id)
-        .and_then(Arc::get_mut)
-        .and_then(Replay::envelope_mut)
+        .get(&receipt.commit_id)
+        .ok_or(StreamError::Unavailable)?;
+    let envelope = state
+        .retained
+        .get_mut(index)
+        .and_then(|entry| entry.envelope.as_mut())
         .ok_or(StreamError::Unavailable)?;
     let Some(crate::CommittedMutation::Fork(fork)) = envelope.mutations.first_mut() else {
         return Err(StreamError::Unavailable);
     };
     fork.source = later;
-    assert!(
-        decode(
-            &encode(&state, None)
-                .expect("unmetered encoding cannot fail")
-                .value
-        )
-        .is_none()
-    );
+    assert!(decode(&encode(&state)).is_none());
     Ok(())
 }
 
@@ -616,7 +501,7 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
     let destination = StreamPath::new("chronology/destination")?;
     let append = |value: &'static [u8]| AppendRequest {
         path: source.clone(),
-        records: vec![OwnedBytes::from_static(value)],
+        records: vec![Bytes::from_static(value)],
         if_tail: None,
         idempotency_key: None,
     };
@@ -630,16 +515,7 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
         })
         .await?;
     stream.append(append(b"future")).await?;
-    assert!(
-        decode(
-            &stream
-                .encode_state(None)
-                .await
-                .expect("unmetered snapshot encoding")
-                .value
-        )
-        .is_some()
-    );
+    assert!(decode(&stream.encode_state().await).is_some());
     let mut state = stream.state.write().await;
     let future = state
         .paths
@@ -654,16 +530,9 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
         .history = Some(Arc::new(History::Prefix {
         source: future,
         tail: 1,
-        _allocation: super::super::Allocation::default(),
+        _allocation: Default::default(),
     }));
-    assert!(
-        decode(
-            &encode(&state, None)
-                .expect("unmetered encoding cannot fail")
-                .value
-        )
-        .is_none()
-    );
+    assert!(decode(&encode(&state)).is_none());
     Ok(())
 }
 
@@ -686,24 +555,20 @@ fn malformed_deep_history_releases_without_recursive_drop() {
 
 #[tokio::test]
 async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
-    let clock = Arc::new(AtomicU64::default());
-    clock.store(100, Ordering::SeqCst);
+    let clock = Arc::new(TestClock::default());
+    clock.0.store(100, Ordering::SeqCst);
     let stream = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
     let path = StreamPath::new("snapshot/timed")?;
     stream
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"one")],
+            records: vec![Bytes::from_static(b"one")],
             if_tail: None,
             idempotency_key: None,
         })
         .await?;
-    let timed = stream
-        .encode_state(None)
-        .await
-        .expect("unmetered snapshot encoding")
-        .value;
-    clock.store(90, Ordering::SeqCst);
+    let timed = stream.encode_state().await;
+    clock.0.store(90, Ordering::SeqCst);
     let restored = MemoryStream::new_with_clock(MemoryLimits::default(), clock);
     restored.install_state(&timed).await?;
     let timed_record = restored
@@ -721,7 +586,7 @@ async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
     restored
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"two")],
+            records: vec![Bytes::from_static(b"two")],
             if_tail: None,
             idempotency_key: None,
         })
