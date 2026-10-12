@@ -686,7 +686,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             })?);
         }
         let view = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).map(|(state, _)| state)?;
-        crate::projection::validate_model_context_selection_at_revision(&view, selection, selection.conversation_revision, None)?;
+        crate::projection::validate_model_context_selection(&view, selection, selection.conversation_revision, &mut None)?;
         Ok(view)
     }
 
