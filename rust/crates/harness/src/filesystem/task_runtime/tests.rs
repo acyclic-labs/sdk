@@ -171,7 +171,7 @@ impl ResumableMachine for Machine {
 
 type Runtime = FilesystemTaskRuntime<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
 struct Fixture {
-    stream: StreamClient<MemoryStream>,
+    stream: Arc<MemoryStream>,
     filesystem: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
     volume: VolumeRef,
     issuer: AuthorityIssuer,
@@ -235,7 +235,7 @@ impl Fixture {
             },
             executor: tool.clone(), projection: tool.clone(),
         })?;
-        Ok(Self { stream: StreamClient::new(Arc::new(MemoryStream::default())), filesystem,
+        Ok(Self { stream: Arc::new(MemoryStream::default()), filesystem,
             volume, issuer, signed, scope, tasks, machines, tools, clock, tool, machine })
     }
     async fn runtime(&self) -> Result<Runtime> {
@@ -508,7 +508,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
             reconciled: AtomicUsize::new(0),
         });
         let execution = runtime.stock_execution(
-            task, fence.clone(), turn, model.clone(), provider.clone(), ContextPipeline::default(),
+            task, fence.clone(), turn, model.clone(), provider.clone(), ContextPipeline::default(), None,
         ).await?.with_compaction_policy(crate::context::CompactionPolicy::Disabled);
         let input = TurnInput {
             operation_id: execution.operation_id(),
@@ -531,7 +531,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
         drop(runtime);
         let reopened = fixture.runtime().await?;
         let execution = reopened.stock_execution(
-            task, fence.clone(), turn, model, provider.clone(), ContextPipeline::default(),
+            task, fence.clone(), turn, model, provider.clone(), ContextPipeline::default(), None,
         ).await?.with_compaction_policy(crate::context::CompactionPolicy::Disabled);
         if expired_before_dispatch {
             assert!(matches!(execution.reconcile(input, 1_000).await, Err(Error::Indeterminate(_))));
