@@ -140,7 +140,6 @@ pub struct RetainedSourceBinding<A, O> {
 /// Constructs the portable current-caller fork from actual providers and authenticated history.
 #[allow(clippy::too_many_arguments, reason = "explicit provider, owner, source and finite-bound contracts")]
 pub async fn recursive_fork_source<P, A, O>(
-    _runtime: &super::FilesystemTaskRuntime<P, A, O>,
     filesystem: Arc<super::FilesystemHost<A, O>>,
     stream: &Arc<P>,
     parent: &crate::store::StreamAggregate<P>,

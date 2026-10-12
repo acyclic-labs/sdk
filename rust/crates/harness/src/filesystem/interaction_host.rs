@@ -25,7 +25,6 @@ use uuid::Uuid;
 pub struct FilesystemInteractionHost<P, A, O> {
     stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
-    authority: Authority,
     verifier: AuthorityVerifier,
     schemas: SchemaRegistry,
     owner_scope: Scope,
@@ -195,10 +194,6 @@ where
         }
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let authority = match work.as_deref_mut() {
-            Some(work) => work.clone_authority(authority)?,
-            None => authority.clone(),
-        };
         let verifier = verifier.copy(&mut work)?;
         let owner_scope = owner_scope.copy(&mut work)?;
         let private_volume = private_volume.copy(&mut work)?;
@@ -213,7 +208,7 @@ where
             }
             None => None,
         };
-        Ok(Self { stream, host, authority, verifier, schemas, owner_scope, private_volume,
+        Ok(Self { stream, host, verifier, schemas, owner_scope, private_volume,
             maximum_bytes, #[cfg(not(target_arch = "wasm32"))] _native_metadata })
     }
 
@@ -300,7 +295,7 @@ where
             }
             let mut aggregate = self.aggregate(io).await?;
             let (committed, _) = crate::store::operations::find_operation_bounded_with_work(
-                &self.stream, &self.authority, &self.verifier, operation_id,
+                &self.stream, self.verifier.audience(), &self.verifier, operation_id,
                 2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut work,
             ).await?;
             let expected_revision = match committed {
@@ -358,7 +353,7 @@ where
             |work| work as &mut dyn crate::store::history::HistoryIo);
         let scope = scope.copy(&mut work)?;
         let (committed, _) = crate::store::operations::find_operation_bounded_with_work(
-            &self.stream, &self.authority, &self.verifier, operation_id,
+            &self.stream, self.verifier.audience(), &self.verifier, operation_id,
             2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut work,
         ).await?;
         let expected_revision = match committed {
@@ -680,8 +675,8 @@ where
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
         let authority = match work.as_deref_mut() {
-            Some(work) => work.clone_authority(&self.authority)?,
-            None => self.authority.clone(),
+            Some(work) => work.clone_authority(self.verifier.audience())?,
+            None => self.verifier.audience().clone(),
         };
         let aggregate_verifier = self.verifier.copy(&mut work)?;
         if let Some(io) = io {
