@@ -35,7 +35,7 @@ impl PinnedContextStage {
         crate::contract::validate_component_label(&name, "context snapshot")?;
         crate::contract::validate_component_label(&revision, "context snapshot revision")?;
         validate_reference(&reference, limits)?;
-        let bytes = reader.read(&reference).await?;
+        let bytes = reader.read(&reference, limits.render_bytes, None)?.await?;
         reference.descriptor().verify(&bytes, &mut None)?;
         let context: Context = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(format!("context snapshot is invalid: {error}")))?;
@@ -79,8 +79,9 @@ fn validate_reference(reference: &FileRef, limits: Limits) -> Result<()> {
 fn validate_reference_native(
     reference: &FileRef, limits: Limits, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    limits.validate_with_native_work(work)?;
-    limits.validate_file_with_native_work(reference, work)?;
+    let mut observer = crate::store::history::native_work_io(work)?;
+    limits.validate(&mut Some(&mut observer))?;
+    limits.validate_file(reference, &mut Some(&mut observer))?;
     if reference.descriptor().media_type() != "application/json"
         || reference.descriptor().byte_length() > limits.render_bytes
     {
@@ -124,7 +125,7 @@ impl ContextStage for PinnedContextStage {
             let composed =
                 super::selection::place_snapshot(context, &self.context, self.placement, limits)?;
             // A new admission still requires the original bound reader's current authority and retained content.
-            self.reader.verify(&self.reference).await?;
+            self.reader.verify(&self.reference, limits.render_bytes, None)?.await?;
             super::validate_context_refs(&self.context, self.reader.as_ref(), limits, None).await?;
             Ok(composed)
         })
@@ -140,7 +141,7 @@ impl ContextStage for PinnedContextStage {
                 "context snapshot identity is invalid"));
         }
         validate_reference_native(&self.reference, self.limits, work)?;
-        if !self.reader.supports_native_read(self.reference.volume(), work)? {
+        if !self.reader.supports_read(self.reference.volume(), Some(&crate::executor::PreparationIo::from_native_work(work)?))? {
             return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
                 "context snapshot reader has no original native capability"));
         }
@@ -172,7 +173,7 @@ impl ContextStage for PinnedContextStage {
             validate_reference_native(&self.reference, limits, work)?;
             let composed = super::selection::place_snapshot_native(
                 context, &self.context, self.placement, limits, work)?;
-            super::verify_context_file(&self.reference, self.reader.as_ref(), Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
+            super::verify_file(&self.reference, self.reader.as_ref(), Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
             super::validate_context_refs(&self.context, self.reader.as_ref(), limits, Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
             Ok(composed)
         })
