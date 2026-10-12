@@ -29,7 +29,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let observed = &mut None;
         let status = async {
             use crate::core::ApplyResult;
-            validate_task_plan(owner, plan, true, observed)?;
+            validate_task_plan(owner, plan, true)?;
             let effect_id = task_effect_id(owner.task_binding().0, command_id, observed)?;
             self.task_action(owner, effect_id, Some(plan), observed)
                 .await?;
@@ -63,11 +63,11 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 effect.0.status,
                 EffectStatus::Dispatched | EffectStatus::Indeterminate
             ) {
-                verify_owner(owner, true, observed).await?;
+                owner.verify(true).await?;
                 return clone_status(&effect.0.status, observed);
             }
             let attestation = if dispatched {
-                verify_owner(owner, false, observed).await?;
+                owner.verify(false).await?;
                 Some(
                     self.providers
                         .dispatch_state_and_attest(&self.issuer, effect_id, &effect.0, observed)
@@ -131,8 +131,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         #[cfg(target_arch = "wasm32")]
         let observed = &mut None;
         let status = async {
-            verify_owner(owner, true, observed).await?;
-            validate_task_plan(owner, plan, false, observed)?;
+            owner.verify(true).await?;
+            validate_task_plan(owner, plan, false)?;
             let effect_id = task_effect_id(owner.task_binding().0, command_id, observed)?;
             let stream = owner.stream();
             let aggregate = self.aggregate(&stream, observed).await?;
@@ -277,7 +277,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                             "task effect command changed after admission",
                         ));
                     }
-                    verify_owner(owner, false, custody.work()).await?;
+                    owner.verify(false).await?;
                 }
                 result => return result,
             }
@@ -312,7 +312,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         loop {
             #[cfg(feature = "filesystem")]
             if let Some(owner) = owner {
-                verify_owner(owner, true, retained.work()).await?;
+                owner.verify(true).await?;
             }
             #[cfg(feature = "filesystem")]
             let stream = owner.map_or_else(
