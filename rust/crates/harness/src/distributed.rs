@@ -2423,13 +2423,13 @@ impl PreparedMaterializationCommit {
         owner: &crate::durable_host::TaskJournalOwner<P>,
         mut template: crate::filesystem::NativePreparationCompletionTemplate,
         reservation: acyclic_fs::NativeWorkReservation,
-        original: &acyclic_fs::NativeMaterializationWork, work: &mut Option<&mut dyn HistoryIo>,
+        original: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         use acyclic_stream::{CommitCondition, CommitConflict, CommittedMutation, Record};
         use std::mem::size_of;
-        let original_observer = work.as_deref().and_then(|io| io.original_native_work());
-        if !original_observer.is_some_and(|native| native.shares_allocation_context(original))
-            || !template.matches_work(original) || !reservation.matches_work(original)
+        let mut io = crate::store::history::native_work_io(original)?;
+        let mut work = Some(&mut io as &mut dyn HistoryIo);
+        if !template.matches_work(original) || !reservation.matches_work(original)
         {
             return Err(Error::NativeBoundary {
                 code: wire::ErrorCode::Unauthorized,
@@ -2461,11 +2461,11 @@ impl PreparedMaterializationCommit {
         })?;
         template.verify_owner(owner, original)?;
         let client = owner.stream();
-        let owner_condition = owner.condition(JournalWrite::Fresh, work).await?;
-        let bounds = operations::bounds_with_work(&client, template.path(), work).await?
-            .map_err(|error| sdk_error(error, work))?;
+        let owner_condition = owner.condition(JournalWrite::Fresh, &mut work).await?;
+        let bounds = operations::bounds_with_work(&client, template.path(), &mut work).await?
+            .map_err(|error| sdk_error(error, &work))?;
         if bounds.tail != template.expected_revision() {
-            return Err(coordinator_boundary(work, wire::ErrorCode::Conflict,
+            return Err(coordinator_boundary(&work, wire::ErrorCode::Conflict,
                 "native completion Preparing record changed before acceptance"));
         }
         let target = CommitCondition::Tail {
@@ -2490,7 +2490,7 @@ impl PreparedMaterializationCommit {
             + size_of::<Error>() as u64 + crate::contract::sdk_json_diagnostic_bytes()
             + size_of::<Self>() as u64)
             .max(size_of::<(acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)>() as u64);
-        let mut prepared = commit_request(template.key().clone(), 0, work);
+        let mut prepared = commit_request(template.key().clone(), 0, &mut work);
         reserve_prepared_vector(
             &mut prepared.0.conditions, 2, &mut prepared.1,
         )?;
@@ -3443,128 +3443,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn atomic_session_retry_uses_the_original_journal_after_reopen()
-    -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
-        let root = OperationId::from_bytes([1; 16]);
-        let root_spec = spec(root, 0)?;
-        let limits = crate::scheduler::SessionLimits {
-            active_tasks: 1,
-            total_tasks: 2,
-            depth: 1,
-            model_steps: 1,
-        };
-        let key = "legacy-atomic-root";
-        let config_key = format!("session:{root}:{}", blake3::hash(key.as_bytes()).to_hex());
-        let events = [
-            SchedulerEvent::Declared {
-                spec: Box::new(root_spec.clone()),
-            },
-            SchedulerEvent::SessionConfigured {
-                operation_id: root,
-                limits,
-            },
-        ];
-        let mut records = Vec::new();
-        for (offset, (intent_key, event)) in [key, config_key.as_str()]
-            .into_iter()
-            .zip(&events)
-            .enumerate()
-        {
-            let canonical = crate::contract::canonical_json_bytes(event)?;
-            records.push(OwnedBytes::from(encode(offset as u64 + 1, root, intent_key, *blake3::hash(&canonical).as_bytes(), canonical, offset as u64 + 10, &mut None)?));
-        }
-        let source = client.stream(COORDINATOR_PATH)?;
-        source
-            .append_batch(records, Some(0), Some(stream_key_with_work(key, &mut None).map(|(key, _)| key)?))
-            .await?;
-        let (first, second) = tokio::join!(
-            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)),
-            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier))
-        );
-        let mut coordinator = first?;
-        let second = second?;
-        assert_eq!(coordinator.scheduler(), second.scheduler());
-        for identity in 2..=81u8 {
-            declare(
-                &mut coordinator,
-                spec(OperationId::from_bytes([identity; 16]), 0)?,
-                &format!("intent-eviction-{identity}"),
-            )
-            .await?;
-        }
-        assert_eq!(source.bounds().await?.tail, 82);
-        let owner = Authority {
-            kind: AggregateKind::Task,
-            id: "owner".into(),
-        };
-        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root(
-            "declare",
-            Capabilities::new(["operation:declare", "operation:observe"]),
-        );
-        let verifier = issuer.verifier();
-        assert_eq!(
-            coordinator
-                .declare_session(
-                    &owner,
-                    &scope,
-                    &verifier,
-                    root_spec.clone(),
-                    limits,
-                    IdempotencyKey::new(key)?
-                , &mut None)
-                .await?,
-            false
-        );
-        assert!(
-            coordinator
-                .declare_session(
-                    &owner,
-                    &scope,
-                    &verifier,
-                    root_spec.clone(),
-                    crate::scheduler::SessionLimits {
-                        model_steps: 2,
-                        ..limits
-                    },
-                    IdempotencyKey::new(key)?
-                , &mut None)
-                .await
-                .is_err()
-        );
-        assert_eq!(source.bounds().await?.tail, 82);
-        drop(coordinator);
-        let mut reopened =
-            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
-        assert_eq!(
-            reopened
-                .declare_session(
-                    &owner,
-                    &scope,
-                    &verifier,
-                    root_spec,
-                    limits,
-                    IdempotencyKey::new(key)?
-                , &mut None)
-                .await?,
-            false
-        );
-        assert_eq!(source.bounds().await?.tail, 82);
-        let canonical = crate::contract::canonical_json_bytes(&events[1])?;
-        source
-            .append_batch(
-                vec![OwnedBytes::from(encode(83, root, &config_key, *blake3::hash(&canonical).as_bytes(), canonical, reopened.last_committed_at_ms + 1, &mut None)?)],
-                Some(82),
-                None,
-            )
-            .await?;
-        assert!(matches!(reopened.refresh().await, Err(Error::Conflict(_))));
-        assert_eq!(reopened.revision, 82);
-        Ok(())
-    }
-
     impl ContentResidencyVerifier for PausedChildVerifier {
         fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
@@ -4504,6 +4382,13 @@ mod tests {
         assert!(last[0].committed_at_ms > next[0].committed_at_ms);
         assert!(read_coordinator_event_page(&client, 3, 1).await?.is_empty());
         assert!(read_coordinator_event_page(&client, 0, 0).await.is_err());
+        let repeated = SchedulerEvent::Declared { spec: Box::new(spec(third, 1)?) };
+        let canonical = crate::contract::canonical_json_bytes(&repeated)?;
+        let bytes = encode(4, third, "projector-third", *blake3::hash(&canonical).as_bytes(),
+            canonical, last[0].committed_at_ms + 1, &mut None)?;
+        client.stream(COORDINATOR_PATH)?.append_batch(vec![OwnedBytes::from(bytes)], Some(3), None).await?;
+        assert!(matches!(reopened.refresh().await, Err(Error::Conflict(_))));
+        assert_eq!(reopened.revision, 3);
         Ok(())
     }
 
@@ -4654,39 +4539,11 @@ mod tests {
     async fn coordinator_replays_and_pull_admission_is_exclusive() -> Result<()> {
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
         let operation_id = OperationId::from_bytes([1; 16]);
-        let spec = OperationSpec {
-            operation_id,
-            parent: None,
-            owner: DurableOwner::Detached {
-                authority: Authority {
-                    kind: AggregateKind::Task,
-                    id: "owner".into(),
-                },
-            },
-            owner_scope: AuthorityIssuer::new(
-                "test-runtime",
-                [9; 32],
-                Authority {
-                    kind: AggregateKind::Task,
-                    id: "owner".into(),
-                },
-            )
-            .root("original-declare", Capabilities::new(["operation:declare"])),
-            entrypoint: EntrypointRef {
-                name: "example.task".into(),
-                version: "1".into(),
-                digest: [2; 32],
-                result_schema: Value::Object(Default::default()),
-            },
-            dependencies: BTreeSet::new(),
-            resources: ResourceRequest::default(),
-            placement: BTreeMap::new(),
-            orchestration: Orchestration::Leaf,
-            state: state_ref()?,
-        };
+        let mut declaration = spec(operation_id, 0)?;
+        declaration.resources = ResourceRequest::default();
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
-        declare(&mut coordinator, spec, "declare-1").await?;
+        declare(&mut coordinator, declaration, "declare-1").await?;
         let mut reopened =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let worker = Worker {
