@@ -142,11 +142,11 @@ impl LineageRegistrationWork<'_> {
             KernelAccounting::native(original, cancellation).record_completed(copied).map_err(lineage_filesystem_failure)?;
         }
         if let Some(parent_name) = &source.parent_workspace_name {
-            let mut parent_owner = self.copy_name(parent_name)?;
+            let parent_owner = self.copy_name(parent_name)?;
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(incoming) = &mut parent_owner.1 {
+            if let Some(mut incoming) = parent_owner.1 {
                 owned.allocation.as_mut().expect("native metadata retains its name guard")
-                    .absorb(incoming).map_err(|error| lineage_filesystem_failure(error.into()))?;
+                    .absorb(&mut incoming).map_err(|error| lineage_filesystem_failure(error.into()))?;
             }
             owned.record.parent_workspace_name = Some(parent_owner.0);
         }
@@ -703,10 +703,10 @@ impl MemoryWorkspaceLineageStore {
 
     fn compare_and_swap_engine(
         &self, workspace_id: WorkspaceId, expected_revision: u64,
-        replacement: LineageOwnedRecord, control: &mut LineageRegistrationWork<'_>,
+        replacement: LineageOwnedRecord, _control: &mut LineageRegistrationWork<'_>,
     ) -> Result<bool, LineageFailure<MemoryWorkspaceLineageStoreError>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let LineageRegistrationWork::Native { original, cancellation } = control {
+        if let LineageRegistrationWork::Native { original, cancellation } = _control {
             let allocation = replacement.allocation.as_ref()
                 .ok_or_else(|| lineage_filesystem_failure(crate::NativeTreeMaterializationError::InvalidLayout.into()))?;
             let actual = replacement.record.workspace_name.capacity().checked_add(
@@ -727,7 +727,7 @@ impl MemoryWorkspaceLineageStore {
         let mut entry_allocation = None;
         #[cfg(not(target_arch = "wasm32"))]
         if !records.contains_key(&workspace_id) {
-            if let LineageRegistrationWork::Native { original, cancellation } = control {
+            if let LineageRegistrationWork::Native { original, cancellation } = _control {
                 // Logical entry storage is known; opaque B-tree nodes are not guessed.
                 let allocation = KernelAccounting::native(original, cancellation).claim_owned(
                     std::mem::size_of::<(WorkspaceId, MemoryLineageRecord)>() as u64, 0,

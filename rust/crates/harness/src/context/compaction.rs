@@ -447,7 +447,7 @@ fn compaction_step(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<
 fn compaction_error(work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
-        return crate::executor::native_boundary(crate::wire::ErrorCode::Invalid, reason);
+        return crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
     }
     let _ = work;
     Error::Invalid(reason.into())
@@ -504,7 +504,7 @@ mod native {
 
     pub(crate) fn native_vector<T>(capacity: usize, work: &NativeMaterializationWork) -> Result<(Vec<T>, NativeAllocation)> {
         let bytes = capacity.checked_mul(size_of::<T>()).ok_or_else(overflow)? as u64;
-        let mut guard = work.retain_owned(bytes).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut guard = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         if bytes != 0 {
             work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;

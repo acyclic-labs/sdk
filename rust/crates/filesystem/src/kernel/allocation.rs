@@ -13,7 +13,8 @@ pub(crate) fn bytes_owner_control_bytes<T>() -> Result<u64, WorkError> {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct AllocationLedger {
+/// Tracks live and reserved logical allocation bytes.
+pub struct AllocationLedger {
     live_bytes: u64,
     // Accepted future payload/control capacity, not a physical allocation or peak.
     #[cfg(not(target_arch = "wasm32"))]
@@ -33,14 +34,6 @@ enum LogicalVecAllocationStep {
 }
 
 impl LogicalVecCapacity {
-    pub(crate) fn record_owned_capacity<T>(&mut self, values: &Vec<T>) -> Result<(), WorkError> {
-        let bytes = values.capacity().checked_mul(std::mem::size_of::<T>())
-            .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(WorkError::Overflow)?;
-        self.elements = values.capacity();
-        self.logical_bytes = bytes;
-        Ok(())
-    }
-
     pub(crate) fn ensure_for_push<T>(
         &mut self,
         values: &mut Vec<T>,
@@ -377,7 +370,7 @@ impl<'a> KernelAccounting<'a> {
                 Ok(KernelOwnedAllocation::Standalone)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work.claim_allocation(bytes, operations, crate::WorkCounters::UNCHARGED)
+            Self::NativeOriginal { work, .. } => work.claim(bytes, operations, crate::WorkCounters::UNCHARGED)
                 .map(KernelOwnedAllocation::NativeOriginal).map_err(Into::into),
         }
     }

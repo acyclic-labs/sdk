@@ -277,7 +277,7 @@ async fn pi_root_original_span_exhaustion_denies_before_creation_and_releases_re
     let fixture = Fixture::new(false).await;
     let baseline = fixture.startup.live_allocation_bytes();
     let bytes = fixture.startup.budget().peak_allocation_bytes - baseline;
-    let payload_custody = fixture.startup.claim(bytes).unwrap();
+    let payload_custody = fixture.startup.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED).unwrap();
     let mut payload = Vec::<u8>::new();
     payload.try_reserve_exact(usize::try_from(bytes).unwrap()).unwrap();
     payload.resize(usize::try_from(bytes).unwrap(), 0);
@@ -570,47 +570,47 @@ async fn pi_root_project_source_proof_uses_original_operations_and_callers_cumul
     assert!(matches!(fixture.execute().await.unwrap().0, EffectStatus::Succeeded { .. }));
     let handles = fixture.provider.take_created_handles().await;
     let (key, handle) = handles.iter().next().unwrap();
-    let snapshot = handle.workspace.snapshot_with_native_work(&fixture.startup).await.unwrap();
+    let snapshot = handle.workspace.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(&fixture.startup, fixture.startup.cancellation()).unwrap()).await.unwrap();
     let project = &fixture.request.binding.project_volumes[key];
     let before = fixture.startup.receipt();
-    prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, snapshot.0,
+    prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, snapshot,
     Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.unwrap();
     let after = fixture.startup.receipt();
     assert!(after.authority_records_read > before.authority_records_read);
     assert_eq!(after.backend_write_operations, before.backend_write_operations);
     assert_eq!(after.materializations, before.materializations);
-    let mut foreign = snapshot.0;
+    let mut foreign = snapshot;
     foreign.workspace_id = acyclic_fs::WorkspaceId::from_bytes([130; 16]);
     assert!(prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources,
         fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, foreign,
         Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.is_err());
-    foreign = snapshot.0;
+    foreign = snapshot;
     foreign.source.identity = [131; 16];
     assert!(prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources,
         fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, foreign,
         Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.is_err());
     assert!(prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources,
         fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, &fixture.request.binding.scratch.volume,
-        snapshot.0, Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.is_err());
+        snapshot, Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.is_err());
     let cancellation = CancellationToken::new();
     let cancelled = NativeMaterializationWork::new(allocation_budget(), &cancellation).unwrap();
     cancellation.cancel();
     let before = cancelled.receipt();
     assert!(prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources,
-        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, snapshot.0,
+        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, snapshot,
         Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &cancelled).await.is_err());
     assert_eq!(cancelled.receipt(), before);
     let limited = NativeMaterializationWork::new(WorkBudget { backend_read_operations: 1, ..allocation_budget() },
         &CancellationToken::new()).unwrap();
     assert!(prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources,
-        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, snapshot.0,
+        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, snapshot,
         Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &limited).await.is_err());
     assert!(limited.receipt().backend_read_operations <= 1);
     let retained = fixture.directory.path().join("source-proof-retained");
     std::fs::rename(&fixture.native, &retained).unwrap();
     std::fs::create_dir(&fixture.native).unwrap();
     assert!(prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources,
-        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, snapshot.0,
+        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, snapshot,
         Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.is_err());
     assert_eq!(std::fs::read(retained.join("untouched.txt")).unwrap(), b"original native bytes");
 }

@@ -373,7 +373,7 @@ impl FuseOpenFile {
 
     fn settle(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         match self {
-            Self::Source(file) => file.settle_with_meter(work),
+            Self::Source(file) => file.settle(work),
             Self::Deferred(file) => file.settle(work),
         }
     }
@@ -394,7 +394,7 @@ fn fuse_source_chunk(bytes: &[u8], work: &crate::NativeMaterializationWork)
     let length = bytes.len() as u64;
     fuse_copy_admit(length, work)?;
     let original = work.clone();
-    let mut allocation = original.claim(length).map_err(NativeMountError::from)?;
+    let mut allocation = original.claim(length, u64::from((length) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
     let mut buffer = Vec::new();
     buffer.try_reserve_exact(bytes.len()).map_err(NativeMountError::Allocation)?;
     allocation.reconcile_capacity(buffer.capacity() as u64).map_err(NativeMountError::from)?;
@@ -402,7 +402,7 @@ fn fuse_source_chunk(bytes: &[u8], work: &crate::NativeMaterializationWork)
     fuse_copy_record(length, work)?;
     let logical_owned_bytes = allocation.bytes();
     let owned = acyclic_stream::OwnedBytes::from_vec_with_guard(
-        buffer, allocation, original.runtime_meter_owner(),
+        buffer, allocation, original.runtime_meter(),
     ).map_err(|failure| match failure.into_error() {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
             NativeMountError::from(original.runtime_error(error))
@@ -717,7 +717,7 @@ impl DeferredOpenFile {
                 .map_err(MountSourceError::from)).transpose()?
         };
         match opened {
-            Some(opened) => opened.settle_with_meter(work),
+            Some(opened) => opened.settle(work),
             None => Ok(()),
         }
     }
@@ -2055,7 +2055,7 @@ impl ProjectionCore {
         let mut core = Self::new(source, state, budget, &cancellation)?;
         core.allocation_custody = Some(custody.clone());
         let entry = InodeEntry::new(FuseOwned::empty(MountPath::root()), root, stamp, 1, native).map_err(NativeMountError::from)?;
-        core.native_allocation = Some(materialization.claim(std::mem::size_of::<Self>() as u64)?);
+        core.native_allocation = Some(materialization.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), crate::WorkCounters::UNCHARGED)?);
         core.state.get_mut().unwrap_or_else(PoisonError::into_inner).by_inode =
             HashMap::from([(ROOT_INODE, entry)]);
         let bytes = std::mem::size_of::<(FuseOwned<MountPath>, u64)>() as u64;
@@ -2227,8 +2227,6 @@ fn clone_fatal_source_error(error: &MountSourceError) -> Option<MountSourceError
             MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled),
         MountSourceError::OriginalSnapshotUnavailable => MountSourceError::OriginalSnapshotUnavailable,
         MountSourceError::Indeterminate => MountSourceError::Indeterminate,
-        MountSourceError::NativeRecordMaterializationInProgress =>
-            MountSourceError::NativeRecordMaterializationInProgress,
         MountSourceError::Allocation(error) => MountSourceError::Allocation(error.clone()),
         MountSourceError::ServicesNotInitialized => MountSourceError::ServicesNotInitialized,
         MountSourceError::ServiceUnavailable(error) => MountSourceError::ServiceUnavailable(Arc::clone(error)),
@@ -2306,7 +2304,7 @@ fn fatal_handler_error(error: &NativeMountError) -> bool {
             matches!(error.semantic_error(), MountSourceError::Work(_) | MountSourceError::Cancelled
                 | MountSourceError::Allocation(_) | MountSourceError::ServicesNotInitialized
                 | MountSourceError::ServiceUnavailable(_) | MountSourceError::OriginalSnapshotUnavailable
-                | MountSourceError::Indeterminate | MountSourceError::NativeRecordMaterializationInProgress
+                | MountSourceError::Indeterminate
                 | MountSourceError::Filesystem(crate::FsError::Work(_) | crate::FsError::Cancelled(_))
                 | MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)
                     | crate::kernel::NamespacePathError::Cancelled
@@ -2325,7 +2323,7 @@ fn source_callback_errno(error: &MountSourceError) -> i32 {
         MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_errno(&error.source),
         MountSourceError::NativeText { kind, .. } =>
             super::native_source_text_errno(*kind),
-        MountSourceError::Io(error) | MountSourceError::NativeRecordIo(error, _) =>
+        MountSourceError::Io(error, _) =>
             error.raw_os_error().unwrap_or(libc::EIO),
         MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) => libc::ECANCELED,
         MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)) => libc::EIO,
@@ -2768,7 +2766,7 @@ impl FuseRetirementHelper {
     ) -> Result<Self, NativeMountError> {
         let normal = work.allocation_work();
         let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process(
-            5, normal.runtime_meter_owner(),
+            5, normal.runtime_meter(),
         ).map_err(|error| normal.runtime_error(error))?;
         // Reserve the bounded observation and termination loops, including reap.
         let observed = 3_001_u64 + 3_000 + 5_001 + 5_000 + 1;
@@ -2987,7 +2985,7 @@ impl FusePhysicalSession {
                 if error.raw_os_error() != Some(libc::EPERM) { return Err(error.into()); }
                 let helper = retirement_helper.as_mut().ok_or(
                     NativeMountError::CapabilityUnavailable(
-                        "no canonical fusermount helper is available for retirement".into(),
+                        "no canonical fusermount helper is available for retirement",
                     ),
                 )?;
                 helper.retire(std::ffi::CStr::from_bytes_with_nul(&mount.path)
@@ -3117,7 +3115,7 @@ impl FuseSession {
         }).map_err(NativeMountError::from)?;
         let normal = materialization.allocation_work();
         let retirement_helper = FuseRetirementHelper::prepare(&normal)?;
-        let control_allocation = normal.claim(std::mem::size_of::<FuseDriverControl>() as u64)
+        let control_allocation = normal.claim(std::mem::size_of::<FuseDriverControl>() as u64, u64::from((std::mem::size_of::<FuseDriverControl>() as u64) != 0), crate::WorkCounters::UNCHARGED)
             .map_err(NativeMountError::from)?;
         let control = Arc::new(FuseDriverControl {
             state: Mutex::new(FuseDriverControlState {
@@ -3135,7 +3133,9 @@ impl FuseSession {
         });
         let allocation = normal.claim(std::mem::size_of::<(
             Arc<FuseDriverControl>, crate::NativeAllocation,
-        )>() as u64).map_err(NativeMountError::from)?;
+        )>() as u64, u64::from((std::mem::size_of::<(
+            Arc<FuseDriverControl>, crate::NativeAllocation,
+        )>() as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
         let job = (Arc::clone(&control), allocation);
         materialization.charge(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
@@ -3151,7 +3151,9 @@ impl FuseSession {
         let mut loan = FuseDriverLoan::take(&control)?;
         let allocation = normal.claim(std::mem::size_of::<(
             Arc<FuseDriverControl>, crate::NativeAllocation,
-        )>() as u64).map_err(NativeMountError::from)?;
+        )>() as u64, u64::from((std::mem::size_of::<(
+            Arc<FuseDriverControl>, crate::NativeAllocation,
+        )>() as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
         let job = (Arc::clone(&control), allocation);
         materialization.charge(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
@@ -3395,7 +3397,7 @@ impl FuseRecoveryControl {
 
     pub(super) fn retire_controls(&mut self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         if let Some(helper) = &mut self.helper {
-            helper.terminate(Some(work.runtime_meter())).map_err(|error| work.runtime_error(error))?;
+            helper.terminate(Some(work.runtime_meter().as_ref())).map_err(|error| work.runtime_error(error))?;
         }
         self.helper.take();
         self.helper_work.take();
@@ -3437,7 +3439,7 @@ impl FuseRecoveryControl {
             let spawned = crate::native_host::unix_name_with_work(
                 destination.as_os_str(), &mut &*work, |path, work| {
                     acyclic_native_runtime::ProcessTree::spawn_closed_measured(
-                        program, &[c"-u", c"-q", c"-z", c"--", path], work.runtime_meter(), &mut self.helper,
+                        program, &[c"-u", c"-q", c"-z", c"--", path], work.runtime_meter().as_ref(), &mut self.helper,
                     ).map_err(|error| work.runtime_error(error))
                 },
             );
@@ -3451,7 +3453,7 @@ impl FuseRecoveryControl {
         loop {
             let status = {
                 let helper = self.helper.as_mut().expect("accepted helper remains owned");
-                helper.try_wait(Some(work.runtime_meter())).map_err(|error| work.runtime_error(error))?
+                helper.try_wait(Some(work.runtime_meter().as_ref())).map_err(|error| work.runtime_error(error))?
             };
             if status.is_some() { break; }
             if self.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
@@ -3531,7 +3533,7 @@ fn fuse_recovery_helper(
         }
     }
     Err(NativeMountError::CapabilityUnavailable(
-        "no canonical fusermount helper is available for crash recovery".into(),
+        "no canonical fusermount helper is available for crash recovery",
     ))
 }
 
@@ -3761,7 +3763,7 @@ impl FuseProjection {
             let stamp = source.view_stamp_with_meter(work)?;
             match (&open_file, current.through) {
                 (Some(open_file), _) => {
-                    self.source_write(work, || open_file.file(work)?.set_attributes_with_meter(metadata, changes.size, work)
+                    self.source_write(work, || open_file.file(work)?.set_attributes(metadata, changes.size, work)
                         .map_err(FuseRequestError::from))?;
                     Resolved {
                         lookup: open_file.file(work)?.lookup_with_meter(work).map_err(FuseRequestError::from)?,
@@ -3992,7 +3994,7 @@ impl FuseProjection {
         let _names = self.core.names()?;
         let path = fuse_clone_path(self.core.state()?.path(inode)?, work)?;
         let stamp = source.view_stamp_with_meter(work)?;
-        let target = source.read_link_with_meter(&path, work).map_err(FuseRequestError::from)?;
+        let target = source.read_link(&path, work).map_err(FuseRequestError::from)?;
         let target = fuse_owned_source_chunk(target, work)?;
         // The kernel keeps the target it receives.
         self.core.state()?.admit_attributes(source, inode, stamp, work)?;
@@ -4245,10 +4247,8 @@ impl FuseProjection {
             }
         } else {
             let metadata = create_metadata(mode, S_IFREG, request.uid(), request.gid());
-            let created = self.source_write(work, || match proof {
-                Some(proof) => source.create_absent_file(path, metadata, proof, work),
-                None => source.create_file_with_meter(path, metadata, work),
-            }.map_err(FuseRequestError::from))?;
+            let created = self.source_write(work, || source.create_file(path, metadata, proof, work)
+                .map_err(FuseRequestError::from))?;
             let claimed = claim(created.node.file_id)?;
             (
                 created,
@@ -4606,11 +4606,11 @@ impl FuseProjection {
                     Ok(file) => file,
                     Err(error) => { DeferredOpenFile::discard_packet(value, work)?; return Err(error.into()); }
                 };
-                file.write_attribute_with_meter(name.as_bytes(), value, mode, work)
+                file.write_attribute(name.as_bytes(), value, mode, work)
             }
             AttributeTarget::Path(path) => {
                 self.core.source.as_ref()
-                    .write_attribute_with_meter(&path, name.as_bytes(), value, mode, work)
+                    .write_attribute(&path, name.as_bytes(), value, mode, work)
             }
         }.map_err(FuseRequestError::from))
     }
@@ -4618,9 +4618,9 @@ impl FuseProjection {
     fn read_named_attribute(&self, inode: u64, name: &OsStr, work: &crate::NativeMaterializationWork) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, FuseRequestError> {
         let _names = self.core.names()?;
         let value = match self.attributes_to_read(inode, work)? {
-            Some(AttributeTarget::Handle(open_file)) => open_file.file(work)?.read_attribute_with_meter(name.as_bytes(), work),
+            Some(AttributeTarget::Handle(open_file)) => open_file.file(work)?.read_attribute(name.as_bytes(), work),
             Some(AttributeTarget::Path(path)) => {
-                self.core.source.as_ref().read_attribute_with_meter(&path, name.as_bytes(), work)
+                self.core.source.as_ref().read_attribute(&path, name.as_bytes(), work)
             }
             None => Ok(None),
         }
@@ -4671,8 +4671,8 @@ impl FuseProjection {
         let _names = self.core.names()?;
         let target = self.attributes_to_write(inode, work)?;
         self.source_write(work, || match target {
-            AttributeTarget::Handle(open_file) => open_file.file(work)?.remove_attribute_with_meter(name.as_bytes(), work),
-            AttributeTarget::Path(path) => self.core.source.as_ref().remove_attribute_with_meter(&path, name.as_bytes(), work),
+            AttributeTarget::Handle(open_file) => open_file.file(work)?.remove_attribute(name.as_bytes(), work),
+            AttributeTarget::Path(path) => self.core.source.as_ref().remove_attribute(&path, name.as_bytes(), work),
         }
         .map_err(|error| match error {
             MountSourceError::NotFound => FuseRequestError::Errno(libc::ENODATA),
@@ -5701,7 +5701,7 @@ mod tests {
         ).map_err(|(cause, _)| cause)?;
         let mut control = super::FuseRecoveryControl::default();
         acyclic_native_runtime::ProcessTree::spawn_closed_measured(
-            c"/bin/sleep", &[c"60"], creator.runtime_meter(), &mut control.helper,
+            c"/bin/sleep", &[c"60"], creator.runtime_meter().as_ref(), &mut control.helper,
         ).map_err(|error| creator.runtime_error(error))?;
         control.helper_work = Some(creator.clone());
         control.deadline = Some(std::time::Instant::now() + Duration::from_secs(30));
@@ -5752,7 +5752,7 @@ mod tests {
         ).map_err(|(cause, _)| cause)?;
         let mut control = super::FuseRecoveryControl::default();
         acyclic_native_runtime::ProcessTree::spawn_closed_measured(
-            c"/bin/sleep", &[c"60"], creator.runtime_meter(), &mut control.helper,
+            c"/bin/sleep", &[c"60"], creator.runtime_meter().as_ref(), &mut control.helper,
         ).map_err(|error| creator.runtime_error(error))?;
         control.helper_work = Some(creator.clone());
         let denied = crate::NativeMaterializationWork::new(crate::WorkBudget {
@@ -6260,7 +6260,7 @@ mod tests {
     fn a_confirmation_at_a_position_lapses_when_its_name_changes()
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, _) = shared_sources()?;
-        let file = source.create_file(&name("a"), FileMetadata::default())?;
+        let file = crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("a"), FileMetadata::default(), None, work))?;
         super::super::adapter::boundary(source.cancellation(), |work| source.hard_link(&name("a"), &name("b"), work))?;
         let file_id = file.node.file_id;
         let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
@@ -6276,13 +6276,13 @@ mod tests {
 
         // The name changes after the page was read, before it is emitted.
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&name("b"), Some(file_id), work))?;
-        source.create_file(&name("b"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("b"), FileMetadata::default(), None, work))?;
         assert!(!name_is_bound(&confirmed, &source, file_id, &name("b"), &work).expect("name history"));
         // A sibling changing leaves another name's confirmation standing.
         let mut sibling = HashMap::new();
         let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
         confirm_name(&mut sibling, file_id, super::FuseOwned::empty(name("a")), Some(stamp), &work).expect("confirmed name");
-        source.create_file(&name("c"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("c"), FileMetadata::default(), None, work))?;
         assert!(name_is_bound(&sibling, &source, file_id, &name("a"), &work).expect("name history"));
         Ok(())
     }
@@ -6291,7 +6291,7 @@ mod tests {
     fn node_facts_follow_the_node_and_directory_facts_its_listing()
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, _) = shared_sources()?;
-        let file = source.create_file(&name("file"), FileMetadata::default())?;
+        let file = crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("file"), FileMetadata::default(), None, work))?;
         let directory = super::super::adapter::boundary(source.cancellation(), |work| source.create_directory(&name("directory"), FileMetadata::default(), work))?;
         let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
         let mut file_entry = InodeEntry::new(super::FuseOwned::empty(name("file")), file, Some(stamp), 1, &super::fuse_fixture_work()).unwrap();
@@ -6301,14 +6301,11 @@ mod tests {
         assert!(file_entry.lacks_named_attributes(&source, &work).expect("node history"));
 
         // Names changing around a node leave its facts current...
-        source.create_file(&name("sibling"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("sibling"), FileMetadata::default(), None, work))?;
         super::super::adapter::boundary(source.cancellation(), |work| source.hard_link(&name("sibling"), &name("alias"), work))?;
         assert_eq!(file_entry.current_facts(&source, &work).expect("node history"), Some(stamp));
         // ...but not a directory's, whose listing they change.
-        source.create_file(
-            &name("directory").child(b"child".to_vec()),
-            FileMetadata::default(),
-        )?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("directory").child(b"child".to_vec()) , FileMetadata::default(), None, work))?;
         assert_eq!(directory_entry.current_facts(&source, &work).expect("listing history"), None);
 
         // A change to the node supersedes its facts.
@@ -6318,12 +6315,7 @@ mod tests {
         file_entry.facts = source.view_stamp();
         file_entry.lookup = source.lookup(&name("file"))?.ok_or("file")?;
         assert!(file_entry.lacks_named_attributes(&source, &work).expect("node history"));
-        source.write_attribute(
-            &name("file"),
-            b"user.present",
-            Bytes::from_static(b"value"),
-            MountAttributeWriteMode::Upsert,
-        )?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.write_attribute(&name("file"), b"user.present", crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"value").into(), 0), MountAttributeWriteMode::Upsert, work))?;
         assert!(!file_entry.lacks_named_attributes(&source, &work).expect("node history"));
         Ok(())
     }
@@ -6535,7 +6527,7 @@ mod tests {
         ));
         let around = MemorySource::new(Arc::clone(&shared), config)?;
         let path = name("write-authority");
-        let created = around.create_file(&path, FileMetadata::default())?;
+        let created = crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&path, FileMetadata::default(), None, work))?;
         let original = crate::NativeMaterializationWork::new(
             FINITE_HANDLER_POLICY, &crate::CancellationToken::new(),
         ).map_err(|(cause, _)| cause)?;
@@ -6544,7 +6536,7 @@ mod tests {
         });
         let source = MemorySource::new_at_meter(
             shared, config, crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
-            original.claim(0)?, &original, Some(&original),
+            original.claim(0, 0, crate::WorkCounters::UNCHARGED)?, &original, Some(&original),
         )?.with_native_callback_guard(guard.clone());
         let source = source.into_arc_meter(&original)?;
         let core = Arc::new(super::ProjectionCore::new(
@@ -6605,7 +6597,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, around) = shared_sources()?;
         let path = name("removed-before-cancellation");
-        let created = around.create_file(&path, FileMetadata::default())?;
+        let created = crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&path, FileMetadata::default(), None, work))?;
         let source = Arc::new(source);
         let cancellation = crate::CancellationToken::new();
         let core = super::ProjectionCore::new(
@@ -6664,7 +6656,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, around) = shared_sources()?;
         let path = name("shared-original-callback");
-        around.create_file(&path, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&path, FileMetadata::default(), None, work))?;
         let source: Arc<dyn MountFilesystem> = Arc::new(source);
         let cancellation = crate::CancellationToken::new();
         let receipt = super::super::run_native_mount_handler(FINITE_HANDLER_POLICY, &cancellation, |work| {
@@ -6693,7 +6685,7 @@ mod tests {
     fn linux_installed_callbacks_observe_original_finite_mount_cancellation()
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, around) = shared_sources()?;
-        around.create_file(&name("cancelled-native-lookup"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&name("cancelled-native-lookup"), FileMetadata::default(), None, work))?;
         let volume_id = source.volume_id()?;
         let destination = tempfile::tempdir()?;
         let cancellation = crate::CancellationToken::new();
@@ -6716,7 +6708,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, _) = shared_sources()?;
         let path = name("copy-denied");
-        source.create_file(&path, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         let opened = source.open_file(&path)?;
         opened.write_range(0, Bytes::from_static(b"original"))?;
         let cancellation = crate::CancellationToken::new();
@@ -6740,7 +6732,7 @@ mod tests {
         let (source, _) = shared_sources()?;
         let source: Arc<dyn MountFilesystem> = Arc::new(source);
         let path = name("deferred-rebound");
-        let opened = source.create_file(&path, FileMetadata::default())?;
+        let opened = crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         let cancellation = crate::CancellationToken::new();
         let deferred = super::super::run_native_mount_handler(
             FINITE_HANDLER_POLICY, &cancellation, |work| {
@@ -6760,7 +6752,7 @@ mod tests {
             },
         ).map_err(|failure| failure.0)?.value;
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&path, Some(opened.node.file_id), work))?;
-        let rebound = source.create_file(&path, FileMetadata::default())?;
+        let rebound = crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         assert_ne!(rebound.node.file_id, opened.node.file_id);
         let failure = super::super::run_native_mount_handler(
             FINITE_HANDLER_POLICY, &cancellation,
@@ -6815,7 +6807,7 @@ mod tests {
         })?;
         let directory = tempfile::tempdir()?;
         let root = cap_std::fs::Dir::open_ambient_dir(directory.path(), cap_std::ambient_authority())?;
-        let control_allocation = original.claim(std::mem::size_of::<super::FuseDriverControl>() as u64)?;
+        let control_allocation = original.claim(std::mem::size_of::<super::FuseDriverControl>() as u64, u64::from((std::mem::size_of::<super::FuseDriverControl>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         let control = Arc::new(super::FuseDriverControl {
             state: super::Mutex::new(super::FuseDriverControlState {
                 sdk_session: Some(None),
@@ -6834,7 +6826,9 @@ mod tests {
         });
         let job_allocation = original.claim(std::mem::size_of::<(
             Arc<super::FuseDriverControl>, crate::NativeAllocation,
-        )>() as u64)?;
+        )>() as u64, u64::from((std::mem::size_of::<(
+            Arc<super::FuseDriverControl>, crate::NativeAllocation,
+        )>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         let job = (Arc::clone(&control), job_allocation);
         let (done, terminal) = std::sync::mpsc::sync_channel(1);
         let worker = std::thread::spawn(move || { super::run_fuse_retirement(job); done.send(()).unwrap(); });
@@ -6916,7 +6910,7 @@ mod tests {
         let (mounted_source, around) = shared_sources()?;
         let mounted_source = Arc::new(mounted_source);
         let file = name("file");
-        around.create_file(&file, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&file, FileMetadata::default(), None, work))?;
         around.write_range(&file, 0, Bytes::from_static(b"first"))?;
         let temporary = tempfile::tempdir()?;
         let mut session = mount(
@@ -6933,7 +6927,7 @@ mod tests {
 
         // Same length, same (unavailable) times: only invalidation can tell.
         around.write_range(&file, 0, Bytes::from_static(b"other"))?;
-        around.create_file(&name("added"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&name("added"), FileMetadata::default(), None, work))?;
         session.revalidate()?;
         assert_eq!(std::fs::read(&mounted)?, b"other");
         assert!(added.is_file());
@@ -7027,10 +7021,7 @@ mod tests {
             .map(|index| format!("entry-{index:04}"))
             .collect::<Vec<_>>();
         for entry in &expected {
-            inner.create_file(
-                &name("many").child(entry.as_bytes().to_vec()),
-                FileMetadata::default(),
-            )?;
+            crate::native_mount::adapter::boundary(inner.cancellation(), |work| inner.create_file(&name("many").child(entry.as_bytes().to_vec()) , FileMetadata::default(), None, work))?;
         }
         let temporary = tempfile::tempdir()?;
         let mut session = mount(
@@ -7059,10 +7050,7 @@ mod tests {
             Ok::<_, Box<dyn std::error::Error>>(())
         })?;
         // A change around the mount reaches the cached listing.
-        around.create_file(
-            &name("many").child(b"added".to_vec()),
-            FileMetadata::default(),
-        )?;
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&name("many").child(b"added".to_vec()) , FileMetadata::default(), None, work))?;
         session.revalidate()?;
         expected.push("added".to_owned());
         expected.sort();
@@ -7121,7 +7109,7 @@ mod tests {
             "a folding volume keys every spelling alike"
         );
         let volume_id = source.volume_id()?;
-        source.create_file(&name("foo"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("foo"), FileMetadata::default(), None, work))?;
         let temporary = tempfile::tempdir()?;
         let mut session = mount(Arc::new(source), volume_id, temporary.path())?;
         let at = |name: &str| temporary.path().join(name);
@@ -7158,7 +7146,7 @@ mod tests {
             .enable_all()
             .build()?;
         let file = name("file");
-        writer.create_file(&file, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(writer.cancellation(), |work| writer.create_file(&file, FileMetadata::default(), None, work))?;
         writer.write_range(&file, 0, Bytes::from_static(b"first"))?;
         writer.sync()?;
         runtime.block_on(reader.advance_to_head_async())?;
@@ -7175,7 +7163,7 @@ mod tests {
         assert_eq!(listing(temporary.path())?, ["file"]);
 
         writer.write_range(&file, 0, Bytes::from_static(b"other"))?;
-        writer.create_file(&name("added"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(writer.cancellation(), |work| writer.create_file(&name("added"), FileMetadata::default(), None, work))?;
         writer.sync()?;
         runtime.block_on(reader.advance_to_head_async())?;
         session.revalidate()?;
@@ -7263,7 +7251,7 @@ mod tests {
             capture_host_paths_with_meter(root: &Path, paths: &[MountPath], identity: crate::NativeRootIdentity, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             capture_host_subtree_with_meter(root: &Path, path: &MountPath, identity: crate::NativeRootIdentity, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             read_pinned_with_meter(path: &MountPath, pin: super::super::MountContentPin, offset: u64, length: u64, piece: u32, sink: &mut super::super::NativeMountContentSink<'_>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
-            read_link_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
+            read_link(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
             read_range_with_meter(path: &MountPath, offset: u64, length: u32, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
             read_directory_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum: u32, work: &crate::NativeMaterializationWork) -> Result<MountDirectoryPage, MountSourceError>;
             binding_epoch() -> Option<u64>;
@@ -7271,14 +7259,10 @@ mod tests {
             acquire_binding_lease(expected_epoch: Option<u64>) -> Result<Box<dyn Send>, MountSourceError>;
             open_file(path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
             detach_file(path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
-            read_link(path: &MountPath) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
             read_range(path: &MountPath, offset: u64, length: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
             seek(path: &MountPath, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError>;
             read_directory(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountDirectoryPage, MountSourceError>;
-            create_file(path: &MountPath, metadata: FileMetadata) -> Result<MountLookup, MountSourceError>;
             list_attributes(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountAttributePage, MountSourceError>;
-            write_attribute(path: &MountPath, name: &[u8], value: Bytes, mode: MountAttributeWriteMode) -> Result<(), MountSourceError>;
-            remove_attribute(path: &MountPath, name: &[u8]) -> Result<(), MountSourceError>;
             write_range(path: &MountPath, offset: u64, bytes: Bytes) -> Result<(), MountSourceError>;
             resize(path: &MountPath, logical_bytes: u64) -> Result<(), MountSourceError>;
             allocate_range(path: &MountPath, offset: u64, length: u64, operation: MountRangeAllocation) -> Result<(), MountSourceError>;
@@ -7294,13 +7278,12 @@ mod tests {
             open_file_with_lookup_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError>;
             open_created_with_meter(path: &MountPath, created: &MountLookup, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
             detach_file_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
-            create_file_with_meter(path: &MountPath, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
-            create_absent_file(path: &MountPath, metadata: FileMetadata, stamp: ViewStamp, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
+            create_file(path: &MountPath, metadata: FileMetadata, stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
             create_symbolic_link(path: &MountPath, target: crate::kernel::OwnedSourceChunk, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
             create_special(path: &MountPath, kind: MountNodeKind, device: Option<(u32,u32)>, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
             list_attributes_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum: u32, work: &crate::NativeMaterializationWork) -> Result<(super::super::MountAttributePage, crate::NativeAllocation), MountSourceError>;
-            write_attribute_with_meter(path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk, mode: super::super::MountAttributeWriteMode, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
-            remove_attribute_with_meter(path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
+            write_attribute(path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk, mode: super::super::MountAttributeWriteMode, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
+            remove_attribute(path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             clone_range_by_id(source: FileId, source_offset: u64, destination: FileId, destination_offset: u64, length: u64, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             hard_link(source: &MountPath, destination: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             folded_path_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<Option<(MountPath,u64)>, MountSourceError>;
@@ -7335,23 +7318,14 @@ mod tests {
             self.inner.lookup(path)
         }
 
-        fn read_attribute(
-            &self,
-            path: &MountPath,
-            name: &[u8],
-        ) -> Result<Option<acyclic_stream::OwnedBytes>, MountSourceError> {
-            self.record_read(path);
-            self.inner.read_attribute(path, name)
-        }
-
         fn create_directory(&self, path: &MountPath, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
             self.pass(path, &self.gated_directory);
             self.inner.create_directory(path, metadata, work)
         }
 
-        fn read_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
+        fn read_attribute(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
             self.record_read(path);
-            self.inner.read_attribute_with_meter(path, name, work)
+            self.inner.read_attribute(path, name, work)
         }
 
     }
@@ -7375,7 +7349,7 @@ mod tests {
             super::super::adapter::boundary(inner.cancellation(), |work| inner.create_directory(&name(directory), FileMetadata::default(), work))?;
         }
         let present = name("free").child(b"present".to_vec());
-        inner.create_file(&present, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(inner.cancellation(), |work| inner.create_file(&present, FileMetadata::default(), None, work))?;
         inner.write_range(&present, 0, Bytes::from_static(b"present"))?;
         let (entered, entries) = sync_channel(4);
         let (release, released) = sync_channel(4);

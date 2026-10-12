@@ -308,7 +308,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
                 key, key_owned, work);
             crate::distributed::add_condition(&mut request, CommitCondition::Absent { path: path.clone() })?;
             crate::distributed::add_record(&mut request, path.clone(), bytes.clone())?;
-            crate::distributed::commit(request, client, None, None, None, None).await?
+            crate::distributed::commit(request, client, None, None).await?
         } else {
             let mut conditions = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
             reserve_chunk_slot(&mut conditions, 1, work)?;
@@ -986,7 +986,7 @@ mod native_staging_custody_tests {
                 assert!(native.remaining().expect("last alias retains original claim").peak_allocation_bytes
                     <= budget().peak_allocation_bytes - capacity as u64);
                 let remaining = native.remaining().expect("original finite quota").peak_allocation_bytes;
-                assert!(matches!(native.claim(remaining + 1),
+                assert!(matches!(native.claim(remaining + 1, 1, acyclic_fs::WorkCounters::UNCHARGED),
                     Err(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::BudgetExceeded {
                         counter: "peak_allocation_bytes", ..
                     }))));

@@ -119,7 +119,7 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
     assert_eq!(provider.io_snapshot().reads, 0);
     assert_eq!(provider.io_snapshot().writes, 0);
     let mut remote = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default()), None, &mut None).await?;
-    remote.apply(operation, IdempotencyKey::new("remote-original-start")?,
+    remote.apply(IdempotencyKey::new("remote-original-start")?,
         SchedulerEvent::Started {
             operation_id:operation, fence:LeaseFence::from(&lease.reservation),
         }, &mut None).await?;
@@ -187,11 +187,11 @@ async fn original_reservation_proof_keeps_the_selected_old_origin_without_curren
     let native = acyclic_fs::NativeMaterializationWork::new(BUDGET, &cancellation)
         .expect("original native ledger control");
     let mut observer = crate::store::history::native_work_io(&native)?;
-    let proof = original_reservation_proof_with_work(
+    let proof = original_reservation_proof(
         &client, &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), operation, &original, &mut Some(&mut observer),
     ).await?;
     let custody = observer.into_custody();
-    assert_eq!((&proof.1), &original);
+    assert_eq!(proof.1, &original);
     assert_eq!(proof.0.operation_id, operation);
     assert_eq!(provider.io_snapshot().writes, 0);
     drop((proof, custody));
@@ -216,7 +216,7 @@ async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selector
         provider.forbid_writes.store(true, Ordering::SeqCst);
         let cancellation = CancellationToken::new();
         let mut work = HistoryWork::new(BUDGET, &cancellation);
-        let result = original_reservation_proof_with_work(
+        let result = original_reservation_proof(
             &client, &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), operation, &candidate, &mut Some(&mut work),
         ).await;
         assert!(if duplicate { matches!(result, Err(Error::Conflict(_))) }

@@ -306,8 +306,8 @@ async fn start() -> Result<Server, Box<dyn std::error::Error + Send + Sync>> {
 async fn http_exercises_every_rpc_streaming_authentication_bounds_and_semantic_errors()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server = start().await?;
-    let client = HttpObjects::new(&server.endpoint, "exact-token", 16 * 1024 * 1024)?;
-    let unauthorized = HttpObjects::new(&server.endpoint, "wrong", 1024)?;
+    let client = HttpObjects::new(&server.endpoint, "exact-token", 16 * 1024 * 1024, None)?;
+    let unauthorized = HttpObjects::new(&server.endpoint, "wrong", 1024, None)?;
     assert_eq!(
         unauthorized
             .create_bucket(wire::CreateBucketRequest {
@@ -353,7 +353,7 @@ async fn http_exercises_every_rpc_streaming_authentication_bounds_and_semantic_e
 async fn ndjson_rejects_incomplete_oversized_and_wrong_media_responses()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server = start().await?;
-    let client = HttpObjects::new(&server.endpoint, "exact-token", 512 * 1024)?;
+    let client = HttpObjects::new(&server.endpoint, "exact-token", 512 * 1024, None)?;
     client
         .create_bucket(wire::CreateBucketRequest {
             name: "customer.inputs".into(),
@@ -403,7 +403,7 @@ async fn ndjson_rejects_incomplete_oversized_and_wrong_media_responses()
             "{key}"
         );
     }
-    let bounded = HttpObjects::new(&server.endpoint, "exact-token", 8)?;
+    let bounded = HttpObjects::new(&server.endpoint, "exact-token", 8, None)?;
     assert_eq!(
         bounded
             .head_bucket(wire::HeadBucketRequest { bucket })
@@ -424,20 +424,20 @@ fn customer_credentials_and_endpoint_configuration_are_bounded() {
         "https://example.com?query=1",
         "https://example.com#fragment",
     ] {
-        assert!(HttpObjects::new(endpoint, "token", 1024).is_err());
+        assert!(HttpObjects::new(endpoint, "token", 1024, None).is_err());
     }
     for token in [
         String::new(),
         "\nsecret".into(),
         "x".repeat(super::MAX_BEARER_TOKEN_BYTES + 1),
     ] {
-        assert!(HttpObjects::new("https://example.com", &token, 1024).is_err());
+        assert!(HttpObjects::new("https://example.com", &token, 1024, None).is_err());
     }
     assert!(
-        HttpObjects::with_ca_certificate("https://example.com", "token", 1024, Some(&[])).is_err()
+        HttpObjects::new("https://example.com", "token", 1024, Some(&[])).is_err()
     );
     for endpoint in ["http://127.0.0.2:1", "http://[::1]:1", "http://localhost:1"] {
-        assert!(HttpObjects::new(endpoint, "token", 1024).is_ok());
+        assert!(HttpObjects::new(endpoint, "token", 1024, None).is_ok());
     }
 }
 
@@ -453,7 +453,7 @@ async fn http_download_trace_requires_validated_eof_and_records_cancellation()
     use tracing_subscriber::prelude::*;
 
     let server = start().await?;
-    let client = HttpObjects::new(&server.endpoint, "exact-token", 512 * 1024)?;
+    let client = HttpObjects::new(&server.endpoint, "exact-token", 512 * 1024, None)?;
     let bucket = Some(wire::BucketRef {
         name: "customer.inputs".into(),
     });
@@ -661,6 +661,7 @@ async fn http_unary_trace_waits_for_delayed_body_and_json_decode()
         &format!("http://{}", listener.local_addr()?),
         "exact-token",
         1024,
+        None,
     )?;
     let (shutdown, receive) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
@@ -817,7 +818,7 @@ fn http_chrome_export_keeps_customer_data_out_of_serialized_trace()
                         .block_on(async {
                             let server = start().await?;
                             let client =
-                                HttpObjects::new(&server.endpoint, "exact-token", 512 * 1024)?;
+                                HttpObjects::new(&server.endpoint, "exact-token", 512 * 1024, None)?;
                             client
                                 .create_bucket(wire::CreateBucketRequest {
                                     name: BUCKET.into(),
@@ -981,7 +982,7 @@ fn http_chrome_export_keeps_customer_data_out_of_serialized_trace()
 async fn http_rejects_the_obsolete_namespace_for_an_existing_bucket()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server = start().await?;
-    let client = HttpObjects::new(&server.endpoint, "exact-token", 1024)?;
+    let client = HttpObjects::new(&server.endpoint, "exact-token", 1024, None)?;
     let bucket = wire::BucketRef {
         name: "namespace.inputs".into(),
     };
@@ -1040,6 +1041,7 @@ async fn http_rejects_a_substituted_bucket()
         &format!("http://{}", listener.local_addr()?),
         "exact-token",
         1024,
+        None,
     )?;
     let (shutdown, receive) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {

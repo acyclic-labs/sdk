@@ -89,7 +89,7 @@ pub(crate) fn vec_with_capacity<T>(
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             if bytes == 0 { work.remaining()?; return Ok(values); }
-            let mut custody = work.claim(bytes)?;
+            let mut custody = work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
             values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
             let completed = custody.reconcile_capacity(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?);
             io.absorb_native_custody(custody)?;
@@ -458,18 +458,6 @@ pub enum ModelRole {
     Tool,
 }
 
-impl ModelRole {
-    /// Stable wire role name.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::User => "user",
-            Self::Assistant => "assistant",
-            Self::Tool => "tool",
-        }
-    }
-}
 
 /// Transient model-visible content. Canonical conversation storage always retains refs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1647,7 +1635,7 @@ impl<'a> NativeModelStream<'a> {
     {
         work.remaining()?;
         let bytes = std::mem::size_of::<S>() as u64;
-        let custody = if bytes == 0 { work.retain_owned(0)? } else { work.claim(bytes)? };
+        let custody = if bytes == 0 { work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)? } else { work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED)? };
         let stream = Box::pin(build());
         Ok(Self { stream, custody })
     }

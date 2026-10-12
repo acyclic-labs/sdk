@@ -23,7 +23,7 @@ pub(super) fn require_view_family<P: StreamProvider>(
 pub(super) fn copy_plan_with_io(
     plan: &TaskEffectPlan, io: &PreparationIo,
 ) -> Result<TaskEffectPlan> {
-    let mut observer = io.history_io();
+    let mut observer = io;
     Ok(TaskEffectPlan {
         provider: crate::store::history::HistoryIo::clone_text(&mut observer, &plan.provider)?,
         guarantee: plan.guarantee,
@@ -36,7 +36,7 @@ pub(super) fn copy_plan_with_io(
 pub(super) fn shared_custody(
     mut custody: NativeAllocation, work: &NativeMaterializationWork,
 ) -> Result<Arc<NativeAllocation>> {
-    let mut slot = match work.claim(std::mem::size_of::<NativeAllocation>() as u64) {
+    let mut slot = match work.claim(std::mem::size_of::<NativeAllocation>() as u64, u64::from((std::mem::size_of::<NativeAllocation>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED) {
         Ok(slot) => slot,
         Err(cause) => return Err(Error::NativeWork { cause, custody: Some(custody) }),
     };
@@ -69,7 +69,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             use crate::filesystem::native_contract::validation_error;
             require_view_family(view.as_ref(), work)?;
             owner.verify_with_native_work(false, work).await?;
-            owner.require_effect_grants(&plan.provider, false, &mut Some(&mut io.history_io()))?;
+            owner.require_effect_grants(&plan.provider, false, &mut Some(&mut &io))?;
             owner.validate_input_file(&plan.request, Some(&io))?;
             owner.validate_input_file(&plan.result_schema, Some(&io))?;
             if authority.history_limits.maximum_events == 0 || authority.history_limits.maximum_bytes == 0 {
@@ -139,8 +139,8 @@ pub(super) fn assemble<P: StreamProvider>(
     authority: NativeProcessAuthority, work: &NativeMaterializationWork,
 ) -> Result<NativeProcessProvider<P>> {
     let effect_id = crate::effect_host::task_effect_id(owner.task_binding().0, command,
-        &mut Some(&mut io.history_io()))?;
-    let history = HistoryReader::new(&owner.stream(), authority.verifier.audience(), &authority.verifier, &mut Some(&mut io.history_io()))?;
+        &mut Some(&mut &io))?;
+    let history = HistoryReader::new(&owner.stream(), authority.verifier.audience(), &authority.verifier, &mut Some(&mut &io))?;
     let plan = arc(plan, &io)?;
     let authority = arc(authority, &io)?;
     let history = arc(history, &io)?;

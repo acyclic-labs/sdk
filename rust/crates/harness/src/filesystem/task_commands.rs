@@ -35,7 +35,7 @@ macro_rules! command_record {
 }
 
 command_record!(
-    TimerTaskCommand, TaskObserveCommand, TaskCancelCommand,
+    TimerTaskCommand, TaskObserveCommand, TaskCancelCommand, CommittedMailResult,
     TaskAdmitCommand => TaskAdmitCommand,
     PreparedTaskAdmitCommand => PreparedTaskAdmitCommand,
     ModelTaskCommand => ModelTaskCommand,
@@ -357,7 +357,7 @@ where
         &self, context: WorkerContext, fence: LeaseFence, command: WorkflowCommand,
         payload: Value, reconciliation_only: bool, io: Option<&super::PreparationIo>,
     ) -> Result<TaskCommandProgress> {
-        use super::task_runtime::observed::{boundary, clone_fence};
+        use super::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
         let task = context.context().durable_task_id().ok_or_else(|| {
             boundary(io, ErrorCode::Unauthorized, "command has no admitted task")
@@ -380,29 +380,8 @@ where
         }
         self.runtime.owner_observed(task, &fence, reconciliation_only, io).await?;
         let progress = match command.kind.as_str() {
-            TOOL_TASK_COMMAND_KIND => {
-                match context {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    WorkerContext::Native(shared) => {
-                        let io = io.ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native tool requires original observer" })?;
-                        let work = io.original_native_work().ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native tool requires original work" })?;
-                        self.tool_command_with_native_work(task, shared, &fence, command.operation_id, payload, reconciliation_only, io, work).await
-                    }
-                    WorkerContext::Ordinary(context) => {
-                        if reconciliation_only {
-                            let operation = super::task_runtime::execution_operation(task, command.operation_id, None)?;
-                            let journal = self.runtime.execution_journal(task, fence.clone(), command.operation_id).await?;
-                            let mut replay = crate::executor::ExecutionReplay::new(operation);
-                            let mut dispatched = false;
-                            while let Some(page) = replay.next_page(journal.as_ref(), None).await? {
-                                dispatched |= page.iter().any(|record| matches!(record.event, crate::executor::ExecutionEvent::ToolStarted { .. }));
-                            }
-                            if !dispatched { return mail::reconciled(io); }
-                        }
-                        self.tool_command(task, context, fence.clone(), command.operation_id, payload).await
-                    }
-                }
-            }
+            TOOL_TASK_COMMAND_KIND => self.tool_command(task, context, &fence,
+                command.operation_id, payload, reconciliation_only, io).await,
             MODEL_TASK_COMMAND_KIND => {
                 let receive = if admission.task.name == "acyclic.stock_turn" {
                     self.stock_mail_operation(task, &fence, command.operation_id, io).await?
@@ -494,7 +473,7 @@ where
                 let owner = self.runtime.task_host().journal_owner_with_native_work(task, fence, work).await?
                     .into_native_shared(work)?;
                 let mut preparation = owner.resource_preparation_with_native_work(request, work)?.await?;
-                let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64)?;
+                let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64, u64::from((std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
                 preparation.native_custody.as_mut().ok_or_else(|| boundary(Some(io), ErrorCode::Unauthorized,
                     "native preparation has no original metadata custody"))?.absorb(&mut header)
                     .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
@@ -889,305 +868,269 @@ where
     }
 
     async fn model_command(
-        &self, task: TaskId, _context: WorkerContext, fence: &LeaseFence,
+        &self, task: TaskId, context: WorkerContext, fence: &LeaseFence,
         turn: OperationId, payload: Value, reconciliation_only: bool,
         io: Option<&super::PreparationIo>, receive: Option<OperationId>,
     ) -> Result<TaskCommandProgress> {
+        use super::task_runtime::observed::boundary;
+        use crate::wire::ErrorCode;
         #[cfg(not(target_arch = "wasm32"))]
-        if let WorkerContext::Native(_) = &_context {
-            let io = io.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native model requires original observer" })?;
-            io.original_native_work().ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native model requires original work" })?;
+        if let WorkerContext::Native(_) = &context {
+            let io = io.ok_or_else(|| boundary(io, ErrorCode::Unsupported, "native model requires original observer"))?;
+            io.original_native_work().ok_or_else(|| boundary(Some(io), ErrorCode::Unsupported, "native model requires original work"))?;
         }
         let mut input: ModelTaskCommand = mail::decode_command(payload, io)?;
         input.mailbox_operation = input.mailbox_operation.or(receive);
-        #[cfg(not(target_arch = "wasm32"))]
-        if let WorkerContext::Native(context) = _context {
-            let io = io.expect("native model observer checked before decoding");
-            let work = io.original_native_work().expect("native model work checked before decoding");
-            let binding = self.model.as_ref().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported, reason: "model command provider is not bound",
-            })?;
-            let (journal, operation) = self.runtime.execution_journal_with_native_work(
-                task, fence, turn, work,
-            ).await?;
-            if reconciliation_only {
-                let dispatched = std::sync::atomic::AtomicBool::new(false);
-                let replay = crate::executor::replay_execution_with_native_work(
-                    journal.as_ref(), operation, 0,
-                    |event| {
-                        if matches!(event, crate::executor::ExecutionEvent::ModelStarted { .. }) {
-                            dispatched.store(true, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        false
-                    }, work,
-                )?.await?;
-                drop(replay);
-                if !dispatched.load(std::sync::atomic::Ordering::Relaxed) {
-                    return mail::reconciled(Some(io));
-                }
-            }
-            if let Some(receive) = input.mailbox_operation {
-                let item = self.committed_mail_input(task, fence, turn, receive, context.context(), Some(io)).await?;
-                let copy_operation = crate::durable_host::received_copy_operation(task, receive, Some(io))?;
-                let copy_path = crate::contract::preparation_format(format_args!("mailbox/{receive}/parcel"), Some(io))?;
-                let _path = io.guard_owned(copy_path.capacity() as u64)?;
-                let retained = context.context().observe_staged_file_once_with_native_work(copy_operation, work).await?;
-                io.absorb_native_custody(retained.1)?;
-                let copy = match retained.0 {
-                    Some(file) => file,
-                    None if reconciliation_only => return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Storage,
-                        reason: "started steered model has no retained receiver parcel",
-                    }),
-                    None => {
-                        let bytes = context.context().read_received_mail(receive, &item, &mut Some(&mut io.history_io())).await?;
-                        self.runtime.owner_observed(task, fence, false, Some(io)).await?;
-                        let staged = context.context().stage_file_once_with_native_work(
-                            copy_operation, &copy_path, &bytes,
-                            item.payload.descriptor().media_type(), item.payload.display_name(), work,
-                        ).await?;
-                        io.absorb_native_custody(staged.1)?;
-                        self.runtime.owner_observed(task, fence, false, Some(io)).await?;
-                        staged.0
-                    }
-                };
-                if copy.path() != copy_path
-                    || copy.descriptor() != item.payload.descriptor()
-                    || copy.display_name() != item.payload.display_name()
-                {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                        reason: "receiver parcel receipt differs from original mail" });
-                }
-                let mut parts = match input.input {
-                    ModelContent::Text(text) => {
-                        let mut parts = Vec::new();
-                        crate::executor::stock_vec_push(&mut parts,
-                            crate::model::ModelContentPart::Text { text }, Some(io))?;
-                        parts
-                    }
-                    ModelContent::Part(part) => {
-                        let mut parts = Vec::new();
-                        crate::executor::stock_vec_push(&mut parts, part, Some(io))?;
-                        parts
-                    }
-                    ModelContent::Parts(parts) => parts,
-                };
-                crate::executor::stock_vec_push(&mut parts, crate::model::ModelContentPart::File {
-                    file: copy, policy: crate::model::FileProjectionPolicy::BoundedFull,
-                }, Some(io))?;
-                input.input = ModelContent::Parts(parts);
-                drop(item);
-            }
-            let context = match &input.selected_output_volume {
-                Some(volume) => context.with_output_volume_with_native_work(volume, work).await?,
-                None => context,
-            };
-            let executor = self.runtime.stock_executor_with_native_work(
-                task, fence, operation, &context, &binding.model, Arc::clone(&binding.provider),
-                &binding.context, &journal, work,
-            )?;
-            let executor = executor.with_compaction_policy_with_native_work(&binding.compaction, work)?;
-            let executor = match input.max_output_tokens {
-                Some(maximum) => executor.with_max_output_tokens(maximum)?,
-                None => executor,
-            };
-            io.retain_owned(std::mem::size_of::<TurnInput>().saturating_sub(std::mem::size_of::<ModelTaskCommand>()) as u64)?;
-            let input = TurnInput {
-                operation_id: operation, input: input.input,
-                selected_context: input.selected_context, max_steps: input.max_steps,
-            };
-            let result = if reconciliation_only {
-                executor.execute_reconcile_progress_with_native_context(&context, &input, journal.as_ref(), work)?.await
-            } else {
-                executor.execute_progress_with_native_context(&context, &input, journal.as_ref(), work)?.await
-            };
+        let binding = self.model.as_ref().ok_or_else(|| boundary(
+            io, ErrorCode::Unsupported, "model command provider is not bound"))?;
+        let (journal, operation) = 'journal: {
             #[cfg(not(target_arch = "wasm32"))]
-            let result = match result {
-                Err(error) if error.is_native_failure() => return Err(error),
-                result => result,
-            };
-            if reconciliation_only {
-                match result {
-                    Ok((progress, custody)) => { drop(progress); drop(custody); }
-                    Err(Error::Indeterminate(_)) => {}
-                    Err(error) => return Err(error),
-                }
-                return if journal.is_quiescent_with_native_work(work)?.await? {
-                    mail::reconciled(Some(io))
-                } else { Ok(TaskCommandProgress::Indeterminate) };
+            if let WorkerContext::Native(_) = &context {
+                let work = io.and_then(super::PreparationIo::original_native_work).ok_or_else(|| boundary(
+                    io, ErrorCode::Unsupported, "native model requires original work"))?;
+                let (journal, operation) = self.runtime.execution_journal_with_native_work(task, fence, turn, work).await?;
+                break 'journal (Some(journal), operation);
             }
-            let (progress, custody) = result?;
-            io.absorb_native_custody(custody)?;
-            return match progress {
-                StockTurnProgress::Ready(output) => ready(Outcome::Succeeded(output), Some(io)),
-                StockTurnProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
-                StockTurnProgress::Rejected(reason) => {
-                    let (message, custody) = work.display(&reason)?;
-                    io.absorb_native_custody(custody)?;
-                    ready(Outcome::<Value>::Failed { message }, Some(io))
-                }
-            };
-        }
-        Box::pin(async {
-            let fence = fence.clone();
             let journal = if reconciliation_only {
-                let journal = self.runtime.execution_journal(task, fence.clone(), turn).await?;
-                let operation = super::task_runtime::execution_operation(task, turn, None)?;
-                let mut replay = crate::executor::ExecutionReplay::new(operation);
-                let mut dispatched = false;
-                while let Some(page) = replay.next_page(journal.as_ref(), None).await? {
-                    dispatched |= page.iter().any(|record| {
-                        matches!(record.event, crate::executor::ExecutionEvent::ModelStarted { .. })
-                    });
-                }
-                if !dispatched {
-                    return Ok(TaskCommandProgress::Ready(Value::Null));
-                }
-                Some(journal)
-            } else {
-                None
-            };
-            if let Some(receive) = input.mailbox_operation {
-                let context = self.runtime.task_context(task, fence.clone()).await?;
-                let item = self.committed_mail_input(task, &fence, turn, receive, &context, None).await?;
-                let copy_operation = crate::durable_host::received_copy_operation(task, receive, None)?;
-                let copy_path = format!("mailbox/{receive}/parcel");
-                let copy = match context.observe_staged_file_once(copy_operation).await? {
-                    Some(file) => file,
-                    None if reconciliation_only => return Err(Error::Storage(
-                        "started steered model has no retained receiver parcel".into())),
-                    None => {
-                        let bytes = context.read_received_mail(receive, &item, &mut None).await?;
-                        self.runtime.task_host().verify_dispatch_owner(task, fence.clone()).await?;
-                        let file = context.stage_file_once(copy_operation, &copy_path, &bytes,
-                            item.payload.descriptor().media_type(), item.payload.display_name()).await?;
-                        self.runtime.task_host().verify_dispatch_owner(task, fence.clone()).await?;
-                        file
+                Some(self.runtime.execution_journal(task, fence.clone(), turn).await?)
+            } else { None };
+            break 'journal (journal, super::task_runtime::execution_operation(task, turn, io)?);
+        };
+        if reconciliation_only && !was_dispatched(journal.as_ref().expect("reconciliation opened its journal").as_ref(),
+            operation, MODEL_TASK_COMMAND_KIND, io).await? {
+            return mail::reconciled(io);
+        }
+        if let Some(receive) = input.mailbox_operation {
+            let copy = match &context {
+                #[cfg(not(target_arch = "wasm32"))]
+                WorkerContext::Native(context) => {
+                    let io = io.expect("native model has its original observer");
+                    let work = io.original_native_work().expect("native model has its original work");
+                    let item = self.committed_mail_input(task, fence, turn, receive, context.context(), Some(io)).await?;
+                    let copy_operation = crate::durable_host::received_copy_operation(task, receive, Some(io))?;
+                    let copy_path = crate::contract::preparation_format(format_args!("mailbox/{receive}/parcel"), Some(io))?;
+                    let _path = io.guard_owned(copy_path.capacity() as u64)?;
+                    let (call_id, _call_id) = work.display(&copy_operation)?;
+                    let publisher = ToolContext::new_with_native_work(Arc::clone(context), copy_operation, &call_id, work)?;
+                    let retained = publisher.observe_staged_file_once_with_native_work(copy_operation, work).await?;
+                    io.absorb_native_custody(retained.1)?;
+                    let copy = match retained.0 {
+                        Some(file) => file,
+                        None if reconciliation_only => return Err(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Storage,
+                            reason: "started steered model has no retained receiver parcel",
+                        }),
+                        None => {
+                            let bytes = context.context().read_received_mail(receive, &item, &mut Some(&mut io.history_io())).await?;
+                            self.runtime.owner_observed(task, fence, false, Some(io)).await?;
+                            let staged = context.context().stage_file_once_with_native_work(
+                                copy_operation, &copy_path, &bytes,
+                                item.payload.descriptor().media_type(), item.payload.display_name(), work,
+                            ).await?;
+                            io.absorb_native_custody(staged.1)?;
+                            self.runtime.owner_observed(task, fence, false, Some(io)).await?;
+                            staged.0
+                        }
+                    };
+                    if copy.path() != copy_path
+                        || copy.descriptor() != item.payload.descriptor()
+                        || copy.display_name() != item.payload.display_name()
+                    {
+                        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                            reason: "receiver parcel receipt differs from original mail" });
                     }
-                };
-                if copy.path() != copy_path || copy.descriptor() != item.payload.descriptor()
-                    || copy.display_name() != item.payload.display_name()
-                {
-                    return Err(Error::Conflict("receiver parcel receipt differs from original mail".into()));
+                    copy
                 }
-                let mut parts = match input.input {
-                    ModelContent::Text(text) => vec![crate::model::ModelContentPart::Text { text }],
-                    ModelContent::Part(part) => vec![part],
-                    ModelContent::Parts(parts) => parts,
-                };
-                parts.push(crate::model::ModelContentPart::File {
-                    file: copy, policy: crate::model::FileProjectionPolicy::BoundedFull,
-                });
-                input.input = ModelContent::Parts(parts);
-            }
-            let binding = self
-                .model
-                .as_ref()
-                .ok_or_else(|| Error::Unsupported("model command provider is not bound".into()))?;
-            let execution = self
-                .runtime
-                .stock_execution(
-                    task,
-                    fence,
-                    turn,
-                    binding.model.clone(),
-                    binding.provider.clone(),
-                    binding.context.clone(),
-                    input.selected_output_volume.as_ref(),
-                )
-                .await?
-                .with_compaction_policy(binding.compaction.clone());
-            let execution = match input.max_output_tokens {
-                Some(maximum) => execution.with_max_output_tokens(maximum)?,
-                None => execution,
-            };
-            let turn = TurnInput {
-                operation_id: execution.operation_id(),
-                input: input.input,
-                selected_context: input.selected_context,
-                max_steps: input.max_steps,
-            };
-            if let Some(journal) = journal {
-                match execution.reconcile_progress(turn).await {
-                    Ok(_) | Err(Error::Indeterminate(_)) => {}
-                    Err(error) => return Err(error),
+                WorkerContext::Ordinary(_) => {
+                    let context = self.runtime.task_context(task, fence.clone()).await?;
+                    let item = self.committed_mail_input(task, fence, turn, receive, &context, None).await?;
+                    let copy_operation = crate::durable_host::received_copy_operation(task, receive, None)?;
+                    let copy_path = format!("mailbox/{receive}/parcel");
+                    let copy = match context.observe_staged_file_once(copy_operation, None).await? {
+                        Some(file) => file,
+                        None if reconciliation_only => return Err(boundary(io, ErrorCode::Storage,
+                            "started steered model has no retained receiver parcel")),
+                        None => {
+                            let bytes = context.read_received_mail(receive, &item, &mut None).await?;
+                            self.runtime.task_host().verify_dispatch_owner(task, fence.clone()).await?;
+                            let file = context.stage_file_once(copy_operation, &copy_path, &bytes,
+                                item.payload.descriptor().media_type(), item.payload.display_name()).await?;
+                            self.runtime.task_host().verify_dispatch_owner(task, fence.clone()).await?;
+                            file
+                        }
+                    };
+                    if copy.path() != copy_path || copy.descriptor() != item.payload.descriptor()
+                        || copy.display_name() != item.payload.display_name() {
+                        return Err(boundary(io, ErrorCode::Conflict,
+                            "receiver parcel receipt differs from original mail"));
+                    }
+                    copy
                 }
-                return Ok(if journal.is_quiescent().await? {
-                    TaskCommandProgress::Ready(Value::Null)
-                } else {
-                    TaskCommandProgress::Indeterminate
-                });
+            };
+            let mut parts = match input.input {
+                ModelContent::Text(text) => {
+                    let mut parts = Vec::new();
+                    crate::executor::stock_vec_push(&mut parts, crate::model::ModelContentPart::Text { text }, io)?;
+                    parts
+                }
+                ModelContent::Part(part) => {
+                    let mut parts = Vec::new();
+                    crate::executor::stock_vec_push(&mut parts, part, io)?;
+                    parts
+                }
+                ModelContent::Parts(parts) => parts,
+            };
+            crate::executor::stock_vec_push(&mut parts, crate::model::ModelContentPart::File {
+                file: copy, policy: crate::model::FileProjectionPolicy::BoundedFull,
+            }, io)?;
+            input.input = ModelContent::Parts(parts);
+        }
+        let output_volume = input.selected_output_volume;
+        let maximum = input.max_output_tokens;
+        if let Some(io) = io {
+            io.retain_owned(std::mem::size_of::<TurnInput>().saturating_sub(std::mem::size_of::<ModelTaskCommand>()) as u64)?;
+        }
+        let input = TurnInput { operation_id: operation, input: input.input,
+            selected_context: input.selected_context, max_steps: input.max_steps };
+        let progress = match context {
+            #[cfg(not(target_arch = "wasm32"))]
+            WorkerContext::Native(context) => {
+                let io = io.expect("native model has its original observer");
+                let work = io.original_native_work().expect("native model has its original work");
+                let context = match &output_volume {
+                    Some(volume) => context.with_output_volume_with_native_work(volume, work).await?,
+                    None => context,
+                };
+                let journal = journal.as_ref().expect("native model opened its journal");
+                let executor = self.runtime.stock_executor_with_native_work(task, fence, operation,
+                    &context, &binding.model, Arc::clone(&binding.provider), &binding.context, journal, work)?;
+                let executor = executor.with_compaction_policy_with_native_work(&binding.compaction, work)?;
+                let executor = match maximum { Some(maximum) => executor.with_max_output_tokens(maximum)?, None => executor };
+                let result = if reconciliation_only {
+                    executor.execute_reconcile_progress_with_native_context(&context, &input, journal.as_ref(), work)?.await
+                } else { executor.execute_progress_with_native_context(&context, &input, journal.as_ref(), work)?.await };
+                if reconciliation_only {
+                    match result {
+                        Ok((progress, custody)) => { drop(progress); drop(custody); }
+                        Err(Error::Indeterminate(_)) => {}
+                        Err(error) => return Err(error),
+                    }
+                    return if journal.is_quiescent(Some(io)).await? {
+                        mail::reconciled(Some(io))
+                    } else { Ok(TaskCommandProgress::Indeterminate) };
+                }
+                let (progress, custody) = result?;
+                io.absorb_native_custody(custody)?;
+                progress
             }
-            let progress = execution.execute_progress(turn).await?;
-            match progress {
-                StockTurnProgress::Ready(output) => ready(Outcome::Succeeded(output), None),
-                StockTurnProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
-                StockTurnProgress::Rejected(reason) => ready(Outcome::<Value>::Failed {
-                    message: reason.to_string(),
-                }, None),
+            WorkerContext::Ordinary(_) => {
+                let execution = self.runtime.stock_execution(task, fence.clone(), turn,
+                    binding.model.clone(), Arc::clone(&binding.provider), binding.context.clone(), output_volume.as_ref())
+                    .await?.with_compaction_policy(binding.compaction.clone());
+                let execution = match maximum { Some(maximum) => execution.with_max_output_tokens(maximum)?, None => execution };
+                if let Some(journal) = journal {
+                    match execution.reconcile_progress(input).await {
+                        Ok(_) | Err(Error::Indeterminate(_)) => {}
+                        Err(error) => return Err(error),
+                    }
+                    return if journal.is_quiescent(io).await? { mail::reconciled(io) }
+                        else { Ok(TaskCommandProgress::Indeterminate) };
+                }
+                execution.execute_progress(input).await?
             }
-        }).await
+        };
+        match progress {
+            StockTurnProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
+            StockTurnProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
+            StockTurnProgress::Rejected(reason) => rejected(reason, io),
+        }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn tool_command_with_native_work(
-        &self, task: TaskId, context: Arc<crate::runtime::NativeTaskContext>, fence: &LeaseFence,
-        turn: OperationId, payload: Value, reconciliation_only: bool,
-        io: &super::PreparationIo, work: &acyclic_fs::NativeMaterializationWork,
+    async fn tool_command(
+        &self, task: TaskId, context: WorkerContext, fence: &LeaseFence,
+        turn: OperationId, payload: Value, reconciliation_only: bool, io: Option<&super::PreparationIo>,
     ) -> Result<TaskCommandProgress> {
-        let input: ToolTaskCommand = mail::decode_command(payload, Some(io))?;
-        let definition = self.runtime.tool_definition(&input.name, &input.revision, Some(io))?;
-        let (journal, operation) = self.runtime.execution_journal_with_native_work(task, fence, turn, work).await?;
-        if reconciliation_only {
-            let dispatched = std::sync::atomic::AtomicBool::new(false);
-            let replay = crate::executor::replay_execution_with_native_work(
-                journal.as_ref(), operation, 0,
-                |event| {
-                    if matches!(event, crate::executor::ExecutionEvent::ToolStarted { .. }) {
-                        dispatched.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    false
-                }, work,
-            )?.await?;
-            drop(replay);
-            if !dispatched.load(std::sync::atomic::Ordering::Relaxed) {
-                return mail::reconciled(Some(io));
-            }
+        use super::task_runtime::observed::boundary;
+        use crate::wire::ErrorCode;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let WorkerContext::Native(_) = &context {
+            let io = io.ok_or_else(|| boundary(io, ErrorCode::Unsupported, "native tool requires original observer"))?;
+            io.original_native_work().ok_or_else(|| boundary(Some(io), ErrorCode::Unsupported, "native tool requires original work"))?;
         }
-        let invocation = tool_invocation(context.context(), operation, definition, input.arguments, Some(io))?;
-        let tool_context = ToolContext::new_with_native_work(Arc::clone(&context), operation, &invocation.call_id, work)?;
-        let tool_context = self.runtime.bind_native_tool_interactions(
-            tool_context, task, fence, turn, Arc::clone(&journal), work,
-        )?;
-        if !reconciliation_only {
-            let records = journal.replay_with_native_work(operation, 0, 1, work)?.await?;
-            let empty = records.0.is_empty();
+        let input: ToolTaskCommand = mail::decode_command(payload, io)?;
+        let definition = self.runtime.tool_definition(&input.name, &input.revision, io)?;
+        let (journal, operation) = 'journal: {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let WorkerContext::Native(_) = &context {
+                let work = io.and_then(super::PreparationIo::original_native_work).ok_or_else(|| boundary(
+                    io, ErrorCode::Unsupported, "native tool requires original work"))?;
+                break 'journal self.runtime.execution_journal_with_native_work(task, fence, turn, work).await?;
+            }
+            break 'journal (self.runtime.execution_journal(task, fence.clone(), turn).await?,
+                super::task_runtime::execution_operation(task, turn, io)?);
+        };
+        if reconciliation_only && !was_dispatched(journal.as_ref(), operation, TOOL_TASK_COMMAND_KIND, io).await? {
+            return mail::reconciled(io);
+        }
+        let context = match context {
+            WorkerContext::Ordinary(context) => WorkerContext::Ordinary(
+                self.runtime.bind_context_interactions(context, task, Arc::clone(&journal))?),
+            #[cfg(not(target_arch = "wasm32"))]
+            context => context,
+        };
+        let limits = context.context().scope().limits();
+        let invocation = tool_invocation(context.context(), operation, definition, input.arguments, io)?;
+        let context = match context {
+            #[cfg(not(target_arch = "wasm32"))]
+            WorkerContext::Native(context) => {
+                let work = io.and_then(super::PreparationIo::original_native_work).expect("native tool has its original work");
+                let context = ToolContext::new_with_native_work(context, operation, &invocation.call_id, work)?;
+                self.runtime.bind_native_tool_interactions(context, task, fence, turn, Arc::clone(&journal), work)?
+            }
+            WorkerContext::Ordinary(context) => ToolContext::new(context, operation, invocation.call_id.clone())?,
+        };
+        if !reconciliation_only || io.is_none() {
+            let _records;
+            let before = io.map(super::PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            let records = journal.replay_page(operation, 0, 1, false, io).await?;
+            _records = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+                .ok_or_else(|| boundary(Some(io), ErrorCode::Invalid, "tool replay custody underflows"))?)).transpose()?;
+            let empty = records.is_empty();
             drop(records);
+            drop(_records);
             if empty {
-                match tool_context.authorize_tool(definition, &invocation, work).await {
+                let approved = 'approval: {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = io.and_then(super::PreparationIo::original_native_work) {
+                        break 'approval context.authorize_tool(definition, &invocation, work).await;
+                    }
+                    break 'approval context.task().authorize_tool(definition, &invocation).await;
+                };
+                match approved {
                     Ok(Some(_)) => return Ok(TaskCommandProgress::Pending),
                     Ok(None) => {}
-                    Err(error) if error.is_native_failure() => return Err(error),
-                    Err(Error::InteractionRejected(reason)) => {
-                        let (message, custody) = work.display(&reason)?;
-                        io.absorb_native_custody(custody)?;
-                        return ready(Outcome::<Value>::Failed { message }, Some(io));
-                    }
+                    Err(Error::InteractionRejected(reason)) => return rejected(reason, io),
                     Err(error) => return Err(error),
                 }
             }
         }
-        let runner = DurableToolRunner::new_with_native_work(self.runtime.tool_registry(), journal, work)?
-            .with_limits(context.context().scope().limits())?;
-        let (outcome, custody) = if reconciliation_only {
-            runner.reconcile_with_native_context(task, operation, definition, &invocation.arguments, &tool_context, work)?.await?
-        } else {
-            runner.run_with_native_context(task, operation, definition, &invocation.arguments, &tool_context, work)?.await?
+        let outcome = 'outcome: {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(io) = io {
+                let work = io.original_native_work().expect("native tool has its original work");
+                let runner = DurableToolRunner::new_with_native_work(self.runtime.tool_registry(), journal, work)?.with_limits(limits)?;
+                let (outcome, custody) = if reconciliation_only {
+                    runner.reconcile_with_native_context(task, operation, definition, &invocation.arguments, &context, work)?.await?
+                } else { runner.run_with_native_context(task, operation, definition, &invocation.arguments, &context, work)?.await? };
+                io.absorb_native_custody(custody)?;
+                break 'outcome outcome;
+            }
+            let runner = DurableToolRunner::new(self.runtime.tool_registry().clone(), journal).with_limits(limits)?;
+            break 'outcome runner.run_with_context(task, operation, definition.clone(), invocation.arguments, context).await?;
         };
-        io.absorb_native_custody(custody)?;
         match outcome {
             Outcome::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
-            outcome => ready(outcome, Some(io)),
+            outcome => ready(outcome, io),
         }
     }
 
@@ -1294,54 +1237,44 @@ where
         Ok(item)
     }
 
-    async fn tool_command(
-        &self,
-        task: TaskId,
-        context: TaskContext,
-        fence: LeaseFence,
-        turn: OperationId,
-        payload: Value,
-    ) -> Result<TaskCommandProgress> {
-        let input: ToolTaskCommand = mail::decode_command(payload, None)?;
-        let definition = self.runtime.tool_definition(&input.name, &input.revision, None)?;
-        let journal = self.runtime.execution_journal(task, fence, turn).await?;
-        let context = self
-            .runtime
-            .bind_context_interactions(context, task, journal.clone())?;
-        let operation = super::task_runtime::execution_operation(task, turn, None)?;
-        if journal.replay(operation, 0, 1).await?.is_empty() {
-            let invocation = tool_invocation(&context, operation, &definition, input.arguments.clone(), None)?;
-            match context
-                .authorize_tool(&definition, &invocation)
-                .await
-            {
-                Ok(Some(_)) => return Ok(TaskCommandProgress::Pending),
-                Ok(None) => {}
-                Err(Error::InteractionRejected(reason)) => {
-                    return ready(Outcome::<Value>::Failed {
-                        message: reason.to_string(),
-                    }, None);
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        let limits = context.scope().limits();
-        let runner =
-            DurableToolRunner::new(self.runtime.tool_registry().clone(), journal).with_limits(limits)?;
-        let outcome = runner
-            .run_with_context(
-                task,
-                operation,
-                definition.clone(),
-                input.arguments,
-                ToolContext::new(context, operation, operation.to_string())?,
-            )
-            .await?;
-        match outcome {
-            Outcome::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
-            outcome => ready(outcome, None),
+
+}
+
+async fn was_dispatched(
+    journal: &dyn ExecutionJournal, operation: OperationId, kind: &str, io: Option<&super::PreparationIo>,
+) -> Result<bool> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(io) = io {
+        let work = io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
+            Some(io), crate::wire::ErrorCode::Unsupported, "dispatch replay requires original work"))?;
+        if !journal.supports_native_execution(work)? {
+            return Err(super::task_runtime::observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported,
+                "native execution journal is unavailable"));
         }
     }
+    let dispatched = std::sync::atomic::AtomicBool::new(false);
+    crate::executor::replay_execution(journal, operation, 0, |event| {
+        if matches!((kind, event),
+            (MODEL_TASK_COMMAND_KIND, crate::executor::ExecutionEvent::ModelStarted { .. })
+            | (TOOL_TASK_COMMAND_KIND, crate::executor::ExecutionEvent::ToolStarted { .. })) {
+            dispatched.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        false
+    }, io).await?;
+    Ok(dispatched.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+fn rejected(reason: crate::InteractionRejection, io: Option<&super::PreparationIo>) -> Result<TaskCommandProgress> {
+    let message = 'message: {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            let (message, custody) = io.original_native_work().expect("native rejection has original work").display(&reason)?;
+            io.absorb_native_custody(custody)?;
+            break 'message message;
+        }
+        break 'message reason.to_string();
+    };
+    ready(Outcome::<Value>::Failed { message }, io)
 }
 
 fn tool_invocation(

@@ -32,8 +32,8 @@ impl Journal {
             }
             StoredBody::Composite { parts, length } => {
                 let mut output = Vec::new();
-                publication.reserve(&mut output, parts.values.len())?;
-                for body in parts.values.iter() {
+                publication.reserve(&mut output, parts.value.len())?;
+                for body in parts.value.iter() {
                     output.push(self.prepare_inline(body, bytes, publication)?);
                 }
                 composite_publication(output, *length, publication)
@@ -80,8 +80,8 @@ impl Journal {
                 while let Some(((offset, digest), length)) = entries.next() {
                     if !batch.holds(&digest) {
                         // Compaction closes this handle before journal replacement.
-                        let bytes = match &publication.meter {
-                            Some(meter) => futures::executor::block_on(
+                        let bytes = match &publication.native {
+                            Some((meter, _)) => futures::executor::block_on(
                                 crate::physical::read_body_at(
                                     &self.root, &digest, length,
                                     &LocalBodyLocation::Journal { offset },
@@ -111,7 +111,7 @@ impl Journal {
                 )?;
                 for (name, _) in &state.buckets.clone() {
                     let bucket = state.buckets.get_mut(name).ok_or(Error::from(Unavailable))?;
-                    let mut relocation = Publication::new(publication.meter.clone());
+                    let mut relocation = Publication::new(publication.native.as_ref().map(|(meter, _)| Arc::clone(meter)));
                     let mut relocated = Vec::new();
                     for (key, object) in bucket.objects.iter() {
                         if let Some(body) =
@@ -227,7 +227,7 @@ fn journal_bodies(
             out.insert((*offset, *digest), *length);
         }
         StoredBody::Composite { parts, .. } => {
-            for part in parts.values.iter() {
+            for part in parts.value.iter() {
                 journal_bodies(part, out, publication)?;
             }
         }

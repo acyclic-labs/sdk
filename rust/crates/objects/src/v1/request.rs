@@ -1,5 +1,6 @@
 //! Shared validation for every logical Objects provider and transport.
 use super::{Error, wire};
+use prost::Message;
 use wire::ErrorCode::InvalidArgument;
 
 /// Canonical body/completion discipline after a validated upload header.
@@ -37,36 +38,6 @@ impl UploadFraming {
     }
 }
 
-/// Canonical incremental identity for a streamed publication. Frame boundaries are excluded.
-pub struct BodyDigest {
-    header: Vec<u8>,
-    operation: &'static str,
-    body: blake3::Hasher,
-    bytes: u64,
-}
-impl BodyDigest {
-    /// Adds decoded body bytes, enforcing the single-put/part size ceiling.
-    pub fn update(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        let size = self
-            .bytes
-            .checked_add(bytes.len() as u64)
-            .ok_or(Error::from(wire::ErrorCode::QuotaExceeded))?;
-        upload_length(size)?;
-        self.body.update(bytes);
-        self.bytes = size;
-        Ok(())
-    }
-    /// Returns the versioned retry digest after the complete body has arrived.
-    #[must_use]
-    pub fn finish(self) -> [u8; 32] {
-        finish_digest(
-            self.operation,
-            &self.header,
-            self.bytes,
-            *self.body.finalize().as_bytes(),
-        )
-    }
-}
 /// Checks the maximum decoded size of a single PUT or multipart part.
 pub fn upload_length(size: u64) -> Result<(), Error> {
     if size > 5 * 1024 * 1024 * 1024 {
@@ -77,7 +48,6 @@ pub fn upload_length(size: u64) -> Result<(), Error> {
 
 /// Validates a canonical binary request before any transport or provider side effect.
 pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<(), Error> {
-    use prost::Message;
     if bytes.len() > 16 * 1024 * 1024 {
         return Err(wire::ErrorCode::QuotaExceeded.into());
     }
@@ -100,50 +70,23 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
             delete_bucket_digest(&decode!(DeleteBucketRequest))?;
         }
         "objects/put" => {
-            put_stream_digest(&decode!(PutObjectHeader))?;
+            put(&decode!(PutObjectHeader))?;
             upload_length(body_length)?;
         }
         "objects/get" => { get(&decode!(GetObjectRequest))?; }
-        "objects/head" => {
-            let value = decode!(HeadObjectRequest);
-            bucket(&value.bucket)?;
-            key(&value.object_key)?;
-            read_filters(&value.if_match, &value.if_none_match)?;
-        }
+        "objects/head" => { head(&decode!(HeadObjectRequest))?; }
         "objects/delete" => {
             delete_digest(&decode!(DeleteObjectRequest))?;
         }
-        "objects/list" => {
-            let value = decode!(ListObjectsRequest);
-            bucket(&value.bucket)?;
-            page_size(value.page_size)?;
-            if value.prefix.len() > 1024
-                || value.delimiter.len() > 1024
-                || value.prefix.contains('\0')
-                || value.delimiter.contains('\0')
-                || value.continuation_token.len() > 8192
-                || value.continuation_token.contains('\0')
-            {
-                return Err(InvalidArgument.into());
-            }
-        }
+        "objects/list" => { list(&decode!(ListObjectsRequest))?; }
         "multipart/create" => {
             create_multipart_digest(&decode!(CreateMultipartRequest))?;
         }
         "multipart/upload-part" => {
-            upload_part_stream_digest(&decode!(UploadPartHeader))?;
+            upload_part(&decode!(UploadPartHeader))?;
             upload_length(body_length)?;
         }
-        "multipart/list-parts" => {
-            let value = decode!(ListPartsRequest);
-            bucket(&value.bucket)?;
-            key(&value.object_key)?;
-            upload_id(&value.upload_id)?;
-            page_size(value.page_size)?;
-            if value.after_part_number > 10_000 {
-                return Err(InvalidArgument.into());
-            }
-        }
+        "multipart/list-parts" => { list_parts(&decode!(ListPartsRequest))?; }
         "multipart/complete" => {
             complete_multipart_digest(&decode!(CompleteMultipartRequest))?;
         }
@@ -154,6 +97,36 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
     }
     Ok(())
 }
+pub(crate) fn head(query: &wire::HeadObjectRequest) -> Result<&str, Error> {
+    if query.encoded_len() > 16 * 1024 * 1024 { return Err(wire::ErrorCode::QuotaExceeded.into()); }
+    let name = bucket(&query.bucket)?;
+    key(&query.object_key)?;
+    read_filters(&query.if_match, &query.if_none_match)?;
+    Ok(name)
+}
+
+pub(crate) fn list(query: &wire::ListObjectsRequest) -> Result<(&str, usize), Error> {
+    if query.encoded_len() > 16 * 1024 * 1024 { return Err(wire::ErrorCode::QuotaExceeded.into()); }
+    let name = bucket(&query.bucket)?;
+    let limit = page_size(query.page_size)?;
+    if query.prefix.len() > 1024 || query.delimiter.len() > 1024
+        || query.prefix.contains('\0') || query.delimiter.contains('\0')
+        || query.continuation_token.len() > 8192 || query.continuation_token.contains('\0') {
+        return Err(InvalidArgument.into());
+    }
+    Ok((name, limit))
+}
+
+pub(crate) fn list_parts(query: &wire::ListPartsRequest) -> Result<(&str, usize), Error> {
+    if query.encoded_len() > 16 * 1024 * 1024 { return Err(wire::ErrorCode::QuotaExceeded.into()); }
+    let name = bucket(&query.bucket)?;
+    key(&query.object_key)?;
+    upload_id(&query.upload_id)?;
+    let limit = page_size(query.page_size)?;
+    if query.after_part_number > 10_000 { return Err(InvalidArgument.into()); }
+    Ok((name, limit))
+}
+
 pub(crate) fn get(query: &wire::GetObjectRequest) -> Result<&str, Error> {
     if prost::Message::encoded_len(query) > 16 * 1024 * 1024 { return Err(wire::ErrorCode::QuotaExceeded.into()); }
     let name = bucket(&query.bucket)?;
@@ -197,47 +170,32 @@ pub(crate) fn put(header: &wire::PutObjectHeader) -> Result<&str, Error> {
     identity(&header.mutation)?;
     Ok(name)
 }
-/// Starts canonical header/body hashing for a streaming PUT. Retry identity is excluded.
-pub fn put_stream_digest(header: &wire::PutObjectHeader) -> Result<BodyDigest, Error> {
+/// Validates a PUT and hashes its complete decoded body without the retry key.
+pub fn put_digest(header: &wire::PutObjectHeader, body: &[u8]) -> Result<[u8; 32], Error> {
     put(header)?;
+    upload_length(body.len() as u64)?;
     let mut normalized = header.clone();
     normalized.mutation = None;
-    Ok(BodyDigest {
-        header: prost::Message::encode_to_vec(&normalized),
-        operation: "put",
-        body: blake3::Hasher::new(),
-        bytes: 0,
-    })
+    Ok(finish_digest("put", &prost::Message::encode_to_vec(&normalized),
+        body.len() as u64, *blake3::hash(body).as_bytes()))
 }
-/// Validates a PUT and hashes exactly the complete decoded bytes.
-pub fn put_digest(header: &wire::PutObjectHeader, body: &[u8]) -> Result<[u8; 32], Error> {
-    let mut digest = put_stream_digest(header)?;
-    digest.update(body)?;
-    Ok(digest.finish())
-}
-/// Starts canonical header/body hashing for one staged multipart part.
-pub fn upload_part_stream_digest(header: &wire::UploadPartHeader) -> Result<BodyDigest, Error> {
+
+pub(crate) fn upload_part(header: &wire::UploadPartHeader) -> Result<(), Error> {
     bucket(&header.bucket)?;
     key(&header.object_key)?;
     upload_id(&header.upload_id)?;
     identity(&header.mutation)?;
-    if !(1..=10_000).contains(&header.part_number) {
-        return Err(InvalidArgument.into());
-    }
+    if !(1..=10_000).contains(&header.part_number) { return Err(InvalidArgument.into()); }
+    Ok(())
+}
+/// Validates a multipart publication and hashes its decoded body without the retry key.
+pub fn upload_part_digest(header: &wire::UploadPartHeader, body: &[u8]) -> Result<[u8; 32], Error> {
+    upload_part(header)?;
+    upload_length(body.len() as u64)?;
     let mut normalized = header.clone();
     normalized.mutation = None;
-    Ok(BodyDigest {
-        header: prost::Message::encode_to_vec(&normalized),
-        operation: "upload_part",
-        body: blake3::Hasher::new(),
-        bytes: 0,
-    })
-}
-/// Validates a part publication and hashes its complete decoded bytes.
-pub fn upload_part_digest(header: &wire::UploadPartHeader, body: &[u8]) -> Result<[u8; 32], Error> {
-    let mut digest = upload_part_stream_digest(header)?;
-    digest.update(body)?;
-    Ok(digest.finish())
+    Ok(finish_digest("upload_part", &prost::Message::encode_to_vec(&normalized),
+        body.len() as u64, *blake3::hash(body).as_bytes()))
 }
 /// Validates and hashes logical bucket creation, excluding the caller retry key.
 pub fn create_bucket_digest(value: &wire::CreateBucketRequest) -> Result<[u8; 32], Error> {
@@ -503,7 +461,7 @@ pub fn range(
 mod tests {
     use super::*;
     #[test]
-    fn streamed_digest_excludes_frame_boundaries_and_retry_identity() -> Result<(), Error> {
+    fn mutation_digest_excludes_retry_identity() -> Result<(), Error> {
         let header = wire::PutObjectHeader {
             bucket: Some(wire::BucketRef {
                 name: "customer.inputs".into(),
@@ -519,17 +477,12 @@ mod tests {
         changed_identity.mutation = Some(wire::MutationIdentity {
             idempotency_key: "second".into(),
         });
-        let mut streamed = put_stream_digest(&changed_identity)?;
-        streamed.update(b"whole-")?;
-        streamed.update(b"body")?;
-        assert_eq!(streamed.finish(), expected);
+        assert_eq!(put_digest(&changed_identity, b"whole-body")?, expected);
         assert_ne!(put_digest(&header, b"different")?, expected);
         changed_identity.object_key = "different".into();
         assert_ne!(put_digest(&changed_identity, b"whole-body")?, expected);
-        let mut full = put_stream_digest(&header)?;
-        full.bytes = 5 * 1024 * 1024 * 1024;
         assert_eq!(
-            full.update(b"x").err().map(|error| error.code),
+            upload_length(5 * 1024 * 1024 * 1024 + 1).err().map(|error| error.code),
             Some(wire::ErrorCode::QuotaExceeded)
         );
         Ok(())

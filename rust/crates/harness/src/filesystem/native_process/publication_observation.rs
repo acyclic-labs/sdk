@@ -15,8 +15,9 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "published native metadata requires a selected Project volume"));
         }
-        if !self.authority.content.supports_read(self.plan.request.volume(), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?
-            || !self.authority.result_content.supports_read(self.authority.results.volume(), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))? {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        if !self.authority.content.supports_read(self.plan.request.volume(), Some(&io))?
+            || !self.authority.result_content.supports_read(self.authority.results.volume(), Some(&io))? {
             return Err(boundary(crate::wire::ErrorCode::Unsupported,
                 "published native metadata requires actual finite request and result readers"));
         }
@@ -72,7 +73,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         &self, attempt: crate::EffectAttemptId, project: &VolumeRef,
         work: &NativeMaterializationWork,
     ) -> Result<(LazySnapshotRef, NativeAllocation)> {
-        let custody = work.retain_owned(std::mem::size_of::<(LazySnapshotRef, NativeAllocation)>() as u64)
+        let custody = work.claim(std::mem::size_of::<(LazySnapshotRef, NativeAllocation)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(Error::from)?;
         let (before, before_custody) = self.owner.outcome_with_native_work(work).await?;
         if before.is_none() { self.owner.verify_with_native_work(true, work).await?; }
@@ -100,8 +101,10 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
                 "published native metadata has no pinned original result"));
         }
         self.owner.require_volume_grant_with_native_work(result.volume(), VolumeOperation::Read, work)?;
-        let bytes = self.authority.result_content.read(result, u64::from(request.as_ref().maximum_result_bytes), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
-        let (result, result_custody) = NativeProcessResult::decode_with_native_work(bytes.as_ref(), work)?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let bytes = self.authority.result_content.read(result, u64::from(request.as_ref().maximum_result_bytes), Some(&io))?.await?;
+        let (result, result_custody) = crate::filesystem::native_decoded(io.decode(
+            std::marker::PhantomData::<NativeProcessResult>, &bytes, crate::wire::ErrorCode::Storage)?)?;
         if result.stop.as_ref().is_some_and(|stop| !stop.cleanup_completed) {
             return Err(Error::Indeterminate(self.command));
         }

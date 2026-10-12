@@ -118,7 +118,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     let detached_source = NativeDemandSource::open(
         std::borrow::Cow::Borrowed(std::path::Path::new(&root)), FilesystemProfile::Portable, VolumeLimits::default(), Some(advanced), None, &work, (&work).cancellation(),
     ).await?;
-    let original = work.runtime_meter_owner();
+    let original = work.runtime_meter();
     let original_weak = Arc::downgrade(&original);
     drop(original);
     work.receipt().verify(budget)?;
@@ -295,7 +295,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
             .ok_or("retry did not publish the companion binding")?;
         assert_eq!(state.source, reference);
         let snapshot = lazy.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
-            WorkBudget::UNBOUNDED, &cancellation,
+            WorkBudget::UNBOUNDED, &CancellationToken::new(),
         )).await?;
         assert_eq!(snapshot.workspace_id, original.workspace_id());
         assert_eq!(snapshot.authored_generation, head);
@@ -378,7 +378,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     ).await.err().ok_or("foreign source adopted an original binding")?;
     assert!(matches!(rejected.error.semantic_error(), LazyWorkspaceError::StaleSource));
     rejected.work.verify(budget)?;
-    assert_eq!(store.load_lazy_workspace(workspace_id).await?, Some(rebound.value));
+    assert_eq!(store.load_lazy_workspace(workspace_id).await?.as_ref(), Some(rebound.value.as_state()));
     assert_eq!(fs.open_workspace("epoch-attachment", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
     assert_eq!(observer.0.load(Ordering::SeqCst), 0);
     Ok(())

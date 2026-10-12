@@ -3,10 +3,9 @@
 use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
 };
-use crate::performance::{MeasuredResult, OperationFailure, WorkBudget, WorkCounters};
+use crate::performance::{MeasuredResult, OperationFailure};
 use acyclic_stream::OwnedBytes;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use thiserror::Error;
 
 /// Canonical bytes hashed in addition to one object's body.
@@ -135,108 +134,6 @@ pub enum FenceOutcome {
     },
 }
 
-/// Storage-only authority interface.
-pub trait AuthorityStore: Send + Sync {
-    /// Creates one authority at the supplied non-zero genesis epoch.
-    fn create_authority(
-        &self,
-        authority_id: AuthorityId,
-        genesis_epoch: Epoch,
-        budget: WorkBudget,
-    ) -> AuthorityResult<CreateAuthorityOutcome>;
-
-    /// Returns the linearizable current head.
-    fn head(&self, authority_id: AuthorityId, budget: WorkBudget) -> AuthorityResult<Head>;
-
-    /// Atomically checks epoch/head/idempotency and durably appends one operation.
-    fn compare_and_append(
-        &self,
-        authority_id: AuthorityId,
-        epoch: Epoch,
-        expected: Head,
-        commit: ProposedCommit,
-        budget: WorkBudget,
-    ) -> AuthorityResult<AppendOutcome>;
-
-    /// Replays a contiguous bounded page after `sequence`.
-    fn replay(
-        &self,
-        authority_id: AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        budget: WorkBudget,
-    ) -> AuthorityResult<Vec<DurableCommit>>;
-
-    /// Atomically compares the complete head, advances its epoch, and permanently fences prior writers.
-    fn fence(
-        &self,
-        authority_id: AuthorityId,
-        expected: Head,
-        budget: WorkBudget,
-    ) -> AuthorityResult<FenceOutcome>;
-
-    /// Looks up a durable operation for exact retry resolution.
-    fn find_operation(
-        &self,
-        authority_id: AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-    ) -> AuthorityResult<Option<DurableCommit>>;
-}
-
-impl<T: AuthorityStore + ?Sized> AuthorityStore for Arc<T> {
-    fn create_authority(
-        &self,
-        authority_id: AuthorityId,
-        genesis_epoch: Epoch,
-        budget: WorkBudget,
-    ) -> AuthorityResult<CreateAuthorityOutcome> {
-        (**self).create_authority(authority_id, genesis_epoch, budget)
-    }
-
-    fn head(&self, authority_id: AuthorityId, budget: WorkBudget) -> AuthorityResult<Head> {
-        (**self).head(authority_id, budget)
-    }
-
-    fn compare_and_append(
-        &self,
-        authority_id: AuthorityId,
-        epoch: Epoch,
-        expected: Head,
-        commit: ProposedCommit,
-        budget: WorkBudget,
-    ) -> AuthorityResult<AppendOutcome> {
-        (**self).compare_and_append(authority_id, epoch, expected, commit, budget)
-    }
-
-    fn replay(
-        &self,
-        authority_id: AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        budget: WorkBudget,
-    ) -> AuthorityResult<Vec<DurableCommit>> {
-        (**self).replay(authority_id, after, limit, budget)
-    }
-
-    fn fence(
-        &self,
-        authority_id: AuthorityId,
-        expected: Head,
-        budget: WorkBudget,
-    ) -> AuthorityResult<FenceOutcome> {
-        (**self).fence(authority_id, expected, budget)
-    }
-
-    fn find_operation(
-        &self,
-        authority_id: AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-    ) -> AuthorityResult<Option<DurableCommit>> {
-        (**self).find_operation(authority_id, operation_id, budget)
-    }
-}
 
 /// One failed authority operation retaining exact spent work.
 pub type AuthorityFailure = OperationFailure<AuthorityStoreError>;
@@ -506,16 +403,16 @@ impl HashedObject {
         cancellation: &crate::CancellationToken,
     ) -> Result<Self, ObjectStoreError> {
         cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
-        let hash = WorkCounters {
+        let hash = crate::WorkCounters {
             bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?
                 .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
                 .ok_or(crate::WorkError::Overflow)?,
-            ..WorkCounters::default()
+            ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
         let object_id = ObjectId { kind, digest: object_digest(kind, &bytes) };
         work.record_admitted(hash)?;
-        work.admit(WorkCounters::default())?;
+        work.admit(crate::WorkCounters::default())?;
         cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
         Ok(Self { object_id, bytes })
     }
@@ -534,21 +431,21 @@ impl HashedObject {
         if !work.shares_ledger(allocation.work()) || allocation.bytes() < capacity {
             return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout.into());
         }
-        let hash = WorkCounters {
+        let hash = crate::WorkCounters {
             bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?
                 .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
                 .ok_or(crate::WorkError::Overflow)?,
-            ..WorkCounters::default()
+            ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
         let object_id = ObjectId { kind, digest: object_digest(kind, bytes) };
         work.record_admitted(hash)?;
-        work.admit(WorkCounters::default())?;
+        work.admit(crate::WorkCounters::default())?;
         cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
         let payload_allocation = allocation.split_off(capacity)?;
         let payload_original = payload_allocation.work().clone();
         let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
-            std::mem::take(bytes), payload_allocation, payload_original.runtime_meter_owner(),
+            std::mem::take(bytes), payload_allocation, payload_original.runtime_meter(),
         ).map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => payload_original.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
@@ -653,107 +550,6 @@ pub type ObjectFailure = OperationFailure<ObjectStoreError>;
 /// Receipt-bearing immutable-object result. Failure never erases spent work.
 pub type ObjectResult<T> = MeasuredResult<crate::OperationReceipt<T>, ObjectStoreError>;
 
-/// Immutable digest-addressed object storage interface.
-pub trait ObjectStore: Send + Sync {
-    /// Admits canonical bytes under their verified identity.
-    fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()>;
-
-    /// Admits an ordered bounded group through one backend batch operation.
-    fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()>;
-
-    /// Reads exactly the requested range or returns a typed error.
-    fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-    ) -> ObjectResult<ObjectRead>;
-
-    /// Reads against the caller's original native work and allocation journal.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_with_native_work(
-        &self,
-        _object_id: ObjectId,
-        _maximum_bytes: u64,
-        _work: &crate::materializer::NativeMaterializationWork,
-        _cancellation: &crate::CancellationToken,
-    ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
-        Err(ObjectStoreError::NativeUnavailable)
-    }
-
-    /// Reads an ordered batch of complete bounded objects.
-    fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-    ) -> ObjectResult<Vec<ObjectRead>>;
-
-    /// Executes this provider's actual batch under the original native journal.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_many_with_native_work(
-        &self,
-        _requests: &[ObjectReadRequest],
-        _work: &crate::materializer::NativeMaterializationWork,
-        _cancellation: &crate::CancellationToken,
-    ) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
-        Err(ObjectStoreError::NativeUnavailable)
-    }
-
-    /// Returns whether the exact typed object is present and verified.
-    fn contains(&self, object_id: ObjectId, budget: WorkBudget) -> ObjectResult<bool>;
-}
-
-impl<T: ObjectStore + ?Sized> ObjectStore for Arc<T> {
-    fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()> {
-        (**self).put(object_id, bytes, budget)
-    }
-
-    fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()> {
-        (**self).put_many(writes, budget)
-    }
-
-    fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-    ) -> ObjectResult<ObjectRead> {
-        (**self).read(object_id, maximum_bytes, budget)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_with_native_work(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
-        (**self).read_with_native_work(object_id, maximum_bytes, work, cancellation)
-    }
-
-    fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        (**self).read_many(requests, budget)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_many_with_native_work(
-        &self,
-        requests: &[ObjectReadRequest],
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
-        (**self).read_many_with_native_work(requests, work, cancellation)
-    }
-
-    fn contains(&self, object_id: ObjectId, budget: WorkBudget) -> ObjectResult<bool> {
-        (**self).contains(object_id, budget)
-    }
-}
 
 /// Typed immutable-object failures.
 #[derive(Debug, Error, strum::IntoStaticStr)]

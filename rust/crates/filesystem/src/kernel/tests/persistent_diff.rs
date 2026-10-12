@@ -9,7 +9,7 @@ use crate::kernel::{
     file_table_page_id,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectKind, ObjectStore};
+use crate::storage::{ObjectKind, };
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
 use acyclic_stream::OwnedBytes;
@@ -31,14 +31,13 @@ fn entry(value: &str, id: u8) -> Result<TreeEntry, Box<dyn std::error::Error>> {
     })
 }
 
-fn put(store: &MemoryObjectStore, page: &TreePage) -> Result<ObjectId, Box<dyn std::error::Error>> {
+async fn put(store: &MemoryObjectStore, page: &TreePage) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = tree_page_id(page, 8)?;
-    ObjectStore::put(
+    AsyncObjectStore::put(
         store,
         id,
         OwnedBytes::from(encode_tree_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(id)
 }
 
@@ -55,29 +54,28 @@ fn file_record(id: u8) -> Result<FileRecord, Box<dyn std::error::Error>> {
     })
 }
 
-fn put_file_table(
+async fn put_file_table(
     store: &MemoryObjectStore,
     page: &FileTablePage,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = file_table_page_id(page, 8)?;
-    ObjectStore::put(
+    AsyncObjectStore::put(
         store,
         id,
         OwnedBytes::from(encode_file_table_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(id)
 }
 
-fn diff<S: AsyncObjectStore>(
+async fn diff<S: AsyncObjectStore>(
     store: &S,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
     maximum_changes: u32,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Option<Result<Diff<LogicalName, TreeEntry>, OperationFailure<FsError>>> {
-    crate::async_storage::poll_ready(diff_accounted::<_, TreeFormat>(
+) -> Result<Diff<LogicalName, TreeEntry>, OperationFailure<FsError>> {
+    (diff_accounted::<_, TreeFormat>(
         store,
         before,
         after,
@@ -85,14 +83,14 @@ fn diff<S: AsyncObjectStore>(
         DecodeLimits::default(),
         budget,
         cancellation,
-    ))
+    )).await
 }
 
-#[test]
-fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
+#[tokio::test]
+async fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &TreePage::Leaf(vec![entry("a", 1)?]))?;
+    let root = put(&store, &TreePage::Leaf(vec![entry("a", 1)?])).await?;
     let cancellation = CancellationToken::new();
     for (before, after) in [(None, None), (Some(root), Some(root))] {
         let result = diff(
@@ -102,8 +100,7 @@ fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
             1,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )
-        .ok_or("memory diff blocked")??;
+        ).await?;
         assert!(result.changes.is_empty());
         assert!(!result.truncated);
         assert_eq!(result.work, WorkCounters::default());
@@ -116,8 +113,7 @@ fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
             0,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )
-        .ok_or("memory diff blocked")?
+        ).await
         .err()
         .ok_or("zero diff limit unexpectedly succeeded")?;
         assert!(matches!(failure.error, FsError::InvalidDiff));
@@ -134,8 +130,7 @@ fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )
-    .ok_or("memory diff blocked")?
+    ).await
     .err()
     .ok_or("wrong diff root kind unexpectedly succeeded")?;
     assert!(matches!(failure.error, FsError::InvalidDiff));
@@ -143,18 +138,18 @@ fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
     Ok(())
 }
 
-#[test]
-fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
+#[tokio::test]
+async fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let before = put(
         &store,
         &TreePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]),
-    )?;
+    ).await?;
     let after = put(
         &store,
         &TreePage::Leaf(vec![entry("a", 3)?, entry("c", 4)?]),
-    )?;
+    ).await?;
     let cancellation = CancellationToken::new();
     let complete = diff(
         &store,
@@ -163,8 +158,7 @@ fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )
-    .ok_or("memory diff blocked")??;
+    ).await?;
     assert_eq!(
         complete
             .changes
@@ -189,13 +183,12 @@ fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )
-    .ok_or("memory diff blocked")??;
+    ).await?;
     assert_eq!(bounded.changes.len(), 1);
     assert!(bounded.truncated);
 
-    let one_before = put(&store, &TreePage::Leaf(vec![entry("z", 5)?]))?;
-    let one_after = put(&store, &TreePage::Leaf(vec![entry("z", 6)?]))?;
+    let one_before = put(&store, &TreePage::Leaf(vec![entry("z", 5)?])).await?;
+    let one_after = put(&store, &TreePage::Leaf(vec![entry("z", 6)?])).await?;
     let exact = diff(
         &store,
         Some(one_before),
@@ -203,19 +196,18 @@ fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )
-    .ok_or("memory diff blocked")??;
+    ).await?;
     assert_eq!(exact.changes.len(), 1);
     assert!(!exact.truncated);
     Ok(())
 }
 
-#[test]
-fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
+#[tokio::test]
+async fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let before = put(&store, &TreePage::Leaf(vec![entry("a", 1)?]))?;
-    let after = put(&store, &TreePage::Leaf(vec![entry("a", 2)?]))?;
+    let before = put(&store, &TreePage::Leaf(vec![entry("a", 1)?])).await?;
+    let after = put(&store, &TreePage::Leaf(vec![entry("a", 2)?])).await?;
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let failure = diff(
@@ -225,8 +217,7 @@ fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
         1,
         WorkBudget::UNBOUNDED,
         &cancelled,
-    )
-    .ok_or("memory diff blocked")?
+    ).await
     .err()
     .ok_or("cancelled diff unexpectedly succeeded")?;
     assert!(matches!(failure.error, FsError::Cancelled(_)));
@@ -242,8 +233,7 @@ fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
             ..WorkBudget::UNBOUNDED
         },
         &CancellationToken::new(),
-    )
-    .ok_or("memory diff blocked")?
+    ).await
     .err()
     .ok_or("unadmitted diff read unexpectedly succeeded")?;
     assert!(matches!(
@@ -260,13 +250,13 @@ fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
     Ok(())
 }
 
-#[test]
-fn internal_diff_skips_shared_merkle_children() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn internal_diff_skips_shared_merkle_children() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let a = put(&store, &TreePage::Leaf(vec![entry("a", 1)?]))?;
-    let c_before = put(&store, &TreePage::Leaf(vec![entry("c", 2)?]))?;
-    let c_after = put(&store, &TreePage::Leaf(vec![entry("c", 3)?]))?;
-    let e = put(&store, &TreePage::Leaf(vec![entry("e", 4)?]))?;
+    let a = put(&store, &TreePage::Leaf(vec![entry("a", 1)?])).await?;
+    let c_before = put(&store, &TreePage::Leaf(vec![entry("c", 2)?])).await?;
+    let c_after = put(&store, &TreePage::Leaf(vec![entry("c", 3)?])).await?;
+    let e = put(&store, &TreePage::Leaf(vec![entry("e", 4)?])).await?;
     let a_name = name("a")?;
     let c_name = name("c")?;
     let e_name = name("e")?;
@@ -286,10 +276,10 @@ fn internal_diff_skips_shared_merkle_children() -> Result<(), Box<dyn std::error
             },
         ])
     };
-    let before = put(&store, &root(c_before))?;
-    let after = put(&store, &root(c_after))?;
+    let before = put(&store, &root(c_before)).await?;
+    let after = put(&store, &root(c_after)).await?;
     let cancellation = CancellationToken::new();
-    let diff = crate::async_storage::poll_ready(diff_accounted::<_, TreeFormat>(
+    let diff = (diff_accounted::<_, TreeFormat>(
         &store,
         Some(before),
         Some(after),
@@ -297,22 +287,21 @@ fn internal_diff_skips_shared_merkle_children() -> Result<(), Box<dyn std::error
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("diff blocked")??;
+    )).await?;
     assert_eq!(diff.changes.len(), 1);
     assert_eq!(diff.changes[0].key.as_bytes(), b"c");
     assert_eq!(diff.work.page_reads, 4);
     Ok(())
 }
 
-#[test]
-fn internal_file_table_diff_aligns_shared_and_one_sided_children()
+#[tokio::test]
+async fn internal_file_table_diff_aligns_shared_and_one_sided_children()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let shared = put_file_table(&store, &FileTablePage::Leaf(vec![file_record(1)?]))?;
-    let removed = put_file_table(&store, &FileTablePage::Leaf(vec![file_record(3)?]))?;
-    let added_left = put_file_table(&store, &FileTablePage::Leaf(vec![file_record(2)?]))?;
-    let added_right = put_file_table(&store, &FileTablePage::Leaf(vec![file_record(4)?]))?;
+    let shared = put_file_table(&store, &FileTablePage::Leaf(vec![file_record(1)?])).await?;
+    let removed = put_file_table(&store, &FileTablePage::Leaf(vec![file_record(3)?])).await?;
+    let added_left = put_file_table(&store, &FileTablePage::Leaf(vec![file_record(2)?])).await?;
+    let added_right = put_file_table(&store, &FileTablePage::Leaf(vec![file_record(4)?])).await?;
     let before = put_file_table(
         &store,
         &FileTablePage::Internal(vec![
@@ -325,7 +314,7 @@ fn internal_file_table_diff_aligns_shared_and_one_sided_children()
                 page: removed,
             },
         ]),
-    )?;
+    ).await?;
     let after = put_file_table(
         &store,
         &FileTablePage::Internal(vec![
@@ -342,8 +331,8 @@ fn internal_file_table_diff_aligns_shared_and_one_sided_children()
                 page: added_right,
             },
         ]),
-    )?;
-    let result = crate::async_storage::poll_ready(diff_accounted::<_, FileTableFormat>(
+    ).await?;
+    let result = (diff_accounted::<_, FileTableFormat>(
         &store,
         Some(before),
         Some(after),
@@ -351,8 +340,7 @@ fn internal_file_table_diff_aligns_shared_and_one_sided_children()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ))
-    .ok_or("memory file-table diff blocked")??;
+    )).await?;
     assert_eq!(
         result
             .changes
@@ -369,12 +357,12 @@ fn internal_file_table_diff_aligns_shared_and_one_sided_children()
     Ok(())
 }
 
-#[test]
-fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let a = put(&store, &TreePage::Leaf(vec![entry("a", 1)?]))?;
-    let c = put(&store, &TreePage::Leaf(vec![entry("c", 2)?]))?;
+    let a = put(&store, &TreePage::Leaf(vec![entry("a", 1)?])).await?;
+    let c = put(&store, &TreePage::Leaf(vec![entry("c", 2)?])).await?;
     let internal = put(
         &store,
         &TreePage::Internal(vec![
@@ -387,7 +375,7 @@ fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dy
                 page: c,
             },
         ]),
-    )?;
+    ).await?;
     let cancellation = CancellationToken::new();
     let added = diff(
         &store,
@@ -396,8 +384,7 @@ fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dy
         2,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )
-    .ok_or("memory diff blocked")??;
+    ).await?;
     assert_eq!(added.changes.len(), 2);
     assert!(
         added
@@ -414,8 +401,7 @@ fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dy
         2,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )
-    .ok_or("memory diff blocked")??;
+    ).await?;
     assert_eq!(removed.changes.len(), 2);
     assert!(
         removed
@@ -427,7 +413,7 @@ fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dy
     let flattened = put(
         &store,
         &TreePage::Leaf(vec![entry("a", 1)?, entry("c", 2)?]),
-    )?;
+    ).await?;
     let mixed = diff(
         &store,
         Some(internal),
@@ -435,8 +421,7 @@ fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dy
         2,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )
-    .ok_or("memory diff blocked")??;
+    ).await?;
     assert!(mixed.changes.is_empty());
     assert!(!mixed.truncated);
 
@@ -446,7 +431,7 @@ fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dy
             first: name("a")?,
             page: flattened,
         }]),
-    )?;
+    ).await?;
     let realigned = diff(
         &store,
         Some(internal),
@@ -454,19 +439,18 @@ fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dy
         2,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )
-    .ok_or("memory diff blocked")??;
+    ).await?;
     assert!(realigned.changes.is_empty());
     assert!(!realigned.truncated);
     Ok(())
 }
 
-#[test]
-fn owned_one_sided_internal_diff_stops_at_the_exact_outer_bound()
+#[tokio::test]
+async fn owned_one_sided_internal_diff_stops_at_the_exact_outer_bound()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = OwnedReadObjectStore::default();
-    let first = put(&store.inner, &TreePage::Leaf(vec![entry("a", 1)?]))?;
-    let second = put(&store.inner, &TreePage::Leaf(vec![entry("z", 2)?]))?;
+    let first = put(&store.inner, &TreePage::Leaf(vec![entry("a", 1)?])).await?;
+    let second = put(&store.inner, &TreePage::Leaf(vec![entry("z", 2)?])).await?;
     let root = put(
         &store.inner,
         &TreePage::Internal(vec![
@@ -479,7 +463,7 @@ fn owned_one_sided_internal_diff_stops_at_the_exact_outer_bound()
                 page: second,
             },
         ]),
-    )?;
+    ).await?;
     let result = diff(
         &store,
         None,
@@ -487,19 +471,18 @@ fn owned_one_sided_internal_diff_stops_at_the_exact_outer_bound()
         1,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )
-    .ok_or("owned one-sided diff blocked")??;
+    ).await?;
     assert_eq!(result.changes.len(), 1);
     assert!(result.truncated);
     assert!(result.work.bytes_copied > 0);
     Ok(())
 }
 
-#[test]
-fn diff_preserves_storage_and_decode_failures_after_admitted_work()
+#[tokio::test]
+async fn diff_preserves_storage_and_decode_failures_after_admitted_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let valid = put(&store, &TreePage::Leaf(vec![entry("a", 1)?]))?;
+    let valid = put(&store, &TreePage::Leaf(vec![entry("a", 1)?])).await?;
     let missing = ObjectId {
         kind: ObjectKind::TreePage,
         digest: Digest::from_bytes([99; 32]),
@@ -511,8 +494,7 @@ fn diff_preserves_storage_and_decode_failures_after_admitted_work()
         2,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )
-    .ok_or("memory diff blocked")?
+    ).await
     .err()
     .ok_or("missing page unexpectedly diffed")?;
     assert!(matches!(
@@ -527,7 +509,7 @@ fn diff_preserves_storage_and_decode_failures_after_admitted_work()
         kind: ObjectKind::TreePage,
         digest: crate::storage::object_digest(ObjectKind::TreePage, &malformed_bytes),
     };
-    ObjectStore::put(&store, malformed, malformed_bytes, WorkBudget::UNBOUNDED)?;
+    AsyncObjectStore::put(&store, malformed, malformed_bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     let failure = diff(
         &store,
         Some(valid),
@@ -535,8 +517,7 @@ fn diff_preserves_storage_and_decode_failures_after_admitted_work()
         2,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )
-    .ok_or("memory diff blocked")?
+    ).await
     .err()
     .ok_or("malformed page unexpectedly diffed")?;
     assert!(matches!(failure.error, FsError::Decode(_)));
@@ -544,8 +525,8 @@ fn diff_preserves_storage_and_decode_failures_after_admitted_work()
     Ok(())
 }
 
-#[test]
-fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
+#[tokio::test]
+async fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
 -> Result<(), Box<dyn std::error::Error>> {
     let backend = MemoryObjectStore::new(1024 * 1024)?;
     let mut before_children = Vec::new();
@@ -559,7 +540,7 @@ fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
                 file_id: FileId::from_bytes([index; 16]),
                 kind: FileKind::Regular,
             }]),
-        )?;
+        ).await?;
         let descriptor = Child {
             first: child_name,
             page: child,
@@ -568,8 +549,8 @@ fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
         after_children.push(descriptor);
     }
     let changed_name = name("z")?;
-    let before_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 90)?]))?;
-    let after_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 91)?]))?;
+    let before_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 90)?])).await?;
+    let after_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 91)?])).await?;
     before_children.push(Child {
         first: changed_name.clone(),
         page: before_leaf,
@@ -578,8 +559,8 @@ fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
         first: changed_name,
         page: after_leaf,
     });
-    let before = put(&backend, &TreePage::Internal(before_children))?;
-    let after = put(&backend, &TreePage::Internal(after_children))?;
+    let before = put(&backend, &TreePage::Internal(before_children)).await?;
+    let after = put(&backend, &TreePage::Internal(after_children)).await?;
     let store = CachedObjectStore::new(
         backend,
         ObjectCacheOptions {
@@ -597,8 +578,7 @@ fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )
-    .ok_or("cold wide diff blocked")??;
+    ).await?;
     assert_eq!(cold.changes.len(), 1);
 
     let warm = diff(
@@ -608,8 +588,7 @@ fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )
-    .ok_or("warm wide diff blocked")??;
+    ).await?;
     assert_eq!(warm.changes, cold.changes);
     assert_eq!(warm.work.backend_read_operations, 0);
     assert_eq!(warm.work.object_bytes_read, 0);
@@ -719,7 +698,7 @@ mod model {
 
     async fn check(before: &Model, after: &Model, page: u32) -> Outcome {
         let store = MemoryObjectStore::new(1 << 20)?;
-        let empty = put(&store, &TreePage::Leaf(Vec::new()))?;
+        let empty = put(&store, &TreePage::Leaf(Vec::new())).await?;
         let old = rewrite(&store, empty, &Model::new(), before).await?;
         let new = rewrite(&store, old, before, after).await?;
         assert_eq!(paginate_all(&store, old, page).await?, entries(before)?);
@@ -732,8 +711,7 @@ mod model {
             1_024,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        )
-        .ok_or("diff suspended on an immediate store")??
+        ).await?
         .changes
         .into_iter()
         .map(|change| (change.key, change.before, change.after))
@@ -764,8 +742,9 @@ mod model {
             after in prop::collection::btree_map(0_u8..48, 1_u8..4, 0..32),
             page in 1_u32..6,
         ) {
-            crate::async_storage::poll_ready(check(&before, &after, page))
-                .ok_or_else(|| TestCaseError::fail("memory operation suspended"))?
+            tokio::runtime::Builder::new_current_thread().build()
+                .map_err(|error| TestCaseError::fail(error.to_string()))?
+                .block_on(check(&before, &after, page))
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
         }
     }
@@ -776,7 +755,7 @@ mod model {
 async fn native_diff_denies_frontier_allocation_before_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &TreePage::Leaf(vec![entry("alpha", 1)?]))?;
+    let root = put(&store, &TreePage::Leaf(vec![entry("alpha", 1)?])).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
         WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,

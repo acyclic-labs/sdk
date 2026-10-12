@@ -185,55 +185,16 @@ impl super::UploadRecord for ListFilesInput {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct NativeListFilesInput {
-    input: ListFilesInput,
-    _custody: acyclic_fs::NativeAllocation,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct NativeListFilesPage {
-    generation: GenerationRef,
-    page: DirectoryPage,
-    _custody: acyclic_fs::NativeAllocation,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct NativeListFilesResult {
-    result: ToolResult,
-    custody: acyclic_fs::NativeAllocation,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 impl LocalListFilesTool {
-    fn native_admission_digest(
-        invocation: &ToolInvocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<[u8; 32]> {
-        let io = super::PreparationIo::from_native_work(work)?;
-        let encoded_hold;
-        let encoded = io.encode(invocation, io.remaining()?.bytes_encoded, true)?;
-        encoded_hold = io.guard_bytes(&encoded)?;
-        let charge = acyclic_fs::WorkCounters {
-            bytes_hashed: encoded.len() as u64,
-            ..Default::default()
-        };
-        io.preflight(charge)?;
-        let digest = *blake3::hash(&encoded).as_bytes();
-        io.charge(charge)?;
-        drop(encoded);
-        drop(encoded_hold);
-        Ok(digest)
-    }
-
     fn native_result_copy(
         result: &ToolResult,
         maximum_bytes: u64,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeListFilesResult> {
+    ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
         let (value, custody) = crate::tool::clone_value(
             &result.value, Some(maximum_bytes), work,
         )?;
-        Ok(NativeListFilesResult { result: ToolResult { value }, custody })
+        Ok((ToolResult { value }, custody))
     }
 
     async fn native_observe(
@@ -241,8 +202,11 @@ impl LocalListFilesTool {
         context: &crate::runtime::ToolContext,
         invocation: &ToolInvocation,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<NativeListFilesResult>> {
-        let digest = Self::native_admission_digest(invocation, work)?;
+    ) -> Result<Option<(ToolResult, acyclic_fs::NativeAllocation)>> {
+        let digest = {
+            let io = super::PreparationIo::from_native_work(work)?;
+            super::task_runtime::observed::digest(invocation, Some(&io), io.remaining()?.bytes_encoded)?
+        };
         let observed = self.observed.lock().await;
         match observed.get(&invocation.operation_id) {
             Some(original) if original.admission_digest == digest =>
@@ -262,8 +226,11 @@ impl LocalListFilesTool {
         context: &crate::runtime::ToolContext,
         invocation: &ToolInvocation,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeListFilesResult> {
-        let digest = Self::native_admission_digest(invocation, work)?;
+    ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
+        let digest = {
+            let io = super::PreparationIo::from_native_work(work)?;
+            super::task_runtime::observed::digest(invocation, Some(&io), io.remaining()?.bytes_encoded)?
+        };
         let limits = context.effective_scope().limits();
         let maximum_bytes = self.maximum_bytes.min(limits.render_bytes);
         let mut observed = self.observed.lock().await;
@@ -277,45 +244,47 @@ impl LocalListFilesTool {
                 })
             };
         }
-        let (input, custody) = crate::tool::decode_with_native_work(&invocation.arguments, work)?;
-        let input = NativeListFilesInput { input, _custody: custody };
-        if input.input.maximum_entries == 0
-            || (input.input.after.is_some() && input.input.expected_generation.is_none())
+        let _input_custody;
+        let (input, custody): (ListFilesInput, _) = crate::tool::decode_with_native_work(&invocation.arguments, work)?;
+        _input_custody = custody;
+        if input.maximum_entries == 0
+            || (input.after.is_some() && input.expected_generation.is_none())
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "list_files requires a bounded, generation-pinned page",
             });
         }
+        let _page_custody;
         let ((generation, page), custody) = self.verifier
             .list_private_directory_with_native_work(
-                context.task(), &self.volume, "", &input.input.path,
-                input.input.expected_generation.as_ref(), input.input.after.as_deref(),
-                input.input.maximum_entries, work,
+                context.task(), &self.volume, "", &input.path,
+                input.expected_generation.as_ref(), input.after.as_deref(),
+                input.maximum_entries, work,
             )?.await?;
-        let page = NativeListFilesPage { generation, page, _custody: custody };
-        let wire = list_files_page_wire(&page.generation, &page.page)?;
+        _page_custody = custody;
+        let wire = list_files_page_wire(&generation, &page)?;
         let (value, custody) = crate::tool::value(
             &wire, maximum_bytes, work,
         )?;
-        let output = NativeListFilesResult { result: ToolResult { value }, custody };
-        let mut cached = Self::native_result_copy(&output.result, maximum_bytes, work)?;
+        let output = (ToolResult { value }, custody);
+        let mut cached = Self::native_result_copy(&output.0, maximum_bytes, work)?;
         let slot_bytes = (std::mem::size_of::<(OperationId, ListFilesObservation)>()
             - std::mem::size_of::<Value>()) as u64;
-        let retained = cached.custody.bytes().checked_add(slot_bytes)
+        let retained = cached.1.bytes().checked_add(slot_bytes)
             .ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "list_files cache ownership overflow",
             })?;
-        cached.custody.resize_retained(retained)
+        cached.1.resize_retained(retained)
             .map_err(Error::from)?;
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1, ..Default::default()
         }).map_err(Error::from)?;
         observed.insert(invocation.operation_id, ListFilesObservation {
             admission_digest: digest,
-            result: cached.result,
-            _custody: Some(cached.custody),
+            result: cached.0,
+            _custody: Some(cached.1),
         });
         Ok(output)
     }
@@ -467,10 +436,7 @@ impl ToolExecutor for LocalListFilesTool {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
         self.authorize_with_native_context(context, invocation, work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let output = self.native_execute(context, invocation, work).await?;
-            Ok((output.result, output.custody))
-        })
+        crate::NativeFutureBundle::new(work, || self.native_execute(context, invocation, work))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -484,18 +450,18 @@ impl ToolExecutor for LocalListFilesTool {
         crate::NativeFutureBundle::new(work, || async move {
             match self.native_observe(context, invocation, work).await? {
                 Some(mut output) => {
-                    let retained = output.custody.bytes().checked_add(
+                    let retained = output.1.bytes().checked_add(
                         (std::mem::size_of::<Option<ToolResult>>()
                             - std::mem::size_of::<ToolResult>()) as u64,
                     ).ok_or(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Invalid,
                         reason: "list_files observation ownership overflow",
                     })?;
-                    output.custody.resize_retained(retained)
+                    output.1.resize_retained(retained)
                         .map_err(Error::from)?;
-                    Ok((Some(output.result), output.custody))
+                    Ok((Some(output.0), output.1))
                 }
-                None => Ok((None, work.retain_owned(std::mem::size_of::<Option<ToolResult>>() as u64)
+                None => Ok((None, work.claim(std::mem::size_of::<Option<ToolResult>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(Error::from)?)),
             }
         })
@@ -805,14 +771,6 @@ impl MemoryHarnessStorage {
             .await
     }
 
-    #[cfg(test)]
-    async fn open_conversation(
-        &self,
-        limits: Limits,
-    ) -> Result<tokio::sync::MappedMutexGuard<'_, StreamAggregate<MemoryStream>>> {
-        self.journal.conversation_projection(limits).await
-    }
-
     /// Stages user content or an attachment before it is admitted to a turn.
     pub async fn stage(
         &self,
@@ -847,7 +805,7 @@ impl MemoryHarnessStorage {
         after: Option<&LogicalName>,
         maximum_entries: u32,
     ) -> Result<(GenerationRef, DirectoryPage)> {
-        let page = self
+        self
             .content_verifier
             .list_private_directory(
                 &self.volume,
@@ -857,20 +815,7 @@ impl MemoryHarnessStorage {
                 after,
                 maximum_entries,
             )
-            .await?;
-        let after_text = after.and_then(LogicalName::unicode_text);
-        let core = self
-            .memory_store
-            .lock()
-            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?;
-        let generation = core.generation();
-        let _shared_page = core.list(
-            path,
-            Some(generation),
-            after_text.as_deref(),
-            maximum_entries as usize,
-        )?;
-        Ok(page)
+            .await
     }
 
     /// Publishes one owner-mediated exact-file read scope to another agent, independent of any fork relationship.
@@ -1120,15 +1065,18 @@ mod tests {
         let work = acyclic_fs::NativeMaterializationWork::new(
             FINITE_CONTENT_BUDGET, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let operation = OperationId::new();
-        let (file, hold) = scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":1}"#, &work)?.await?;
+        let io = super::super::PreparationIo::from_native_work(&work)?;
+        let file = scheduler.stage(
+            operation, "canonical-original-key", br#"{"input":1}"#, Some(&io))?.await?;
+        let hold = io.take_native_custody(file.logical_owned_bytes()?)?;
         assert_eq!(hold.bytes(), file.logical_owned_bytes()?);
-        let (retry, retry_hold) = scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":1}"#, &work)?.await?;
+        let retry = scheduler.stage(
+            operation, "canonical-original-key", br#"{"input":1}"#, Some(&io))?.await?;
+        let retry_hold = io.take_native_custody(retry.logical_owned_bytes()?)?;
         assert_eq!(retry, file);
-        assert_eq!(scheduler.stage(operation, "canonical-original-key", br#"{"input":1}"#).await?, file);
-        assert!(scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":2}"#, &work)?.await.is_err());
+        assert_eq!(scheduler.stage(operation, "canonical-original-key", br#"{"input":1}"#, None)?.await?, file);
+        assert!(scheduler.stage(
+            operation, "canonical-original-key", br#"{"input":2}"#, Some(&io))?.await.is_err());
         drop(retry);
         drop(retry_hold);
         drop(file);
@@ -1137,8 +1085,9 @@ mod tests {
         denied.bytes_hashed = "canonical-original-key".len() as u64 - 1;
         let denied_work = acyclic_fs::NativeMaterializationWork::new(
             denied, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        assert!(matches!(scheduler.stage_with_native_work(
-            OperationId::new(), "canonical-original-key", b"never", &denied_work)?.await,
+        let denied_io = super::super::PreparationIo::from_native_work(&denied_work)?;
+        assert!(matches!(scheduler.stage(
+            OperationId::new(), "canonical-original-key", b"never", Some(&denied_io))?.await,
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None })));
         assert_eq!(denied_work.receipt().bytes_hashed, 0);
@@ -2007,7 +1956,7 @@ mod tests {
             )
             .await?;
         assert_eq!(output.text, "local response");
-        let first_aggregate = storage.open_conversation(bundle.limits()).await?;
+        let first_aggregate = storage.journal.conversation_projection(bundle.limits()).await?;
         let first_user = first_aggregate
             .reducer()
             .conversation()
@@ -2031,7 +1980,7 @@ mod tests {
             )
             .await?;
         assert_eq!(replayed, output);
-        let mut aggregate = storage.open_conversation(bundle.limits()).await?;
+        let mut aggregate = storage.journal.conversation_projection(bundle.limits()).await?;
         assert_eq!(
             aggregate
                 .reducer()
