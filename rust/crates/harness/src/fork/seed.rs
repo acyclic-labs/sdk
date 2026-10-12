@@ -188,11 +188,7 @@ impl ForkSeed {
             work.checkpoint()?;
             resource.validate(work.work())?;
             for revision in [&resource.source, &resource.revision] {
-                crate::contract::validate_trusted_json_byte_bound(
-                    revision,
-                    crate::store::default_projection_read_limits().maximum_bytes,
-                    work.work(),
-                )?;
+                crate::contract::json_byte_length(revision, crate::store::default_projection_read_limits().maximum_bytes, work.work()).map(|_| ())?;
             }
             for previous in &self.resources[..index] {
                 work.checkpoint()?;
@@ -231,11 +227,7 @@ impl ForkSeed {
         for (index, omission) in self.omissions.iter().enumerate() {
             work.checkpoint()?;
             omission.validate(work.work())?;
-            crate::contract::validate_trusted_json_byte_bound(
-                &omission.selection.revision,
-                crate::store::default_projection_read_limits().maximum_bytes,
-                work.work(),
-            )?;
+            crate::contract::json_byte_length(&omission.selection.revision, crate::store::default_projection_read_limits().maximum_bytes, work.work()).map(|_| ())?;
             for previous in self.resources.iter().map(|capture| &capture.source).chain(
                 self.omissions[..index]
                     .iter()
@@ -253,11 +245,7 @@ impl ForkSeed {
         for (index, manifest) in self.attachment_manifests.iter().enumerate() {
             work.checkpoint()?;
             manifest.validate(work.work())?;
-            crate::contract::validate_trusted_json_byte_bound(
-                manifest,
-                crate::store::default_projection_read_limits().maximum_bytes,
-                work.work(),
-            )?;
+            crate::contract::json_byte_length(manifest, crate::store::default_projection_read_limits().maximum_bytes, work.work()).map(|_| ())?;
             manifest_bytes = manifest_bytes
                 .checked_add(manifest.descriptor().byte_length())
                 .ok_or_else(|| work.invalid("fork attachment manifest bytes overflow"))?;
@@ -354,11 +342,7 @@ impl ForkSeed {
             work.checkpoint()?;
             grant.validate(work.work())?;
             for file in std::iter::once(&grant.file).chain(grant.attachment_manifest.iter()) {
-                crate::contract::validate_trusted_json_byte_bound(
-                    file,
-                    crate::store::default_projection_read_limits().maximum_bytes,
-                    work.work(),
-                )?;
+                crate::contract::json_byte_length(file, crate::store::default_projection_read_limits().maximum_bytes, work.work()).map(|_| ())?;
             }
             if grant.reader != self.child_agent && !attached.contains(&grant.reader) {
                 return Err(work.invalid("reference reader is not attached to fork"));

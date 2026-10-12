@@ -52,14 +52,8 @@ where
         cancellation: &crate::CancellationToken,
         expected_root_identity: Option<NativeRootIdentity>,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
-        let standalone;
-        let work = if let Some(work) = mount.work.as_ref() {
-            work
-        } else {
-            standalone = NativeMaterializationWork::new(capture_budget, cancellation)
-                .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?;
-            &standalone
-        };
+        let original = mount.work(capture_budget, cancellation)?;
+        let work = &original;
         super::super::adapter::validate_native_source_io_binding(
             work,
             mount.native_original.as_ref(),
@@ -209,7 +203,6 @@ where
                     source_identity,
                     selected_root,
                     expected_generation,
-                    baseline,
                     writable: mount.writable,
                     _custody: custody,
                 })

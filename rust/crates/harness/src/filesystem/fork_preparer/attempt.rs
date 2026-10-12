@@ -300,10 +300,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 "fork journal name is not UTF-8",
             )
         })?;
-        let creation_key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("fork:{}:journal", request.operation_id),
-            self.io.as_ref(),
-        )?)?;
+        let creation_key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:journal", request.operation_id), work))?)?;
         bounded_io::create(
             &self.preparer.host,
             name,
@@ -323,10 +320,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         {
             return Ok(journal);
         }
-        let key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("fork:{}:claim", request.operation_id),
-            self.io.as_ref(),
-        )?)?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:claim", request.operation_id), work))?)?;
         write_record(
             &self.preparer.host,
             &journal,
@@ -357,10 +351,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         journal: &WorkspaceRef,
         report: &ForkReport,
     ) -> Result<ForkReport> {
-        let key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("fork:{}:report", report.request.operation_id),
-            self.io.as_ref(),
-        )?)?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:report", report.request.operation_id), work))?)?;
         write_record(
             &self.preparer.host,
             journal,
@@ -397,10 +388,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         index: usize,
         selection: &ForkSelection,
     ) -> Result<Option<Capture>> {
-        let path = crate::contract::preparation_format(
-            format_args!("/capture-{index}-result.json"),
-            self.io.as_ref(),
-        )?;
+        let path = crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("/capture-{index}-result.json"), work))?;
         let Some(capture) = read_record::<A, O, Capture>(
             &self.preparer.host,
             journal,
@@ -412,10 +400,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         else {
             return Ok(None);
         };
-        let attempt_path = crate::contract::preparation_format(
-            format_args!("/capture-{index}-attempt.json"),
-            self.io.as_ref(),
-        )?;
+        let attempt_path = crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("/capture-{index}-attempt.json"), work))?;
         read_record::<A, O, Uuid>(
             &self.preparer.host,
             journal,
@@ -442,10 +427,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         request: &ForkRequest,
         index: usize,
     ) -> Result<bool> {
-        let path = crate::contract::preparation_format(
-            format_args!("/capture-{index}-attempt.json"),
-            self.io.as_ref(),
-        )?;
+        let path = crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("/capture-{index}-attempt.json"), work))?;
         if read_record::<A, O, Uuid>(
             &self.preparer.host,
             journal,
@@ -459,13 +441,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             return Ok(false);
         }
         let attempt = Uuid::new_v4();
-        let key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!(
+        let key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!(
                 "fork:{}:capture-attempt:{index}:{attempt}",
                 request.operation_id
-            ),
-            self.io.as_ref(),
-        )?)?;
+            ), work))?)?;
         write_record(
             &self.preparer.host,
             journal,
@@ -511,14 +490,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 ))
             };
         }
-        let path = crate::contract::preparation_format(
-            format_args!("/capture-{index}-result.json"),
-            self.io.as_ref(),
-        )?;
-        let key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("fork:{}:capture-result:{index}", request.operation_id),
-            self.io.as_ref(),
-        )?)?;
+        let path = crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("/capture-{index}-result.json"), work))?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:capture-result:{index}", request.operation_id), work))?)?;
         write_record(
             &self.preparer.host,
             journal,

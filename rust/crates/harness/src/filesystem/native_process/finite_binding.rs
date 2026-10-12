@@ -100,7 +100,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             }
             let schema = authority.content.read(&plan.result_schema, owner.input_limits().file_bytes, Some(&io))?.await?;
             let decoded = io.decode(std::marker::PhantomData::<serde_json::Value>, schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
-            crate::contract::compile_json_schema(&decoded.0, "effect result", Some(&io))?;
+            crate::executor::with_history_io(Some(&io), |work| crate::contract::compile_json_schema(&decoded.0, "effect result", work))?;
             let result_schema = crate::filesystem::retain_decoded(decoded);
             drop(schema);
             for operation in [crate::conversation::VolumeOperation::Write, crate::conversation::VolumeOperation::Read] {

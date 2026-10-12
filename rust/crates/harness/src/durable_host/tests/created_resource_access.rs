@@ -334,7 +334,7 @@ impl SandboxCreator {
         };
         assert_eq!(evidence, expected_evidence);
         let bytes = crate::contract::canonical_json_bytes(&allocation)?;
-        crate::contract::validate_json_byte_bound(&allocation, request.maximum_bytes)?;
+        crate::contract::json_byte_length(&allocation, request.maximum_bytes, &mut None).map(|_| ())?;
         if manifest_bytes.saturating_add(bytes.len() as u64) > request.maximum_bytes {
             return Err(Error::Invalid(
                 "sandbox allocation exceeds its aggregate IO bound".into(),

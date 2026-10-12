@@ -90,7 +90,18 @@ impl<S: MaterializationJournalStore>
         ));
         let reader = generation
             .workspace()
-            .checkout(crate::model::GenerationSelector::Exact(generation.id()), crate::model::CheckoutMode::read_only_pinned(), &work, work.cancellation()).await.and_then(|checkout| checkout.into_pinned_reader_with_native_work(&work, work.cancellation()).map_err(crate::WorkspaceError::from))
+            .checkout(
+                crate::model::GenerationSelector::Exact(generation.id()),
+                crate::model::CheckoutMode::read_only_pinned(),
+                work,
+                work.cancellation(),
+            )
+            .await
+            .and_then(|checkout| {
+                checkout
+                    .into_pinned_reader_with_native_work(work, work.cancellation())
+                    .map_err(crate::WorkspaceError::from)
+            })
             .map_err(E::from)?;
         let mut control = |phase| {
             use crate::native_mount::NativeMaterializationActionPhase::{Before, Completed};
@@ -307,19 +318,13 @@ impl NativeTreeMaterializationBackend {
                 &mut &*work,
             )
             .map_err(backend)?;
-            let parent = parent
-                .open_dir_held(Path::new(""), &mut &*work)
-                .map_err(backend)?;
             let leaf = Path::new(
                 operation
                     .file_name()
                     .ok_or_else(|| backend(NativeTreeMaterializationError::InvalidLayout))?,
             );
-            let directory = match step {
-                MaterializationPreparationAllocation::Operation => {
-                    crate::native_host::create_new_directory_held(&parent, leaf, &mut &*work)
-                        .map_err(backend)?
-                }
+            let (parent, leaf) = match step {
+                MaterializationPreparationAllocation::Operation => (parent, leaf),
                 _ => {
                     let operation = recorded_child(
                         &parent,
@@ -330,18 +335,22 @@ impl NativeTreeMaterializationBackend {
                         work,
                     )
                     .map_err(backend)?;
-                    crate::native_host::create_new_directory_held(
-                        &operation,
+                    (
+                        operation,
                         if step == MaterializationPreparationAllocation::Target {
                             Path::new("target")
                         } else {
                             Path::new("backup")
                         },
-                        &mut &*work,
                     )
-                    .map_err(backend)?
                 }
             };
+            work.with_original_leaf(|state| parent.create_dir(leaf, state))
+                .map_err(native_materialization_work_error)
+                .map_err(backend)?;
+            crate::native_host::sync_directory_held(&parent.directory, &mut &*work)
+                .map_err(backend)?;
+            let directory = parent.open_dir_held(leaf, &mut &*work).map_err(backend)?;
             let identity = crate::native_host::directory_identity(&directory, &mut &*work)
                 .map_err(backend)?
                 .to_bytes();
@@ -391,20 +400,21 @@ impl NativeTreeMaterializationBackend {
     }
 }
 fn recorded_child(
-    parent: &cap_std::fs::Dir,
+    parent: &crate::native_host::HostRoot,
     leaf: &Path,
     expected: [u8; 16],
     work: &NativeMaterializationWork,
-) -> Result<cap_std::fs::Dir, NativeTreeMaterializationError> {
-    let directory = with_native_walk_leaf(leaf, work, |name| {
-        open_native_walk_directory(parent, name, work)
-    })?;
+) -> Result<crate::native_host::HostRoot, NativeTreeMaterializationError> {
+    let directory = parent.open_dir_held(leaf, &mut &*work)?;
     let actual = crate::native_host::directory_identity(&directory, &mut &*work)?;
     let expected = crate::NativeRootIdentity::from_bytes(expected);
     if actual != expected {
         return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual });
     }
-    Ok(directory)
+    Ok(crate::native_host::HostRoot {
+        directory,
+        identity: actual,
+    })
 }
 fn verify_preparation(
     root: &Path,
@@ -431,7 +441,6 @@ fn verify_preparation(
         });
     }
     if let Some(identity) = progress.operation {
-        let parent = parent.open_dir_held(Path::new(""), &mut &*work)?;
         let operation = recorded_child(
             &parent,
             Path::new(
