@@ -89,7 +89,6 @@ impl NativePublicationConfig {
 #[serde(deny_unknown_fields)]
 pub struct NativePublicationRequest {
     pub operation_id: OperationId,
-    pub caller: TaskId,
     pub caller_lease: WorkLease,
 }
 
@@ -99,10 +98,6 @@ pub struct NativePublicationSource {
     pub workspace: String,
     pub generation: GenerationId,
 }
-
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NativePublicationStatus { Unopened, Pending, Approved, Rejected, Recovering, Applied, Failed }
 
 #[derive(Serialize)]
 pub struct NativePublicationReceipt {
@@ -118,7 +113,7 @@ pub struct NativePublicationFailure { pub message: String, pub work: WorkCounter
 pub struct NativePublicationResult {
     pub operation_id: OperationId,
     pub caller: TaskId,
-    pub status: NativePublicationStatus,
+    pub status: &'static str,
     pub interaction: Option<InteractionTicket>,
     pub resolution: Option<InteractionResolution>,
     pub action_digest: Option<[u8; 32]>,
@@ -216,7 +211,7 @@ impl NativeSession {
             // The SDK resumes its original captured preparation; it must never plan a second operation just because the approval open was lost.
             return self.publication_open(request).await;
         }
-        if matches!(observed.status, NativePublicationStatus::Approved | NativePublicationStatus::Recovering)
+        if matches!(observed.status, "approved" | "recovering")
             && observed.resolution.as_ref().is_some_and(|value| value.outcome == InteractionOutcome::Approved)
         {
             return self.publication_apply(request).await;
@@ -289,7 +284,7 @@ impl NativeSession {
     async fn publication_binding<'a>(&'a self, request: &NativePublicationRequest) -> Result<&'a NativePublicationConfig> {
         let mut selected = self.config.native_publications.iter().filter(|entry| entry.operation_id == request.operation_id);
         let binding = selected.next().ok_or_else(|| Error::Unauthorized("publication operation is not configured".into()))?;
-        if selected.next().is_some() || binding.caller != request.caller
+        if selected.next().is_some()
             || canonical_bytes(&binding.caller_lease)? != canonical_bytes(&request.caller_lease)?
         {
             return Err(Error::Unauthorized("publication request differs from its original caller and lease".into()));
@@ -341,11 +336,11 @@ impl NativeSession {
                 result.action_digest = Some(publication_digest(binding, &receipt.journal)?);
             }
             result.status = match receipt.journal.phase {
-                MaterializationPhase::Applied => NativePublicationStatus::Applied,
-                MaterializationPhase::Applying => NativePublicationStatus::Recovering,
-                MaterializationPhase::Preparing => NativePublicationStatus::Recovering,
-                MaterializationPhase::RollingBack | MaterializationPhase::RolledBack => NativePublicationStatus::Rejected,
-                MaterializationPhase::Prepared => NativePublicationStatus::Pending,
+                MaterializationPhase::Applied => "applied",
+                MaterializationPhase::Applying => "recovering",
+                MaterializationPhase::Preparing => "recovering",
+                MaterializationPhase::RollingBack | MaterializationPhase::RolledBack => "rejected",
+                MaterializationPhase::Prepared => "pending",
             };
             result.publication = Some(receipt);
         }
@@ -366,10 +361,10 @@ impl NativeSession {
             if let Some(resolution) = &resolution {
                 resolution.validate(&ticket)?;
                 result.status = match &resolution.outcome {
-                    InteractionOutcome::Approved if matches!(result.status, NativePublicationStatus::Applied | NativePublicationStatus::Recovering) => result.status,
-                    InteractionOutcome::Approved => NativePublicationStatus::Approved,
-                    InteractionOutcome::Indeterminate { .. } => NativePublicationStatus::Pending,
-                    _ => NativePublicationStatus::Rejected,
+                    InteractionOutcome::Approved if matches!(result.status, "applied" | "recovering") => result.status,
+                    InteractionOutcome::Approved => "approved",
+                    InteractionOutcome::Indeterminate { .. } => "pending",
+                    _ => "rejected",
                 };
             } else if binding.owner.scope.capabilities().contains("interaction:resolve") {
                 result.approved_frame_hex = Some(self.publication_decision_frame(binding, &ticket, true).await?);
@@ -472,7 +467,7 @@ fn publication<'a>(binding: &'a NativePublicationConfig, excluded: &'a [&'a str]
         excluded_names: excluded, options, budget: binding.budget, cancellation }
 }
 fn empty_result(binding: &NativePublicationConfig) -> Result<NativePublicationResult> {
-    Ok(NativePublicationResult { operation_id: binding.operation_id, caller: binding.caller, status: NativePublicationStatus::Unopened,
+    Ok(NativePublicationResult { operation_id: binding.operation_id, caller: binding.caller, status: "unopened",
         interaction: None, resolution: None, action_digest: None,
         before: NativePublicationSource { project: binding.from_project.clone(), workspace: binding.from_project.storage_name()?, generation: binding.from },
         proposed: NativePublicationSource { project: binding.to_project.clone(), workspace: binding.to_project.storage_name()?, generation: binding.to },
@@ -502,7 +497,7 @@ fn account_guard<T>(
 }
 fn publication_failure(binding: &NativePublicationConfig, message: String, work: WorkCounters) -> Result<NativePublicationResult> {
     let mut result = empty_result(binding)?;
-    result.status = NativePublicationStatus::Failed;
+    result.status = "failed";
     result.failure = Some(NativePublicationFailure { message, work });
     Ok(result)
 }

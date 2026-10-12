@@ -435,7 +435,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             match &state.spec.parent {
                 Some(parent) => operation = parent.operation_id,
                 None => {
-                    coordinator.scheduler().session_limits(operation, quota.work())?.validate_with_work(quota.work())?;
+                    coordinator.scheduler().session_limits(operation, quota.work())?.validate(quota.work())?;
                     return Ok(TaskId::from_bytes(operation.into_bytes()));
                 }
             }
