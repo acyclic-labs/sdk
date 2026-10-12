@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use acyclic_grpc_observability::test_support::Capture;
+use acyclic_grpc_observability::tests::Capture;
 use std::{future::Future, pin::Pin, task::{Context, Poll, Waker}, time::{Duration, Instant}};
 use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
 

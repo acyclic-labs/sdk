@@ -9729,7 +9729,7 @@ mod tests {
             native_file.read_bounded_async(0, 8, job.runtime_meter(), false)
                 .expect("first read submission")
         })?;
-        assert_eq!(first.bytes.as_ref(), b"original");
+        assert_eq!(first.0.as_ref(), b"original");
         let prefix = root.receipt();
         assert_eq!(prefix.backend_read_operations, before.backend_read_operations + 1);
         assert_eq!(prefix.source_bytes_read, before.source_bytes_read + 8);
@@ -9828,7 +9828,7 @@ mod tests {
         let result = borrowed.runtime.block_on(|| {
             native_file.read_bounded_async(0, 8, meter.clone(), false).expect("actual read submission")
         })?;
-        assert_eq!(result.bytes.as_ref(), b"original");
+        assert_eq!(result.0.as_ref(), b"original");
         drop(native_file);
         drop(meter);
         drop(job);
@@ -9839,7 +9839,7 @@ mod tests {
         assert!(weak_source.upgrade().is_none(),
             "DATA, ReadAllocation, cleanup credit, original_work and demand keeper are not operative jobs");
         assert_eq!(*data, *b"retained");
-        assert_eq!(result.bytes.as_ref(), b"original");
+        assert_eq!(result.0.as_ref(), b"original");
         assert_eq!(demand.with_original_leaf(|work| work.work)?.backend_read_operations, 1);
         assert!(credit.remaining_work().items_examined > 0);
         assert!(!local_stop.is_cancelled());

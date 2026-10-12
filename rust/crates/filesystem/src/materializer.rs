@@ -391,12 +391,8 @@ impl acyclic_native_runtime::NativeReadMeter for $owner {
         admit_examination(items: u64, bytes_copied: u64) => admit { items_examined: items, bytes_copied: bytes_copied };
         record_examination(items: u64, bytes_copied: u64) => record { items_examined: items, bytes_copied: bytes_copied };
         admit_bytes(maximum: usize) => admit { source_bytes_read: maximum as u64 };
-        admit_operations(additional: u64) => admit { backend_read_operations: additional };
-        record_operations(completed: u64) => record { backend_read_operations: completed };
         record_read(bytes: usize) => record { source_bytes_read: bytes as u64 };
         record_write(bytes: usize) => record { output_bytes: bytes as u64 };
-        admit_write_operations(additional: u64) => admit { backend_write_operations: additional };
-        record_write_operations(completed: u64) => record { backend_write_operations: completed };
         admit_durability() => charge { durability_operations: 1 };
     }
 
@@ -2074,12 +2070,6 @@ impl acyclic_native_runtime::NativeReadMeter for NativeOwnedCleanupCredit {
             .map_err(|error| self.failure(error))?;
         state.credit.started_io(actual).map_err(|error| self.failure(error))
     }
-    fn admit_operations(&self, additional: u64) -> std::io::Result<()> {
-        self.preflight(Self::operation(acyclic_native_runtime::NativeOperationKind::Read, additional))
-    }
-    fn record_operations(&self, completed: u64) -> std::io::Result<()> {
-        self.complete(None, Self::operation(acyclic_native_runtime::NativeOperationKind::Read, completed))
-    }
     fn record_read(&self, bytes: usize) -> std::io::Result<()> {
         self.complete(None, Self::bytes(acyclic_native_runtime::NativeOperationKind::Read, bytes as u64)?)
     }
@@ -2094,12 +2084,6 @@ impl acyclic_native_runtime::NativeReadMeter for NativeOwnedCleanupCredit {
     }
     fn record_write(&self, bytes: usize) -> std::io::Result<()> {
         self.complete(None, Self::bytes(acyclic_native_runtime::NativeOperationKind::Write, bytes as u64)?)
-    }
-    fn admit_write_operations(&self, additional: u64) -> std::io::Result<()> {
-        self.preflight(Self::operation(acyclic_native_runtime::NativeOperationKind::Write, additional))
-    }
-    fn record_write_operations(&self, completed: u64) -> std::io::Result<()> {
-        self.complete(None, Self::operation(acyclic_native_runtime::NativeOperationKind::Write, completed))
     }
     fn admit_durability(&self) -> std::io::Result<()> {
         self.start(Self::operation(acyclic_native_runtime::NativeOperationKind::Durability, 1), false)

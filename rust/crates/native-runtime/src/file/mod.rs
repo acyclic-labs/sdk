@@ -1,10 +1,6 @@
 use crate::*;
 pub(crate) use operations::{validate_write_batch, write_bounded_in_place};
-pub(crate) use range::{
-    read_bounded_in_place, read_prepared_in_place, validate_prepared_read_range,
-};
-#[cfg(all(test, any(windows, target_os = "linux", target_vendor = "apple")))]
-pub(crate) use scope::in_file_scope;
+pub(crate) use range::validate_prepared_read_range;
 pub(crate) use scope::{with_file_admission, with_file_scope};
 
 mod capability;
@@ -20,7 +16,7 @@ pub use operations::{
     Durability, OwnedRead, OwnedWrite, read_at, read_batch_async, set_len, sync_data, sync_file,
     sync_parent, write_all_at,
 };
-pub use range::{AsyncRangeReader, NativeReadResult};
+pub use range::AsyncRangeReader;
 
 #[derive(Debug)]
 pub(crate) struct NativeFilePayload {

@@ -4,7 +4,7 @@
     reason = "bounded generated-client counterexamples"
 )]
 use crate::{grpc::*, wire};
-use acyclic_grpc_observability::test_support::Capture;
+use acyclic_grpc_observability::tests::Capture;
 use std::{
     pin::Pin,
     task::{Context, Poll},
