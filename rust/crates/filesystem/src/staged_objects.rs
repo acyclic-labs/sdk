@@ -58,7 +58,7 @@ fn staged_vector<T>(
 fn staged_owned_bytes(
     bytes: Vec<u8>, allocation: NativeAllocation, native: &NativeMaterializationWork,
 ) -> Result<OwnedBytes, ObjectStoreError> {
-    OwnedBytes::from_vec_with_guard(bytes, allocation, native.runtime_meter_owner())
+    OwnedBytes::from_vec_with_guard(bytes, allocation, native.runtime_meter())
         .map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => native.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
@@ -71,13 +71,13 @@ async fn staged_native_read(
     file: &NativeFile, offset: u64, length: usize, native: &NativeMaterializationWork,
 ) -> Result<OwnedBytes, ObjectStoreError> {
     if length == 0 {
-        native.runtime_meter_owner().check().map_err(|error| native.runtime_error(error))?;
+        native.runtime_meter().check().map_err(|error| native.runtime_error(error))?;
         return Ok(OwnedBytes::new());
     }
     let (allocation, mut bytes) = staged_vector::<u8>(length, Some(native))?;
     bytes.resize(bytes.capacity(), 0);
     let prepared = acyclic_stream::PreparedOwnedBytes::new(
-        bytes, allocation.expect("native read buffer is funded"), native.runtime_meter_owner(),
+        bytes, allocation.expect("native read buffer is funded"), native.runtime_meter(),
     ).map_err(|failure| match failure.into_error() {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => native.runtime_error(error).into(),
         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
@@ -85,7 +85,7 @@ async fn staged_native_read(
             ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout),
     })?;
     let (prepared, filled) = file.read_prepared_bounded_async(
-        offset, prepared, length, false, native.runtime_meter_owner(),
+        offset, prepared, length, false, native.runtime_meter(),
     ).map_err(|error| native.runtime_error(error))?
         .await.map_err(|error| native.runtime_error(error))?;
     prepared.freeze(filled).map_err(|_| ObjectStoreError::Corrupt)
@@ -431,7 +431,7 @@ impl<S> StagedObjects<S> {
                 ).map_err(ObjectFailure::before_work)?;
                 self.spill.control_async(move |file, meter| { let meter = meter.expect("metered control");
                     acyclic_native_runtime::write_all_at(file, offset, &bytes, Some((meter, true)))
-                }, Some(native.runtime_meter_owner()))
+                }, Some(native.runtime_meter()))
                     .map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?
                     .await.map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?;
                 // Physical partial writes (including cancellation) are
@@ -675,7 +675,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         };
         if truncate {
             if let Some(native) = native {
-                self.spill.set_len_async(0, Some(native.runtime_meter_owner()))
+                self.spill.set_len_async(0, Some(native.runtime_meter()))
                     .map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?
                     .await.map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?;
             } else {

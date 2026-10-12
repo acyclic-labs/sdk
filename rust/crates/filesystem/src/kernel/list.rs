@@ -97,10 +97,10 @@ fn to_page(receipt: persistent_pagination::Receipt<TreeEntry>) -> DirectoryPage 
     }
 }
 
-/// Bounded directory-read failure retaining exact spent work.
+/// Bounded page-listing failure retaining exact spent work.
 pub type DirectoryReadFailure = OperationFailure<DirectoryReadError>;
 
-/// Authenticated bounded directory-read failures.
+/// Authenticated bounded page-listing failures.
 #[derive(Debug, Error)]
 pub enum DirectoryReadError {
     /// Cooperative cancellation occurred before the next storage boundary.
@@ -115,8 +115,8 @@ pub enum DirectoryReadError {
     /// Page-bound allocation overflowed this target.
     #[error("directory page limit cannot be represented")]
     LimitOverflow,
-    /// Root is not a tree page.
-    #[error("directory root is not a tree page")]
+    /// Root kind does not match the listed pages.
+    #[error("listing root has the wrong page kind")]
     WrongRootKind,
     /// Decode/traversal limits are internally inconsistent.
     #[error("directory listing limits are invalid")]
@@ -136,7 +136,7 @@ pub enum DirectoryReadError {
     /// Immutable object backend failed.
     #[error(transparent)]
     Storage(#[from] ObjectStoreError),
-    /// Canonical tree page failed decoding.
+    /// Canonical page failed decoding.
     #[error(transparent)]
     Decode(#[from] CanonicalDecodeError),
     /// Exact work exceeded or overflowed its budget.

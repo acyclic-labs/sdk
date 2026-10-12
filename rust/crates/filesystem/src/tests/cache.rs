@@ -929,7 +929,7 @@ mod native_cache {
         allocation.reconcile_capacity(bytes.capacity() as u64)?;
         bytes.resize(bytes.capacity(), 0);
         let mut prepared = acyclic_stream::PreparedOwnedBytes::new(
-            bytes, allocation, work.runtime_meter_owner(),
+            bytes, allocation, work.runtime_meter(),
         ).map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => work.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized

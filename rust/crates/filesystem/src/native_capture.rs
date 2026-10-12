@@ -218,6 +218,20 @@ mod capture_policy_tests {
         )?)
     }
 
+    fn batch(changes: Vec<WatchChange>) -> WatchBatch {
+        WatchBatch::Changes {
+            original: Default::default(), epoch: 1, first_sequence: 1,
+            next_sequence: 1 + changes.len() as u64, changes,
+        }
+    }
+
+    fn options(root: &Path, maximum_paths: u32) -> Result<CaptureOptions, CaptureError> {
+        Ok(CaptureOptions {
+            source_root: root.to_path_buf(), expected_root_identity: capture_root_identity(root)?,
+            maximum_paths, maximum_extent_spans: 8,
+        })
+    }
+
     #[test]
     fn canonical_policy_uses_the_nearest_sorted_prefix() -> Result<(), Box<dyn std::error::Error>> {
         let policy = CapturePolicy::excluding(vec![
@@ -251,19 +265,8 @@ mod capture_policy_tests {
         let changed = path("/sub/changed.txt")?;
         capture_watch_batch(
             &mut checkout,
-            WatchBatch::Changes {
-                original: Default::default(),
-                epoch: 1,
-                first_sequence: 1,
-                next_sequence: 2,
-                changes: vec![WatchChange::Modified(changed.clone())],
-            },
-            &CaptureOptions {
-                source_root: temporary.path().to_path_buf(),
-                expected_root_identity: capture_root_identity(temporary.path())?,
-                maximum_paths: 2,
-                maximum_extent_spans: 8,
-            },
+            batch(vec![WatchChange::Modified(changed.clone())]),
+            &options(temporary.path(), 2)?,
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -300,12 +303,7 @@ mod capture_policy_tests {
             .create_workspace("watch-directory", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let options = CaptureOptions {
-            source_root: temporary.path().to_path_buf(),
-            expected_root_identity: capture_root_identity(temporary.path())?,
-            maximum_paths: 8,
-            maximum_extent_spans: 8,
-        };
+        let options = options(temporary.path(), 8)?;
         capture_baseline(
             &mut checkout,
             &options,
@@ -316,13 +314,7 @@ mod capture_policy_tests {
         .await?;
         capture_watch_batch(
             &mut checkout,
-            WatchBatch::Changes {
-                original: Default::default(),
-                epoch: 1,
-                first_sequence: 1,
-                next_sequence: 2,
-                changes: vec![WatchChange::Modified(path("/pkg")?)],
-            },
+            batch(vec![WatchChange::Modified(path("/pkg")?)]),
             &options,
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
@@ -376,25 +368,14 @@ mod capture_policy_tests {
         let child = path("/new/file.txt")?;
         capture_watch_batch(
             &mut checkout,
-            WatchBatch::Changes {
-                original: Default::default(),
-                epoch: 1,
-                first_sequence: 1,
-                next_sequence: 3,
-                changes: vec![
+            batch(vec![
                     WatchChange::Renamed {
                         from: old.clone(),
                         to: new.clone(),
                     },
                     WatchChange::Modified(child.clone()),
-                ],
-            },
-            &CaptureOptions {
-                source_root: temporary.path().to_path_buf(),
-                expected_root_identity: capture_root_identity(temporary.path())?,
-                maximum_paths: 3,
-                maximum_extent_spans: 8,
-            },
+                ]),
+            &options(temporary.path(), 3)?,
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -446,22 +427,11 @@ mod capture_policy_tests {
         let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         capture_watch_batch(
             &mut checkout,
-            WatchBatch::Changes {
-                original: Default::default(),
-                epoch: 1,
-                first_sequence: 1,
-                next_sequence: 3,
-                changes: vec![
+            batch(vec![
                     WatchChange::Modified(path("/modified")?),
                     WatchChange::Arrived(path("/arrived")?),
-                ],
-            },
-            &CaptureOptions {
-                source_root: temporary.path().to_path_buf(),
-                expected_root_identity: capture_root_identity(temporary.path())?,
-                maximum_paths: 8,
-                maximum_extent_spans: 8,
-            },
+                ]),
+            &options(temporary.path(), 8)?,
             &CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -503,19 +473,8 @@ mod capture_policy_tests {
         let child = path("/sub/new.txt")?;
         capture_watch_batch(
             &mut checkout,
-            WatchBatch::Changes {
-                original: Default::default(),
-                epoch: 1,
-                first_sequence: 1,
-                next_sequence: 2,
-                changes: vec![WatchChange::Created(child.clone())],
-            },
-            &CaptureOptions {
-                source_root: temporary.path().to_path_buf(),
-                expected_root_identity: capture_root_identity(temporary.path())?,
-                maximum_paths: 2,
-                maximum_extent_spans: 8,
-            },
+            batch(vec![WatchChange::Created(child.clone())]),
+            &options(temporary.path(), 2)?,
             &CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -555,12 +514,7 @@ mod capture_policy_tests {
         let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         capture_watch_batch(
             &mut checkout,
-            WatchBatch::Changes {
-                original: Default::default(),
-                epoch: 1,
-                first_sequence: 1,
-                next_sequence: 3,
-                changes: vec![
+            batch(vec![
                     WatchChange::Renamed {
                         from: path("/old.txt")?,
                         to: path("/sub/intermediate.txt")?,
@@ -569,14 +523,8 @@ mod capture_policy_tests {
                         from: path("/sub/intermediate.txt")?,
                         to: path("/final.txt")?,
                     },
-                ],
-            },
-            &CaptureOptions {
-                source_root: temporary.path().to_path_buf(),
-                expected_root_identity: capture_root_identity(temporary.path())?,
-                maximum_paths: 3,
-                maximum_extent_spans: 8,
-            },
+                ]),
+            &options(temporary.path(), 3)?,
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -913,7 +861,7 @@ pub(crate) fn capture_runtime_meter_owner(
         return Err(crate::NativeTreeMaterializationError::InvalidLayout);
     }
     let header = native.claim(std::mem::size_of::<CapturedRuntimeReadMeter>() as u64, u64::from((std::mem::size_of::<CapturedRuntimeReadMeter>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
-    let base = native.runtime_meter_owner();
+    let base = native.runtime_meter();
     Ok(std::sync::Arc::new(CapturedRuntimeReadMeter {
         base, _header: header, _capture: std::sync::Arc::clone(capture),
     }))
@@ -985,7 +933,7 @@ fn native_device_control_in_scope(
     code: u32, input: &[u8], output: &mut [u8], scope: &CaptureWorkScope,
 ) -> Result<usize, DemandError> {
     acyclic_native_runtime::device_control_in_place(
-        file, code, input, output, Some((scope.native.runtime_meter(), acyclic_native_runtime::NativeOperationKind::Read)),
+        file, code, input, output, Some((scope.native.runtime_meter().as_ref(), acyclic_native_runtime::NativeOperationKind::Read)),
     ).map_err(|error| scope.native.native_read_meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error)))
 }
@@ -1083,7 +1031,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let expected_identity = options.expected_root_identity;
     let worker = meter.native.clone();
     let capture = std::sync::Arc::clone(meter.custody.as_ref().expect("capture scope is live"));
-    let task_meter = meter.native.runtime_meter_owner();
+    let task_meter = meter.native.runtime_meter();
     let task = acyclic_native_runtime::run_blocking_io(move || {
         let worker = CaptureWorkScope { native: worker, custody: None };
         let result = (|| {
@@ -1204,12 +1152,6 @@ impl<K: CaptureKey, V> CaptureMap<K, V> {
     }
     fn get_measured(&self, key: &K, meter: &CaptureWorkScope) -> Result<Option<&V>, CaptureError> {
         Ok(self.position_measured(key, meter)?.ok().map(|index| &self.entries[index].1))
-    }
-    fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
-        self.entries.iter().map(|entry| (&entry.0, &entry.1))
-    }
-    fn keys(&self) -> impl Iterator<Item = &K> {
-        self.entries.iter().map(|entry| &entry.0)
     }
     fn insert_at(&mut self, index: usize, key: K, value: V, meter: &CaptureWorkScope) -> Result<(), CaptureError> {
         let copied = (self.entries.len() - index).checked_mul(std::mem::size_of::<(K, V)>())
@@ -2585,9 +2527,8 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
 
     // A watcher may report a nested file before any ancestor has been observed in this lazy checkout. Capture only the missing ancestors, rather than expanding their entire host subtrees as event roots.
     let maximum_paths = usize::try_from(options.maximum_paths).unwrap_or(usize::MAX);
-    let ancestors = watch_ancestor_candidates(ordinary
-        .keys()
-        .chain(rename_records.keys())
+    let ancestors = watch_ancestor_candidates(ordinary.entries.iter().map(|(path, _)| path)
+        .chain(rename_records.entries.iter().map(|(path, _)| path))
         .chain(rename_destinations.iter()),
         &ordinary,
         &rename_records,
@@ -2609,7 +2550,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
     .await?;
 
     let mut lookup_paths = capture_vec(ordinary.len(), meter)?;
-    for (path, (current, _)) in ordinary.iter() {
+    for (path, (current, _)) in &ordinary.entries {
         if matches!(current, CurrentRecord::Lookup) {
             lookup_paths.push(clone_capture_path(path, meter)?);
         }
@@ -3152,16 +3093,14 @@ enum CaptureIntent {
     Replace,
 }
 
-struct PreparedRegular {
-    path: NamespacePath,
-    host_path: CaptureHostPath,
-    snapshot: HostSnapshot,
-    exists_with_kind: bool,
-    canonical_metadata: FileMetadata,
-}
-
 enum PreparedPath {
-    Regular(PreparedRegular),
+    Regular {
+        path: NamespacePath,
+        host_path: CaptureHostPath,
+        snapshot: HostSnapshot,
+        exists_with_kind: bool,
+        canonical_metadata: FileMetadata,
+    },
     HardLink {
         source: NamespacePath,
         destination: NamespacePath,
@@ -3186,7 +3125,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(che
     let limits = checkout.volume_config().limits;
     let profile = checkout.volume_config().profile;
     let mut roots = capture_vec(ordinary.len(), meter)?;
-    for (path, (_, intent)) in ordinary.iter() {
+    for (path, (_, intent)) in &ordinary.entries {
         // Expand newly arrived directories; ordinary directory hints already name changed children.
         if !cfg!(target_os = "macos")
         && !matches!(intent, CaptureIntent::Replace | CaptureIntent::Arrived)
@@ -3206,7 +3145,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(che
         }
     }
     let mut paths = CaptureMap::new();
-    for path in ordinary.keys() {
+    for (path, _) in &ordinary.entries {
         { let path = clone_capture_path(path, meter)?;
             paths.insert_measured(path, (), meter).map(|_| ()) }?;
     }
@@ -3401,13 +3340,13 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(checkou
                 None
             } else if host_kind == FileKind::Regular {
                 // Staging opens the file once and proves it is still the observed node before reading a byte.
-                Some(PreparedPath::Regular(PreparedRegular {
+                Some(PreparedPath::Regular {
                     path,
                     host_path,
                     snapshot,
                     exists_with_kind,
                     canonical_metadata,
-                }))
+                })
             } else {
                 append_final_state(path,
     source_root,
@@ -3572,11 +3511,14 @@ async fn apply_capture_transaction<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         mutation_bytes, meter.custody.as_ref().expect("capture scope is live"),
     ).map_err(CaptureError::from)?);
     let apply_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
+    let call_cancellation = &apply_cancellation;
     capture_sdk(
-        |native| {
-            checkout.apply_authored_bulk_transaction_with_native_work(
-                input.0, input.1, native, &apply_cancellation,
-            )
+        |native| async move {
+            let mut accounting = crate::kernel::allocation::KernelAccounting::native(native, call_cancellation);
+            checkout.apply_authored_bulk_transaction_with_accounting(
+                crate::kernel::Owned { value: input.0, bytes: input.1.bytes(), allocation: crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(input.1) },
+                &mut accounting, call_cancellation,
+            ).await
         },
         meter, &apply_cancellation,
     ).await?;
@@ -3668,13 +3610,13 @@ async fn finish_prepared_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(stag
     // A pending alias is planned only after its source, so staging preserves their dependency order.
     for path in prepared {
         match path {
-            PreparedPath::Regular(plan) => {
-                let staged = stage_regular_body(stager, source_root, &plan.host_path,
-                    &plan.snapshot, maximum_extent_spans, cancellation, meter,
+            PreparedPath::Regular { path, host_path, snapshot, exists_with_kind, canonical_metadata } => {
+                let staged = stage_regular_body(stager, source_root, &host_path,
+                    &snapshot, maximum_extent_spans, cancellation, meter,
                     &mut receipt.staged_file_bytes).await?;
-                capture_drop_host_path(plan.host_path, meter)?;
-                append_staged_regular_state(plan.path, plan.snapshot.length,
-                    plan.exists_with_kind, plan.canonical_metadata, staged, mutations, meter)?;
+                capture_drop_host_path(host_path, meter)?;
+                append_staged_regular_state(path, snapshot.length,
+                    exists_with_kind, canonical_metadata, staged, mutations, meter)?;
             }
             PreparedPath::HardLink { source, destination, current } => {
                 append_hard_link(source, destination, current, mutations, meter)?;
@@ -4210,7 +4152,7 @@ fn native_positional_file_measured(
     file: std::fs::File,
     scope: &CaptureWorkScope,
 ) -> Result<acyclic_native_runtime::NativeFile, CaptureError> {
-    let meter = scope.native.runtime_meter_owner();
+    let meter = scope.native.runtime_meter();
     #[cfg(windows)]
     let result = unsafe {
         acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))

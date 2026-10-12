@@ -796,17 +796,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 VolumeOperation::Read, MAX_CAPTURE_BYTES, work))
     }
 
-    fn project_read_grant<'a>(&'a self, request: &ForkRequest, volume: &VolumeRef,
-        generation: &GenerationRef) -> Result<std::borrow::Cow<'a, ContentGrant>> {
-        if request.authorized_source.is_none() { return self.read_grant(volume).map(std::borrow::Cow::Owned); }
-        if self.task_preparation.is_some_and(|task| task.project_source().is_none()) {
-            return Err(bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Unauthorized, "fork source descriptor has no sealed project read"));
-        }
-        let grant = self.preparer.sealed_project_read(request, volume, generation, self.io.as_ref(), self.task_preparation)?;
-        if !self.io.as_ref().is_some_and(|io| io.original_native_work().is_some()) { grant.require(volume, VolumeOperation::Read, self.io.as_ref())?; }
-        Ok(std::borrow::Cow::Borrowed(grant))
-    }
-
     async fn verify_task_lease(&self, settlement: bool) -> Result<()> {
         if let Some(preparation) = &self.task_preparation {
             #[cfg(not(target_arch = "wasm32"))]
@@ -1046,7 +1035,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             .ok_or_else(|| bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "fork has no parent scratch selection"))?;
         let private_key = IdempotencyKey::new(crate::contract::preparation_format(format_args!("fork:{}:{request_digest}:scratch", request.operation_id), self.io.as_ref())?)?;
         let private_grant = self.read_grant(source_private)?;
-        let project_grant = self.project_read_grant(&request, source_project, source_generation)?;
+        let project_grant = if request.authorized_source.is_some() {
+            std::borrow::Cow::Borrowed(self.preparer.sealed_project_read(
+                &request, source_project, source_generation, self.io.as_ref(), self.task_preparation,
+            )?)
+        } else { std::borrow::Cow::Owned(self.read_grant(source_project)?) };
         self.verify_task_lease(false).await?;
         let private_observation = bounded_io::fork(
             &self.preparer.host, source_private, &private_grant, private_generation, &private,

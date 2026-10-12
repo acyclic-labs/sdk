@@ -1164,7 +1164,7 @@ where
         cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<super::RecursiveToolOwner<P, A, O>> {
         let workflow = self.workflow_journal_for_tool(context, tool, invocation, cancellation).await?;
-        let journal_owner = workflow.task_journal_owner()
+        let journal_owner = workflow.owner.clone()
             .ok_or_else(|| Error::Unauthorized("recursive tool lacks its original task owner".into()))?;
         Ok(super::RecursiveToolOwner { runtime:self.clone(), workflow, journal_owner })
     }

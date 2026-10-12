@@ -35,7 +35,7 @@ macro_rules! command_record {
 }
 
 command_record!(
-    TimerTaskCommand, TaskObserveCommand, TaskCancelCommand,
+    TimerTaskCommand, TaskObserveCommand, TaskCancelCommand, CommittedMailResult,
     TaskAdmitCommand => TaskAdmitCommand,
     PreparedTaskAdmitCommand => PreparedTaskAdmitCommand,
     ModelTaskCommand => ModelTaskCommand,
@@ -357,7 +357,7 @@ where
         &self, context: WorkerContext, fence: LeaseFence, command: WorkflowCommand,
         payload: Value, reconciliation_only: bool, io: Option<&super::PreparationIo>,
     ) -> Result<TaskCommandProgress> {
-        use super::task_runtime::observed::{boundary, clone_fence};
+        use super::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
         let task = context.context().durable_task_id().ok_or_else(|| {
             boundary(io, ErrorCode::Unauthorized, "command has no admitted task")
@@ -910,7 +910,9 @@ where
                     let copy_operation = crate::durable_host::received_copy_operation(task, receive, Some(io))?;
                     let copy_path = crate::contract::preparation_format(format_args!("mailbox/{receive}/parcel"), Some(io))?;
                     let _path = io.guard_owned(copy_path.capacity() as u64)?;
-                    let retained = context.context().observe_staged_file_once_with_native_work(copy_operation, work).await?;
+                    let (call_id, _call_id) = work.display(&copy_operation)?;
+                    let publisher = ToolContext::new_with_native_work(Arc::clone(context), copy_operation, &call_id, work)?;
+                    let retained = publisher.observe_staged_file_once_with_native_work(copy_operation, work).await?;
                     io.absorb_native_custody(retained.1)?;
                     let copy = match retained.0 {
                         Some(file) => file,
@@ -1038,7 +1040,7 @@ where
             }
         };
         match progress {
-            StockTurnProgress::Ready(output) => mail::mail_ready(Outcome::Succeeded(output), io),
+            StockTurnProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
             StockTurnProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
             StockTurnProgress::Rejected(reason) => rejected(reason, io),
         }
@@ -1050,6 +1052,11 @@ where
     ) -> Result<TaskCommandProgress> {
         use super::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let WorkerContext::Native(_) = &context {
+            let io = io.ok_or_else(|| boundary(io, ErrorCode::Unsupported, "native tool requires original observer"))?;
+            io.original_native_work().ok_or_else(|| boundary(Some(io), ErrorCode::Unsupported, "native tool requires original work"))?;
+        }
         let input: ToolTaskCommand = mail::decode_command(payload, io)?;
         let definition = self.runtime.tool_definition(&input.name, &input.revision, io)?;
         let (journal, operation) = 'journal: {
@@ -1123,7 +1130,7 @@ where
         };
         match outcome {
             Outcome::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
-            outcome => mail::mail_ready(outcome, io),
+            outcome => ready(outcome, io),
         }
     }
 
@@ -1267,7 +1274,7 @@ fn rejected(reason: crate::InteractionRejection, io: Option<&super::PreparationI
         }
         break 'message reason.to_string();
     };
-    mail::mail_ready(Outcome::<Value>::Failed { message }, io)
+    ready(Outcome::<Value>::Failed { message }, io)
 }
 
 fn tool_invocation(

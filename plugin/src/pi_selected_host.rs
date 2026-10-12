@@ -242,7 +242,7 @@ impl<'a> PiControlHost<'a> {
             }
         }
         let pinned = cursor.as_ref().and_then(|cursor| match &cursor.cursor {
-            PageCursor::Inspect(cursor) => Some(cursor.snapshot), PageCursor::Diff(cursor) => Some(cursor.after_snapshot()),
+            PageCursor::Inspect(cursor) => Some(cursor.snapshot), PageCursor::Diff(cursor) => Some(cursor.after.snapshot),
         });
         let base_selection_operation = derived(operation, if command.kind == "acyclic.pi.writeback" {
             "selected-writeback" } else { "selected-import" }, &work)?;
@@ -695,8 +695,8 @@ impl PiControlHost<'_> {
         command: PiSelectedCommand::normalized(input, key),
         operation, approval_digest: &prepared.approval_digest,
         private_volume: &root_binding.scratch.volume,
-        source_snapshot: prepared.original_snapshot(), selected_snapshot: import_receipt.selected_snapshot,
-        imported: prepared.imported(), import_receipt,
+        source_snapshot: prepared.generations.original_snapshot, selected_snapshot: import_receipt.selected_snapshot,
+        imported: prepared.generations.imported, import_receipt,
         journal: &prepared.journal, canonical_digest_input: &prepared.canonical_digest_input,
         root_path: &root_display.0, source_path: source_display.as_ref().map_or("", |(value, _)| value),
     };
@@ -713,8 +713,8 @@ impl PiControlHost<'_> {
         return Err(denied("user approval does not match this exact prepared original-root plan"));
     }
     crate::pi_operator_host::require_resolved_approval(&self.filesystem, &self.stream, &self.protected, descriptor, work).await?;
-    let published = publish_writeback(&prepared, &root, context, owner, verifier, scope, &generations,
-        &self.resources.store, approval, true, &options, &[".git"], cancellation, work).await?;
+    let published = publish_writeback(&prepared, context, owner, verifier, scope,
+        &self.resources.store, approval, true, cancellation, work).await?;
     if published.phase != acyclic_fs::MaterializationPhase::Applied { return Ok(TaskCommandProgress::Pending); }
     owner.native_view_owner().verify_with_native_work(work).await?;
     ready(&PiWritebackResponse { status: "published", source: input.source, root: key,

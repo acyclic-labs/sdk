@@ -487,7 +487,7 @@ impl_original_native_read_meter!(NativeResourceAllowance);
 #[cfg(not(target_arch = "wasm32"))]
 impl_original_native_read_meter!(NativeInvocationView);
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-impl_original_native_read_meter!(NativeSourceExecutionView, |owner: &NativeSourceExecutionView| Some(owner._metadata.work().runtime_meter_owner()));
+impl_original_native_read_meter!(NativeSourceExecutionView, |owner: &NativeSourceExecutionView| Some(owner._metadata.work().runtime_meter()));
 
 /// Retains an allocation's resource ownership through physical retirement.
 #[cfg(not(target_arch = "wasm32"))]
@@ -757,23 +757,9 @@ impl NativeMaterializationWork {
         Ok(work)
     }
 
-    /// Borrows the original operation's native runtime admission interface.
+    /// Returns the original runtime meter for synchronous and queued I/O.
     #[must_use]
-    pub fn runtime_meter(&self) -> &dyn acyclic_native_runtime::NativeReadMeter {
-        #[cfg(feature = "native-mount")]
-        if let Some(view) = &self.execution { return view.as_ref(); }
-        if let Some(view) = &self.invocation {
-            if view.owns_resource(self.resource.as_ref()) { return view.as_ref(); }
-        }
-        match &self.resource {
-            Some(resource) => resource.as_ref(),
-            None => self.state.as_ref(),
-        }
-    }
-
-    /// Pins the same original runtime meter for an asynchronous native queue.
-    #[must_use]
-    pub fn runtime_meter_owner(&self) -> std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> {
+    pub fn runtime_meter(&self) -> std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> {
         #[cfg(feature = "native-mount")]
         if let Some(view) = &self.execution {
             return std::sync::Arc::clone(view) as std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>;
@@ -819,42 +805,6 @@ impl NativeMaterializationWork {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         Ok((image, allocation))
-    }
-
-    /// Writes borrowed bytes through this original work's SDK I/O boundary.
-    pub fn write_owned_bytes<W: std::io::Write + ?Sized>(
-        &self, output: &mut W, bytes: &[u8],
-    ) -> Result<(), NativeTreeMaterializationError> {
-        use acyclic_native_runtime::{
-            NativeOperationKind, NativeOperationReservation, NativeByteReservation,
-        };
-        let mut transfer = NativeByteReservation::new(
-            self.runtime_meter_owner(), NativeOperationKind::Write, bytes.len(),
-        ).map_err(|error| self.runtime_error(error))?;
-        let mut offset = 0;
-        while offset < bytes.len() {
-            let mut operation = NativeOperationReservation::new(
-                self.runtime_meter(), NativeOperationKind::Write, 1,
-            ).map_err(|error| self.runtime_error(error))?;
-            let (written, recorded) = operation.attempt(|| output.write(&bytes[offset..]));
-            let count = match written {
-                Ok(count) if count <= bytes.len() - offset => count,
-                Ok(_) => return Err(NativeTreeMaterializationError::InvalidLayout),
-                Err(error) => {
-                    recorded.map_err(|error| self.runtime_error(error))?;
-                    if error.kind() == std::io::ErrorKind::Interrupted { continue; }
-                    return Err(self.runtime_error(error));
-                }
-            };
-            let transferred = transfer.record_partial(count);
-            recorded.map_err(|error| self.runtime_error(error))?;
-            transferred.map_err(|error| self.runtime_error(error))?;
-            if count == 0 {
-                return Err(self.runtime_error(std::io::ErrorKind::WriteZero.into()));
-            }
-            offset += count;
-        }
-        Ok(())
     }
 
     /// Withholds additive completion limits on this same original and resource.
@@ -1274,7 +1224,7 @@ impl NativeMaterializationWork {
         bytes.resize(bytes.capacity(), 0);
         self.spent(initialized).map_err(E::from)?;
         let mut bytes = acyclic_stream::PreparedOwnedBytes::new(
-            bytes, custody, self.runtime_meter_owner(),
+            bytes, custody, self.runtime_meter(),
         ).map_err(|failure| E::from(match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => self.runtime_error(error),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
@@ -1663,7 +1613,7 @@ impl NativeOwnedCleanupCredit {
     pub(crate) fn original_work(&self) -> &NativeMaterializationWork { self._metadata.work() }
 
     /// Pure coercion of this already-funded owner; no new meter or allocation.
-    pub(crate) fn runtime_meter_owner(
+    pub(crate) fn runtime_meter(
         self: &std::sync::Arc<Self>,
     ) -> std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> {
         std::sync::Arc::clone(self) as std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>
@@ -1887,7 +1837,7 @@ impl acyclic_native_runtime::NativeReadMeter for NativeOwnedCleanupCredit {
         Self::available(&state).map(|_| ()).map_err(|_| std::io::ErrorKind::Other.into())
     }
     fn allocation_owner(&self) -> Option<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>> {
-        let owner = self.original_work().runtime_meter_owner();
+        let owner = self.original_work().runtime_meter();
         Some(owner.allocation_owner().unwrap_or(owner))
     }
     fn reserve_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) -> std::io::Result<()> {
@@ -2060,7 +2010,7 @@ impl crate::native_host::NativeHostWork for &std::sync::Arc<NativeOwnedCleanupCr
     fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error> { drop(allocation); Ok(()) }
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
         acyclic_native_runtime::NativeOperationReservation::new(
-            self.runtime_meter_owner(), acyclic_native_runtime::NativeOperationKind::Write, 1,
+            self.runtime_meter(), acyclic_native_runtime::NativeOperationKind::Write, 1,
         ).map_err(|error| self.host_relay(error))
     }
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) { drop(reservation); }
@@ -2163,7 +2113,7 @@ impl NativeAllocation {
         original: &NativeMaterializationWork,
         incoming: acyclic_native_runtime::ReadAllocation,
     ) -> Result<Self, (NativeTreeMaterializationError, acyclic_native_runtime::ReadAllocation)> {
-        let owner = original.runtime_meter_owner();
+        let owner = original.runtime_meter();
         let expected = owner.allocation_owner().unwrap_or(owner);
         match incoming.consume_same_meter_owned_bytes(&expected) {
             Ok(bytes) => Ok(Self {
@@ -5407,12 +5357,8 @@ impl NativeTreeMaterializationError {
     /// Moves original diagnostic custody without allocating or checking work.
     #[must_use]
     pub fn into_native_failure(mut self) -> (Self, Option<NativeAllocation>) {
-        let allocation = self.take_native_failure_allocation();
+        let allocation = self.native_failure_allocation_mut().and_then(Option::take);
         (self, allocation)
-    }
-
-    pub(crate) fn take_native_failure_allocation(&mut self) -> Option<NativeAllocation> {
-        self.native_failure_allocation_mut().and_then(Option::take)
     }
 
     pub(crate) fn native_failure_allocation_mut(&mut self) -> Option<&mut Option<NativeAllocation>> {
@@ -5877,18 +5823,10 @@ async fn native_preflight_path<A: crate::AsyncAuthorityStore, O: crate::AsyncObj
                                 #[cfg(windows)]
                                 let (target, _target_custody) = crate::native_host::read_link_held_wide_with_work(&parent, name, work.remaining()?.source_bytes_read, &mut &*work)?;
                                 #[cfg(unix)]
-                                let mut actual = target.iter().copied();
+                                let actual = target.iter().copied();
                                 #[cfg(windows)]
-                                let mut actual = native_utf16_name_bytes(target.iter().copied());
-                                let mut expected = published.iter().copied();
-                                loop {
-                                    work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() })?;
-                                    match (actual.next(), expected.next()) {
-                                        (Some(a), Some(b)) if a == b => {}
-                                        (None, None) => return Ok(true),
-                                        _ => return Ok(false),
-                                    }
-                                }
+                                let actual = native_utf16_name_bytes(target.iter().copied());
+                                Ok(native_compare(actual, published.iter().copied(), work)? == std::cmp::Ordering::Equal)
                             })?;
                             matched && native_stat_identity(&native_stat_held(&parent, leaf, work)?) == native_stat_identity(&observed)
                         }
@@ -6868,9 +6806,9 @@ mod tests {
         work.write_working_file(temporary.path(), identity, Path::new("file"), "", false, Some(digest),
             || std::future::ready(Ok::<(), NativeTreeMaterializationError>(()))).await.expect("same held preimage edit can truncate to empty");
         assert_eq!(std::fs::read(temporary.path().join("file")).expect("empty postimage"), b"");
-        work.write_working_file(temporary.path(), identity, Path::new("new/nested/file"), "héllo", true, None,
+        work.write_working_file(temporary.path(), identity, Path::new("new/nested/file"), "hÃƒÆ’Ã‚Â©llo", true, None,
             || std::future::ready(Ok::<(), NativeTreeMaterializationError>(()))).await.expect("held parent directory creation");
-        assert_eq!(std::fs::read(temporary.path().join("new/nested/file")).expect("whole UTF-8 postimage"), "héllo".as_bytes());
+        assert_eq!(std::fs::read(temporary.path().join("new/nested/file")).expect("whole UTF-8 postimage"), "hÃƒÆ’Ã‚Â©llo".as_bytes());
     }
 
     #[cfg(not(target_arch = "wasm32"))]

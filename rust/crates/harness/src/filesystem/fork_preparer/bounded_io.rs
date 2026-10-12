@@ -1043,7 +1043,7 @@ pub(in crate::filesystem) fn source_bytes_from_vec(bytes: Vec<u8>, io: Option<&P
             Ok(custody) => custody,
             Err(error) => { drop(bytes); return Err(error); }
         };
-        return acyclic_stream::OwnedBytes::from_vec_with_guard(bytes, custody, original.runtime_meter_owner())
+        return acyclic_stream::OwnedBytes::from_vec_with_guard(bytes, custody, original.runtime_meter())
             .map_err(|failure| {
                 let error = failure.into_error();
                 Error::NativeWork { cause: match error {

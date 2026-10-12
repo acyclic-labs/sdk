@@ -910,14 +910,14 @@ mod tests {
         let bytes = reader.read_with_native_work(&staged.0, 65_536, &original)?.await?;
         assert!(original.receipt().backend_read_operations > reads);
         assert_eq!(bytes.as_ref(), b"same issued context");
-        assert!(bytes.matches_meter(&original.runtime_meter_owner()));
+        assert!(bytes.matches_meter(&original.runtime_meter()));
         let held = original.live_allocation_bytes() - before;
         assert!(held > 0);
         let physical = original.receipt();
         let shared_bytes = bytes.clone();
         drop(bytes);
         assert_eq!(shared_bytes.as_ref(), b"same issued context");
-        assert!(shared_bytes.matches_meter(&original.runtime_meter_owner()));
+        assert!(shared_bytes.matches_meter(&original.runtime_meter()));
         assert_eq!(original.live_allocation_bytes(), before + held);
         drop(shared_bytes);
         assert_eq!(original.live_allocation_bytes(), before);

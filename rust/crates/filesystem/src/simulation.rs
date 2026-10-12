@@ -1333,7 +1333,7 @@ fn altered_read_data(
         #[cfg(not(target_arch = "wasm32"))]
         KernelOwnedAllocation::NativeOriginal(allocation) => {
             let original = accounting.native_work().ok_or(ObjectStoreError::Corrupt)?;
-            OwnedBytes::from_vec_with_guard(bytes, allocation, original.runtime_meter_owner())
+            OwnedBytes::from_vec_with_guard(bytes, allocation, original.runtime_meter())
                 .map_err(|failure| match failure.into_error() {
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) =>
                         crate::FsError::from(original.runtime_error(error)),

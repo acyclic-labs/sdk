@@ -4776,7 +4776,7 @@ fn family_stems(
 }
 
 /// Every stored node of one family the `roots` reach.
-fn reachable_nodes<T: LazyNode>(
+fn reachable_nodes<T: LazyNode + DeserializeOwned>(
     root: &Namespace,
     roots: Vec<T::Id>,
     children: impl Fn(T) -> Vec<[u8; 32]>,
@@ -5610,10 +5610,10 @@ mod tests {
         let measured = store.materialization_with_work(work.clone());
         let original = measured.load(operation).await.expect("original decoder").expect("same operation");
         let root_identity = original.root_identity;
-        let mut file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
             .open(root.join("file.txt")).expect("authorized fixture file");
         let completion = measured.prepare_action(original).await.expect("accepted exact original completion");
-        work.write_owned_bytes(&mut file, b"after").expect("actual bounded SDK action");
+        acyclic_native_runtime::write_all_at(&file, 0, b"after", Some((work.runtime_meter().as_ref(), false))).expect("actual bounded SDK action");
         cancellation.cancel();
         let known_prefix = work.journal_work().expect("actual post-action prefix");
         let allocations = work.receipt().allocation_operations;

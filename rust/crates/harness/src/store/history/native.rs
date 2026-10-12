@@ -685,7 +685,7 @@ mod tests {
         original: &NativeMaterializationWork,
         dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> acyclic_stream::NativeStreamOutput<RuntimeOutputDropWitness> {
-        let meter = original.runtime_meter_owner();
+        let meter = original.runtime_meter();
         let mut allocation = acyclic_native_runtime::ReadAllocation::new(&meter, 8)
             .expect("pre-admitted concrete byte allocation");
         let mut bytes = Vec::new();

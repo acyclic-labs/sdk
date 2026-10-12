@@ -1504,16 +1504,13 @@ impl NativeWatch {
         &mut self, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
         let NativeWatchDriver::Source { watcher, .. } = &self.watcher else { return Ok(()); };
-        let result = (|| {
-            watcher.unadmit_with_work(Path::new(""), work)?;
-            while self.watched_directories.len() > 1 {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                let removed = self.watched_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
-                drop(removed);
-            }
-            Ok(())
-        })();
-        result
+        watcher.unadmit_with_work(Path::new(""), work)?;
+        while self.watched_directories.len() > 1 {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            let removed = self.watched_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
+            drop(removed);
+        }
+        Ok(())
     }
 
     #[cfg(windows)]
@@ -1659,21 +1656,18 @@ impl NativeWatch {
         &mut self, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
         work.check()?;
-        let result = (|| {
-            while let Some(observed) = self.windows_directories.last_mut() {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                observed.watcher.stop_with_work(work)?;
-                if !observed.watcher.is_stopped() {
-                    return Err(crate::demand::DemandError::WorkerUnavailable);
-                }
-                let removed = self.windows_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
-                drop(removed);
+        while let Some(observed) = self.windows_directories.last_mut() {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            observed.watcher.stop_with_work(work)?;
+            if !observed.watcher.is_stopped() {
+                return Err(crate::demand::DemandError::WorkerUnavailable);
             }
-            self.windows_directories = Vec::new();
-            drop(self.windows_backing_allocation.take());
-            Ok(())
-        })();
-        result
+            let removed = self.windows_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
+            drop(removed);
+        }
+        self.windows_directories = Vec::new();
+        drop(self.windows_backing_allocation.take());
+        Ok(())
     }
 
     /// Adds every directory beneath the root, except the root names in `excluded`, to a non-recursive native watcher: what a baseline that captures the whole tree needs before it starts, so a change to anything it captured is reported.

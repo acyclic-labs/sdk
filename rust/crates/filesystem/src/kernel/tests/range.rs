@@ -542,8 +542,8 @@ fn range_terminal_and_lower_layer_error_translation_is_total()
 
     let prospective = WorkCounters { object_probes: u64::MAX, ..WorkCounters::default() };
     if let KernelAccounting::Standalone { work, .. } = &mut accounting { *work = prospective; }
-    let overflow = super::super::file_read::completed_read_work(
-        &mut accounting, WorkCounters { object_probes: 1, ..WorkCounters::default() },
+    let overflow = accounting.record_completed(
+        WorkCounters { object_probes: 1, ..WorkCounters::default() },
     ).err().ok_or("overflowing backend prefix was accepted")?;
     assert!(matches!(range_error(overflow), ExtentReadError::Work(WorkError::Overflow)));
     assert_eq!(accounting.spent(), prospective);

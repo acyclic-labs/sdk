@@ -3373,7 +3373,7 @@ fn prepare_source_link_buffer<W: crate::demand::SourceDemandReadWork>(
     let copied = original.reserve_work(crate::WorkCounters { bytes_copied: allocation, ..crate::WorkCounters::UNCHARGED }).map_err(crate::native_name::original_name_error)?;
     buffer.resize(buffer.capacity(), 0);
     { let mut copy = copied; copy.record_completed(crate::WorkCounters { bytes_copied: allocation, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
-    acyclic_stream::PreparedOwnedBytes::new(buffer, ownership, original.runtime_meter_owner())
+    acyclic_stream::PreparedOwnedBytes::new(buffer, ownership, original.runtime_meter())
         .map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
                 crate::native_name::original_name_error(original.runtime_error(error))

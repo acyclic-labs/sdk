@@ -1255,7 +1255,7 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
                 .expect("genuine Memory completion accepted before the physical action");
             assert!(original.receipt().bytes_copied > before_admission.bytes_copied);
             assert_eq!(std::fs::read(&file).expect("unchanged before acceptance"), b"before");
-            work.write_owned_bytes(&mut output, b"after!").expect("actual original-resource action");
+            acyclic_native_runtime::write_all_at(&output, 0, b"after!", Some((work.runtime_meter().as_ref(), false))).expect("actual original-resource action");
             if cancel_after_action {
                 cancellation.cancel();
             }

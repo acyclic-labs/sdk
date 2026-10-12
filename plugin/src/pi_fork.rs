@@ -914,7 +914,9 @@ impl PiForkCoordinator {
                 &[filesystem, history, capture], work)?.into_native_shared(work)?;
             let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
                 SchemaRegistry::new(), work).await?;
-            let mut parent_value = parent.0.with_limits(context.scope().limits())?.with_fork_verifier(forks);
+            let mut parent_value = parent.0;
+            parent_value.set_limits(context.scope().limits())?;
+            parent_value = parent_value.with_fork_verifier(forks);
             {
                 let mut io = acyclic_harness::store::native_work_io(work)
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -937,7 +939,8 @@ impl PiForkCoordinator {
             let child_verifier = child_authority.0.1.verifier_with_native_work(work)?;
             let child = StreamAggregate::open_with_native_work(&self.stream, child_authority.0.0, child_verifier.0,
                 SchemaRegistry::new(), work).await?;
-            let mut child_value = child.0.with_limits(plan.request.child.limits)?;
+            let mut child_value = child.0;
+            child_value.set_limits(plan.request.child.limits)?;
             {
                 let mut io = acyclic_harness::store::native_work_io(work)
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;

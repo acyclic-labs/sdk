@@ -334,7 +334,8 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         drop(authority.0.2);
         parent_custody.absorb(&mut authority.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         parent_custody.absorb(&mut verifier.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let parent = parent.0.with_limits(context.scope().limits())?;
+        let mut parent = parent.0;
+        parent.set_limits(context.scope().limits())?;
         let plan = coordinator.begin(shared, owner, &fence, parent, source.clone(), frozen, input.commit, ForkPreparationLimits { resources: 128, work: 1_000_000,
             bytes: self.protected.policy().maximum_payload_bytes }, remaining(&work)?, cancel.clone()).await?;
         let saved = self.retained.pending.iter().find(|pending| pending.fork_key == operations.fork.into_bytes());

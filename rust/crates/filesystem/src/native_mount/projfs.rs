@@ -2853,7 +2853,7 @@ impl<'a> ProjectedNativeWriter<'a> {
         // SAFETY: the existing raw native creator set asynchronous I/O and this transfer is the handle's sole positional I/O owner.
         let file = match unsafe {
             acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(
-                writer_file, Some(acyclic_native_runtime::NativeFileMeter::Borrowed(work.runtime_meter())),
+                writer_file, Some(acyclic_native_runtime::NativeFileMeter::Borrowed(work.runtime_meter().as_ref())),
             )
         } {
             Ok(file) => file,
@@ -2875,7 +2875,7 @@ impl<'a> ProjectedNativeWriter<'a> {
         let cleanup = self.cleanup.take().expect("created writer has cleanup custody");
         let allocation = file.logical_owned_bytes();
         let recorded = cleanup.attempt(|| drop(file)).1;
-        self.work.runtime_meter().release(allocation);
+        self.work.runtime_meter().as_ref().release(allocation);
         recorded.map_err(detach_work_error)
     }
 }
@@ -2920,7 +2920,7 @@ fn finish_projected_file(
 ) -> Result<(), NativeMountError> {
     use std::os::windows::io::AsRawHandle as _;
     use windows::Win32::Storage::FileSystem::{FileBasicInfo, FILE_BASIC_INFO, SetFileInformationByHandle};
-    let meter = work.runtime_meter_owner();
+    let meter = work.runtime_meter();
     let size = u64::try_from(entry.basic_info().FileSize).map_err(|_| NativeMountError::Demand(crate::DemandError::InvalidRequest))?;
     wait_native_unit_measured(file.set_len_async(size, Some(Arc::clone(&meter)))
         .map_err(projection_io_error)?, work)?;
@@ -2996,7 +2996,7 @@ fn publish_projected_file(
     }
     host_work.record(delta).map_err(detach_work_error)?;
     let length = u32::try_from(total).map_err(|_| crate::WorkError::Overflow)?;
-    let meter = work.runtime_meter_owner();
+    let meter = work.runtime_meter();
     wait_native_unit_measured(file.control_async(move |file, meter| { let meter = meter.expect("metered control");
         meter.admit_write(0)?;
         let mut status_block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
@@ -3180,7 +3180,7 @@ fn write_listed_content(
         let length = packet.bytes.len() as u64;
         let written: Result<(), NativeMountError> = (|| {
             let packet = RetainedBuffer::source_chunk(packet, projection)?;
-            let meter = projection.work.runtime_meter_owner();
+            let meter = projection.work.runtime_meter();
             let completion = file.control_async(move |file, meter| { let meter = meter.expect("metered control");
                 acyclic_native_runtime::write_all_at(
                     file, offset, &std::ops::Deref::deref(&packet).bytes, Some((meter, true)),
@@ -4390,7 +4390,7 @@ fn source_hresult(error: &MountSourceError) -> HRESULT {
         MountSourceError::NativeCallbackDenied { .. } => HRESULT::from_win32(5),
         MountSourceError::NativeWorkspaceCause(error) => workspace_hresult(&error.source),
         MountSourceError::Filesystem(error) => filesystem_hresult(error),
-        MountSourceError::Io(error) | MountSourceError::NativeRecordIo(error, _) => error.raw_os_error().map_or(HR_IO_DEVICE, |code| {
+        MountSourceError::Io(error, _) => error.raw_os_error().map_or(HR_IO_DEVICE, |code| {
             if code < 0 { HRESULT(code) } else { HRESULT::from_win32(code as u32) }
         }),
         _ => HR_IO_DEVICE,
@@ -5547,7 +5547,7 @@ fn projected_entry(
     let symlink = if lookup.node.kind == MountNodeKind::SymbolicLink {
         let mut path = source_clone_path(projection, directory)?;
         source_path_push(projection, &mut path, source_copy_bytes(projection, &component)?)?;
-        let target = projection.source.read_link_with_meter(&path, projection.work).map_err(detach_source_error)?;
+        let target = projection.source.read_link(&path, projection.work).map_err(detach_source_error)?;
         let target = RetainedBuffer::source_chunk(target, projection)?;
         if !source_valid_utf16(projection, &target.value.as_ref().expect("live link packet").bytes)? { return Ok(None); }
         Some(target)
@@ -5652,7 +5652,7 @@ fn resolves_to_directory(
     match lookup {
         Some(lookup) if lookup.node.kind == MountNodeKind::Directory => Ok(true),
         Some(lookup) if lookup.node.kind == MountNodeKind::SymbolicLink && hops < MOST_HOPS => {
-            let next = match projection.source.read_link_with_meter(&path, projection.work) {
+            let next = match projection.source.read_link(&path, projection.work) {
                 Ok(next) => next,
                 Err(MountSourceError::NotFound) => return Ok(false),
                 Err(error) => return Err(detach_source_error(error)),
@@ -5806,10 +5806,10 @@ fn retain_callback_failure(projection: Projection<'_>, error: NativeMountError) 
         };
         if ordinary { return result; }
         if matches!(source.semantic_error(),
-            MountSourceError::NativeRecordIo(_, _)
+            MountSourceError::Io(_, _)
                 | MountSourceError::NativeRecordJson(_, _) | MountSourceError::NativeRecordLockTimeout(_, _)
                 | MountSourceError::NativeRecordOwnershipConflict(_, _)
-                | MountSourceError::NativeRecordIntegrity | MountSourceError::NativeRecordContextTransaction(_, _)
+                | MountSourceError::NativeRecordContextTransaction(_, _)
                 | MountSourceError::NativeRecordCorrupt(_, _) | MountSourceError::PublicationRetryLimit)
         {
             return result;
@@ -5848,7 +5848,7 @@ fn callback_requires_permanent_fence(error: &NativeMountError) -> bool {
             MountSourceError::Filesystem(error) => filesystem_failure_is_fatal(error),
             MountSourceError::OriginalSnapshotUnavailable | MountSourceError::Indeterminate
                 | MountSourceError::SelectedPublication(_)
-                | MountSourceError::NativeRecordMaterializationInProgress => true,
+                => true,
             #[cfg(feature = "native-watch")]
             MountSourceError::SourceWatchStartup(_) | MountSourceError::NativeWatchStartupFailed { .. }
                 | MountSourceError::NativeWatchSourceStartupFailed { .. } => true,
@@ -6308,7 +6308,7 @@ mod tests {
             crate::native_host::create_windows_provisional_overlapped_file_with_work(
                 &parent, &[102], &mut &meter,
             ).map_err(super::detach_work_error))?;
-        let native_meter = meter.runtime_meter_owner();
+        let native_meter = meter.runtime_meter();
         super::wait_native_unit_measured(writer.file().write_async(0, Bytes::from_static(b"physical"), Arc::clone(&native_meter), ()).map_err(super::projection_io_error)?, &meter)?;
         cancellation.cancel();
         let error = match writer.file().write_async(8, Bytes::from_static(b"not written"), native_meter, ()) {

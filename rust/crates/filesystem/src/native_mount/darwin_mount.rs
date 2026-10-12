@@ -2022,7 +2022,7 @@ fn detach_check(
 ) -> Result<(), NativeMountError> {
     match cleanup {
         Some(loan) => loan.check_wait().map_err(NativeMountError::from),
-        None => meter.with_native(|work| work.admit(crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)),
+        None => meter.work().ok_or(crate::DemandError::Cancelled)?.admit(crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from),
     }
 }
 
@@ -2032,7 +2032,7 @@ fn detach_wait(
     detach_check(meter, cleanup)?;
     match cleanup {
         Some(loan) => Ok(loan.cancellation().cloned()),
-        None => meter.with_native(|work| Ok(Some(work.cancellation().clone()))),
+        None => Ok(Some(meter.work().ok_or(crate::DemandError::Cancelled)?.cancellation().clone())),
     }
 }
 
@@ -2043,7 +2043,7 @@ fn detach_started_read(
         Some(loan) => loan.started_io(crate::WorkCounters {
             backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(NativeMountError::from),
-        None => meter.with_native(|work| darwin_native_attempt(work, false)),
+        None => darwin_native_attempt(&meter.work().ok_or(crate::DemandError::Cancelled)?, false),
     }
 }
 
@@ -2052,7 +2052,7 @@ fn detach_observe<T>(
     operation: impl FnOnce() -> T,
 ) -> Result<T, NativeMountError> {
     let delta = crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED };
-    meter.with_native(|work| darwin_probe_cpu(work, cleanup, delta, operation))
+    darwin_probe_cpu(&meter.work().ok_or(crate::DemandError::Cancelled)?, cleanup, delta, operation)
 }
 
 
@@ -2491,12 +2491,8 @@ impl Drop for DetachLoan<'_> {
 }
 
 impl DetachReadMeter {
-    fn with_native<T>(
-        &self, call: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, NativeMountError>,
-    ) -> Result<T, NativeMountError> {
-        let native = self.work.lock().unwrap_or_else(PoisonError::into_inner)
-            .as_ref().cloned().ok_or(crate::DemandError::Cancelled)?;
-        call(&native)
+    fn work(&self) -> Option<crate::NativeMaterializationWork> {
+        self.work.lock().unwrap_or_else(PoisonError::into_inner).as_ref().cloned()
     }
 
     fn seal(&self) {
@@ -2604,7 +2600,7 @@ fn poll_direct(
     let mut credit = if let Some(cleanup) = cleanup {
         Some(cleanup.admit_completed(visit)?)
     } else {
-        meter.with_native(|work| work.charge(visit).map_err(NativeMountError::from))?;
+        meter.work().ok_or(crate::DemandError::Cancelled)?.charge(visit)?;
         None
     };
     let failed = task.submission_failure.is_some();
@@ -2638,7 +2634,7 @@ fn prepare_direct_unmount(
         backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
     })?;
     let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(credit)?;
-    let task_meter = credit.runtime_meter_owner();
+    let task_meter = credit.runtime_meter();
     let operation = acyclic_native_runtime::NativeOperationReservation::new(
         Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
     ).map_err(|error| NativeMountError::from(native.native_read_meter().take_native_io_failure()
@@ -2676,11 +2672,11 @@ fn bounded_direct_unmount(
     if state.direct.is_none() && resources.is_some() { return Ok(()); }
     if state.direct.is_none() {
         let path = DirectUnmountPath::Recovery(
-            meter.with_native(|work| DetachPath::new(destination, work))?,
+            DetachPath::new(destination, &meter.work().ok_or(crate::DemandError::Cancelled)?)?,
         );
     let original = meter.work.lock().unwrap_or_else(PoisonError::into_inner)
         .as_ref().cloned().ok_or(crate::DemandError::Cancelled)?;
-    let task_meter = original.runtime_meter_owner();
+    let task_meter = original.runtime_meter();
     let operation = acyclic_native_runtime::NativeOperationReservation::new(
         Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
     ).map_err(|error| NativeMountError::from(original.native_read_meter().take_native_io_failure()
@@ -2750,7 +2746,7 @@ impl PreparedDiskutilProcess {
         let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(credit)?;
         let original_work = original.allocation_work();
         let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process(
-            3, original_work.runtime_meter_owner(),
+            3, original_work.runtime_meter(),
         ).map_err(|error| NativeMountError::from(original.runtime_error(error)))?;
         Ok(Self { frame: Some(frame), credit, original_work })
     }
@@ -2778,7 +2774,7 @@ fn spawn_diskutil(
             owned_credit: Some(Arc::clone(&prepared.credit)),
             _original_work: Some(prepared.original_work.clone()),
         });
-        let native = prepared.credit.runtime_meter_owner();
+        let native = prepared.credit.runtime_meter();
         let result = acyclic_native_runtime::ProcessTree::spawn_closed_prepared(
             c"/usr/sbin/diskutil", &[c"unmount", c"force", path.as_c_str()], &mut prepared.frame,
             native.as_ref(), &mut state.diskutil.as_mut().expect("spawn custody installed").tree,
@@ -2795,15 +2791,17 @@ fn spawn_diskutil(
         tree: None, deadline: Instant::now() + DISKUTIL_UNMOUNT_TIMEOUT, failed_spawn: false,
         owned_credit: None, _original_work: None,
     });
-    let result = meter.with_native(|mut work| {
+    let result = (|| {
+        let original = meter.work().ok_or(crate::DemandError::Cancelled)?;
+        let mut work = &original;
         crate::native_host::unix_name_with_work(destination.as_os_str(), &mut work, |path, work| {
             acyclic_native_runtime::ProcessTree::spawn_closed_measured(
-                c"/usr/sbin/diskutil", &[c"unmount", c"force", path], work.runtime_meter(),
+                c"/usr/sbin/diskutil", &[c"unmount", c"force", path], work.runtime_meter().as_ref(),
                 &mut state.diskutil.as_mut().expect("spawn custody").tree,
             ).map_err(|error| crate::materializer::native_materialization_work_error(
                 work.native_read_meter().take_native_io_failure().unwrap_or_else(|| native_demand_error(error))))
         }).map_err(NativeMountError::from)
-    });
+    })();
     if state.diskutil.as_ref().is_some_and(|child| child.tree.is_none()) { state.diskutil.take(); }
     if let Some(child) = &mut state.diskutil { child.failed_spawn = result.is_err(); }
     result
@@ -2813,23 +2811,25 @@ impl DiskutilProcess {
     fn observe(&mut self, meter: &Arc<DetachReadMeter>) -> Result<Option<std::process::ExitStatus>, NativeMountError> {
         if let Some(credit) = &self.owned_credit {
             return self.tree.as_mut().expect("retained process tree")
-                .try_wait(Some(credit.runtime_meter_owner().as_ref()))
+                .try_wait(Some(credit.runtime_meter().as_ref()))
                 .map_err(|error| NativeMountError::from(credit.original_work().runtime_error(error)));
         }
-        meter.with_native(|work| self.tree.as_mut().expect("retained process tree").try_wait(Some(work.runtime_meter()))
+        let work = meter.work().ok_or(crate::DemandError::Cancelled)?;
+        self.tree.as_mut().expect("retained process tree").try_wait(Some(work.runtime_meter().as_ref()))
             .map_err(|error| NativeMountError::from(work.native_read_meter().take_native_io_failure()
-                .unwrap_or_else(|| native_demand_error(error)))))
+                .unwrap_or_else(|| native_demand_error(error))))
     }
 
     fn terminate(&mut self, meter: &Arc<DetachReadMeter>) -> Result<(), NativeMountError> {
         if let Some(credit) = &self.owned_credit {
             return self.tree.as_mut().expect("retained process tree")
-                .terminate(Some(credit.runtime_meter_owner().as_ref()))
+                .terminate(Some(credit.runtime_meter().as_ref()))
                 .map_err(|error| NativeMountError::from(credit.original_work().runtime_error(error)));
         }
-        meter.with_native(|work| self.tree.as_mut().expect("retained process tree").terminate(Some(work.runtime_meter()))
+        let work = meter.work().ok_or(crate::DemandError::Cancelled)?;
+        self.tree.as_mut().expect("retained process tree").terminate(Some(work.runtime_meter().as_ref()))
             .map_err(|error| NativeMountError::from(work.native_read_meter().take_native_io_failure()
-                .unwrap_or_else(|| native_demand_error(error)))))
+                .unwrap_or_else(|| native_demand_error(error))))
     }
 }
 
@@ -2838,7 +2838,7 @@ fn bounded_unmount(
     resources: Option<&Arc<DriverSessionResources>>,
     mut scratch: Option<&mut DarwinStopScratch>, cleanup: Option<&crate::materializer::NativeCleanupLoan<'_>>,
 ) -> Result<bool, NativeMountError> {
-    let mounted = meter.with_native(|work| is_mounted(destination, work, scratch.as_deref_mut(), cleanup))?;
+    let mounted = is_mounted(destination, &meter.work().ok_or(crate::DemandError::Cancelled)?, scratch.as_deref_mut(), cleanup)?;
     state.detached = !mounted;
     if mounted && state.start_aborted {
         return Err(NativeMountError::DestinationBusy);
@@ -2863,7 +2863,7 @@ fn bounded_unmount(
             Ok(()) | Err(NativeMountError::Io(_)) => {}
             Err(error) => return Err(error),
         }
-        if !meter.with_native(|work| is_mounted(destination, work, scratch.as_deref_mut(), cleanup))? {
+        if !is_mounted(destination, &meter.work().ok_or(crate::DemandError::Cancelled)?, scratch.as_deref_mut(), cleanup)? {
             state.detached = true;
             drop(state.prepared_diskutil.take());
             return Ok(true);
@@ -2884,7 +2884,7 @@ fn bounded_unmount(
         std::thread::sleep(STOP_POLL_INTERVAL);
     };
     state.diskutil.take();
-    if !meter.with_native(|work| is_mounted(destination, work, scratch.as_deref_mut(), cleanup))? {
+    if !is_mounted(destination, &meter.work().ok_or(crate::DemandError::Cancelled)?, scratch.as_deref_mut(), cleanup)? {
         state.detached = true;
         return Ok(true);
     }
@@ -2895,7 +2895,7 @@ fn bounded_unmount(
         return Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure::DiskutilExit(status)));
     }
     let verify_deadline = Instant::now() + DISKUTIL_VISIBILITY_TIMEOUT;
-    while meter.with_native(|work| is_mounted(destination, work, scratch.as_deref_mut(), cleanup))? {
+    while is_mounted(destination, &meter.work().ok_or(crate::DemandError::Cancelled)?, scratch.as_deref_mut(), cleanup)? {
         if Instant::now() >= verify_deadline {
             return Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure::MountStillVisible));
         }
@@ -2966,7 +2966,7 @@ impl DarwinRecoveryControl {
         }
         if let Some(child) = &mut self.diskutil {
             let result = child.tree.as_mut().ok_or(NativeMountError::ControlPending)?
-                .terminate(Some(original.runtime_meter()))
+                .terminate(Some(original.runtime_meter().as_ref()))
                 .map_err(|error| NativeMountError::from(original.runtime_error(error)));
             if let Err(error) = result { return Err(failure.unwrap_or(error)); }
             drop(self.diskutil.take());
@@ -3232,7 +3232,7 @@ impl DarwinCallbackWork<'_> {
         self.native.record_admitted(delta).map_err(|error| self.native_error(error.into()))?;
         let retained = allocation.bytes();
         let value = OwnedBytes::from_vec_with_guard(
-            value, allocation, self.native.runtime_meter_owner(),
+            value, allocation, self.native.runtime_meter(),
         ).map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
                 self.native_error(self.native.runtime_error(error).into())
@@ -3309,7 +3309,7 @@ fn darwin_source_errno(error: &MountSourceError) -> i32 {
         MountSourceError::Stale | MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
         MountSourceError::Cancelled | MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ECANCELED,
         MountSourceError::Allocation(_) => libc::ENOMEM,
-        MountSourceError::Io(error) | MountSourceError::NativeRecordIo(error, _) =>
+        MountSourceError::Io(error, _) =>
             error.raw_os_error().unwrap_or(libc::EIO),
         MountSourceError::NativeWork(error) => super::native_materialization_errno(error),
         MountSourceError::WorkspaceCause(error) => super::native_workspace_errno(error),
@@ -3352,7 +3352,6 @@ fn darwin_handler_is_fatal(error: &NativeMountError) -> bool {
                 MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_failure_is_fatal(&error.source),
                 MountSourceError::Cancelled | MountSourceError::Work(_)
                 | MountSourceError::OriginalSnapshotUnavailable | MountSourceError::Indeterminate
-                | MountSourceError::NativeRecordMaterializationInProgress
                 | MountSourceError::Filesystem(crate::FsError::Cancelled(_) | crate::FsError::Work(_)) => true,
                 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                 MountSourceError::SourceWatchStartup(_)
@@ -4090,7 +4089,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
         if length == 0 {
             return Err(libc::ERANGE);
         }
-        let chunk = context.source.read_link_with_meter(&*mount_path(path, work)?, work.native)
+        let chunk = context.source.read_link(&*mount_path(path, work)?, work.native)
             .map_err(|error| work.native_error(error.into()))?;
         let target = work.source_chunk(chunk);
         if target.len() >= length {
@@ -4227,7 +4226,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
         if !context.may_have_named_attributes(&path, work)? {
             return Err(libc::ENOATTR);
         }
-        let chunk = context.source.read_attribute_with_meter(&path, c_bytes(name, work)?, work.native)
+        let chunk = context.source.read_attribute(&path, c_bytes(name, work)?, work.native)
             .map_err(|error| work.native_error(error.into()))?
             .ok_or(libc::ENOATTR)?;
         let bytes = work.source_chunk(chunk);
@@ -4715,7 +4714,7 @@ mod tests {
         let native = creator.clone();
         let meter = new_detach_meter(&native)?;
         let path = DirectUnmountPath::Recovery(DetachPath::new(temporary.path(), &creator)?);
-        let task_meter = creator.runtime_meter_owner();
+        let task_meter = creator.runtime_meter();
         let operation = acyclic_native_runtime::NativeOperationReservation::new(
             Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
         ).map_err(|error| creator.runtime_error(error))?;

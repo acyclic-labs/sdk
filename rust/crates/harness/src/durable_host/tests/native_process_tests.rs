@@ -703,7 +703,7 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     let before = work.receipt().source_bytes_read;
     let project = issued.read_builtin_file(operation, Path::new("src/cold.txt"), 64, &work)?.await?;
     assert_eq!(project.as_slice(), b"genuine cold project");
-    assert!(project.matches_meter(&fixture.lazy_work.as_ref().expect("original seeded volume work").runtime_meter_owner()));
+    assert!(project.matches_meter(&fixture.lazy_work.as_ref().expect("original seeded volume work").runtime_meter()));
     assert!(work.receipt().source_bytes_read - before >= project.len() as u64);
     drop(project);
     issued.verify_with_native_work(&work)?.await?;

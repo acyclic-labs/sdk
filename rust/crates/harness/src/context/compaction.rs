@@ -447,7 +447,7 @@ fn compaction_step(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<
 fn compaction_error(work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
-        return crate::executor::native_boundary(crate::wire::ErrorCode::Invalid, reason);
+        return crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
     }
     let _ = work;
     Error::Invalid(reason.into())
