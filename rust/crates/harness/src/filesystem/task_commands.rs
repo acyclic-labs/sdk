@@ -1036,7 +1036,7 @@ where
             }
         };
         match progress {
-            StockTurnProgress::Ready(output) => mail::mail_ready(Outcome::Succeeded(output), io),
+            StockTurnProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
             StockTurnProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
             StockTurnProgress::Rejected(reason) => rejected(reason, io),
         }
@@ -1121,7 +1121,7 @@ where
         };
         match outcome {
             Outcome::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
-            outcome => mail::mail_ready(outcome, io),
+            outcome => ready(outcome, io),
         }
     }
 
@@ -1265,7 +1265,7 @@ fn rejected(reason: crate::InteractionRejection, io: Option<&super::PreparationI
         }
         break 'message reason.to_string();
     };
-    mail::mail_ready(Outcome::<Value>::Failed { message }, io)
+    ready(Outcome::<Value>::Failed { message }, io)
 }
 
 fn tool_invocation(
