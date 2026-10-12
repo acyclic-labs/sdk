@@ -1521,13 +1521,12 @@ impl StockExecution<'_> {
                     phase = crate::obs::Empty,
                     items = crate::obs::Empty,
                 );
-                tracing::Instrument::instrument(
+                span.scope(
                     async move {
                         crate::obs::outcome(
                             self.dispatch_model_step(journal, input, step, prior_messages, purpose).await,
                         )
                     },
-                    span,
                 )
             }).map(futures::future::Either::Right);
         }

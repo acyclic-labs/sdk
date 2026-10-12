@@ -2494,12 +2494,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let path = crate::contract::preparation_format(
             format_args!("harness/v2/workflows/{}", owner.workflow_admission().operation_id), io)?;
         let _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
-        let workflow = crate::store::operations::stream_text_with_work(&owner.stream(), &path, &mut work)?;
-        let tail = crate::store::operations::bounds_with_work(&owner.stream(), workflow.stream.path(), &mut work).await?
+        let workflow = crate::store::operations::stream(&owner.stream(), &path, &mut work)?;
+        let tail = crate::store::operations::bounds_with_work(&owner.stream(), workflow.0.path(), &mut work).await?
             .map_err(|error| crate::distributed::sdk_error(error, &work))?.tail;
         let index = tail.checked_sub(1).ok_or_else(|| admission_boundary(&work,
             crate::wire::ErrorCode::Unauthorized, "parcel receive checkpoint is absent"))?;
-        let latest = self.read_mail_workflow_record(owner, &workflow.stream, index, io).await?;
+        let latest = self.read_mail_workflow_record(owner, &workflow.0, index, io).await?;
         let prior;
         let receive = if let [command] = latest.transition.commands.as_slice()
             && command.operation_id == receive_operation
@@ -2557,7 +2557,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let event: MailEvent = mail::decode(&record.value, io)?;
         let mut message = [0; 36];
         let message = uuid::Uuid::from_bytes(event.message_id.into_bytes()).hyphenated().encode_lower(&mut message);
-        if record.sequence.checked_add(1) != Some(item.sequence) || message != item.message_id || event.payload != item.payload
+        if record.sequence.checked_add(1) != Some(item.sequence) || message != item.message_id.as_str() || event.payload != item.payload
             || mail::encode(&event, acyclic_stream::MAX_RECORD_BYTES as u64, io)?.as_ref() != record.value.as_ref() {
             return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
                 "parcel differs from its retained mailbox item"));
