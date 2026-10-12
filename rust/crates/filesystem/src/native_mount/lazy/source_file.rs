@@ -109,7 +109,7 @@ where
                             &self.authored,
                             &self.path,
                             self.expected_source,
-                            carrier,
+                            work,
                         )
                         .await?;
                         self.authored
@@ -335,7 +335,7 @@ where
         ),
         MountSourceError,
     > {
-        self.observe(work, false, |file, node, carrier| {
+        self.observe(work, false, |file, node, _| {
             if let Some(file) = file {
                 return file.read_sparse_range(offset, length, work);
             }
