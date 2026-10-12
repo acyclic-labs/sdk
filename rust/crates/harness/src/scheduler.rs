@@ -2827,7 +2827,7 @@ mod tests {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            ?;
         scheduler.apply(event, &mut Some(&mut io))
     }
 

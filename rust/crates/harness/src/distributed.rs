@@ -247,7 +247,7 @@ pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
             "declaration lies beyond coordinator source"));
     }
     let mut next = declaration_revision;
-    let mut admitted = None;
+    let mut admitted = false;
     let mut last_time = None;
     while next < tail {
         let maximum = (tail - next).min(u64::from(READ_PAGE_SIZE)) as u32;
@@ -279,18 +279,18 @@ pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
                     if operation_id == operation && reservation.id == candidate.reservation_id
                         && reservation.placement == candidate.placement =>
                 {
-                    if admitted.is_some() {
+                    if admitted {
                         return Err(coordinator_boundary(event_custody.work(), wire::ErrorCode::Conflict,
                             "historical reservation has distinct admission origins"));
                     }
-                    admitted = Some(revision);
+                    admitted = true;
                     drop(reservation);
                     drop(event_custody);
                 }
                 SchedulerEvent::Started { operation_id, fence }
                     if operation_id == operation && &fence == candidate =>
                 {
-                    if admitted.is_none_or(|admission| admission >= revision) || started {
+                    if !admitted || started {
                         return Err(coordinator_boundary(event_custody.work(), wire::ErrorCode::Conflict,
                             "historical reservation has no unique admitted start"));
                     }
@@ -2005,7 +2005,7 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
             let result = native_call_result(&original, client.native_append(
                 acyclic_stream::AppendRequest {
                     path: stream.path().clone(), records, if_tail, idempotency_key: Some(key.clone()),
-                }, original.runtime_meter_owner(),
+                }, original.runtime_meter(),
             ).await)?;
             return Ok(result.map(|output| output.into_parts().0));
         }
@@ -2178,7 +2178,7 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
     };
     let prepared = async {
         let prepared = native_call_result(original,
-            client.native_prepare_commit(request, maximum_bytes as usize, original.runtime_meter_owner()).await)?
+            client.native_prepare_commit(request, maximum_bytes as usize, original.runtime_meter()).await)?
             .map_err(|error| sdk_error(error, &None))?;
         let (mut prepared, incoming) = prepared.into_parts();
         let sdk_custody = match acyclic_fs::NativeAllocation::from_runtime_allocation(original, incoming) {
@@ -2406,7 +2406,7 @@ async fn inspect_idempotency<P: StreamProvider>(
                     drop(key);
                     recovery.await
                 }
-                None => client.native_inspect_idempotency(key, original.runtime_meter_owner()).await,
+                None => client.native_inspect_idempotency(key, original.runtime_meter()).await,
             })?;
             let output = match inspected {
                 Ok(output) => output,
@@ -2581,7 +2581,7 @@ pub(crate) async fn commit<P: StreamProvider>(
         if let Some(original) = custody.work().as_deref()
             .and_then(|observer| observer.original_native_work()).cloned()
         {
-            let committed = client.native_commit(request, original.runtime_meter_owner()).await;
+            let committed = client.native_commit(request, original.runtime_meter()).await;
             return receive_native_commit(&original, committed, phase.as_deref_mut(), vectors, &mut custody);
         }
         let committed = client.commit(request).await;

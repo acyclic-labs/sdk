@@ -1042,7 +1042,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let (data, custody) = original.copy_bytes(b"immutable original operation data")?;
-    let evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter_owner())
+    let evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter())
         .expect("fresh evidence has fully initialized unique backing");
     let intent = PublicationIntent::unrestricted(Some(Digest::from_bytes([59; 32])))
         .with_original_evidence(Some(evidence));

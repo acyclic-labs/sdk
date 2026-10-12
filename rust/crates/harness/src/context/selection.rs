@@ -385,13 +385,13 @@ impl ContextStage for SelectionStage {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
         self.validate_native(work)?;
-        work.remaining().map_err(super::native_context_work_error)?;
+        work.remaining()?;
         let renderer = self.renderer.contract_with_native_work(work)?;
         if !renderer.0.is_object() {
             return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context renderer contract must be an object" });
         }
         let mut source_io = crate::store::history::native_work_io(work)
-            .map_err(super::native_context_work_error)?;
+            ?;
         observe_selection_value(&renderer.0, &mut Some(&mut source_io))?;
         #[derive(Serialize)]
         struct Contract<'a> {
@@ -424,7 +424,7 @@ impl ContextStage for SelectionStage {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        work.remaining().map_err(super::native_context_work_error)?;
+        work.remaining()?;
         if !crate::is_valid_component_label(&self.name) {
             return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "selection stage identity is invalid" });
         }
@@ -432,7 +432,7 @@ impl ContextStage for SelectionStage {
             return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context renderer has no native capability" });
         }
         let mut observer = crate::store::history::native_work_io(work)
-            .map_err(super::native_context_work_error)?;
+            ?;
         self.selection.validate(self.limits, &mut Some(&mut observer))
     }
 
@@ -444,7 +444,7 @@ impl ContextStage for SelectionStage {
         limits: Limits,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Context, acyclic_fs::NativeAllocation)>> {
-        work.remaining().map_err(super::native_context_work_error)?;
+        work.remaining()?;
         if !crate::is_valid_component_label(&self.name) {
             return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "selection stage identity is invalid" });
         }
@@ -456,15 +456,15 @@ impl ContextStage for SelectionStage {
             super::validate_projected_context(&context.0, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
             {
                 let mut observer = crate::store::history::native_work_io(work)
-                    .map_err(super::native_context_work_error)?;
+                    ?;
                 self.selection.validate(limits, &mut Some(&mut observer))?;
             }
             if let ContextSourceValue::File { file } = &self.selection.source {
                 limits.validate_file(file, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
-                work.remaining().map_err(super::native_context_work_error)?;
+                work.remaining()?;
                 self.verifier.verify(file, limits.file_bytes, Some(&crate::executor::PreparationIo::from_native_work(work)?))?.await?;
             }
-            work.remaining().map_err(super::native_context_work_error)?;
+            work.remaining()?;
             let messages = self.renderer.render_native(
                 &self.selection, self.mode, input, limits, work,
             )?.await?;

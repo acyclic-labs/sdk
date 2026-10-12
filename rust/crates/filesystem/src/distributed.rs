@@ -205,7 +205,7 @@ impl<'a> ForkWork<'a> {
         let allocation = if let Some(original) = self.original {
             original.admit(WorkCounters::UNCHARGED)?;
             self.cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
-            Some(original.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?)
+            Some(original.claim(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?)
         } else { None };
         #[cfg(target_arch = "wasm32")]
         let allocation: ForkAllocation = None;
@@ -266,7 +266,7 @@ impl<'a> ForkWork<'a> {
             let mut buffer = buffer;
             let original = self.original.expect("native allocation has its original owner");
             // Filesystem payloads keep their existing intrinsic Bytes custody.
-            let mut control = original.claim(std::mem::size_of::<ForkBytes>() as u64)?;
+            let mut control = original.claim(std::mem::size_of::<ForkBytes>() as u64, u64::from((std::mem::size_of::<ForkBytes>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
             if let Err(error) = buffer.1.as_mut().expect("native buffer custody").absorb(&mut control) {
                 drop(buffer);
                 return Err(error.into());
@@ -2244,7 +2244,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         cancellation: &CancellationToken,
     ) -> Result<(FsAppendOutcome, crate::NativeAllocation), AuthorityStoreError> {
         let mut meter = ForkWork::native(original, cancellation)?;
-        let allocation = original.claim(0)?;
+        let allocation = original.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         self.append(request, &mut meter,
             ()).await
             .map(|value| (value, allocation))
@@ -2262,7 +2262,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     where F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static, E: From<AuthorityStoreError> + Send + 'static {
         let mut meter = ForkWork::native(original, cancellation).map_err(E::from)?;
-        let allocation = original.claim(0).map_err(AuthorityStoreError::from).map_err(E::from)?;
+        let allocation = original.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(AuthorityStoreError::from).map_err(E::from)?;
         let seal = OwnedAuthorityPublicationGuard(guard.clone());
         self.append(request, &mut meter, seal).await
             .map(|value| (value, allocation))
@@ -2409,7 +2409,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         cancellation: &CancellationToken,
     ) -> Result<(Option<DurableCommit>, crate::NativeAllocation), AuthorityStoreError> {
         let mut meter = ForkWork::native(work, cancellation)?;
-        let allocation = work.claim(0)?;
+        let allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let output = self.authority_find_operation(authority, operation, &mut meter).await?;
         Ok((output, allocation))
     }
@@ -2859,15 +2859,15 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             authority_records_read: record_ceiling, authority_bytes_read: ceiling,
             peak_allocation_bytes: peak, ..WorkCounters::UNCHARGED
         })?;
-        let result = 'inspect: {
+        let result = async {
             #[cfg(not(target_arch = "wasm32"))]
             if meter.is_native() {
                 let result = self.provider.native_inspect_idempotency(key, meter.native_meter()).await;
-                break 'inspect meter.result(result);
+                return meter.result(result);
             }
             self.provider.inspect_idempotency(key).await.map(|value| (value, None))
                 .map_err(map_stream_error)
-        };
+        }.await;
         let mut actual = WorkCounters { backend_read_operations: u64::from(!meter.is_native()), ..WorkCounters::UNCHARGED };
         if let Ok(output) = &result
             && let Some(observation) = &output.0
