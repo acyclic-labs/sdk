@@ -1088,7 +1088,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let key = bounded_io::operation_key(&creation_key, Some(io))?;
         let initial = bounded_io::filesystem_call!(io, original,
             original_workspace.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(key.into_bytes()), original, &io.cancellation),
-            original_workspace.operation_generation_measured(key, io.remaining()?, &io.cancellation))?;
+            original_workspace.operation_generation(key, io.remaining()?, &io.cancellation))?;
         let initial = initial.ok_or_else(|| Error::Unauthorized("original fork allocation operation is missing".into()))?;
         let generation = bounded_io::generation_ref(host, &initial, Some(io))?;
         let captured_generation = match role {
@@ -1315,7 +1315,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             });
             let mut receipt_custody = work.retain_owned((std::mem::size_of::<RootBootstrapContentReceipt>()
                 - std::mem::size_of::<crate::resource_preparation::RootBootstrapContentRequest>()) as u64)?;
-            let (request, mut request_custody) = request.clone_with_native_work(work)?;
+            let (request, mut request_custody) = request.copy(work)?;
             receipt_custody.absorb(&mut request_custody).map_err(|cause| Error::NativeWork {
                 cause, custody: Some(request_custody),
             })?;
@@ -1818,7 +1818,7 @@ mod tests {
             &owner, &admission, token.witness.binding(), &work,
         ).await?;
         for control in 0..5 {
-            let (mut request, request_custody) = token.request().clone_with_native_work(&work)?;
+            let (mut request, request_custody) = token.request().copy(&work)?;
             match control {
                 0 => request.graph_root = TaskId::from_bytes([181; 16]),
                 1 => request.root_operation = OperationId::from_bytes([182; 16]),

@@ -1,12 +1,4 @@
 //! Journaled local persistence for filesystem control-plane state.
-//!
-//! Distributed deployments can implement the small CAS traits over their
-//! authority stream. Embedded native deployments use this companion namespace:
-//! one recoverable JSON record per workspace and state family. Contexts,
-//! lineage, and lazy-workspace bindings change through one write-ahead log
-//! (`CoreLog`); every other family locks and journals each record.
-//! Keeping the implementation here prevents adapters from inventing separate
-//! lineage, lease, and Git-compatibility databases.
 
 use crate::record_store::Revisioned;
 use crate::lazy_workspace::NativeOwnedCoreState;
@@ -56,13 +48,6 @@ async fn run_local_transaction<T: Send + 'static>(
 }
 
 /// One journaled private namespace shared by core control-plane state.
-///
-/// A namespace has either one owner or any number of transactional users,
-/// never both. [`Self::open_owned`] holds `owner.lock` exclusively for the
-/// owner's lifetime, and every transaction of a [`Self::new`] store holds it
-/// shared. File locks conflict between separate handles within one process as
-/// well as across processes, so nothing but an owner and its clones can observe
-/// or change an owned namespace, and an owner may serve records from memory.
 #[derive(Clone, Debug)]
 pub struct LocalCoreStateStore {
     root: PathBuf,
@@ -85,10 +70,8 @@ enum Ownership {
 struct Owner {
     _lock: OwnerLock,
     /// Every logged record read or committed so far, `None` when absent.
-    /// Only the log changes it, under the log's mutex.
     residents: Arc<RwLock<Residents>>,
-    /// Core-state log, opened by the first logged transaction. Its mutex
-    /// replaces the log's file lock for every owned logged access.
+    /// Core-state log, opened by the first logged transaction.
     log: Mutex<Option<CoreLog>>,
 }
 
@@ -132,10 +115,6 @@ impl Drop for OwnerLock {
 }
 
 /// One admitted transaction's view of a namespace.
-///
-/// Record paths exist only as borrows of a namespace, so no record can be
-/// touched unless its store owns the namespace or holds a shared admission
-/// that excludes any owner for the whole transaction.
 #[derive(Debug)]
 struct Namespace {
     root: PathBuf,
@@ -175,10 +154,6 @@ impl Revisioned for MultiRootParentClaim {
 
 impl LocalCoreStateStore {
     /// Opens a private companion namespace below `root` for transactional use.
-    ///
-    /// Directories are created lazily. Every transaction fails with
-    /// [`LocalCoreStateStoreError::OwnershipConflict`] while an owner holds the
-    /// namespace.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
@@ -189,12 +164,7 @@ impl LocalCoreStateStore {
         }
     }
 
-    /// Opens the namespace below `root` as its sole owner for as long as this
-    /// store or any clone of it is alive.
-    ///
-    /// Fails with [`LocalCoreStateStoreError::OwnershipConflict`] while another
-    /// store owns the namespace or has a transaction in flight. An owner serves
-    /// logged records from memory after their first load.
+    /// Opens the namespace below `root` as its sole owner for as long as this store or any clone of it is alive.
     pub fn open_owned(root: impl Into<PathBuf>) -> Result<Self, LocalCoreStateStoreError> {
         let root = root.into();
         let lock = OwnerLock::acquire(&root, LockMode::Exclusive)?;
@@ -210,14 +180,7 @@ impl LocalCoreStateStore {
         })
     }
 
-    /// Returns a handle whose context, lineage, and lazy-workspace commits
-    /// defer durability until [`DeferredDurability::commit`], so a sequence of
-    /// commits costs one flush.
-    ///
-    /// Deferred commits are visible at once and stay atomic and ordered: a
-    /// crash before the flush loses a suffix of them. Once the returned guard
-    /// commits or drops, the handle and its clones flush every commit again.
-    /// Only an owner defers; a shared handle's commits stay flushed.
+    /// Returns a handle whose context, lineage, and lazy-workspace commits defer durability until [`DeferredDurability::commit`], so a sequence of commits costs one flush.
     pub fn defer_durability(&self) -> (Self, DeferredDurability) {
         let deferral = Arc::new(AtomicBool::new(true));
         let store = Self {
@@ -310,9 +273,6 @@ impl LocalCoreStateStore {
     }
 
     /// Lists materialization operation ids with durable recovery state.
-    ///
-    /// Only canonical journal names are returned. Temporary, previous, and
-    /// lock files remain internal recovery details.
     pub async fn materialization_operations_async(
         &self,
     ) -> Result<Vec<OperationId>, LocalCoreStateStoreError> {
@@ -320,8 +280,7 @@ impl LocalCoreStateStore {
             .await
     }
 
-    /// Removes a terminal materialization journal and its recovery copies
-    /// without blocking an async executor.
+    /// Removes a terminal materialization journal and its recovery copies without blocking an async executor.
     pub async fn remove_materialization_async(
         &self,
         operation_id: OperationId,
@@ -398,9 +357,6 @@ impl Namespace {
 }
 
 /// Files of one record.
-///
-/// Borrowing the namespace that derived them confines every record access to
-/// an admitted transaction.
 #[derive(Debug)]
 struct RecordPaths<'a> {
     directory: PathBuf,
@@ -462,9 +418,7 @@ fn with_lock<T>(
     with_lock_mode(paths, LockMode::Exclusive, action)
 }
 
-/// Reads one record. A readable current record needs no recovery, so readers
-/// share the lock; only a missing or torn current record takes the exclusive
-/// recovery path, which may promote the previous record.
+/// Reads one record.
 fn read_locked<T: DeserializeOwned>(
     paths: &RecordPaths,
 ) -> Result<Option<T>, LocalCoreStateStoreError> {
@@ -573,11 +527,7 @@ fn read_json_bounded<T: DeserializeOwned>(
     let mut bytes = Vec::new();
     file.take(maximum_bytes.saturating_add(1))
         .read_to_end(&mut bytes)?;
-    let length = u64::try_from(bytes.len()).map_err(|_| {
-        LocalCoreStateStoreError::ContextTransaction(
-            "workspace-context child bucket length is not representable".to_owned(),
-        )
-    })?;
+    let length = bytes.len() as u64;
     if length > maximum_bytes {
         return Err(LocalCoreStateStoreError::ContextTransaction(
             "workspace-context child bucket grew beyond its declared bound".to_owned(),
@@ -655,8 +605,7 @@ fn remove_if_present(path: &Path) -> Result<(), std::io::Error> {
     }
 }
 
-/// Makes the entries of directory `path` durable, with the one directory
-/// synchronization every store shares; Windows flushes a directory handle.
+/// Makes the entries of directory `path` durable, with the one directory synchronization every store shares; Windows flushes a directory handle.
 fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
     acyclic_native_runtime::sync_parent(path, acyclic_native_runtime::Durability::Full)
 }
@@ -670,8 +619,7 @@ pub struct DeferredDurability {
 }
 
 impl DeferredDurability {
-    /// Ends the scope and makes every commit made through the log so far
-    /// durable.
+    /// Ends the scope and makes every commit made through the log so far durable.
     pub async fn commit(self) -> Result<(), LocalCoreStateStoreError> {
         self.deferral.store(false, Ordering::Release);
         self.store
@@ -720,8 +668,7 @@ pub enum LocalCoreStateStoreError {
     /// A durable workspace-context transaction was malformed or incompatible.
     #[error("workspace-context transaction is incompatible: {0}")]
     ContextTransaction(String),
-    /// The core-state log holds an intact frame that does not decode, so it
-    /// may commit changes this store cannot apply.
+    /// The core-state log holds an intact frame that does not decode, so it may commit changes this store cannot apply.
     #[error("core state log holds an undecodable intact frame: {}", .0.display())]
     Corrupt(PathBuf),
 }
@@ -826,7 +773,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
             root.with_log(|log| {
                 let contexts = load_all_contexts(root, log)?;
                 if !context_children_index_ready(root, log)? {
-                    log.commit(root, index_change(contexts.iter().cloned())?)?;
+                    log.commit(root, index_change(contexts.iter().cloned()))?;
                 }
                 Ok(contexts)
             })
@@ -881,7 +828,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 }
                 if !context_children_index_ready(root, log)? {
                     let contexts = load_all_contexts(root, log)?;
-                    log.commit(root, index_change(contexts)?)?;
+                    log.commit(root, index_change(contexts))?;
                 }
                 let affected_parents = before
                     .values()
@@ -905,7 +852,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                     change.put(context_id, Some(record));
                 }
                 for parent in affected_parents {
-                    change.put_children(parent, children.remove(&parent))?;
+                    change.put_children(parent, children.remove(&parent));
                 }
                 log.commit(root, change)?;
                 Ok(true)
@@ -989,8 +936,7 @@ const CONTEXT_CHILDREN_INDEX_FAMILY: &str = "workspace-context-children-index-v1
 const CONTEXT_CHILD_COUNT_FAMILY: &str = "workspace-context-child-counts-v1";
 const LINEAGE_FAMILY: &str = "lineage";
 const CORE_LOG_FAMILY: &str = "core-state-log-v1";
-/// Commits an owner keeps in its log before writing their records back. Tests
-/// checkpoint every few commits so crash tests cover owned checkpoints.
+/// Commits an owner keeps in its log before writing their records back.
 const OWNED_CHECKPOINT: u64 = if cfg!(test) { 3 } else { 256 };
 
 impl LocalCoreStateStore {
@@ -1008,8 +954,7 @@ impl LocalCoreStateStore {
             .await
     }
 
-    /// Commits `replacement` only while the record is at `expected_revision`
-    /// (`0` means absent).
+    /// Commits `replacement` only while the record is at `expected_revision` (`0` means absent).
     async fn compare_and_swap_logged<T: Logged + Revisioned>(
         &self,
         id: T::Id,
@@ -1032,9 +977,7 @@ impl LocalCoreStateStore {
 }
 
 impl Owner {
-    /// Returns a resident record (`Some(None)` for a known absence) without
-    /// touching the log. Every commit and every replay updates residents
-    /// before its transaction ends, so a resident record is never stale.
+    /// Returns a resident record (`Some(None)` for a known absence) without touching the log.
     fn resident<T: Logged>(&self, id: T::Id) -> Option<Option<T>> {
         let residents = self.residents.read().ok()?;
         let value = residents.get(&T::key(id))?;
@@ -1053,17 +996,6 @@ impl Owner {
 
 impl Namespace {
     /// Runs one transaction over the replayed core-state log.
-    ///
-    /// An owner serializes its transactions on its own mutex, keeps its log
-    /// open between them, and replays a predecessor's log only when it opens
-    /// it; a due checkpoint runs before the next transaction rather than inside
-    /// the commit that made it due, so a committed change is never reported as
-    /// failed. A shared store takes the log's file lock, replays and
-    /// checkpoints whatever an earlier transaction or owner left, and
-    /// checkpoints its own commits before releasing the lock. Its frames are
-    /// already flushed then, so the next opener finds an empty log instead of
-    /// re-flushing and replaying it; a failed checkpoint leaves the committed
-    /// frames for that opener, exactly as before.
     fn with_log<T>(
         &self,
         operation: impl FnOnce(&mut CoreLog) -> Result<T, LocalCoreStateStoreError>,
@@ -1152,17 +1084,9 @@ impl Serialize for RecordValue {
 impl RecordValue {
     /// Encodes a record file: the bare value, or `null` for an absence.
     fn encode(value: Option<&Self>) -> Result<Vec<u8>, serde_json::Error> {
-        match value {
-            None => serde_json::to_vec(&()),
-            Some(Self::Context(value)) => serde_json::to_vec(value),
-            Some(Self::Children(value)) => serde_json::to_vec(value),
-            Some(Self::ChildCount(value)) => serde_json::to_vec(value),
-            Some(Self::ChildIndex(value)) => serde_json::to_vec(value),
-            Some(Self::Lineage(value)) => serde_json::to_vec(value),
-            Some(Self::LazyWorkspace(value)) => serde_json::to_vec(value),
-            Some(Self::FlatContext(value)) => serde_json::to_vec(value),
-            Some(Self::FlatChildren(value)) => serde_json::to_vec(value),
-        }
+        let mut bytes = Vec::new();
+        Self::write_bare(value, &mut bytes)?;
+        Ok(bytes)
     }
 }
 
@@ -1232,8 +1156,7 @@ logged!(LazyWorkspaceState, WorkspaceId, LazyWorkspace, |id| {
     RecordKey::LazyWorkspace(id)
 });
 
-/// Complete after-images of the records one commit changes; `None` records
-/// an absence. Deserialization checks key/value types before replay.
+/// Complete after-images of the records one commit changes; `None` records an absence.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "Vec<(RecordKey, Option<RecordValue>)>")]
 struct Change(Vec<(RecordKey, Option<RecordValue>)>);
@@ -1270,23 +1193,11 @@ impl Change {
         &mut self,
         parent: WorkspaceContextId,
         descendants: Option<BTreeSet<WorkspaceContextId>>,
-    ) -> Result<(), LocalCoreStateStoreError> {
-        let count = child_bucket_count(descendants.as_ref().map(BTreeSet::len))?;
+    ) {
+        let count = descendants.as_ref().map(|children| ContextChildCount(children.len() as u64));
         self.put(parent, descendants.map(ContextChildren));
         self.put(parent, count);
-        Ok(())
     }
-}
-
-/// Both ordinary and original-funded afterimages use the same absence/count policy.
-fn child_bucket_count(descendants: Option<usize>) -> Result<Option<ContextChildCount>, LocalCoreStateStoreError> {
-    descendants.map(|count| {
-        u64::try_from(count).map(ContextChildCount).map_err(|_| {
-            LocalCoreStateStoreError::MaterializationWork(
-                crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
-            )
-        })
-    }).transpose()
 }
 
 /// Original after-images and their original-ledger payload/capacity custody.
@@ -1380,13 +1291,13 @@ fn context_children(
 /// Installs the child index derived from every context.
 fn index_change(
     records: impl IntoIterator<Item = WorkspaceContext>,
-) -> Result<Change, LocalCoreStateStoreError> {
+) -> Change {
     let mut change = Change::default();
     for (parent, descendants) in context_children(records) {
-        change.put_children(parent, Some(descendants))?;
+        change.put_children(parent, Some(descendants));
     }
     change.put((), Some(ContextChildIndex(1)));
-    Ok(change)
+    change
 }
 
 /// One log line: `<blake3 hex> <frame json>`.
@@ -1563,32 +1474,7 @@ impl FlatRecordValue {
     }
 }
 
-/// Write-ahead log through which workspace contexts, their child index,
-/// lineage, and lazy-workspace bindings change.
-///
-/// A change is committed once its checksummed frame is flushed. The change is
-/// then resident in memory, and its record files are written back only by a
-/// checkpoint, which flushes the log, writes and flushes every changed record,
-/// and only then truncates the log into a new epoch. Every opener replays the
-/// log's valid prefix into memory and checkpoints it before any record is
-/// read, so a crash of the process or the machine exposes every record of a
-/// change or none of them.
-///
-/// Record files are only ever rewritten in place, and an absent record is
-/// written as `null` rather than deleted, so recovery never depends on a
-/// directory update becoming durable: on Windows, which has no directory
-/// flush, a checkpoint needs only each record file flushed through its own
-/// handle, exactly as the journaled single-record path relies on.
-///
-/// Frames carry the log's epoch and a consecutive sequence. Replay stops at
-/// the first torn or out-of-sequence frame, which can only follow the last
-/// flush, so its changes were never written back. A checkpoint starts a new
-/// epoch, so frames a not-yet-durable truncation leaves behind are never
-/// replayed after a newer frame.
-///
-/// A deferred commit is appended without a flush; it becomes durable together
-/// with the next flush of the log, and a crash before then loses it together
-/// with every later frame.
+/// Write-ahead log through which workspace contexts, their child index, lineage, and lazy-workspace bindings change.
 #[derive(Debug)]
 struct CoreLog {
     file: File,
@@ -1600,8 +1486,7 @@ struct CoreLog {
     sequence: u64,
     residents: Arc<RwLock<Residents>>,
     dirty: Vec<RecordKey>,
-    /// The log may hold a frame whose outcome is unknown, so it must be
-    /// reopened and replayed before it is used again.
+    /// The log may hold a frame whose outcome is unknown, so it must be reopened and replayed before it is used again.
     broken: bool,
     slots: NativeSlotCustody,
     residents_control: Option<crate::materializer::NativeAllocation>,
@@ -1711,10 +1596,6 @@ impl CoreLog {
     }
 
     /// Commits `change`, durably unless `root` defers durability.
-    ///
-    /// A failed append is cut back off the log and flushed away, so the change
-    /// is reported failed only when it can never be replayed; if that repair
-    /// fails too, the log is marked broken and the outcome is unknown.
     fn commit(&mut self, root: &Namespace, change: Change) -> Result<(), LocalCoreStateStoreError> {
         let frame = serde_json::to_vec(&LogFrame {
             epoch: self.epoch,
@@ -1779,8 +1660,7 @@ impl CoreLog {
         }
     }
 
-    /// Flushes the log, writes back and flushes every changed record, then
-    /// truncates the log into a new epoch.
+    /// Flushes the log, writes back and flushes every changed record, then truncates the log into a new epoch.
     fn checkpoint(&mut self, root: &Namespace) -> Result<(), LocalCoreStateStoreError> {
         self.flush()?;
         let mut directories = BTreeSet::new();
@@ -1862,7 +1742,6 @@ fn measured_slots<T>(
 }
 
 /// Retains real backing-vector capacity until its physical owner is dropped.
-/// These are guards in the original ledger, not another allocation ledger.
 #[derive(Debug, Default)]
 struct NativeSlotCustody {
     guards: Vec<(usize, crate::materializer::NativeAllocation)>,
@@ -2446,7 +2325,7 @@ impl CoreLog {
                 }
             }
             let result = RecordValue::write_bare(value, &mut writer);
-            materialization_writer_result(result, &mut writer)?;
+            result.map_err(measured_json_error)?;
             crash_point("record written", self.flushed);
             work.charge(crate::WorkCounters { durability_operations: 1, ..Default::default() })?;
             writer.file.sync_all()?;
@@ -2652,12 +2531,7 @@ fn native_corrupt_log(
     )))
 }
 
-/// Decodes the log's valid prefix: frames of the first frame's epoch in
-/// consecutive sequence, each intact.
-///
-/// A torn frame ends the prefix, but an intact frame that does not decode
-/// fails: its checksum proves it was written whole, so it may be a committed
-/// change, and treating it as torn would let the next checkpoint discard it.
+/// Decodes the log's valid prefix: frames of the first frame's epoch in consecutive sequence, each intact.
 fn replayable_changes(bytes: &[u8]) -> Result<Vec<Change>, serde_json::Error> {
     let mut changes = Vec::new();
     let mut epoch = None;
@@ -2685,8 +2559,7 @@ fn replayable_changes(bytes: &[u8]) -> Result<Vec<Change>, serde_json::Error> {
     Ok(changes)
 }
 
-/// Aborts the process at the configured crash point of a crash-atomicity test,
-/// reporting the point and how many log bytes were durable.
+/// Aborts the process at the configured crash point of a crash-atomicity test, reporting the point and how many log bytes were durable.
 #[cfg(test)]
 fn crash_point(label: &str, flushed: u64) {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2765,7 +2638,7 @@ fn plan_local_context_subtree_discard(
             .get_bounded::<ContextChildren>(root_path, context_id, Some(maximum_bucket_bytes))?
             .unwrap_or_default()
             .0;
-        if usize::try_from(count) != Ok(descendants.len()) {
+        if count != descendants.len() as u64 {
             return Ok(Err(WorkspaceContextDiscardOutcome::IncompatibleState));
         }
         pending.extend(descendants);
@@ -2928,7 +2801,6 @@ pub struct MeasuredMaterializationStore<'a> {
 }
 
 /// The original materialization record's accepted, lock-held completion.
-/// Fields are private: work custody alone cannot create this provider proof.
 pub struct LocalMaterializationActionCompletion {
     prepared: Option<LocalPreparedMaterializationAction>,
     _body_custody: crate::materializer::NativeAllocation,
@@ -3134,16 +3006,6 @@ impl LocalCoreStateStore {
             operation(namespace, namespace_allocation, &work)
         }).await
     }
-
-    /// Removes a terminal journal using the same finite native/store boundary.
-    pub async fn remove_materialization_bounded(&self, operation_id: OperationId, budget: crate::WorkBudget, cancellation: &crate::CancellationToken) -> Result<crate::OperationReceipt<()>, (LocalCoreStateStoreError, crate::WorkCounters)> {
-        let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(|(cause, work)| (LocalCoreStateStoreError::MaterializationWork(cause), work))?;
-        match self.materialization_with_work(work.clone()).remove(operation_id).await {
-            Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
-            Err(error) => Err((error, work.receipt())),
-        }
-    }
 }
 
 impl MaterializationJournalStore for MeasuredMaterializationStore<'_> {
@@ -3232,8 +3094,7 @@ impl MaterializationJournalStore for MeasuredMaterializationStore<'_> {
 }
 
 impl MeasuredMaterializationStore<'_> {
-    /// Retains terminal intent until the final record removal; partial cleanup
-    /// remains observable and retryable through this same journal family.
+    /// Retains terminal intent until the final record removal; partial cleanup remains observable and retryable through this same journal family.
     pub async fn remove(&self, operation_id: OperationId) -> Result<(), LocalCoreStateStoreError> {
         self.store.measured_transaction(self.work.clone(), move |namespace, work| {
             let (paths, _paths_allocation) = namespace.measured_record(MATERIALIZATION_FAMILY, &operation_id.into_bytes(), work)?;
@@ -3378,9 +3239,7 @@ impl Read for MaterializationReader<'_> {
     }
 }
 
-/// Tracks serde's owned string copies and sequence capacities before its
-/// visitors allocate them. Fixed arrays, identifiers and borrowed strings do
-/// not masquerade as owned allocations.
+/// Tracks serde's owned string copies and sequence capacities before its visitors allocate them.
 struct MaterializationDecode<'a> {
     work: &'a crate::materializer::NativeMaterializationWork,
     allocation: std::cell::RefCell<crate::materializer::NativeAllocation>,
@@ -3837,13 +3696,6 @@ fn measured_decode_slice<T: DeserializeOwned>(bytes: &[u8], work: &crate::materi
     measured_decode_reader(std::io::Cursor::new(bytes), work, std::marker::PhantomData::<T>)
 }
 
-fn measured_decode_slice_seed<'de, S: serde::de::DeserializeSeed<'de>>(bytes: &[u8], work: &crate::materializer::NativeMaterializationWork, seed: S) -> Result<(S::Value, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
-    measured_decode_reader(std::io::Cursor::new(bytes), work, seed)
-}
-
-fn materialization_writer_result(result: Result<(), serde_json::Error>, _writer: &mut MaterializationWriter<'_>) -> Result<(), LocalCoreStateStoreError> {
-    result.map_err(measured_json_error)
-}
 
 fn measured_read_record<T: DeserializeOwned>(paths: &RecordPaths, work: &crate::materializer::NativeMaterializationWork) -> Result<Option<(T, crate::materializer::NativeAllocation)>, LocalCoreStateStoreError> {
     match measured_read_file(&paths.current, work) {
@@ -3959,7 +3811,7 @@ fn materialization_remove(path: &Path, work: &crate::materializer::NativeMateria
 fn measured_write_record<T: Serialize>(paths: &RecordPaths, journal: &T, work: &crate::materializer::NativeMaterializationWork) -> Result<(), LocalCoreStateStoreError> {
     let mut writer = MaterializationWriter { file: materialization_open(&paths.temporary, true, work)?, work, encoded: true };
     let encoded = serde_json::to_writer(&mut writer, journal);
-    materialization_writer_result(encoded, &mut writer)?;
+    encoded.map_err(measured_json_error)?;
     crate::native_host::sync_file_held_with_work(&writer.file, &mut &*work)?;
     drop(writer);
     materialization_remove(&paths.previous, work)?;
@@ -4081,25 +3933,21 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
 /// Entries retained per cache generation before the older generation is dropped.
 const NODE_CACHE_GENERATION: usize = 16_384;
 
-/// Two-generation bounded memo: an entry read since the last rotation
-/// survives the next one, so hot treap spines stay resident.
+/// Two-generation bounded memo: an entry read since the last rotation survives the next one, so hot treap spines stay resident.
 #[derive(Debug)]
 struct Generations<K, V> {
     current: Vec<(K, NativeOwnedCoreState<V>)>,
     previous: Vec<(K, NativeOwnedCoreState<V>)>,
     /// When each node was last put; see [`LAZY_NODE_GRACE`].
     put: Vec<(K, Instant)>,
-    /// The size at which expired put times are next pruned: twice what the
-    /// last pruning kept, so pruning stays amortized constant per put.
+    /// The size at which expired put times are next pruned: twice what the last pruning kept, so pruning stays amortized constant per put.
     prune_at: usize,
-    /// Counts nodes collected; a load memoizes what it read only if none was
-    /// collected since it began, so the memo never outlives a node's file.
+    /// Counts nodes collected; a load memoizes what it read only if none was collected since it began, so the memo never outlives a node's file.
     collected: u64,
     slots: NativeSlotCustody,
 }
 
-/// How long a node that was put stays safe from collection: long enough for
-/// the mutation that put it to swap it into its workspace's state.
+/// How long a node that was put stays safe from collection: long enough for the mutation that put it to swap it into its workspace's state.
 const LAZY_NODE_GRACE: Duration = if cfg!(test) {
     Duration::ZERO
 } else {
@@ -4258,11 +4106,7 @@ impl<K: Copy + Ord, V> Generations<K, V> {
     }
 }
 
-/// Immutable overlay and shadow nodes this store and its clones have read or
-/// written.
-///
-/// A node's identifier is the digest of its verified encoding, so a memoized
-/// node can never be stale: eviction only costs a reload.
+/// Immutable overlay and shadow nodes this store and its clones have read or written.
 #[derive(Debug)]
 struct NodeMemo {
     overlays: Mutex<Generations<LazyOverlayId, LazyOverlay>>,
@@ -4279,9 +4123,6 @@ impl Default for NodeMemo {
 }
 
 /// An immutable content-addressed lazy node.
-///
-/// Every store implies the canonical empty node (`Default`) without storing
-/// it, so attaching a root writes no node at all.
 trait LazyNode: Clone + Default + PartialEq + Serialize + DeserializeOwned + Send + 'static {
     type Id: Copy + Ord + Send + 'static;
     type Wire: DeserializeOwned;
@@ -4768,8 +4609,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
 }
 
 impl LocalCoreStateStore {
-    /// Every file record a stored lazy shadow holds, which an object
-    /// collection keeps: a lazy workspace may still resolve any of them.
+    /// Every file record a stored lazy shadow holds, which an object collection keeps: a lazy workspace may still resolve any of them.
     pub(crate) async fn lazy_shadow_records(
         &self,
     ) -> Result<Vec<crate::kernel::FileRecord>, LocalCoreStateStoreError> {
@@ -4850,8 +4690,7 @@ impl LocalCoreStateStore {
 }
 
 impl LocalCoreStateStore {
-    /// Every workspace this store keeps a lineage, lazy binding, or
-    /// Git-compatibility record for, with the parents those records name.
+    /// Every workspace this store keeps a lineage, lazy binding, or Git-compatibility record for, with the parents those records name.
     pub(crate) async fn workspace_records(
         &self,
     ) -> Result<BTreeMap<WorkspaceId, Vec<WorkspaceId>>, LocalCoreStateStoreError> {
@@ -4916,8 +4755,7 @@ impl LocalCoreStateStore {
         .await
     }
 
-    /// Forgets every record of a deleted workspace: its lineage, its lazy
-    /// binding, and its Git-compatibility state.
+    /// Forgets every record of a deleted workspace: its lineage, its lazy binding, and its Git-compatibility state.
     pub(crate) async fn forget_workspace(
         &self,
         workspace: WorkspaceId,
@@ -4945,16 +4783,7 @@ impl LocalCoreStateStore {
         .await
     }
 
-    /// Removes every lazy overlay and shadow node no lazy workspace reaches,
-    /// and returns how many it removed.
-    ///
-    /// It runs as one log transaction, so no workspace state changes while
-    /// it marks and sweeps; a node put within the grace period is kept for
-    /// the mutation still to swap it in.
-    ///
-    /// # Errors
-    ///
-    /// Fails, removing nothing, when a reachable node is missing or damaged.
+    /// Removes every lazy overlay and shadow node no lazy workspace reaches, and returns how many it removed.
     pub async fn collect_lazy_nodes(&self) -> Result<u64, LocalCoreStateStoreError> {
         let nodes = Arc::clone(&self.nodes);
         self.transaction(move |root| {
@@ -5028,8 +4857,7 @@ impl LocalCoreStateStore {
     }
 }
 
-/// The distinct record keys one family holds, whatever recovery copies
-/// accompany them.
+/// The distinct record keys one family holds, whatever recovery copies accompany them.
 fn family_stems(
     root: &Namespace,
     family: &str,
@@ -5075,8 +4903,7 @@ fn reachable_nodes<T: LazyNode>(
     Ok(reachable)
 }
 
-/// Removes every stored node of one family outside `reachable` that was not
-/// put within the grace period.
+/// Removes every stored node of one family outside `reachable` that was not put within the grace period.
 fn sweep_nodes<T: LazyNode>(
     root: &Namespace,
     nodes: &NodeMemo,
@@ -5124,28 +4951,6 @@ fn load_content_addressed<T: DeserializeOwned + Serialize>(
     Ok(Some(value))
 }
 
-/// Stores an immutable content-addressed record, idempotently rejecting
-/// digest mismatches.
-fn put_content_addressed<T: DeserializeOwned + Serialize + PartialEq>(
-    namespace: &Namespace,
-    family: &str,
-    address: [u8; 32],
-    value: &T,
-) -> Result<(), LocalCoreStateStoreError> {
-    verify_content_address(address, value)?;
-    let paths = namespace.record(family, &address);
-    with_lock(&paths, || {
-        if let Some(existing) = read_recoverable::<T>(&paths)? {
-            return if &existing == value {
-                Ok(())
-            } else {
-                Err(LocalCoreStateStoreError::Integrity)
-            };
-        }
-        write_journaled(&paths, value)
-    })
-}
-
 fn verify_content_address<T: Serialize>(
     address: [u8; 32],
     value: &T,
@@ -5167,82 +4972,6 @@ mod tests {
         Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceName, WorkspaceRootId,
     };
 
-    fn finite_materialization_budget() -> crate::WorkBudget {
-        let mut encoded = serde_json::to_value(crate::WorkBudget::UNBOUNDED).expect("budget fields");
-        for value in encoded.as_object_mut().expect("budget object").values_mut() {
-            *value = serde_json::Value::from(100_000_000_u64);
-        }
-        serde_json::from_value(encoded).expect("finite native budget")
-    }
-
-    #[test]
-    fn materialization_writer_rejects_bytes_before_any_native_write_attempt() {
-        let temporary = tempfile::tempdir().expect("temporary state");
-        let path = temporary.path().join("record");
-        let file = File::create(&path).expect("record fixture");
-        let mut budget = finite_materialization_budget();
-        budget.object_bytes_written = 0;
-        budget.bytes_encoded = 0;
-        let work = crate::materializer::NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).expect("native meter");
-        let mut writer = MaterializationWriter { file, work: &work, encoded: true };
-        writer.write(b"not admitted").expect_err("byte admission");
-        assert_eq!(work.receipt().backend_write_operations, 0);
-        assert_eq!(work.receipt().object_bytes_written, 0);
-        assert_eq!(std::fs::metadata(path).expect("untouched record").len(), 0);
-        work.receipt().verify(budget).expect("failed writer prefix");
-    }
-
-    #[test]
-    fn materialization_json_releases_parser_scratch_but_retains_actual_dto_buffers() {
-        #[derive(Deserialize)]
-        struct Image { value: String, values: Vec<u64> }
-        let budget = finite_materialization_budget();
-        let work = crate::materializer::NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).expect("native meter");
-        let original_live = work.live_allocation_bytes();
-        let (image, custody) = measured_decode_slice::<Image>(br#"{"value":"x\uD83D\uDE00z","values":[1,2,3],"ignored":"\uD83D\uDE00"}"#, &work).expect("real unicode parser");
-        assert_eq!(image.value, "x\u{1f600}z");
-        assert_eq!(image.values, [1, 2, 3]);
-        assert_eq!(custody.bytes(), image.value.capacity() as u64 + (image.values.capacity() * std::mem::size_of::<u64>()) as u64);
-        assert_eq!(work.live_allocation_bytes(), original_live + custody.bytes());
-        assert!(work.receipt().items_examined >= image.values.len() as u64, "the actual sequence visitor examines every decoded element");
-        assert!(work.receipt().allocation_operations > 1);
-        drop(image);
-        drop(custody);
-        assert_eq!(work.live_allocation_bytes(), original_live);
-        work.receipt().verify(budget).expect("unicode parser receipt");
-    }
-
-    #[test]
-    fn record_families_keep_their_durable_names() {
-        assert_eq!(
-            [
-                GIT_COMPAT_NAMESPACE,
-                LAZY_WORKSPACE_FAMILY,
-                MATERIALIZATION_FAMILY,
-                MULTI_ROOT_PARENT_CLAIM_FAMILY,
-                MULTI_ROOT_PUBLICATION_FAMILY,
-                WORKSPACE_CONTEXT_FAMILY,
-                CONTEXT_CHILDREN_FAMILY,
-                CONTEXT_CHILDREN_INDEX_FAMILY,
-                CONTEXT_CHILD_COUNT_FAMILY,
-                LINEAGE_FAMILY,
-                CORE_LOG_FAMILY,
-            ],
-            [
-                "git-compat-v9",
-                "lazy-workspaces",
-                "materialization",
-                "multi-root-parent-claims",
-                "multi-root-publications",
-                "workspace-contexts-v2",
-                "workspace-context-children-v1",
-                "workspace-context-children-index-v1",
-                "workspace-context-child-counts-v1",
-                "lineage",
-                "core-state-log-v1",
-            ]
-        );
-    }
 
     #[test]
     fn local_transactions_work_without_a_tokio_runtime() {
@@ -5595,31 +5324,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn node_memo_rotation_keeps_recently_used_entries() {
-        let mut generations = Generations::new();
-        let work = unbounded_lazy_work().expect("unbounded memo meter");
-        for key in 0..NODE_CACHE_GENERATION {
-            let owned = NativeOwnedCoreState::from_parts(key, work.claim(0).expect("scalar memo custody"));
-            generations.insert(key, owned, &work).expect("memo insert");
-        }
-        let owned = NativeOwnedCoreState::from_parts(NODE_CACHE_GENERATION, work.claim(0).expect("scalar memo custody"));
-        generations.insert(NODE_CACHE_GENERATION, owned, &work)
-            .expect("memo rotation");
-        assert_eq!(generations.get(&0, &work).expect("memo lookup"), Some(&0));
-        for key in NODE_CACHE_GENERATION + 1..2 * NODE_CACHE_GENERATION {
-            let owned = NativeOwnedCoreState::from_parts(key, work.claim(0).expect("scalar memo custody"));
-            generations.insert(key, owned, &work).expect("memo insert");
-        }
-        assert_eq!(
-            generations.get(&0, &work).expect("memo lookup"),
-            Some(&0),
-            "a promoted entry survives rotation"
-        );
-        assert_eq!(generations.get(&1, &work).expect("memo lookup"),
-            None, "an unused entry is evicted");
-    }
-
     #[tokio::test]
     async fn workspace_contexts_are_durable_and_discoverable() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -5863,18 +5567,11 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn materialization_operations_are_discoverable_and_terminal_cleanup_is_safe() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let store = LocalCoreStateStore::new(directory.path());
-        let operation_id = OperationId::new();
-        let journal = MaterializationJournal {
-            version: 2,
-            revision: 1,
-            root_identity: None,
-            preparation_identity: None,
-            preparation_progress: None,
-            work: crate::WorkCounters::default(),
+    fn materialization_journal(operation_id: OperationId) -> MaterializationJournal {
+        MaterializationJournal {
+            version: 2, revision: 1, root_identity: None,
+            preparation_identity: None, preparation_progress: None,
+            work: crate::WorkCounters::UNCHARGED,
             plan: crate::MaterializationPlan {
                 operation_id,
                 intent: crate::MaterializationIntent::GenerationTransition {
@@ -5883,11 +5580,17 @@ mod tests {
                 },
                 edits: Vec::new(),
             },
-            preimages: Vec::new(),
-            phase: crate::MaterializationPhase::Prepared,
-            applied: 0,
-            restored: 0,
-        };
+            preimages: Vec::new(), phase: crate::MaterializationPhase::Prepared,
+            applied: 0, restored: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn materialization_operations_are_discoverable_and_terminal_cleanup_is_safe() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let operation_id = OperationId::new();
+        let journal = materialization_journal(operation_id);
         assert!(
             MaterializationJournalStore::compare_and_swap(&store, operation_id, 0, crate::materializer::OwnedMaterializationJournal {
                 journal: journal.clone(),
@@ -5939,28 +5642,11 @@ mod tests {
         let store = LocalCoreStateStore::new(directory.path());
         let namespace = store.namespace().expect("admitted namespace");
         let operation_id = OperationId::from_bytes([0x73; 16]);
-        let journal = MaterializationJournal {
-            version: 2,
-            revision: 1,
-            root_identity: None,
-            preparation_identity: None,
-            preparation_progress: None,
-            work: crate::WorkCounters::default(),
-            plan: crate::MaterializationPlan {
-                operation_id,
-                intent: crate::MaterializationIntent::GenerationTransition {
-                    from: crate::GenerationId::new(Digest::from_bytes([1; 32])),
-                    to: crate::GenerationId::new(Digest::from_bytes([2; 32])),
-                },
-                edits: vec![crate::MaterializationEdit::Install {
-                    path: "file.txt".to_owned(), image: vec![1, 2, 3],
-                }],
-            },
-            preimages: vec![crate::MaterializationPreimage { image: vec![4, 5, 6] }],
-            phase: crate::MaterializationPhase::Prepared,
-            applied: 0,
-            restored: 0,
-        };
+        let mut journal = materialization_journal(operation_id);
+        journal.plan.edits.push(crate::MaterializationEdit::Install {
+            path: "file.txt".to_owned(), image: vec![1, 2, 3],
+        });
+        journal.preimages.push(crate::MaterializationPreimage { image: vec![4, 5, 6] });
         let paths = namespace.record("materialization", &operation_id.into_bytes());
         std::fs::create_dir_all(&paths.directory).expect("journal directory");
         std::fs::write(
@@ -6030,19 +5716,12 @@ mod tests {
         let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation).expect("original finite work");
         let held = crate::native_host::HostRoot::open_with_work(&root, &mut &work).expect("actual root identity");
         let operation = OperationId::new();
-        let journal = MaterializationJournal {
-            version: 2, revision: 1, root_identity: Some(held.identity().to_bytes()),
-            preparation_identity: None, preparation_progress: None, work: crate::WorkCounters::UNCHARGED,
-            plan: crate::MaterializationPlan {
-                operation_id: operation,
-                intent: crate::MaterializationIntent::GenerationTransition {
-                    from: crate::GenerationId::new(Digest::from_bytes([1; 32])),
-                    to: crate::GenerationId::new(Digest::from_bytes([2; 32])),
-                },
-                edits: vec![crate::MaterializationEdit::Install { path: "file.txt".to_owned(), image: vec![1] }],
-            },
-            preimages: Vec::new(), phase: crate::MaterializationPhase::Preparing, applied: 0, restored: 0,
-        };
+        let mut journal = materialization_journal(operation);
+        journal.root_identity = Some(held.identity().to_bytes());
+        journal.phase = crate::MaterializationPhase::Preparing;
+        journal.plan.edits.push(crate::MaterializationEdit::Install {
+            path: "file.txt".to_owned(), image: vec![1],
+        });
         assert!(crate::materializer::MaterializationJournalStore::compare_and_swap(&store, operation, 0, crate::materializer::OwnedMaterializationJournal {
             journal, custody: None,
         }).await.expect("original durable preparing intent").0);
@@ -6093,19 +5772,6 @@ mod tests {
             "pending_remove": null,
         }))
         .expect("lazy binding fixture")
-    }
-
-    #[test]
-    fn canonical_lazy_companion_layout_requires_schema_ten() {
-        let workspace = WorkspaceId::from_bytes([0x39; 16]);
-        let mut state = lazy_state(workspace, 1);
-        assert_eq!(state.schema_version, 10);
-        state.validate_root_binding(workspace, state.source).expect("current root layout");
-        state.schema_version = 9;
-        assert!(matches!(
-            state.validate_root_binding(workspace, state.source),
-            Err(crate::LazyWorkspaceError::StaleSource),
-        ));
     }
 
     #[tokio::test]
@@ -6183,113 +5849,6 @@ mod tests {
             Err(crate::LazyWorkspaceError::Cancelled),
         ));
         assert_eq!(work.receipt(), before);
-    }
-
-    #[tokio::test]
-    async fn native_lazy_overlay_retains_output_and_cache_custody_and_refuses_another_ledger() {
-        let directory = tempfile::tempdir().expect("native immutable node namespace");
-        let store = LocalCoreStateStore::new(directory.path());
-        let value = LazyOverlay::Node {
-            path: format!("/{}", "owned".repeat(100)),
-            priority: 3,
-            change: crate::lazy_workspace::LazyOverlayChange::Tombstone { removed: None },
-            left: LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).expect("empty ID")),
-            right: LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).expect("empty ID")),
-        };
-        let id = LazyOverlayId::from_bytes(content_address(&value).expect("actual node ID"));
-        let cancellation = crate::CancellationToken::new();
-        let work = crate::materializer::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED, &cancellation,
-        ).expect("original meter");
-        let (owned, allocation) = value.clone_owned(&work).expect("actual admitted clone");
-        let payload_bytes = allocation.bytes();
-        store.put_lazy_overlay_with_native_work(
-            id, NativeOwnedCoreState::from_parts(owned, allocation), &work,
-        ).await.expect("original native put");
-        let cache_live = work.live_allocation_bytes();
-        assert!(cache_live >= crate::materializer::NativeMaterializationWork::accounting_state_bytes() + payload_bytes);
-        let output = store.load_lazy_overlay_with_native_work(id, &work).await
-            .expect("native cached clone").expect("actual output");
-        assert_eq!(output.as_state(), &value);
-        assert!(work.live_allocation_bytes() >= cache_live + payload_bytes);
-        drop(output);
-        assert_eq!(work.live_allocation_bytes(), cache_live);
-        let other = crate::materializer::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-        ).expect("other original meter");
-        let (foreign, allocation) = value.clone_owned(&other).expect("foreign payload");
-        let before = work.receipt();
-        assert!(matches!(store.put_lazy_overlay_with_native_work(
-            id, NativeOwnedCoreState::from_parts(foreign, allocation), &work,
-        ).await, Err(crate::LazyWorkspaceError::NativeLedgerMismatch)));
-        assert_eq!(work.receipt(), before);
-        drop(store);
-        assert_eq!(work.live_allocation_bytes(), crate::materializer::NativeMaterializationWork::accounting_state_bytes());
-    }
-
-    #[tokio::test]
-    async fn native_owned_lazy_cas_keeps_real_resident_backing_until_owner_drop() {
-        let directory = tempfile::tempdir().expect("owned native namespace");
-        let id = WorkspaceId::from_bytes([0xb6; 16]);
-        let owner = LocalCoreStateStore::open_owned(directory.path()).expect("original owner");
-        let cancellation = crate::CancellationToken::new();
-        let work = crate::materializer::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED, &cancellation,
-        ).expect("original native meter");
-        let baseline = work.live_allocation_bytes();
-        assert!(owner.compare_and_swap_lazy_workspace_with_native_work(
-            id, 0, lazy_state(id, 1), &work,
-        ).await.expect("native owned CAS"));
-        let retained = work.live_allocation_bytes();
-        assert!(retained > baseline, "actual resident and dirty-vector backing is still live");
-        let state = owner.load_lazy_workspace_with_native_work(id, &work).await
-            .expect("actual owned-cache load").expect("original state");
-        assert_eq!(state.as_state().workspace_id, id);
-        drop(state);
-        assert_eq!(work.live_allocation_bytes(), retained);
-        drop(owner);
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        let restarted = LocalCoreStateStore::new(directory.path());
-        let retained = restarted.load_lazy_workspace_with_native_work(id, &work).await
-            .expect("real namespace restart").expect("acknowledged original decision");
-        assert_eq!(retained.as_state().revision, 1);
-    }
-
-    #[tokio::test]
-    async fn native_intact_corrupt_frame_moves_original_path_custody_without_error_allocation() {
-        let directory = tempfile::tempdir().expect("native corrupt-frame namespace");
-        let store = LocalCoreStateStore::new(directory.path());
-        let original_path = store.transaction(|namespace| {
-            let paths = core_log_paths(namespace);
-            std::fs::create_dir_all(&paths.directory)?;
-            let frame = b"not-json";
-            let mut bytes = blake3::hash(frame).to_hex().as_bytes().to_vec();
-            bytes.push(b' ');
-            bytes.extend_from_slice(frame);
-            bytes.push(b'\n');
-            std::fs::write(&paths.current, bytes)?;
-            Ok(paths.current)
-        }).await.expect("real intact malformed WAL frame");
-        let cancellation = crate::CancellationToken::new();
-        let work = crate::materializer::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED, &cancellation,
-        ).expect("original native meter");
-        let baseline = work.live_allocation_bytes();
-        let error = store.load_lazy_workspace_with_native_work(
-            WorkspaceId::from_bytes([0xb7; 16]), &work,
-        ).await.expect_err("intact malformed frame refuses native replay");
-        let prior = work.receipt();
-        cancellation.cancel();
-        let (error, allocation) = error.into_native_failure();
-        let allocation = allocation.expect("original path backing is retained with its cause");
-        assert!(allocation.work().shares_ledger(&work));
-        assert!(matches!(&error, crate::LazyWorkspaceError::NativeRecordCorrupt(path, None)
-            if path == &original_path));
-        assert_eq!(work.receipt(), prior, "pure extraction does not allocate, check or recharge");
-        assert_eq!(work.live_allocation_bytes(), baseline + original_path.as_os_str().len() as u64);
-        drop(error);
-        drop(allocation);
-        assert_eq!(work.live_allocation_bytes(), baseline);
     }
 
 
@@ -6777,8 +6336,7 @@ mod tests {
     const CRASH_PARENT: WorkspaceContextId = WorkspaceContextId::from_bytes([0x41; 16]);
     const CRASH_CHILD: WorkspaceContextId = WorkspaceContextId::from_bytes([0x42; 16]);
     const CRASH_WORKSPACE: WorkspaceId = WorkspaceId::from_bytes([0x43; 16]);
-    /// Commits of the crash script, grouped by what one caller acknowledges;
-    /// the multi-commit group runs through one deferred-durability scope.
+    /// Commits of the crash script, grouped by what one caller acknowledges; the multi-commit group runs through one deferred-durability scope.
     const CRASH_GROUPS: [std::ops::Range<usize>; 6] = [0..1, 1..2, 2..5, 5..6, 6..7, 7..8];
 
     fn crash_lineage() -> WorkspaceLineageRecord {
@@ -6823,9 +6381,7 @@ mod tests {
             .expect("recovered snapshot")
     }
 
-    /// Runs one commit of the crash script: index, register a parent, register
-    /// its child with the child's lineage and binding, freeze the child,
-    /// advance the binding, discard the child.
+    /// Runs one commit of the crash script: index, register a parent, register its child with the child's lineage and binding, freeze the child, advance the binding, discard the child.
     fn crash_step(store: &LocalCoreStateStore, step: usize) {
         let source = std::env::temp_dir();
         let parent = workspace_context(&source, CRASH_PARENT, 1, WorkspaceContextState::Active);
@@ -6933,9 +6489,7 @@ mod tests {
         Ok(())
     }
 
-    /// Simulates losing every write not yet flushed: the log keeps its durable
-    /// prefix and half of the next frame, and every record a durable frame
-    /// names reads back torn.
+    /// Simulates losing every write not yet flushed: the log keeps its durable prefix and half of the next frame, and every record a durable frame names reads back torn.
     fn lose_unflushed_writes(root: &Path, flushed: usize) {
         let store = LocalCoreStateStore::new(root);
         let namespace = store.namespace().expect("admitted namespace");
@@ -6968,11 +6522,7 @@ mod tests {
         }
     }
 
-    /// Kills a writer at every crash point of every commit, then recovers both
-    /// what the killed process left and what a power loss would leave. Each
-    /// recovery must expose exactly the state after some prefix of the
-    /// script's commits: at least every acknowledged commit, and at most the
-    /// ones in flight.
+    /// Kills a writer at every crash point of every commit, then recovers both what the killed process left and what a power loss would leave.
     fn assert_core_commits_are_crash_atomic(owned: bool) {
         let directory = tempfile::tempdir().expect("temporary directory");
         let reference_store = crash_store(&directory.path().join("reference"), owned);
@@ -7078,8 +6628,7 @@ mod tests {
         (id, node)
     }
 
-    /// Collection removes every node no lazy workspace reaches, keeps every
-    /// node one does, and a node put again after removal is stored again.
+    /// Collection removes every node no lazy workspace reaches, keeps every node one does, and a node put again after removal is stored again.
     #[tokio::test(flavor = "multi_thread")]
     async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
         let directory = tempfile::tempdir().expect("temporary directory");

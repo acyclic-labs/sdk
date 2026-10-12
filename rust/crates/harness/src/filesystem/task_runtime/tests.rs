@@ -472,7 +472,7 @@ impl ModelProvider for PendingModel {
         })
     }
     fn reconcile_with_native_work<'a>(
-        &'a self, _: crate::model::NativeModelAttempt<'a>, work: &'a acyclic_fs::NativeMaterializationWork,
+        &'a self, _: crate::model::ModelDispatch, _: &'a [crate::model::ModelEvent], work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<Vec<crate::model::ModelEvent>>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             self.reconciled.fetch_add(1, Ordering::SeqCst);

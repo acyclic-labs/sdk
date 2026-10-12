@@ -204,9 +204,14 @@ impl RecursiveDefaultToolSource<MemoryStream, MemoryAuthorityBackend, MemoryObje
 #[tokio::test]
 async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursive_execution() -> Result<()> {
     let source = Arc::new(RejectUnexpectedSource(AtomicUsize::new(0)));
-    let registry = recursive_default_tools(source.clone(), 65536)?;
+    let storage = super::super::MemoryHarnessStorage::new(AgentId::new(), 65536).await?;
+    let ordinary = storage.default_tools(crate::conversation::Limits {
+        file_bytes: 65536, ..Default::default()
+    }, Some(source.clone()))?;
+    let registry = recursive_default_tools(Some(source.clone()), 65536)?;
     for expected in ["acyclic.read_file", "acyclic.write_file", "acyclic.edit_file", "acyclic.fork", "acyclic.merge"] {
         assert!(registry.tools.get(expected).is_some());
+        assert_eq!(ordinary.get(expected).unwrap().definition, registry.tools.get(expected).unwrap().definition);
     }
     for name in ["acyclic.fork", "acyclic.merge"] {
         let tool = registry.tools.get(name).ok_or_else(|| Error::NotFound(name.into()))?;

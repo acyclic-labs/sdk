@@ -37,7 +37,6 @@ impl ModelProvider for SummaryModel {
                 let bytes = message
                     .content
                     .file_refs()
-                    .iter()
                     .try_fold(0_u64, |bytes, file| {
                         bytes
                             .checked_add(file.descriptor().byte_length())

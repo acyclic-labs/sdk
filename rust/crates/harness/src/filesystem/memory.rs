@@ -105,7 +105,7 @@ impl LocalHarness {
     ) -> Result<Self> {
         limits.validate()?;
         let storage = MemoryHarnessStorage::new(agent, limits.file_bytes).await?;
-        let tools = storage.default_tools(limits)?;
+        let tools = storage.default_tools(limits, None)?;
         Self::from_storage(
             storage,
             limits,
@@ -117,6 +117,8 @@ impl LocalHarness {
                 "tool:call:acyclic.write_file".into(),
                 "tool:call:acyclic.edit_file".into(),
                 "tool:call:acyclic.list_files".into(),
+                "tool:call:acyclic.fork".into(),
+                "tool:call:acyclic.merge".into(),
             ],
             compaction,
         )
@@ -810,18 +812,17 @@ impl MemoryContentPublisher {
 }
 
 impl MemoryHarnessStorage {
-    /// Assembles portable read/write/edit tools and this volume's directory tool.
-    pub fn default_tools(&self, limits: Limits) -> Result<ToolRegistry> {
+    /// Assembles portable defaults with an optional explicitly bound recursive provider.
+    pub fn default_tools(&self, limits: Limits, source: Option<Arc<dyn super::RecursiveDefaultToolSource<
+        MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend,
+    >>>) -> Result<ToolRegistry> {
         limits.validate()?;
         if limits.file_bytes > self.maximum_file_bytes {
             return Err(Error::Invalid(
                 "tool file limit exceeds the bound storage volume".into(),
             ));
         }
-        let mut tools = ToolRegistry::new();
-        tools.register(crate::tool::files::read_file()?)?;
-        tools.register(crate::tool::files::write_file()?)?;
-        tools.register(crate::tool::files::edit_file()?)?;
+        let mut tools = super::recursive_default_tools(source, limits.file_bytes)?.tools;
         tools.register(self.list_files_tool(limits))?;
         Ok(tools)
     }
@@ -1602,7 +1603,7 @@ mod tests {
             .messages
             .iter()
             .map(|message| {
-                let bytes = message.content.file_refs().iter().try_fold(
+                let bytes = message.content.file_refs().try_fold(
                     crate::contract::canonical_json_bytes(message)?.len() as u64,
                     |total, file| {
                         total
@@ -1683,6 +1684,8 @@ mod tests {
                 "tool:call:acyclic.write_file".into(),
                 "tool:call:acyclic.edit_file".into(),
                 "tool:call:acyclic.list_files".into(),
+                "tool:call:acyclic.fork".into(),
+                "tool:call:acyclic.merge".into(),
             ]),
             limits,
         )?;
@@ -1762,6 +1765,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn default_recursive_tools_are_present_and_unbound_routes_are_unavailable() -> Result<()> {
+        let storage = MemoryHarnessStorage::new(AgentId::new(), 65536).await?;
+        let limits = Limits { file_bytes: 65536, ..Default::default() };
+        let tools = storage.default_tools(limits, None)?;
+        for name in ["acyclic.fork", "acyclic.merge"] {
+            let tool = tools.get(name).unwrap().clone();
+            run_admitted_file_case(&storage, limits, move |task| {
+                let tool = tool.clone();
+                async move {
+                    let invocation = ToolInvocation { operation_id: OperationId::new(),
+                        call_id: "unbound".into(), name: tool.definition.name.clone(), arguments: json!({}) };
+                    let context = crate::runtime::ToolContext::new(task, invocation.operation_id, &invocation.call_id)?;
+                    assert!(matches!(tool.executor.authorize_with_context(&context, &invocation), Err(Error::Unsupported(_))));
+                    assert!(matches!(tool.executor.execute_with_context(context, invocation).await, Err(Error::Unsupported(_))));
+                    Ok(())
+                }
+            }).await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
         let owner = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
         let other = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
@@ -1784,7 +1809,7 @@ mod tests {
             ..Limits::default()
         };
         let tool = owner
-            .default_tools(limits)?
+            .default_tools(limits, None)?
             .get("acyclic.read_file")
             .ok_or_else(|| Error::NotFound("read tool".into()))?
             .clone();
@@ -1884,7 +1909,7 @@ mod tests {
             ..Limits::default()
         };
         let tool = storage
-            .default_tools(limits)?
+            .default_tools(limits, None)?
             .get("acyclic.write_file")
             .ok_or_else(|| Error::NotFound("write tool".into()))?
             .clone();
@@ -1954,7 +1979,7 @@ mod tests {
             ..Limits::default()
         };
         let tool = storage
-            .default_tools(limits)?
+            .default_tools(limits, None)?
             .get("acyclic.list_files")
             .ok_or_else(|| Error::NotFound("default list tool".into()))?
             .clone();
@@ -2021,7 +2046,7 @@ mod tests {
             render_bytes: 4_096,
             ..Limits::default()
         };
-        let tools = storage.default_tools(limits)?;
+        let tools = storage.default_tools(limits, None)?;
         let file = storage
             .stage(
                 OperationId::new(),

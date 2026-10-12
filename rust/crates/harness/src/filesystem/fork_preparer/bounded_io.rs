@@ -1232,7 +1232,7 @@ pub(in crate::filesystem) async fn operation_generation<A: AsyncAuthorityStore, 
     let operation = operation_key(key, Some(io))?;
     filesystem_call!(io, original,
         workspace.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, &io.cancellation),
-        workspace.operation_generation_measured(operation, io.remaining()?, &io.cancellation))
+        workspace.operation_generation(operation, io.remaining()?, &io.cancellation))
 }
 
 pub(in crate::filesystem) fn content_workspace(
@@ -1289,7 +1289,7 @@ pub(crate) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let id = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(bytes));
     filesystem_call!(io, original,
         workspace.generation_with_native_work(id, original, &io.cancellation),
-        workspace.generation_measured(id, io.remaining()?, &io.cancellation))
+        workspace.generation(id, io.remaining()?, &io.cancellation))
 }
 
 pub(in crate::filesystem) async fn read<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1305,7 +1305,7 @@ pub(in crate::filesystem) async fn read<A: AsyncAuthorityStore, O: AsyncObjectSt
         return generation.read_with_native_work(path, maximum_bytes, original, &io.cancellation)
             .await.map_err(native_workspace_error);
     }
-    let bytes = io.receive(workspace.read_measured(path, maximum_bytes, io.remaining()?, &io.cancellation).await)?;
+    let bytes = io.receive(workspace.read(path, maximum_bytes, io.remaining()?, &io.cancellation).await)?;
     io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
     Ok(bytes)
 }
@@ -1336,7 +1336,7 @@ pub(in crate::filesystem) async fn resolve<A: AsyncAuthorityStore, O: AsyncObjec
             generation: generation_ref(host, &generation, Some(io))?,
         });
     }
-    let generation = io.receive(workspace.head_measured(io.remaining()?, &io.cancellation).await)?;
+    let generation = io.receive(workspace.head(io.remaining()?, &io.cancellation).await)?;
     let provider = reference.as_resource().provider();
     strings(io, &[provider.namespace(), provider.family(), provider.version()])?;
     io.claim(reference.as_resource().key().len() as u64)?;
@@ -1450,7 +1450,7 @@ where
 {
     let generation = match expected {
         Some(reference) => generation(host, &workspace, reference, io).await?,
-        None => io.receive(workspace.head_measured(io.remaining()?, &io.cancellation).await)?,
+        None => io.receive(workspace.head(io.remaining()?, &io.cancellation).await)?,
     };
     let mut transaction = io.receive(workspace.begin_pinned_transaction_measured(
         &generation, super::super::filesystem_key(key), io.remaining()?, &io.cancellation,
@@ -1478,9 +1478,7 @@ where
     }
     let budget = io.remaining()?;
     let callback_work = Mutex::new(WorkCounters::default());
-    let committed = transaction.commit_with_permit_measured_guarded(
-        acyclic_fs::PublicationPermit::Unrestricted, budget, &io.cancellation,
-        |allowance| {
+    let committed = transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, budget, &io.cancellation, |allowance| {
             let scope = io.borrow_publication(budget, allowance);
             let future = scope.as_ref().ok().map(|_| before_publication());
             let callback_work = &callback_work;
@@ -1497,8 +1495,7 @@ where
                 result.map(|value| OperationReceipt { value, work: observed })
                     .map_err(|error| OperationFailure::new(error, observed))
             }
-        },
-    ).await;
+        }).await;
     let callback_work = callback_work.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
     let committed = match committed {
         Ok(mut receipt) => {
@@ -1751,7 +1748,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
         let forked = io.receive(workspace.fork_measured(&child_name, options, io.remaining()?, &io.cancellation).await)?;
         let initial = filesystem_call!(io, original,
             forked.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, &io.cancellation),
-            forked.operation_generation_measured(operation, io.remaining()?, &io.cancellation))?;
+            forked.operation_generation(operation, io.remaining()?, &io.cancellation))?;
         let initial = initial.ok_or_else(|| failure(Some(io), crate::wire::ErrorCode::Storage,
             "fork creation has no durable original generation"))?;
         retain(&initial, Some(io)).await?;

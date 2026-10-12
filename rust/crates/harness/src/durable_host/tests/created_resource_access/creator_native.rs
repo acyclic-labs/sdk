@@ -119,7 +119,7 @@ async fn created_seal_keeps_exact_sdk_custody_after_original_observer_and_scope_
     let baseline = work.remaining().expect("original remaining quota").peak_allocation_bytes;
     let mut observer = crate::store::history::native_work_io(&work)?;
     let mut receipts = authenticated_native_receipts(creator.as_ref(), &created.request, &work, &mut observer).await?;
-    let (access, held) = CreatedResourceAccess::consume_with_work(
+    let (access, held) = CreatedResourceAccess::consume(
         &created.request.child, &mut receipts, Some(created.request.child.operation_id), &mut Some(&mut observer),
     )?;
     assert_eq!(held, 0, "native access carries its own final SDK payload guard");
@@ -186,7 +186,7 @@ async fn native_created_seal_preserves_typed_identity_and_first_cancellation_fai
             receipts[0].origin.preparation_task = TaskId::from_bytes([180;16]);
         }
         let prefix = work.receipt();
-        let rejected = CreatedResourceAccess::consume_with_work(
+        let rejected = CreatedResourceAccess::consume(
             &created.request.child, &mut receipts, Some(created.request.child.operation_id), &mut Some(&mut observer),
         );
         if cancel {
@@ -217,7 +217,7 @@ async fn same_created_seal_engine_rejects_exact_file_ambiguity_and_inherited_def
     for proof in &created.request.child.resource_proofs {
         receipts.push(creator.verify(&created.request, proof).await?);
     }
-    let inherited = CreatedResourceAccess::consume(&created.request.child, receipts, None)?;
+    let inherited = CreatedResourceAccess::consume(&created.request.child, &mut { receipts }, None, &mut None)?.0;
     assert!(inherited.content.iter().all(|binding| !binding.default_writer && !binding.artifact_writer));
     assert!(inherited.current_content(&mut None)?.is_none(), "inherited allocation is not the current scratch origin");
     let private_resource = workspace_ref(
@@ -263,7 +263,7 @@ async fn same_created_seal_engine_rejects_exact_file_ambiguity_and_inherited_def
             receipts.push(receipt);
         }
         assert!(matches!(CreatedResourceAccess::consume(
-            &created.request.child, receipts, Some(created.request.child.operation_id),
+            &created.request.child, &mut { receipts }, Some(created.request.child.operation_id), &mut None,
         ), Err(Error::Unauthorized(_))), "the same ordinary engine rejects altered creator seal {change}");
     }
     Ok(())
