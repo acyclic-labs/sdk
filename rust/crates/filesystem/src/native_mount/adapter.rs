@@ -8608,10 +8608,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             ).await?;
         }
         let checkout = self.checkout.read_current_state().await;
-        let data = checkout.proof_data_snapshot(Some(&mut crate::kernel::allocation::KernelAccounting::native(
+        let bytes = checkout.proof_data_bytes(&mut crate::kernel::allocation::KernelAccounting::native(
             &native_work, cancellation,
-        ))).map_err(MountSourceError::Filesystem)?;
-        Ok(Some(data.total_bytes().map_err(MountSourceError::Work)?))
+        )).map_err(|error| match error {
+            crate::FsError::Work(error) => MountSourceError::Work(error),
+            error => MountSourceError::Filesystem(error),
+        })?;
+        Ok(Some(bytes))
     }
 
 }
