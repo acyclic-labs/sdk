@@ -495,13 +495,8 @@ export interface WatchReconcileResult {
   readonly postBaseline: NativeWatchBatch;
 }
 
-export interface NativePathComponent {
-  readonly encoding: "utf8" | "posix-bytes" | "windows-utf16le";
-  readonly bytes: Uint8Array;
-}
-
 export interface NativeNamespacePath {
-  readonly components: readonly NativePathComponent[];
+  readonly components: readonly WorkspaceName[];
 }
 
 export type NativeWatchChange =
@@ -579,7 +574,7 @@ export type MergeConflict =
   | {
       readonly kind: "binding";
       readonly directoryId: Uint8Array;
-      readonly name: NativePathComponent;
+      readonly name: WorkspaceName;
     };
 
 export type MergeConflictSelection = MergeConflict & {
@@ -1013,7 +1008,6 @@ export type WasmRawMergeConflict = WasmBinding.MergeConflictResult;
 export type WasmRawObjectCacheStats = { readonly [Key in keyof ObjectCacheStats]: string };
 export type WasmImportManifest = Pick<GenerationExportManifest, "manifestBytes" | "objects">;
 
-export type WasmRawFileRecordSnapshot = WasmBinding.BrowserFileRecordResult;
 export type WasmRawGenerationDiff = WasmBinding.BrowserGenerationDiffResult;
 
 export type WasmRawGeneration = WasmTypedClass<WasmBinding.BrowserGeneration, {
