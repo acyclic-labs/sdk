@@ -43,7 +43,7 @@ pub struct AuthorityBinding {
 
 impl AuthorityBinding {
     fn verifier(&self) -> Result<AuthorityVerifier> {
-        let verifier = AuthorityIssuer::new(&self.issuer, self.key, self.authority.clone()).verifier();
+        let verifier = AuthorityIssuer::new(&self.issuer, self.key, self.authority.clone()).verifier(&mut None).expect("verifier copy");
         verifier.verify(&self.scope)?;
         Ok(verifier)
     }

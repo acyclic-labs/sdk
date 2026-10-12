@@ -154,7 +154,7 @@ pub(super) struct LoadedProjection {
 
 fn suffix(authority: &Authority) -> Result<String> {
     authority
-        .stream_path()?
+        .stream_path(&mut None)?
         .strip_prefix("harness/v2/")
         .map(str::to_owned)
         .ok_or_else(|| Error::Invalid("projection authority path is invalid".into()))
@@ -568,7 +568,7 @@ async fn tail<P: StreamProvider>(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<u64> {
     if work.is_none() {
-        let stream = client.stream(authority.stream_path()?)?;
+        let stream = client.stream(authority.stream_path(&mut None)?)?;
         return match stream.tail().await {
             Ok(tail) => Ok(tail),
             Err(StreamError::NotFound) => Ok(0),
@@ -637,7 +637,7 @@ pub(super) async fn load_with_work<P: StreamProvider>(
     original_revision: Option<u64>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<LoadedProjection> {
-    verifier.verify_audience_with_work(authority, work)?;
+    verifier.verify_audience(authority, work)?;
     if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
         return Err(projection_error(work, crate::wire::ErrorCode::Invalid,
             "projection read bounds must be positive"));
@@ -738,7 +738,7 @@ impl ProjectionLocation {
                 if let Some(observer) = work.as_deref_mut() { observer.stage_output(self.bytes, 1)?; }
                 let bytes = load_chunks(client, self, consumed_bytes, maximum_bytes, work).await?;
                 let result = (|| {
-                    let snapshot = Snapshot::decode_with_work(&bytes, maximum_bytes, work)?;
+                    let snapshot = Snapshot::decode(&bytes, maximum_bytes, work)?;
                     if snapshot.authority != self.authority
                         || snapshot.revision != self.revision
                         || snapshot.events.last() != Some(&event)

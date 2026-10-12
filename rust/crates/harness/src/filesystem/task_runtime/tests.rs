@@ -240,7 +240,7 @@ impl Fixture {
     }
     async fn runtime(&self) -> Result<Runtime> {
         FilesystemTaskRuntime::open_with_clock(
-            self.stream.clone(), self.filesystem.clone(), self.volume.clone(), self.issuer.verifier(),
+            self.stream.clone(), self.filesystem.clone(), self.volume.clone(), self.issuer.verifier(&mut None).expect("verifier copy"),
             self.signed.clone(), self.scope.clone(), self.tasks.clone(), self.machines.clone(),
             self.tools.clone(), SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 },
             1, 65_536, self.clock.clone(),
@@ -266,7 +266,7 @@ impl Fixture {
     async fn admit_only(&self, runtime: &Runtime, kind: &str, command: Value) -> Result<OperationId> {
         let operation = OperationId::from_bytes([104; 16]);
         let payloads = FilesystemSchedulerPayloadStore::new(
-            self.filesystem.clone(), self.volume.clone(), &self.issuer.verifier(), &self.signed, 65_536,
+            self.filesystem.clone(), self.volume.clone(), &self.issuer.verifier(&mut None).expect("verifier copy"), &self.signed, 65_536,
         )?;
         let payload = payloads.stage(operation, "command", &crate::contract::canonical_json_bytes(&command)?).await?;
         let definition = self.tasks.get_version::<Value, Value>("test.deadline", "1")?;
@@ -558,7 +558,7 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
     let runtime = fixture.runtime().await?;
     let task = TaskId::from_bytes([104; 16]);
     let payloads = FilesystemSchedulerPayloadStore::new(
-        fixture.filesystem.clone(), fixture.volume.clone(), &fixture.issuer.verifier(),
+        fixture.filesystem.clone(), fixture.volume.clone(), &fixture.issuer.verifier(&mut None).expect("verifier copy"),
         &fixture.signed, 65_536,
     )?;
     let file = payloads.stage(OperationId::from_bytes([106; 16]), "mail-body", b"7").await?;

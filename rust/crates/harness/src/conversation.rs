@@ -637,7 +637,7 @@ impl ContentGrant {
                 "internal storage file is not public content".into(),
             ));
         }
-        verifier.verify(scope)?;
+        verifier.verify(scope, &mut None)?;
         if scope
             .capabilities()
             .contains(&file.volume().capability(VolumeOperation::Read)?)
@@ -694,7 +694,7 @@ impl ContentGrant {
         operation: VolumeOperation, maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        verifier.verify_with_work(scope, work)?;
+        verifier.verify(scope, work)?;
         if operation == VolumeOperation::Write {
             volume.require_writer(scope.agent())?;
         }
@@ -774,7 +774,7 @@ impl ContentGrant {
         operation: VolumeOperation, io: &crate::filesystem::PreparationIo,
     ) -> Result<()> {
         let mut borrowed = io.history_io();
-        verifier.verify_with_work(scope, &mut Some(&mut borrowed))?;
+        verifier.verify(scope, &mut Some(&mut borrowed))?;
         let native;
         #[cfg(not(target_arch = "wasm32"))]
         { native = io.original_native_work().is_some(); }
@@ -804,7 +804,7 @@ impl ContentGrant {
         volume: &VolumeRef,
         prefix: &str,
     ) -> Result<Self> {
-        verifier.verify(scope)?;
+        verifier.verify(scope, &mut None)?;
         let directory_capability = volume.directory_read_capability(prefix)?;
         let volume_capability = volume.capability(VolumeOperation::Read)?;
         if scope.agent().is_none()
@@ -830,7 +830,7 @@ impl ContentGrant {
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let mut borrowed = io.history_io();
-        verifier.verify_with_work(scope, &mut Some(&mut borrowed))?;
+        verifier.verify(scope, &mut Some(&mut borrowed))?;
         if !prefix.is_empty() { validate_content_path_with_native_work(prefix, work)?; }
         if is_internal_path(prefix) {
             return Err(io.invalid("internal storage paths cannot be delegated"));
@@ -872,7 +872,7 @@ impl ContentGrant {
                 "internal storage file is not public content".into(),
             ));
         }
-        verifier.verify(scope)?;
+        verifier.verify(scope, &mut None)?;
         if !scope.capabilities().contains(&file.read_capability()?) {
             return Err(Error::Unauthorized("exact file read is not granted".into()));
         }
@@ -5215,14 +5215,14 @@ mod tests {
             "write",
             crate::Capabilities::new([write.clone(), read.clone()]),
         );
-        ContentGrant::verify(&issuer.verifier(), &scope, &private, VolumeOperation::Write)?;
+        ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &private, VolumeOperation::Write)?;
         let unsigned = issuer.root(
             "copied-capability",
             crate::Capabilities::new([write.clone()]),
         );
         assert!(
             ContentGrant::verify(
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &unsigned,
                 &private,
                 VolumeOperation::Write
@@ -5233,7 +5233,7 @@ mod tests {
             issuer.attenuate(&scope, "child", crate::Capabilities::new([write.clone()]))?;
         assert_eq!(inherited.agent(), Some(owner));
         ContentGrant::verify(
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &inherited,
             &private,
             VolumeOperation::Write,
@@ -5250,7 +5250,7 @@ mod tests {
             foreign_issuer.root_for_agent(attached, "copied", crate::Capabilities::new([write]));
         assert!(
             ContentGrant::verify(
-                &foreign_issuer.verifier(),
+                &foreign_issuer.verifier(&mut None).expect("verifier copy"),
                 &copied,
                 &private,
                 VolumeOperation::Write
@@ -5261,10 +5261,10 @@ mod tests {
         let delegated =
             issuer.delegate_private_file_read(&scope, attached, "attached-read", &exact_file)?;
         assert_eq!(delegated.agent(), Some(attached));
-        ContentGrant::verify_file_read(&issuer.verifier(), &delegated, &exact_file)?;
+        ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &delegated, &exact_file)?;
         let internal = file(owner, ".system/execution/state.json")?;
         assert!(matches!(
-            ContentGrant::verify_read(&issuer.verifier(), &scope, &internal),
+            ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &internal),
             Err(Error::Unauthorized(_))
         ));
         let internal_exact = issuer.root_for_agent(
@@ -5273,7 +5273,7 @@ mod tests {
             crate::Capabilities::new([internal.read_capability()?]),
         );
         assert!(matches!(
-            ContentGrant::verify_file_read(&issuer.verifier(), &internal_exact, &internal),
+            ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &internal_exact, &internal),
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
@@ -5281,7 +5281,7 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         let inherited_context = file(owner, ".system/inherited-conversation/prefix.json")?;
-        ContentGrant::verify_read(&issuer.verifier(), &scope, &inherited_context)?;
+        ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &inherited_context)?;
         let directory = issuer.delegate_private_directory_read(
             &scope,
             attached,
@@ -5290,7 +5290,7 @@ mod tests {
             "scratch",
         )?;
         let directory_grant = ContentGrant::verify_directory_read(
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &directory,
             &private,
             "scratch",
@@ -5696,7 +5696,7 @@ mod tests {
             "exact-member",
             crate::Capabilities::new([member.read_capability()?]),
         );
-        let grant = ContentGrant::verify_file_read(&issuer.verifier(), &scope, &member)?;
+        let grant = ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &member)?;
         let lazy = CompositeContentVerifier::new(vec![(manifest.volume().clone(), first)])?
             .with_mount_resolver(Arc::new(StaticMount {
                 volume: member.volume().clone(),
@@ -5801,7 +5801,7 @@ mod native_grant_controls {
     #[test]
     fn native_volume_grant_keeps_its_real_backing_until_data_drop() -> Result<()> {
         let (issuer, scope, volume) = owner()?;
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("finite original grant ledger");
@@ -5826,7 +5826,7 @@ mod native_grant_controls {
         let child = issuer.delegate_private_directory_read(
             &parent, AgentId::from_bytes([73; 16]), "attached-directory", &volume, "private",
         )?;
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("finite original directory ledger");
@@ -5848,7 +5848,7 @@ mod native_grant_controls {
     #[test]
     fn native_grant_cancellation_precedes_metadata_allocations() -> Result<()> {
         let (issuer, scope, volume) = owner()?;
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("finite cancellable grant ledger");

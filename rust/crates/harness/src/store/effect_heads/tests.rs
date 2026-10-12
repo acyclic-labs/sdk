@@ -54,7 +54,7 @@ async fn publish_lifecycle(
     publication_with_work(
         client,
         reducer.authority(),
-        &issuer().verifier(),
+        &issuer().verifier(&mut None).expect("verifier copy"),
         &event,
         None,
         &mut indexed,
@@ -71,7 +71,7 @@ async fn publish_lifecycle(
         return Err(Error::Invalid("root fixture publication conflicted".into()));
     };
     indexed.verify(&envelope)?;
-    reducer.apply_committed(event)?;
+    reducer.apply_committed(event, &mut None)?;
     Ok(())
 }
 
@@ -81,7 +81,7 @@ async fn copy_cut(
     atomic: bool,
 ) -> Result<StreamClient<MemoryStream>> {
     let client = StreamClient::new(Arc::new(MemoryStream::default()));
-    let canonical_path = StreamPath::new(authority().stream_path()?)?;
+    let canonical_path = StreamPath::new(authority().stream_path(&mut None)?)?;
     let proof_path = certificate_path_with_work(&authority(), &mut None).map(|(path, _)| path)?;
     if atomic {
         client
@@ -124,12 +124,12 @@ async fn copy_cut(
 async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic_copy() -> Result<()>
 {
     let client = StreamClient::new(Arc::new(MemoryStream::default()));
-    let mut reducer = Reducer::new(authority(), issuer().verifier(), SchemaRegistry::new());
+    let mut reducer = Reducer::new(authority(), issuer().verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     publish_lifecycle(&client, &mut reducer, 1).await?;
     let selected = select_with_work(
         &client,
         &authority(),
-        &issuer().verifier(),
+        &issuer().verifier(&mut None).expect("verifier copy"),
         EffectId::from_bytes([92; 16]),
         1,
         1_000_000, &mut None)
@@ -141,7 +141,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         select_with_work(
             &client,
             &authority(),
-            &issuer().verifier(),
+            &issuer().verifier(&mut None).expect("verifier copy"),
             EffectId::from_bytes([92; 16]),
             1,
             exact, &mut None)
@@ -153,7 +153,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         select_with_work(
             &client,
             &authority(),
-            &issuer().verifier(),
+            &issuer().verifier(&mut None).expect("verifier copy"),
             EffectId::from_bytes([92; 16]),
             1,
             exact - 1, &mut None)
@@ -161,7 +161,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         Err(Error::Invalid(_))
     ));
     let canonical = client
-        .stream(authority().stream_path()?)?
+        .stream(authority().stream_path(&mut None)?)?
         .read(0, 1)
         .await?
         .try_collect::<Vec<_>>()
@@ -174,14 +174,14 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         .await?;
     let valid = copy_cut(&canonical[0].value, certificates[0].value.clone(), true).await?;
     assert_eq!(
-        root_at(&valid, &authority(), &issuer().verifier(), 1, exact, &mut None)
+        root_at(&valid, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), 1, exact, &mut None)
             .await?
             .hash,
         None
     );
     let non_atomic = copy_cut(&canonical[0].value, certificates[0].value.clone(), false).await?;
     assert!(matches!(
-        root_at(&non_atomic, &authority(), &issuer().verifier(), 1, exact, &mut None).await,
+        root_at(&non_atomic, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), 1, exact, &mut None).await,
         Err(Error::Storage(_))
     ));
     for mutation in 0..4 {
@@ -199,7 +199,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         )
         .await?;
         assert!(matches!(
-            root_at(&forged, &authority(), &issuer().verifier(), 1, 1_000_000, &mut None).await,
+            root_at(&forged, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), 1, 1_000_000, &mut None).await,
             Err(Error::Unauthorized(_))
         ));
     }
@@ -211,7 +211,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
             id: "foreign-effect-root".into(),
         },
     )
-    .verifier();
+    .verifier(&mut None).expect("verifier copy");
     assert!(matches!(
         root_at(&client, &authority(), &foreign, 1, exact, &mut None).await,
         Err(Error::Unauthorized(_))

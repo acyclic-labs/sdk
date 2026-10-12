@@ -65,9 +65,9 @@ impl ForkToolArguments {
         limits: Limits,
         request: &mut ForkRequest,
     ) -> Result<()> {
-        request.validate()?;
+        request.validate(&mut None)?;
         let revision = ResourceRevision::Project { volume: project, generation };
-        revision.validate()?;
+        revision.validate(&mut None)?;
         if let ResourceRevision::Project { volume, .. } = &revision
             && (volume == &request.preparation.child_project_volume
                 || volume.provider() != request.preparation.child_project_volume.provider())
@@ -170,7 +170,7 @@ where
     if caller != source.task || !context.scope().grants().contains("fork:publish") {
         return Err(Error::Unauthorized("fork caller/source authority differs".into()));
     }
-    verifier.verify(&signed)?;
+    verifier.verify(&signed, &mut None)?;
     let agent = parent.reducer().conversation().and_then(|conversation| conversation.agent)
         .ok_or_else(|| Error::Invalid("fork caller conversation has no agent".into()))?;
     if signed.agent() != Some(agent) || source.private_volume.owner() != &crate::conversation::VolumeOwner::Agent(agent) {
@@ -200,7 +200,7 @@ where
         selections: vec![
             crate::fork::ForkSelection { required: true, revision: ResourceRevision::History(
                 crate::resources::StreamRef::new(stream_provider.clone(),
-                    parent.reducer().authority().stream_path()?.into_bytes(),
+                    parent.reducer().authority().stream_path(&mut None)?.into_bytes(),
                     Some(parent.reducer().revision().to_string()))?) },
             crate::fork::ForkSelection { required: true, revision: ResourceRevision::Project {
                 volume: source.project.clone(), generation: source.project_generation } },
@@ -288,7 +288,7 @@ pub(crate) fn recursive_fork_request_with_native_work(
     }
     let parent_authority = observer.as_deref_mut().expect("native fork observer").clone_authority(parent.authority())?;
     let child = observer.as_deref_mut().expect("native fork observer").clone_authority(allocation.child)?;
-    let path = parent.authority().stream_path_with_work(&mut observer)?.into_bytes();
+    let path = parent.authority().stream_path(&mut observer)?.into_bytes();
     let mut version = String::new();
     observer.as_deref_mut().expect("native fork observer").reserve_text(&mut version, 20)?;
     observer.as_deref_mut().expect("native fork observer").admit_copy(20)?;
@@ -455,12 +455,12 @@ where
     O: AsyncObjectStore + 'static,
 {
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    request.validate()?;
+    request.validate(&mut None)?;
     if request.parent != *parent.authority() || request.parent_revision != parent.revision() {
         return Err(Error::Conflict("restored fork source is not the original admitted parent cut".into()));
     }
-    verifier.verify(&signed)?;
-    verifier.verify_audience(parent.authority())?;
+    verifier.verify(&signed, &mut None)?;
+    verifier.verify_audience(parent.authority(), &mut None)?;
     if request.authorized_source.as_ref() != source_read.as_ref().map(|handle| handle.authorization()) {
         return Err(Error::Unauthorized("restored source differs from the exact admitted workspace approval".into()));
     }
@@ -504,7 +504,7 @@ where
     {
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        request.0.validate_with_work(&mut observer)?;
+        request.0.validate(&mut observer)?;
         if &request.0.parent != parent.authority() || request.0.parent_revision != parent.revision() {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                 reason: "restored source differs from original admitted parent cut" });
@@ -528,7 +528,7 @@ where
     let (owned_verifier, owned_scope, project) = {
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        (verifier.clone_with_work(&mut observer)?, signed.clone_with_work(&mut observer)?,
+        (verifier.copy(&mut observer)?, signed.copy(&mut observer)?,
             caller_project.clone_with_work(&mut observer)?)
     };
     let provider = stream_provider.clone_with_io(&io)?;
@@ -577,7 +577,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     source_checkpoint: Option<crate::conversation::FileRef>,
     input_files: Vec<crate::conversation::FileRef>,
 ) -> Result<ResourcePreparationRequest> {
-    fork.validate()?;
+    fork.validate(&mut None)?;
     command.validate()?;
     if command.kind != FORK_PREPARE_TASK_COMMAND_KIND
         || fork.operation_id != command.operation_id
@@ -616,7 +616,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         source_checkpoint,
         input_files,
     };
-    request.validate()?;
+    request.validate(&mut None)?;
     Ok(request)
 }
 /// Builds the native creator request from the already issuer-authenticated child claims.
@@ -632,7 +632,7 @@ pub fn fork_preparation_request_with_native_work<A: AsyncAuthorityStore, O: Asyn
     {
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        fork.validate_with_work(&mut observer)?;
+        fork.validate(&mut observer)?;
         command.validate_with_work(&mut observer)?;
     }
     if command.kind != FORK_PREPARE_TASK_COMMAND_KIND
@@ -881,7 +881,7 @@ impl ForkPreparationMachine {
                 }
                 let status = match result.value {
                     Outcome::Succeeded(report) => {
-                        recursive_observe(io, |work| report.validate_with_work(work))?;
+                        recursive_observe(io, |work| report.validate(work))?;
                         if report.request.operation_id != operation_id
                             || preparation_payload_digest(&report.request, io)? != request_digest
                         {

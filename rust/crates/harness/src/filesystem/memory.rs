@@ -919,7 +919,7 @@ impl MemoryHarnessStorage {
         let mut aggregate = StreamAggregate::open(
             &stream,
             conversation.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             SchemaRegistry::new(),
         )
         .await?;
@@ -935,7 +935,7 @@ impl MemoryHarnessStorage {
             .await?;
         let input = Arc::new(FilesystemContentVerifier::new(
             Arc::clone(&host),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             scope.clone(),
             maximum_file_bytes,
         )?);
@@ -944,7 +944,7 @@ impl MemoryHarnessStorage {
                 stream.clone(),
                 Arc::clone(&host),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 scope.clone(),
                 maximum_file_bytes,
             )?
@@ -954,7 +954,7 @@ impl MemoryHarnessStorage {
             files: FilesystemContentPublisher::new(
                 Arc::clone(&host),
                 volume.clone(),
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &scope,
                 maximum_file_bytes,
             )?,
@@ -1198,7 +1198,7 @@ impl MemoryHarnessStorage {
     ) -> Result<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>> {
         FilesystemContentVerifier::new(
             self.host.clone(),
-            self.issuer.verifier(),
+            self.issuer.verifier(&mut None).expect("verifier copy"),
             scope.clone(),
             self.maximum_file_bytes,
         )
@@ -1247,7 +1247,7 @@ impl MemoryHarnessStorage {
     /// Returns the trusted verifier without disclosing the signing key.
     #[must_use]
     pub fn verifier(&self) -> crate::core::AuthorityVerifier {
-        self.issuer.verifier()
+        self.issuer.verifier(&mut None).expect("verifier copy")
     }
 }
 
@@ -1432,7 +1432,7 @@ mod tests {
         use crate::distributed::SchedulerPayloadStore as _;
         let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
         let scheduler = super::super::FilesystemSchedulerPayloadStore::new(
-            storage.host.clone(), storage.volume.clone(), &storage.issuer.verifier(),
+            storage.host.clone(), storage.volume.clone(), &storage.issuer.verifier(&mut None).expect("verifier copy"),
             &storage.scope, 1024)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(

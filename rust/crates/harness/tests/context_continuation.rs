@@ -824,7 +824,7 @@ async fn assert_checkpoint_history_cut(
     use acyclic_harness::store::HistoryReader;
     use acyclic_harness::{executor::load_canonical_checkpoint_at, runtime::RuntimeScope};
 
-    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier())?;
+    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier(&mut None).expect("verifier copy"))?;
     let cursor = history.pin(0).await?;
     let scope = RuntimeScope::new(storage.owner_scope().capabilities().clone(), limits)?;
     let bytes = MAX_RECORD_BYTES as u64 * 2;
@@ -1123,7 +1123,7 @@ async fn assert_checkpoint_tail_source(
         store::{HistoryReadLimits, HistoryReader},
     };
 
-    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier())?;
+    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier(&mut None).expect("verifier copy"))?;
     let cursor = history.pin(0).await?;
     let content = StoredContent(storage.clone());
     let budget = HistoryReadLimits {
@@ -1223,7 +1223,7 @@ async fn assert_checkpoint_tail_source(
     let mut aggregate = acyclic_harness::store::StreamAggregate::open(
         storage.stream(),
         storage.conversation().clone(),
-        storage.verifier(),
+        storage.verifier(&mut None).expect("verifier copy"),
         acyclic_harness::core::SchemaRegistry::new(),
     )
     .await?
@@ -2386,7 +2386,7 @@ async fn append_private_checkpoint_metadata(
     let mut history = acyclic_harness::store::StreamAggregate::open(
         storage.stream(),
         storage.conversation().clone(),
-        storage.verifier(),
+        storage.verifier(&mut None).expect("verifier copy"),
         acyclic_harness::core::SchemaRegistry::new(),
     )
     .await?

@@ -64,7 +64,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         payloads,
         authority,
         signed,
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         tasks.clone(),
         machines,
@@ -279,7 +279,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         .cancel_operation(
             &host.owner,
             &host.owner_scope,
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             prep_op,
             IdempotencyKey::new("cancel-resource-preparation")?,
             false,

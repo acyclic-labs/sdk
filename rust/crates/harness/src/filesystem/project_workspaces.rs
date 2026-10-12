@@ -72,7 +72,7 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
     }
 
     fn require_scope(&self, scope: &Scope) -> Result<()> {
-        self.verifier.verify(scope)?;
+        self.verifier.verify(scope, &mut None)?;
         if scope != &self.scope {
             return Err(Error::Unauthorized(
                 "project operation belongs to another parent scope".into(),
@@ -130,7 +130,7 @@ where
                     "import is outside the bound destination conversation".into(),
                 ));
             }
-            source.stream_path()?;
+            source.stream_path(&mut None)?;
             let plan = self
                 .controller()
                 .prepare_project_import(source_project, source_generation)
@@ -184,7 +184,7 @@ where
                     "project join child is not a conversation".into(),
                 ));
             }
-            child.stream_path()?;
+            child.stream_path(&mut None)?;
             if &self.child != child {
                 return Err(Error::Unauthorized(
                     "project join child is not the inspected fork".into(),

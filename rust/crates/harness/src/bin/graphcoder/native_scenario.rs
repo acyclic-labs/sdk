@@ -162,7 +162,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     files.create_volume(&private).await?;
     files.create_volume(&project).await?;
     // Known qualification prompts are real provider-owned command artifacts.
-    let project_writer = ContentGrant::verify(&issuer.verifier(), &owner.scope, &project, VolumeOperation::Write)?;
+    let project_writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &owner.scope, &project, VolumeOperation::Write)?;
     let mut planned_commands = BTreeMap::new();
     let mut planned_inputs = BTreeMap::new();
     let mut artifact_grants = owner.scope.capabilities().iter().map(str::to_owned).collect::<Vec<_>>();
@@ -193,7 +193,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     machines.register(preparation)?;
     let creator = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), issuer.clone())?);
     let runtime = Runtime::open_with_creation_providers(
-        stream.clone(), files.clone(), private.clone(), issuer.verifier(), owner.scope.clone(),
+        stream.clone(), files.clone(), private.clone(), issuer.verifier(&mut None).expect("verifier copy"), owner.scope.clone(),
         RuntimeScope::new(owner.scope.capabilities().clone(), limits)?.with_run_limits(run_limits)?,
         tasks, machines, Default::default(), config.session_limits, config.concurrency,
         PAYLOAD_BYTES, Arc::new(SystemUnixMillisClock), None, vec![creator], Default::default(),
@@ -246,7 +246,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     // Authenticated foreign project selection only.
     producer.fork(&mut left, "cross_source", Some(logical_root.task), false).await?;
     let left_issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, left.binding.authority.clone());
-    let notice_writer = ContentGrant::verify(&left_issuer.verifier(), &left.binding.scope, &left.private, VolumeOperation::Write)?;
+    let notice_writer = ContentGrant::verify(&left_issuer.verifier(&mut None).expect("verifier copy"), &left.binding.scope, &left.private, VolumeOperation::Write)?;
     let notice_file = producer.files.put_content(&left.private, &notice_writer, "merge/selected-grandchild.txt",
         b"Explicit caller notice: import the selected immutable grandchild project; do not import private scratch.\n",
         "text/plain", "merge-notice.txt", PAYLOAD_BYTES, &IdempotencyKey::new("left-grandchild-merge-notice")?).await?;
@@ -382,7 +382,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
 impl Producer {
     async fn seed(&mut self, caller: &mut Caller, label: &str, messages: usize) -> Result<()> {
         let issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, caller.binding.authority.clone());
-        let writer = ContentGrant::verify(&issuer.verifier(), &caller.binding.scope, &caller.private, VolumeOperation::Write)?;
+        let writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &caller.binding.scope, &caller.private, VolumeOperation::Write)?;
         let scratch = self.files.put_content(&caller.private, &writer, "scratch/caller-marker.txt",
             format!("{label} private scratch; must never be copied as child scratch\n").as_bytes(),
             "text/plain", "caller-marker.txt", PAYLOAD_BYTES,
@@ -406,7 +406,7 @@ impl Producer {
                         kind: MessageKind::User, content: file, attachments: Default::default(),
                         reply_to: None, tool_call_id: None, extensions: Default::default() }) } }).await?;
         }
-        let project_writer = ContentGrant::verify(&issuer.verifier(), &caller.binding.scope,
+        let project_writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &caller.binding.scope,
             &caller.project, VolumeOperation::Write)?;
         let before = self.files.put_content(&caller.project, &project_writer, "sentinel.txt",
             format!("{label} project baseline\n").as_bytes(), "text/plain", "sentinel.txt", PAYLOAD_BYTES,
@@ -436,7 +436,7 @@ impl Producer {
         let preparation_task = acyclic_harness::runtime::task_id_for_admission(preparation_operation);
         let child_operation = OperationId::new();
         let initial_prompt = format!("real isolated {label} qualification task");
-        let verifier = AuthorityIssuer::new(ISSUER, TEST_KEY, parent.binding.authority.clone()).verifier();
+        let verifier = AuthorityIssuer::new(ISSUER, TEST_KEY, parent.binding.authority.clone()).verifier(&mut None).expect("verifier copy");
         let admission = self.runtime.task_host().observe_admission(parent.task).await?;
         let context = self.runtime.task_context(parent.task, LeaseFence::from(&parent.lease.reservation)).await?;
         let source_read = if let Some(source_task) = source.filter(|task| *task != parent.task) {
@@ -479,7 +479,7 @@ impl Producer {
         ).await?;
         let projected_reference_grants = binding.preparer.required_reference_grants(&binding.request, None).await?;
         let checkpoint = ForkSourceConfig { caller: parent.task, owner: parent.binding.clone(),
-            project: parent.project.clone(), snapshot: parent.aggregate.reducer().snapshot()?,
+            project: parent.project.clone(), snapshot: parent.aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
             request: binding.request.clone() };
         let checkpoint_path = self.root.join("inputs").join(format!("{label}-source.json"));
         persist(&checkpoint_path, &checkpoint).await?;
@@ -604,7 +604,7 @@ impl Producer {
 async fn aggregate(stream: &StreamClient<LocalStream>, files: Arc<Files>,
     owner: &AuthorityBinding, config: &Config) -> Result<StreamAggregate<LocalStream>>
 {
-    let verifier = AuthorityIssuer::new(&owner.issuer, owner.key, owner.authority.clone()).verifier();
+    let verifier = AuthorityIssuer::new(&owner.issuer, owner.key, owner.authority.clone()).verifier(&mut None).expect("verifier copy");
     let content = Arc::new(FilesystemContentVerifier::new(files.clone(), verifier.clone(), owner.scope.clone(), PAYLOAD_BYTES)?);
     let forks = Arc::new(CompositeForkVerifier::new(vec![
         Arc::new(FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES)?),

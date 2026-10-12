@@ -624,7 +624,7 @@ impl ExtensionRuntime {
     where
         F: Fn(&str, u32) -> Result<Option<[u8; 32]>>,
     {
-        admission.validate()?;
+        admission.validate(&mut None)?;
         let mut roots = Vec::with_capacity(admission.selected().len());
         for dependency in admission.selected() {
             let identity = registry
@@ -785,7 +785,7 @@ impl ExtensionRuntime {
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if let Some(admission) = admission {
-            admission.validate_with_work(work)?;
+            admission.validate(work)?;
             let matches = |selected: &ExtensionDependency, linked: &ExtensionIdentity| {
                 selected.name == linked.name && selected.version == linked.version
             };

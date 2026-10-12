@@ -112,13 +112,13 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     let writer = Arc::new(FilesystemContentPublisher::new(
         host.clone(),
         volume.clone(),
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         4096,
     )?);
     let reader = Arc::new(FilesystemContentVerifier::new(
         host,
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope,
         4096,
     )?);
@@ -531,9 +531,9 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
             other.capability(VolumeOperation::Write)?,
         ]),
     );
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
-    let foreign = ContentGrant::verify(&issuer.verifier(), &scope, &other, VolumeOperation::Write)?;
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
+    let foreign = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &other, VolumeOperation::Write)?;
     let source = host
         .put_content(
             &volume,
@@ -685,8 +685,8 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
             volume.capability(VolumeOperation::Write)?,
         ]),
     );
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
     let replacement = ExactTextReplacement {
         old_text: "before".into(),
         new_text: "after".into(),
@@ -814,8 +814,8 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
     let scope = issuer.root_for_agent(owner, "owner", Capabilities::new([
         volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
     ]));
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
     let key = IdempotencyKey::new("original-content")?;
     let cancellation = acyclic_fs::CancellationToken::new();
     {

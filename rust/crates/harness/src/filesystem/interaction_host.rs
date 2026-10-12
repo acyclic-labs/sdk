@@ -80,7 +80,7 @@ impl<P, A, O> FilesystemInteractionHost<P, A, O> {
         &self, id: InteractionId, scope: &Scope, io: Option<&PreparationIo>,
     ) -> Result<()> {
         let mut borrowed = io.map(PreparationIo::history_io);
-        self.verifier.verify_with_work(scope, &mut borrowed.as_mut().map(
+        self.verifier.verify(scope, &mut borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo))?;
         let grant_hold;
         let grant = interaction_text("interaction:respond:", Some(id.into_bytes()), "", "", "", io)?;
@@ -113,7 +113,7 @@ where
         id: InteractionId,
     ) -> BoxFuture<'a, Result<Option<(InteractionTicket, Option<InteractionResolution>)>>> {
         Box::pin(async move {
-            self.verifier.verify(&scope)?;
+            self.verifier.verify(&scope, &mut None)?;
             let result = self.read(id).await?;
             if let Some((ticket, _)) = &result
                 && !scope.capabilities().contains(&ticket.viewer_grant())
@@ -207,12 +207,12 @@ where
     ) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            verifier.verify_audience_with_native_work(&authority, work)?;
+            verifier.verify_audience(&authority, &mut Some(&mut crate::store::history::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
         } else {
-            verifier.verify_audience(&authority)?;
+            verifier.verify_audience(&authority, &mut None)?;
         }
         #[cfg(target_arch = "wasm32")]
-        verifier.verify_audience(&authority)?;
+        verifier.verify_audience(&authority, &mut None)?;
         if authority.kind != crate::core::AggregateKind::Conversation
             || private_volume.class() != VolumeClass::AgentPrivate
             || private_volume.provider() != &host.provider
@@ -434,7 +434,7 @@ where
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
-        scope.clone_with_work(&mut work)
+        scope.copy(&mut work)
     }
 
     /// Resolves only with the exact interaction responder grant and current version.
@@ -533,7 +533,7 @@ where
         id: InteractionId,
         expected_version: u64,
     ) -> Result<InteractionTicket> {
-        self.verifier.verify(scope)?;
+        self.verifier.verify(scope, &mut None)?;
         if !scope
             .capabilities()
             .contains(capability::INTERACTION_RESOLVE)
@@ -867,9 +867,9 @@ where
             Some(work) => work.clone_authority(&self.authority)?,
             None => self.authority.clone(),
         };
-        let aggregate_verifier = self.verifier.clone_with_work(&mut work)?;
-        let content_authority = self.verifier.clone_with_work(&mut work)?;
-        let scope = self.owner_scope.clone_with_work(&mut work)?;
+        let aggregate_verifier = self.verifier.copy(&mut work)?;
+        let content_authority = self.verifier.copy(&mut work)?;
+        let scope = self.owner_scope.copy(&mut work)?;
         if let Some(io) = io {
             io.claim(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
             io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;

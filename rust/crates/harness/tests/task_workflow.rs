@@ -463,8 +463,8 @@ where
 {
     let aggregate = acyclic_harness::store::StreamAggregate::open(
         stream,
-        issuer.verifier().audience().clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
     )
     .await?;
@@ -480,8 +480,8 @@ where
     let interactions = FilesystemInteractionHost::new(
         stream.clone(),
         filesystem.clone(),
-        issuer.verifier().audience().clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
         owner_scope.clone(),
         volume.clone(),
@@ -951,13 +951,13 @@ async fn worker_restart_with_options(
             let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
                 filesystem.clone(),
                 volume.clone(),
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &signed,
                 65_536,
             )?);
             let reader = Arc::new(FilesystemContentVerifier::new(
                 filesystem.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 signed.clone(),
                 65_536,
             )?);
@@ -965,8 +965,8 @@ async fn worker_restart_with_options(
                 Box::pin(async {
                     let mut aggregate = acyclic_harness::store::StreamAggregate::open(
                         &stream,
-                        conversation_issuer.verifier().audience().clone(),
-                        conversation_issuer.verifier(),
+                        conversation_issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
+                        conversation_issuer.verifier(&mut None).expect("verifier copy"),
                         SchemaRegistry::new(),
                     )
                     .await?;
@@ -988,7 +988,7 @@ async fn worker_restart_with_options(
                 stream.clone(),
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 signed.clone(),
                 scope.clone(),
                 tasks.clone(),
@@ -1008,7 +1008,7 @@ async fn worker_restart_with_options(
             .await?;
             let runtime = if with_policy {
                 runtime.with_interaction_owner(
-                    conversation_issuer.verifier(),
+                    conversation_issuer.verifier(&mut None).expect("verifier copy"),
                     SchemaRegistry::new(),
                     conversation_scope.clone(),
                     volume.clone(),
@@ -1021,7 +1021,7 @@ async fn worker_restart_with_options(
                     stream.clone(),
                     filesystem.clone(),
                     volume.clone(),
-                    issuer.verifier(),
+                    issuer.verifier(&mut None).expect("verifier copy"),
                     signed.clone(),
                     scope.clone(),
                     tasks.clone(),
@@ -2107,13 +2107,13 @@ async fn stock_restart_with_publication_fault(
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
             filesystem.clone(),
             volume.clone(),
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &signed,
             65_536,
         )?);
         let reader = Arc::new(FilesystemContentVerifier::new(
             filesystem.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             signed.clone(),
             65_536,
         )?);
@@ -2126,7 +2126,7 @@ async fn stock_restart_with_publication_fault(
             reader.clone(),
             authority.clone(),
             signed.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             scope.clone(),
             tasks.clone(),
             machines.clone(),
@@ -2148,7 +2148,7 @@ async fn stock_restart_with_publication_fault(
             stream.clone(),
             filesystem.clone(),
             volume.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             signed.clone(),
             scope.clone(),
             tasks.clone(),
@@ -2390,7 +2390,7 @@ async fn stock_restart_with_publication_fault(
                     OperationId::from_bytes([8; 16]),
                     filesystem.clone(),
                     volume.clone(),
-                    issuer.verifier(),
+                    issuer.verifier(&mut None).expect("verifier copy"),
                     signed.clone(),
                     65_536,
                 )?;
@@ -2466,7 +2466,7 @@ async fn stock_restart_with_publication_fault(
                 .cancel_operation(
                     &authority,
                     &signed,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel-uncertain-model")?,
                     false,
@@ -2554,7 +2554,7 @@ async fn stock_restart_with_publication_fault(
                 .cancel_operation(
                     &authority,
                     &signed,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel")?,
                     false,

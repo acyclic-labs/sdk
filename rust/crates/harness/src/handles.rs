@@ -122,9 +122,9 @@ mod tests {
             id: ConversationId::from_bytes([1; 16]).to_string(),
         };
         let agent_verifier =
-            crate::core::AuthorityIssuer::new("test", [7; 32], agent_authority).verifier();
+            crate::core::AuthorityIssuer::new("test", [7; 32], agent_authority).verifier(&mut None).expect("verifier copy");
         let conversation_verifier =
-            crate::core::AuthorityIssuer::new("test", [7; 32], conversation_authority).verifier();
+            crate::core::AuthorityIssuer::new("test", [7; 32], conversation_authority).verifier(&mut None).expect("verifier copy");
         let agent = Agent::open(
             &client,
             AgentId::from_bytes([1; 16]),

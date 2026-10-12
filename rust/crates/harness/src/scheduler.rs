@@ -190,7 +190,7 @@ impl OperationSpec {
         if self.owner.authority() != owner {
             return Err(diagnostic(work, crate::wire::ErrorCode::Unauthorized, "declaration belongs to another owner"));
         }
-        verifier.verify_audience_with_work(owner, work)?;
+        verifier.verify_audience(owner, work)?;
         verifier.verify_scope_for_with_work(owner,&self.owner_scope,work)?;
         if !self
             .owner_scope

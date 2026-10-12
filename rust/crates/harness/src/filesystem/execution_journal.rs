@@ -1158,8 +1158,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let volume = volume.clone_with_io(io)?;
         let mut observer = io.history_io();
         let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
-        let verifier = verifier.clone_with_work(&mut work)?;
-        let scope = scope.clone_with_work(&mut work)?;
+        let verifier = verifier.copy(&mut work)?;
+        let scope = scope.copy(&mut work)?;
         Self::assemble_validated_configuration(
             stream, host, volume, verifier, SchemaRegistry::new(), scope,
             maximum_payload_bytes, Some(io),
@@ -1205,8 +1205,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                     Some(work) => work.clone_authority(verifier.audience())?,
                     None => verifier.audience().clone(),
                 };
-                let interaction_verifier = verifier.clone_with_work(&mut work)?;
-                let interaction_scope = scope.clone_with_work(&mut work)?;
+                let interaction_verifier = verifier.copy(&mut work)?;
+                let interaction_scope = scope.copy(&mut work)?;
                 let interaction_volume = match io {
                     Some(io) => volume.clone_with_io(io)?,
                     None => volume.clone(),
@@ -1948,7 +1948,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                         "internal storage file is not public content"));
                 }
                 let mut work = io.history_io();
-                self.verifier.verify_with_work(&self.scope, &mut Some(&mut work))?;
+                self.verifier.verify(&self.scope, &mut Some(&mut work))?;
                 if !io.contains_capability(self.scope.capabilities(), reference, "file:read:")? {
                     return Err(Self::journal_read_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
                         "exact file read is not granted"));
@@ -3114,7 +3114,7 @@ mod tests {
                 stream.clone(),
                 host.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 scope.clone(),
                 4096,
             )
@@ -3461,21 +3461,21 @@ mod tests {
         );
         let content = Arc::new(super::super::FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             scope.clone(),
             4096,
         )?);
         let publisher = super::super::FilesystemContentPublisher::new(
             host.clone(),
             volume.clone(),
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             4096,
         )?;
         let mut aggregate = StreamAggregate::open(
             &client,
             authority.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             SchemaRegistry::new(),
         )
         .await?
@@ -3647,7 +3647,7 @@ mod tests {
                 client.clone(),
                 host.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 SchemaRegistry::new(),
                 scope.clone(),
                 4096,

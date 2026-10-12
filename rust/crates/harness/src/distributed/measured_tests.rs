@@ -53,7 +53,7 @@ async fn seed(client: &StreamClient<FaultStream>, ids: &[OperationId]) -> Result
         let declaration = spec(*id, 0)?;
         let owner = declaration.owner.authority().clone();
         let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        coordinator.declare_operation(&owner, &declaration.owner_scope.clone(), &issuer.verifier(),
+        coordinator.declare_operation(&owner, &declaration.owner_scope.clone(), &issuer.verifier(&mut None).expect("verifier copy"),
             declaration, IdempotencyKey::new(format!("measured-seed-{index}"))?,
     None,).await?;
     }
@@ -192,7 +192,7 @@ async fn historical_source(
     let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
     let declaration_scope = declaration.owner_scope.clone();
     let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default())).await?;
-    coordinator.declare_operation(&owner, &declaration_scope, &issuer.verifier(), declaration,
+    coordinator.declare_operation(&owner, &declaration_scope, &issuer.verifier(&mut None).expect("verifier copy"), declaration,
         IdempotencyKey::new(format!("task-admission:{operation}"))?,
     None,).await?;
     let time = coordinator.last_committed_at_ms;
@@ -234,7 +234,7 @@ async fn original_reservation_proof_keeps_the_selected_old_origin_without_curren
         .expect("original native ledger control");
     let mut observer = crate::store::history::native_work_io(&native)?;
     let proof = original_reservation_proof_with_work(
-        &client, &owner, &scope, &issuer.verifier(), operation, &original, &mut Some(&mut observer),
+        &client, &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), operation, &original, &mut Some(&mut observer),
     ).await?;
     let custody = observer.into_custody();
     assert_eq!((&proof.1), &original);
@@ -263,7 +263,7 @@ async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selector
         let cancellation = CancellationToken::new();
         let mut work = HistoryWork::new(budget(), &cancellation);
         let result = original_reservation_proof_with_work(
-            &client, &owner, &scope, &issuer.verifier(), operation, &candidate, &mut Some(&mut work),
+            &client, &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), operation, &candidate, &mut Some(&mut work),
         ).await;
         assert!(if duplicate { matches!(result, Err(Error::Conflict(_))) }
             else { matches!(result, Err(Error::NotFound(_))) });
@@ -299,7 +299,7 @@ async fn historical_proof_rejects_an_original_declaration_signed_by_another_key_
     let cancellation = CancellationToken::new();
     let mut work = HistoryWork::new(budget(), &cancellation);
     let result = original_reservation_proof_with_work(
-        &client, &owner, &scope, &issuer.verifier(), operation, &candidate, &mut Some(&mut work),
+        &client, &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), operation, &candidate, &mut Some(&mut work),
     ).await;
     assert!(matches!(result, Err(Error::Unauthorized(_))));
     assert_eq!(provider.io_snapshot().reads, 2);

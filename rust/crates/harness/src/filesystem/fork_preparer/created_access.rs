@@ -335,7 +335,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             };
             let creator = {
                 let mut observer = io.history_io();
-                self.issuer.verifier_with_work(&mut Some(&mut observer))?
+                self.issuer.verifier(&mut Some(&mut observer))?
             };
             let work = io.original_native_work().ok_or(native_error(crate::wire::ErrorCode::Invalid, "Root bootstrap requires its original native ledger"))?;
             let (volume, volume_custody) = volume.clone_with_native_work(work)?;
@@ -574,7 +574,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
             return Err(io.invalid("Root source path escapes its signed read boundary"));
         }
         let mut metadata = io.history_io();
-        self.reader.verifier.verify_with_work(&self.reader.scope, &mut Some(&mut metadata))?;
+        self.reader.verifier.verify(&self.reader.scope, &mut Some(&mut metadata))?;
         let directory = io.contains_capability(self.reader.scope.capabilities(), &(volume, prefix), "directory:read:")?;
         let entire = io.contains_capability(self.reader.scope.capabilities(), volume, "volume:read:")?;
         if self.reader.scope.agent().is_none() || (!directory && !entire) {
@@ -1000,7 +1000,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let fork = io.decode_preparation::<ForkRequest>(&payload)?.into_retained();
     drop(payload);
     drop(payload_hold);
-    fork.validate()?;
+    fork.validate(&mut None)?;
     let encoded_hold;
     let encoded = io.encode(&fork, record_limit)?;
     encoded_hold = io.guard_bytes(&encoded)?;
@@ -1040,7 +1040,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let report = read_preparation_report(host, &journal, &fork, record_limit, Some(io)).await?
         .ok_or_else(|| Error::Unauthorized("fork allocation has no completed report".into()))?;
     let mut observer = io.history_io();
-    let seed = report.into_seed_with_work(&mut Some(&mut observer))?;
+    let seed = report.into_seed(&mut Some(&mut observer))?;
     let encoded_hold;
     let encoded = io.encode(&fork, record_limit)?;
     encoded_hold = io.guard_bytes(&encoded)?;
@@ -1056,7 +1056,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     drop((encoded, canonical));
     drop((encoded_hold, canonical_hold));
     let mut observer = io.history_io();
-    seed.validate_with_work(&mut Some(&mut observer))?;
+    seed.validate(&mut Some(&mut observer))?;
     let seed_hold;
     let encoded_seed = io.encode(&seed, record_limit)?;
     seed_hold = io.guard_bytes(&encoded_seed)?;
@@ -1334,7 +1334,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             io.release(capabilities_capacity)?;
             let verifier = {
                 let mut observer = io.history_io();
-                self.issuer.verifier_with_work(&mut Some(&mut observer))?
+                self.issuer.verifier(&mut Some(&mut observer))?
             };
             io.claim(std::mem::size_of::<RootCreatedFilesystemAccess<A, O>>() as u64)?;
             let custody;
@@ -1415,8 +1415,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         };
         let verifier = if let Some(io) = io {
             let mut observer = io.history_io();
-            self.issuer.verifier_with_work(&mut Some(&mut observer))?
-        } else { self.issuer.verifier() };
+            self.issuer.verifier(&mut Some(&mut observer))?
+        } else { self.issuer.verifier(&mut None).expect("verifier copy") };
         let writer = FilesystemContentPublisher::new_with_io(self.host.clone(), allocation.volume.clone(),
             &verifier, &scope, request.maximum_bytes, io)?;
         let reader = FilesystemContentVerifier::new_with_io(self.host.clone(), verifier, scope,
@@ -1473,8 +1473,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             };
             let verifier = if let Some(io) = io {
                 let mut observer = io.history_io();
-                self.issuer.verifier_with_work(&mut Some(&mut observer))?
-            } else { self.issuer.verifier() };
+                self.issuer.verifier(&mut Some(&mut observer))?
+            } else { self.issuer.verifier(&mut None).expect("verifier copy") };
             let verifier = FilesystemContentVerifier::new_with_io(self.host.clone(), verifier, scope, request.maximum_bytes, io)?;
             if let Some(io) = io {
                 if verifier.logical_owned_bytes()? > io.owned_bytes()? {
@@ -1863,7 +1863,7 @@ mod tests {
         assert_eq!(command.action, Action::BindConversation { agent });
         assert_eq!(command.scope.agent(), Some(agent));
         assert!(command.scope.capabilities().contains("conversation:bind"));
-        configured_issuer.verifier().verify(&command.scope)?;
+        configured_issuer.verifier(&mut None).expect("verifier copy").verify(&command.scope)?;
         let witness = owner.root_bootstrap_binding_witness_with_native_work(work).await?;
         assert_eq!(witness.binding().bind_operation(), command.operation_id);
         assert_eq!(witness.binding().audience(), &configured_audience);
@@ -1871,7 +1871,7 @@ mod tests {
         let mut metadata = crate::store::history::native_work_io(work)
             .map_err(Error::from)?;
         assert_eq!(witness.binding().intent_digest(),
-            crate::core::canonical_intent_with_work(&command, &mut Some(&mut metadata))?);
+            crate::contract::canonical_json_digest_with_work(&command, crate::store::default_projection_read_limits().maximum_bytes, &mut Some(&mut metadata))?);
         drop(command);
         drop(encoded);
         assert_eq!(owner.root_bootstrap_owner(), fixture.filesystem_creator.issuer.audience());
@@ -2100,7 +2100,7 @@ mod tests {
                 let foreign_agent = AgentId::from_bytes([186; 16]);
                 let scope = issuer.root_for_agent(foreign_agent, "foreign-prior-root-bind", Capabilities::new(["conversation:bind"]));
                 let mut aggregate = crate::store::StreamAggregate::open(
-                    &fixture.stream, audience, issuer.verifier(), SchemaRegistry::new(),
+                    &fixture.stream, audience, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(),
                 ).await?;
                 aggregate.execute(Command { operation_id: OperationId::from_bytes([186; 16]),
                     idempotency_key: IdempotencyKey::new("genuine-foreign-prior-root-bind")?,

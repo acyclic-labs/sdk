@@ -1160,7 +1160,7 @@ mod tests {
             [],
             None,
         )?;
-        let agent = Reducer::new(authority, issuer.verifier(), schemas.clone());
+        let agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), schemas.clone());
         let inspect = TaskDefinition::live("example.registry", "1", move |context, (): ()| {
             let expected = schemas.clone();
             async move {

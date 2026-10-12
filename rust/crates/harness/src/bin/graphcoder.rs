@@ -462,7 +462,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             native.caller_context(request.caller, &request.lease).await?;
             let binding = native.caller_binding(request.caller).await?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
-                &binding.issuer, binding.key, binding.authority.clone()).verifier();
+                &binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
             let reader = acyclic_harness::store::HistoryReader::new(
                 &native.stream, &binding.authority, verifier)?;
             let cursor = match request.cursor {
@@ -499,7 +499,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
                 .or_else(|| if native.config.owner.authority == request.seed.parent { Some(&native.config.owner) } else { None })
                 .ok_or_else(|| Error::Unsupported("original parent history verifier unavailable".into()))?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
-                &parent.issuer, parent.key, parent.authority.clone()).verifier();
+                &parent.issuer, parent.key, parent.authority.clone()).verifier(&mut None).expect("verifier copy");
             let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &parent.authority, verifier)?;
             let messages = reader.inherited_conversation_page(
                 &request.seed, child.agent()?, request.after_sequence,
@@ -550,7 +550,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             }
             let binding = native.caller_binding(request.caller).await?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
-                &binding.issuer, binding.key, binding.authority.clone()).verifier();
+                &binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
             let grant = acyclic_harness::conversation::ContentGrant::verify_directory_read(
                 &verifier, &binding.scope, &request.volume, "")?;
             let (file, bytes) = native.files.read_private_path(

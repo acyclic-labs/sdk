@@ -247,8 +247,8 @@ impl ResourcePreparationRequest {
         };
         let mut items = 0_u64;
         let mut retained = 0_u64;
-        let result = crate::contract::json_from_slice_bounded_trusted(
-            bytes, bounds, 0, &mut |next| {
+        let result = crate::contract::json_from_slice_bounded(std::marker::PhantomData,
+            bytes, bounds, 0, None, None, &mut |next| {
                 match next {
                     crate::contract::JsonCodecCharge::Work { items: count, .. } => {
                         items = items.checked_add(count)

@@ -46,7 +46,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if context.durable_task_id() != Some(self.task_id)
             || context.owned_task_fence()? != self.fence
             || context.scope().grants() != &self.input_grants
-            || issuer.verifier() != self.host.verifier
+            || issuer.verifier(&mut None).expect("verifier copy") != self.host.verifier
             || maximum_work == 0 || maximum_work == u64::MAX
             || maximum_bytes == 0 || maximum_bytes == u64::MAX
             || operation_id == self.operation_id()
@@ -183,7 +183,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            let verifier = issuer.verifier_with_work(&mut observer)?;
+            let verifier = issuer.verifier(&mut observer)?;
             if verifier != self.host.verifier {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "project source signer differs from installed owner" });

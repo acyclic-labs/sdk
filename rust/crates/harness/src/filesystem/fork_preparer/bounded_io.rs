@@ -881,12 +881,12 @@ impl PreparationIo {
     ) -> Result<T> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.original_native_work().is_some() {
-            return crate::contract::json_from_slice_bounded_native_trusted(
-                bytes, bounds, maximum_owned_bytes, code, value_schema, charge,
+            return crate::contract::json_from_slice_bounded(std::marker::PhantomData,
+                bytes, bounds, maximum_owned_bytes, Some(code), Some(value_schema), charge,
             );
         }
         let _ = (code, value_schema);
-        crate::contract::json_from_slice_bounded_trusted(bytes, bounds, maximum_owned_bytes, charge)
+        crate::contract::json_from_slice_bounded(std::marker::PhantomData, bytes, bounds, maximum_owned_bytes, None, None, charge)
     }
 
     pub(crate) fn decode_preparation<T: PreparationRecord>(
@@ -936,14 +936,14 @@ impl PreparationIo {
         };
         #[cfg(not(target_arch = "wasm32"))]
         if self.original_native_work().is_some() {
-            let result = crate::contract::json_from_slice_seed_bounded_native_trusted(
-                seed, bytes, bounds, 0, code, value_schema, &mut charge,
+            let result = crate::contract::json_from_slice_bounded(
+                seed, bytes, bounds, 0, Some(code), Some(value_schema), &mut charge,
             );
             return reservation.finish(result);
         }
         let _ = code;
-        let result = crate::contract::json_from_slice_seed_bounded_trusted(
-            seed, bytes, bounds, 0, value_schema, &mut charge,
+        let result = crate::contract::json_from_slice_bounded(
+            seed, bytes, bounds, 0, None, Some(value_schema), &mut charge,
         );
         reservation.finish(result)
     }
@@ -1040,8 +1040,8 @@ impl PreparationIo {
             maximum_depth: 128,
         };
         let mut reservation = TrustedDecodeReservation::new(self);
-        let result = crate::contract::json_from_value_bounded_native_trusted(
-            source, bounds, 0, code, schema, &mut |next| match next {
+        let result = crate::contract::json_from_value_bounded(
+            std::borrow::Cow::Borrowed(source), bounds, 0, code, schema, &mut |next| match next {
                 crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
                     let allowance = match profile {
                         Some(profile) => profile(value_shape, 0, value_shape.input_bytes(), Some(code))?,
@@ -2036,8 +2036,8 @@ mod tests {
         let scope = issuer.root("exact-project-read", crate::Capabilities::new([
             source.capability(VolumeOperation::Read)?, caller.capability(VolumeOperation::Read)?,
         ]));
-        let selected_read = ContentGrant::verify(&issuer.verifier(), &scope, &source, VolumeOperation::Read)?;
-        let caller_read = ContentGrant::verify(&issuer.verifier(), &scope, &caller, VolumeOperation::Read)?;
+        let selected_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &source, VolumeOperation::Read)?;
+        let caller_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &caller, VolumeOperation::Read)?;
         assert!(matches!(fork(&host, &source, &caller_read, &selected_generation, &denied_child,
             None, &IdempotencyKey::new("denied-source-read")?, None, None,
             #[cfg(not(target_arch = "wasm32"))]

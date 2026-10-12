@@ -515,7 +515,7 @@ impl RecursiveToolMachine {
                     }
                     (Plan::Fork(fork), Stage::Observe) => {
                         let observed: ForkReport = recursive_decode(&value, io)?;
-                        recursive_observe(io, |work| observed.validate_with_work(work))?;
+                        recursive_observe(io, |work| observed.validate(work))?;
                         if !recursive_encoded_equal(&observed.request, &fork.request.payload, io)? {
                             return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized, "fork report changed the original source request"));
                         }
@@ -527,8 +527,8 @@ impl RecursiveToolMachine {
                         let seed: ForkSeed = recursive_decode(&value, io)?;
                         let expected = match report.as_ref() {
                             Some(report) => {
-                                let copy = recursive_observe(io, |work| report.clone_with_work(work))?;
-                                Some(recursive_observe(io, |work| copy.into_seed_with_work(work))?)
+                                let copy = recursive_observe(io, |work| report.copy(work).map(|(report, _)| report))?;
+                                Some(recursive_observe(io, |work| copy.into_seed(work))?)
                             }
                             None => None,
                         };
@@ -549,7 +549,7 @@ impl RecursiveToolMachine {
                         }
                         let prepared = report.take().ok_or_else(|| recursive_reject(
                             io, crate::wire::ErrorCode::Invalid, "fork has no prepared report"))?;
-                        let seed = recursive_observe(io, |work| (*prepared).into_seed_with_work(work))?;
+                        let seed = recursive_observe(io, |work| (*prepared).into_seed(work))?;
                         #[derive(Serialize)]
                         struct Admitted<'a> {
                             status: &'static str, id: crate::AgentId, task: TaskId,
@@ -629,7 +629,7 @@ fn check_command(command: &WorkflowCommand, stage: Stage, plan: &Plan, io: Optio
     Ok(())
 }
 fn validate_source_intent(intent: &RecursiveForkSourceIntent, arguments: &Value, io: Option<&super::PreparationIo>) -> Result<()> {
-    recursive_observe(io, |work| intent.request.validate_with_work(work))?;
+    recursive_observe(io, |work| intent.request.validate(work))?;
     for selection in &intent.request.selections {
         recursive_inspect(io, 1)?;
         if matches!(&selection.revision, crate::fork::ResourceRevision::PrivateVolume { volume, paths, .. }
@@ -667,7 +667,7 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
                 return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized, "fork plan changed its original source checkpoint"));
             }
             recursive_decoded::<ForkRequest, _>(&plan.request.payload, io, |fork| {
-                recursive_observe(io, |work| fork.validate_with_work(work))?;
+                recursive_observe(io, |work| fork.validate(work))?;
                 if !recursive_encoded_equal(&plan.arguments, arguments, io)? || fork.child_agent != plan.arguments.id
                     || plan.preparation.parent != Some(plan.caller) || plan.request.child.parent != Some(plan.caller)
                     || plan.preparation.operation_id == plan.request.child.operation_id
@@ -1611,12 +1611,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let expected_seed = {
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            report.clone_with_work(&mut observer)?.into_seed_with_work(&mut observer)?
+            report.copy(&mut observer)?.0.into_seed(&mut observer)?
         };
         {
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            let report = report.clone_with_work(&mut observer)?;
+            let report = report.copy(&mut observer)?.0;
             binding.0.parent.publish_fork_report_with_work(
                 report, binding.0.parent_scope, owner.journal_owner.as_ref(), &mut observer).await?;
         }
@@ -1705,7 +1705,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     Some(Outcome::Succeeded(value)) => {
                         let report = recursive_decode_with_native_work::<ForkReport>(&value, work)?;
                         let io = super::PreparationIo::from_native_work(work)?;
-                        recursive_observe(Some(&io), |work| report.0.validate_with_work(work))?;
+                        recursive_observe(Some(&io), |work| report.0.validate(work))?;
                         if !recursive_encoded_equal(&report.0.request, &fork.request.payload, Some(&io))? {
                             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                                 reason: "native preparation output changed original retained request" });
@@ -1804,7 +1804,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 let retained = owner.runtime.task_host().observe_admission(fork.preparation.task_id()).await?;
                 if retained != fork.preparation { return Err(Error::Unauthorized("observed preparation admission changed".into())); }
                 match owner.runtime.task_host().outcome(fork.preparation.task_id()).await? {
-                    Some(Outcome::Succeeded(value)) => { let report: ForkReport = decode(&value)?; report.validate()?;
+                    Some(Outcome::Succeeded(value)) => { let report: ForkReport = decode(&value)?; report.validate(&mut None)?;
                         if encode(&report.request)? != fork.request.payload { return Err(Error::Unauthorized("preparation output changed its original request".into())); }
                         Ok(Some(value)) },
                     Some(Outcome::Failed { message }) => Err(Error::Conflict(message)),
@@ -1836,7 +1836,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     return Err(Error::Unauthorized("restored fork child, source or allowances changed".into()));
                 }
                 let report = report.ok_or_else(|| Error::Invalid("fork publication has no canonical report".into()))?;
-                let expected_seed = report.clone().into_seed()?;
+                let expected_seed = report.clone().into_seed(&mut None)?;
                 let budget = finite_budget(fork.request.maximum_work, fork.request.maximum_bytes);
                 let published = binding.parent.publish_fork_report_measured(report.clone(), binding.parent_scope,
                     owner.journal_owner.as_ref(), budget, &owner.cancellation).await.map_err(|failure| failure.error)?;
@@ -2141,7 +2141,7 @@ async fn validate_fork_binding<P, A, O>(context: &ToolContext, arguments: &ForkT
 where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
     let effective = recursive_effective_scope(context, io);
     recursive_observe(io, |work| {
-        binding.source.request.validate_with_work(work)?;
+        binding.source.request.validate(work)?;
         binding.child.validate_with_work(work)?;
         effective.limits().validate_file_with_work(&binding.source_checkpoint, work)
     })?;

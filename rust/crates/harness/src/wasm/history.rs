@@ -49,7 +49,7 @@ impl From<BrowserMemoryLimits> for MemoryLimits {
 
 impl BrowserHistoryOptions {
     async fn connect(self) -> Result<(StreamClient<BrowserStream>, AuthorityIssuer), JsValue> {
-        self.authority.stream_path().map_err(js_error)?;
+        self.authority.stream_path(&mut None).map_err(js_error)?;
         let issuer =
             AuthorityIssuer::new(self.issuer_id, key_bytes(self.issuer_key)?, self.authority);
         let limits = BrowserStreamLimits {
@@ -77,7 +77,7 @@ impl WasmBrowserHistoryReader {
     pub async fn open_browser(options: JsValue) -> Result<WasmBrowserHistoryReader, JsValue> {
         let options: BrowserHistoryOptions = from_js(options)?;
         let (client, issuer) = options.connect().await?;
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let inner =
             HistoryReader::new(&client, verifier.audience(), verifier.clone()).map_err(js_error)?;
         Ok(Self { inner })
@@ -150,7 +150,7 @@ impl WasmBrowserAggregate {
         let schemas = schema_registry(schemas)?;
         let snapshot: Option<Snapshot> = snapshot.map(from_js).transpose()?;
         let (client, issuer) = options.connect().await?;
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let authority = verifier.audience().clone();
         let inner = if let Some(snapshot) = snapshot {
             StreamAggregate::open_from_snapshot(&client, authority, verifier, schemas, snapshot)
@@ -195,7 +195,7 @@ impl WasmBrowserAggregate {
 
     /// Captures the existing authenticated reducer projection.
     pub fn snapshot(&self) -> Result<JsValue, JsValue> {
-        to_js(&self.inner.reducer().snapshot().map_err(js_error)?)
+        to_js(&self.inner.reducer().snapshot(usize::MAX, &mut None).map(|(snapshot, _)| snapshot).map_err(js_error)?)
     }
 
     /// Binds an archival reader to this exact provider and owner verifier.

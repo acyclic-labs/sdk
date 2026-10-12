@@ -278,7 +278,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
         }
         for (index, original) in config.original_sources.iter().enumerate() {
-            original.request.validate()?;
+            original.request.validate(&mut None)?;
             let caller = config.callers.iter().find(|caller| caller.task == original.caller)
                 .ok_or_else(|| Error::Unauthorized("original source lacks its actual configured caller".into()))?;
             if &original.request.parent != caller.owner.authority()
@@ -544,7 +544,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             observed.value
         };
         let source_checkpoint = if let Some(checkpoint) = checkpoint { checkpoint } else {
-            let capture = SourceCheckpoint { snapshot: pinned.reducer().snapshot_with_event_limit(1)?,
+            let capture = SourceCheckpoint { snapshot: pinned.reducer().snapshot(1, &mut None).map(|(snapshot, _)| snapshot)?,
                 request: intent.request.clone(), caller: caller.task, arguments: arguments.clone() };
             let bytes = serde_json::to_vec(&capture).map_err(invalid_json)?;
             let remaining = content_work.remaining(self.config.content_budget).map_err(work_error)?;
@@ -676,7 +676,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if original.caller != caller || original.request != request {
                 return Err(Error::Unauthorized("trusted original record differs from the sealed preparation request".into()));
             }
-            restored = self.restore_snapshot(&binding.owner, &request, original.snapshot.clone_with_work(&mut None)?, cancellation).await?;
+            restored = self.restore_snapshot(&binding.owner, &request, original.snapshot.copy(&mut None)?, cancellation).await?;
             &restored
         } else {
             aggregate = StreamAggregate::open_at_revision_measured(&self.stream, binding.owner.authority().clone(),
@@ -824,7 +824,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        let verifier = caller.owner.issuer().verifier_with_work(&mut observer)?;
+        let verifier = caller.owner.issuer().verifier(&mut observer)?;
         verifier.verify_scope_for_with_work(caller.owner.authority(), &caller.owner.scope, &mut observer)?;
         Ok(caller)
     }
@@ -838,7 +838,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let aggregate = {
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            let verifier = binding.issuer().verifier_with_work(&mut observer)?;
+            let verifier = binding.issuer().verifier(&mut observer)?;
             verifier.verify_scope_for_with_work(binding.authority(), &binding.scope, &mut observer)?;
             let authority = observer.as_deref_mut().expect("native aggregate observer").clone_authority(binding.authority())?;
             match cut {
@@ -937,7 +937,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let verifier = {
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            caller.owner.issuer().verifier_with_work(&mut observer)?
+            caller.owner.issuer().verifier(&mut observer)?
         };
         let resolver = self.native_resolver(context, owner, work)?;
         super::recursive::restore_recursive_fork_source_with_native_work(
@@ -965,7 +965,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        let verifier = binding.issuer().verifier_with_work(&mut observer)?;
+        let verifier = binding.issuer().verifier(&mut observer)?;
         let reader = HistoryReader::new_with_native_work(&self.stream, binding.authority(), &verifier, work)?;
         let expected = snapshot.events.last().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized, reason: "native checkpoint has no canonical head" })?;
@@ -1161,7 +1161,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let verifier = {
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            caller.owner.issuer().verifier_with_work(&mut observer)?
+            caller.owner.issuer().verifier(&mut observer)?
         };
         let source = super::recursive::restore_recursive_fork_source_with_native_work(
             Arc::clone(&self.filesystem), &self.stream, parent.0.into_reducer(), &verifier, &caller.owner.scope,
@@ -1190,7 +1190,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let verifier = {
             let mut history = io.history_io();
-            binding.issuer().verifier_with_work(&mut Some(&mut history))?
+            binding.issuer().verifier(&mut Some(&mut history))?
         };
         let content = match content {
             Some(content) => content,
@@ -1307,8 +1307,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let (verifier, scope, project, source, source_project) = {
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            (caller.owner.issuer().verifier_with_work(&mut observer)?,
-                caller.owner.scope.clone_with_work(&mut observer)?, caller.project.clone_with_work(&mut observer)?,
+            (caller.owner.issuer().verifier(&mut observer)?,
+                caller.owner.scope.copy(&mut observer)?, caller.project.clone_with_work(&mut observer)?,
                 observer.as_deref_mut().expect("native merge observer").clone_authority(source_owner.owner.authority())?,
                 selected.volume.clone_with_work(&mut observer)?)
         };
@@ -1371,7 +1371,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         let retained_request = {
             let mut history = io.history_io();
-            intent.request.clone_with_work_and_custody(&mut Some(&mut history))?
+            intent.request.copy(&mut Some(&mut history))?
         };
         let retained_guard = io.take_native_custody(retained_request.1)?;
         let pinned_source = self.native_restore_source(context, caller, Arc::clone(&owner),
@@ -1397,7 +1397,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 let pinned = self.native_open_aggregate(&caller.owner, Some(intent.request.parent_revision), cancellation, work).await?;
                 let request = {
                     let mut history = io.history_io();
-                    intent.request.clone_with_work_and_custody(&mut Some(&mut history))?.0
+                    intent.request.copy(&mut Some(&mut history))?.0
                 };
                 let capture = SourceCheckpoint {
                     snapshot: pinned.0.reducer().snapshot_native(1, work)?,
@@ -1437,7 +1437,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             capture.snapshot, Some(snapshot_guard), cancellation, work).await?;
         let copied_request = {
             let mut history = io.history_io();
-            capture.request.clone_with_work_and_custody(&mut Some(&mut history))?
+            capture.request.copy(&mut Some(&mut history))?
         };
         let request_guard = io.take_native_custody(copied_request.1)?;
         let source = self.native_restore_source(context, caller, Arc::clone(&owner),
@@ -1447,7 +1447,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let child = self.native_open_aggregate(&allocation.child, None, cancellation, work).await?;
         let scope = {
             let mut history = io.history_io();
-            caller.owner.scope.clone_with_work(&mut Some(&mut history))?
+            caller.owner.scope.copy(&mut Some(&mut history))?
         };
         let parent_aggregate = self.native_bind_aggregate(&caller.owner, &scope, parent.0,
             Some(self.native_resolver(context, owner, work)?), work)?;
@@ -1546,11 +1546,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         };
         let verifier = {
             let mut history = io.history_io();
-            caller.owner.issuer().verifier_with_work(&mut Some(&mut history))?
+            caller.owner.issuer().verifier(&mut Some(&mut history))?
         };
         let copied_request = {
             let mut history = io.history_io();
-            request.clone_with_work_and_custody(&mut Some(&mut history))?
+            request.copy(&mut Some(&mut history))?
         };
         let request_guard = io.take_native_custody(copied_request.1)?;
         let source = super::recursive::restore_recursive_fork_source_with_native_work(
@@ -1668,8 +1668,8 @@ fn validate_result_volume(result: &VolumeRef, private: &VolumeRef, agent: crate:
 }
 
 fn verifier(binding: &ConfiguredRecursiveAuthorityBinding) -> Result<AuthorityVerifier> {
-    let verifier = binding.issuer().verifier();
-    verifier.verify(&binding.scope)?;
+    let verifier = binding.issuer().verifier(&mut None).expect("verifier copy");
+    verifier.verify(&binding.scope, &mut None)?;
     Ok(verifier)
 }
 

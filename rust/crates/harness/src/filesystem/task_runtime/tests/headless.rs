@@ -3,7 +3,7 @@ use crate::conversation::{ContentGrant, FileRef};
 
 async fn runtime(fixture: &Fixture) -> Result<Runtime> {
     FilesystemTaskRuntime::open_with_clock(
-        fixture.stream.clone(), fixture.filesystem.clone(), fixture.volume.clone(), fixture.issuer.verifier(),
+        fixture.stream.clone(), fixture.filesystem.clone(), fixture.volume.clone(), fixture.issuer.verifier(&mut None).expect("verifier copy"),
         fixture.signed.clone(), fixture.scope.clone(), fixture.tasks.clone(), fixture.machines.clone(),
         fixture.tools.clone(), SessionLimits { active_tasks: 8, total_tasks: 16, depth: 4, model_steps: 8 },
         1, 65_536, fixture.clock.clone(),
@@ -20,7 +20,7 @@ async fn admit(runtime: &Runtime, fixture: &Fixture, id: u8, grants: Capabilitie
 }
 
 async fn put(fixture: &Fixture, volume: &VolumeRef, path: &str, bytes: &[u8], key: &str) -> Result<FileRef> {
-    let grant = ContentGrant::verify(&fixture.issuer.verifier(), &fixture.signed, volume, VolumeOperation::Write)?;
+    let grant = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, volume, VolumeOperation::Write)?;
     fixture.filesystem.put_content(volume, &grant, path, bytes, "text/plain", path.rsplit('/').next().unwrap_or(path),
         65_536, &IdempotencyKey::new(key)?).await
 }
@@ -118,7 +118,7 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
     let agent = fixture.signed.agent().ok_or_else(|| Error::Invalid("fixture agent".into()))?;
     let signed = foreign_issuer.root_for_agent(agent, "owner", fixture.signed.capabilities().clone());
     let foreign = FilesystemTaskRuntime::open_with_clock(
-        fixture.stream.clone(), fixture.filesystem.clone(), fixture.volume.clone(), foreign_issuer.verifier(),
+        fixture.stream.clone(), fixture.filesystem.clone(), fixture.volume.clone(), foreign_issuer.verifier(&mut None).expect("verifier copy"),
         signed, fixture.scope.clone(), fixture.tasks.clone(), fixture.machines.clone(), fixture.tools.clone(),
         SessionLimits { active_tasks: 8, total_tasks: 16, depth: 4, model_steps: 8 }, 1, 65_536, fixture.clock.clone(),
     ).await?;

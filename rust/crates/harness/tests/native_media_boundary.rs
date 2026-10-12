@@ -567,7 +567,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let writer = FilesystemContentPublisher::new(
         host.clone(),
         volume.clone(),
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &owner,
         65_536,
     )?;
@@ -587,7 +587,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     };
     let mut schemas = SchemaRegistry::new();
     schemas.register_configured(extension.name.clone(),1,json!({"type":"object"}),[31;32],ExtensionForkPolicy::Inherit,[],Some(json!({"type":"object","required":["mode","scale"],"properties":{"mode":{"const":"strict"},"scale":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false})))?;
-    let mut agent = Reducer::new(authority, issuer.verifier(), schemas.clone());
+    let mut agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), schemas.clone());
     agent.validate_configuration_bytes(&extension, &options_file, options_bytes)?;
     for (revision, action) in [
         (
@@ -692,7 +692,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let reader = Arc::new(ReaderSpy {
         inner: Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             owner.clone(),
             65_536,
         )?),
@@ -1106,7 +1106,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         StreamClient::new(Arc::new(MemoryStream::default())),
         host.clone(),
         volume.clone(),
-        journal_issuer.verifier(),
+        journal_issuer.verifier(&mut None).expect("verifier copy"),
         journal_scope,
         65_536,
     )?);
@@ -1384,7 +1384,7 @@ where
         stream.clone(),
         host.clone(),
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         signed.clone(),
         65_536,
     )?);
@@ -1409,7 +1409,7 @@ where
             stream.clone(),
             host.clone(),
             volume.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             signed.clone(),
             scope.clone(),
             tasks.clone(),
@@ -1462,7 +1462,7 @@ where
                 writer: Some(Arc::new(FilesystemContentPublisher::new(
                     host.clone(),
                     volume.clone(),
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     &signed,
                     65_536,
                 )?)),

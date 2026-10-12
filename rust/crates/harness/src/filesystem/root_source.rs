@@ -532,9 +532,9 @@ where
                 }
                 let encoded = native_source_json(value, bounds, &io, work)?;
                 let _frozen_hold = work.retain_owned(std::mem::size_of::<LazySnapshotRef>() as u64)?;
-                let frozen: LazySnapshotRef = crate::contract::json_from_slice_bounded_native_trusted(
-                    &encoded, bounds, 0, crate::wire::ErrorCode::Invalid,
-                    crate::contract::JsonValueSchema::None,
+                let frozen: LazySnapshotRef = crate::contract::json_from_slice_bounded(std::marker::PhantomData,
+                    &encoded, bounds, 0, Some(crate::wire::ErrorCode::Invalid),
+                    Some(crate::contract::JsonValueSchema::None),
                     &mut |charge| io.codec_charge(charge, false),
                 )?;
                 drop(encoded);

@@ -227,7 +227,7 @@ fn copy_spec(source: &OperationSpec, quota: &mut CodecQuota<'_, '_>) -> Result<O
         DurableOwner::Attached { .. } => DurableOwner::Attached { authority },
         DurableOwner::Detached { .. } => DurableOwner::Detached { authority },
     };
-    let owner_scope = source.owner_scope.clone_with_work(quota.work())?;
+    let owner_scope = source.owner_scope.copy(quota.work())?;
     quota.adopt(owner_scope.logical_owned_bytes()?)?;
     let entrypoint = copy_entrypoint(&source.entrypoint, quota)?;
     claim_slots::<OperationId>(source.dependencies.len(), quota)?;

@@ -945,7 +945,6 @@ fn encode_value<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     Ok(value)
 }
 
-
 /// Finish an SDK-owned, already canonical immutable journal template in its caller-owned prepaid output.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn canonical_json_value_into_prepaid_native_trusted<F: FnMut(JsonCodecCharge) -> Result<()>>(
@@ -1242,72 +1241,31 @@ pub fn json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
     Ok(output)
 }
 
-/// Typed decoding is NOT a generic heap admission proof.
-pub fn json_from_slice_bounded_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    bytes: &[u8], bounds: JsonBounds, maximum_owned_bytes: u64, charge: &mut F,
-) -> Result<T> {
-    decode_seed_bounded(std::marker::PhantomData::<T>, bytes, bounds, maximum_owned_bytes, None, charge).map_err(DecodeFailure::into_portable_root)
-}
-
-/// SDK-private portable closed-seed carrier using the SAME decode engine.
-pub(crate) fn json_from_slice_seed_bounded_trusted<'de, S, F>(
+/// Decodes an admitted schema with the supplied Serde seed.
+pub fn json_from_slice_bounded<'de, S, F>(
     seed: S, bytes: &'de [u8], bounds: JsonBounds, maximum_owned_bytes: u64,
-    value_schema: JsonValueSchema, charge: &mut F,
+    code: Option<crate::wire::ErrorCode>, value_schema: Option<JsonValueSchema>, charge: &mut F,
 ) -> Result<S::Value>
 where S: serde::de::DeserializeSeed<'de>, F: FnMut(JsonCodecCharge) -> Result<()> {
-    decode_seed_bounded(seed, bytes, bounds, maximum_owned_bytes, Some(value_schema), charge)
-        .map_err(DecodeFailure::into_portable_root)
+    decode_seed_bounded(seed, bytes, bounds, maximum_owned_bytes, value_schema, charge)
+        .map_err(|failure| failure.into_error(code))
 }
 
-/// Native carrier for the SAME trusted concrete-schema decoder.
+/// Converts an admitted borrowed or owned JSON value.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub fn json_from_slice_bounded_native_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    bytes: &[u8], bounds: JsonBounds, maximum_owned_bytes: u64, code: crate::wire::ErrorCode,
+pub fn json_from_value_bounded<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
+    source: std::borrow::Cow<'_, Value>, bounds: JsonBounds, maximum_owned_bytes: u64, code: crate::wire::ErrorCode,
     value_schema: JsonValueSchema, charge: &mut F,
 ) -> Result<T> {
-    decode_seed_bounded(std::marker::PhantomData::<T>, bytes, bounds, maximum_owned_bytes, Some(value_schema), charge).map_err(|failure| match failure {
-        DecodeFailure::Root(error) => error,
-        DecodeFailure::Bound(reason) => Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason },
-        DecodeFailure::Serde(source) => Error::NativeDecode { code, source, custody: None },
-    })
-}
-
-/// SDK-private closed seed boundary using the SAME original lexical/serde engine.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn json_from_slice_seed_bounded_native_trusted<'de, S, F>(
-    seed: S, bytes: &'de [u8], bounds: JsonBounds, maximum_owned_bytes: u64,
-    code: crate::wire::ErrorCode, value_schema: JsonValueSchema, charge: &mut F,
-) -> Result<S::Value>
-where S: serde::de::DeserializeSeed<'de>, F: FnMut(JsonCodecCharge) -> Result<()> {
-    decode_seed_bounded(seed, bytes, bounds, maximum_owned_bytes, Some(value_schema), charge)
-        .map_err(|failure| match failure {
-            DecodeFailure::Root(error) => error,
-            DecodeFailure::Bound(reason) => Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason },
-            DecodeFailure::Serde(source) => Error::NativeDecode { code, source, custody: None },
-        })
-}
-
-/// Trusted BORROWED Value-to-closed-DTO boundary.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub fn json_from_value_bounded_native_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    source: &Value, bounds: JsonBounds, maximum_owned_bytes: u64, code: crate::wire::ErrorCode,
-    value_schema: JsonValueSchema, charge: &mut F,
-) -> Result<T> {
-    let mut value_shape = json_owned_value_shape_bounded(source, bounds, value_schema, charge)?;
-    value_shape.origin = ShapeOrigin::BorrowedConversion;
+    let mut value_shape = json_owned_value_shape_bounded(source.as_ref(), bounds, value_schema, charge)?;
+    if matches!(source, std::borrow::Cow::Borrowed(_)) {
+        value_shape.origin = ShapeOrigin::BorrowedConversion;
+    }
     charge(JsonCodecCharge::Admission { maximum_owned_bytes, value_shape })?;
-    T::deserialize(source).map_err(|source| Error::NativeDecode { code, source, custody: None })
-}
-
-/// Trusted CONSUMING Value-to-closed-DTO boundary.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub fn json_from_value_owned_bounded_native_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    source: Value, bounds: JsonBounds, maximum_owned_bytes: u64, code: crate::wire::ErrorCode,
-    value_schema: JsonValueSchema, charge: &mut F,
-) -> Result<T> {
-    let value_shape = json_owned_value_shape_bounded(&source, bounds, value_schema, charge)?;
-    charge(JsonCodecCharge::Admission { maximum_owned_bytes, value_shape })?;
-    serde_json::from_value(source).map_err(|source| Error::NativeDecode { code, source, custody: None })
+    match source {
+        std::borrow::Cow::Borrowed(value) => T::deserialize(value),
+        std::borrow::Cow::Owned(value) => T::deserialize(value),
+    }.map_err(|source| Error::NativeDecode { code, source, custody: None })
 }
 
 enum DecodeFailure {
@@ -1316,7 +1274,16 @@ enum DecodeFailure {
     Serde(serde_json::Error),
 }
 impl DecodeFailure {
-    fn into_portable_root(self) -> Error {
+    fn into_error(self, code: Option<crate::wire::ErrorCode>) -> Error {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(code) = code {
+            return match self {
+                Self::Root(error) => error,
+                Self::Bound(reason) => Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason },
+                Self::Serde(source) => Error::NativeDecode { code, source, custody: None },
+            };
+        }
+        let _ = code;
         match self {
             Self::Root(error) => error,
             Self::Bound(reason) => Error::Invalid(reason.into()),

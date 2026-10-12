@@ -1001,7 +1001,7 @@ impl NativeConfigurationBinding {
         let expected = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => schemas.implementation_digest_with_io(&extension.name, extension.version, io)?,
-            _ => schemas.implementation_digest(&extension.name, extension.version)?,
+            _ => schemas.implementation_digest(&extension.name, extension.version, &mut None)?,
         };
         if linked.digest != expected || self.implementation_digest != expected {
             return Err(Error::Conflict(

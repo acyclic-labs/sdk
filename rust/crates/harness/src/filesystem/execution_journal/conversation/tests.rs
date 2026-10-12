@@ -77,19 +77,19 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
         root.join("stream"), Default::default()).await
         .map_err(|error| Error::Storage(error.to_string()))?));
     if initialize {
-        let mut aggregate = StreamAggregate::open(&stream, authority, issuer.verifier(), SchemaRegistry::new()).await?;
+        let mut aggregate = StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new()).await?;
         aggregate.execute(Command {
             operation_id: OperationId::new(), idempotency_key: IdempotencyKey::new("bind-durable-10k")?,
             expected_revision: 0, scope: scope.clone(), causal_parent: None,
             action: Action::BindConversation { agent },
         }).await?;
     }
-    let reader = Arc::new(FilesystemContentVerifier::new(host.clone(), issuer.verifier(),
+    let reader = Arc::new(FilesystemContentVerifier::new(host.clone(), issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(), 262_144)?);
     let writer = Arc::new(FilesystemContentPublisher::new(host.clone(), volume.clone(),
-        &issuer.verifier(), &scope, 262_144)?);
+        &issuer.verifier(&mut None).expect("verifier copy"), &scope, 262_144)?);
     let journal = Arc::new(FilesystemExecutionJournal::new(stream, host, volume,
-        issuer.verifier(), scope, 262_144)?.with_input_verifier(reader.clone()));
+        issuer.verifier(&mut None).expect("verifier copy"), scope, 262_144)?.with_input_verifier(reader.clone()));
     let instructions = Context {
         messages: ["Keep the user's constraints.", "Preserve original references."].into_iter()
             .map(|text| crate::model::ModelMessage { role: crate::model::ModelRole::System,

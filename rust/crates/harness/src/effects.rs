@@ -645,7 +645,7 @@ impl EffectRegistry {
                     &effect.result_schema, &schema_bytes, result, &bytes, work)?;
             }
         }
-        issuer.attest_effect_with_work(
+        issuer.attest_effect(
             effect_id, effect, observation.attempt_id, observation.status, work)
     }
 }

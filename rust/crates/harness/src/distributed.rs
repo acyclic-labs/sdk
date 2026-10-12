@@ -418,7 +418,7 @@ pub(crate) async fn observe_declaration_with_work<P: StreamProvider>(
     operation_id: OperationId, declaration_key: &IdempotencyKey,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<OperationSpec>> {
-    verifier.verify_audience_with_work(owner, work)?;
+    verifier.verify_audience(owner, work)?;
     verifier.verify_scope_for_with_work(owner, scope, work)?;
     if !scope.capabilities().contains(capability::OPERATION_OBSERVE) {
         return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized,
@@ -451,7 +451,7 @@ fn authenticate_reservation_observation(
     owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
-    verifier.verify_audience_with_work(owner, work)?;
+    verifier.verify_audience(owner, work)?;
     verifier.verify_scope_for_with_work(owner, scope, work)?;
     if !scope.capabilities().contains(capability::OPERATION_OBSERVE) {
         return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized,
@@ -1384,7 +1384,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier, capability: &str,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        verifier.verify_audience_with_work(owner, work)?;
+        verifier.verify_audience(owner, work)?;
         verifier.verify_scope_for_with_work(owner, scope, work)?;
         if !scope.capabilities().contains(capability) {
             return Err(coordinator_error(work, wire::ErrorCode::Unauthorized,
@@ -1492,7 +1492,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         idempotency_key: IdempotencyKey, waiting_command: Option<OperationId>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<CoordinatorApply> {
-        verifier.verify_audience_with_work(owner, work)?;
+        verifier.verify_audience(owner, work)?;
         verifier.verify_scope_for_with_work(owner, scope, work)?;
         if !scope.capabilities().contains("operation:wake") {
             return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized,
@@ -1541,7 +1541,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
                 "owned child declaration has no parent"));
         }
-        verifier.verify_audience_with_work(owner, work)?;
+        verifier.verify_audience(owner, work)?;
         verifier.verify_scope_for_with_work(owner, scope, work)?;
         if !scope.capabilities().contains(capability::OPERATION_DECLARE) {
             return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized, "scope lacks operation:declare"));
@@ -1596,8 +1596,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         idempotency_key: IdempotencyKey, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<CoordinatorApply> {
         let mut custody = CodecQuota::new(work, 0)?;
-        verifier.verify_audience_with_work(owner, custody.work())?;
-        verifier.verify_with_work(scope, custody.work())?;
+        verifier.verify_audience(owner, custody.work())?;
+        verifier.verify(scope, custody.work())?;
         if !scope.capabilities().contains("operation:declare") || spec.owner.authority() != owner {
             return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Unauthorized,
                 "session declaration owner is invalid"));
@@ -2051,7 +2051,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier, worker: &Worker,
         operation_id: Option<OperationId>, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<WorkPull> {
-        verifier.verify_audience_with_work(owner, work)?;
+        verifier.verify_audience(owner, work)?;
         verifier.verify_scope_for_with_work(owner, scope, work)?;
         if !scope.capabilities().contains("operation:observe")
             || !scope.capabilities().contains("operation:declare")
@@ -4183,7 +4183,7 @@ mod tests {
         let owner = declaration.owner.authority().clone();
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let scope = issuer.root("observe", Capabilities::new(["operation:observe"]));
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let key = IdempotencyKey::new("point-declaration")?;
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
@@ -4248,7 +4248,7 @@ mod tests {
                 &client,
                 &foreign,
                 &foreign_scope,
-                &foreign_issuer.verifier(),
+                &foreign_issuer.verifier(&mut None).expect("verifier copy"),
                 operation,
                 &key
             )
@@ -4355,7 +4355,7 @@ mod tests {
             "declare",
             Capabilities::new(["operation:declare", "operation:observe"]),
         );
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         assert_eq!(
             coordinator
                 .declare_session(
@@ -4518,7 +4518,7 @@ mod tests {
                 "declare",
                 Capabilities::new(["operation:declare", "operation:observe"]),
             );
-            let verifier = issuer.verifier();
+            let verifier = issuer.verifier(&mut None).expect("verifier copy");
             let child_id = OperationId::from_bytes([42; 16]);
             let mut child = spec(child_id, 0)?;
             child.parent = Some(ParentLink {
@@ -4669,7 +4669,7 @@ mod tests {
             let owner = Authority { kind: AggregateKind::Task, id: "owner".into() };
             let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
             let scope = issuer.root("cancel-child", Capabilities::new(["operation:cancel"]));
-            let verifier = issuer.verifier();
+            let verifier = issuer.verifier(&mut None).expect("verifier copy");
             let before = coordinator.revision();
             let mut stale = fence.clone();
             stale.placement.push_str("-stale");
@@ -4685,7 +4685,7 @@ mod tests {
             let foreign_issuer = AuthorityIssuer::new("test-runtime", [9; 32], foreign.clone());
             let foreign_scope = foreign_issuer.root("cancel-child", Capabilities::new(["operation:cancel"]));
             assert!(matches!(coordinator.cancel_child_operation(
-                &foreign, &foreign_scope, &foreign_issuer.verifier(), child,
+                &foreign, &foreign_scope, &foreign_issuer.verifier(&mut None).expect("verifier copy"), child,
                 IdempotencyKey::new("foreign-child-cancel")?, parent, fence.clone(),
             ).await, Err(Error::NotFound(_))));
             assert_eq!(coordinator.revision(), before);
@@ -4796,7 +4796,7 @@ mod tests {
         let owner = Authority { kind: AggregateKind::Task, id: "owner".into() };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let scope = issuer.root("cancel-child", Capabilities::new(["operation:cancel"]));
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let selected_revision = coordinator.revision();
         provider.armed.store(true, Ordering::SeqCst);
         let disturbance = async {
@@ -4902,7 +4902,7 @@ mod tests {
                 "wake",
                 Capabilities::new(["operation:wake", "operation:observe"]),
             );
-            let verifier = issuer.verifier();
+            let verifier = issuer.verifier(&mut None).expect("verifier copy");
             let input = state_ref()?;
             assert!(
                 first
@@ -5110,7 +5110,7 @@ mod tests {
             .declare_operation(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 spec,
                 IdempotencyKey::new(key)?,
                 None,
@@ -5142,7 +5142,7 @@ mod tests {
                 &client,
                 &owner,
                 &replacement,
-                &replaced.verifier(),
+                &replaced.verifier(&mut None).expect("verifier copy"),
                 operation_id,
                 &key
             )
@@ -5150,7 +5150,7 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
-            reopened.observe_operation(&owner, &replacement, &replaced.verifier(), operation_id),
+            reopened.observe_operation(&owner, &replacement, &replaced.verifier(&mut None).expect("verifier copy"), operation_id),
             Err(Error::Unauthorized(_))
         ));
         let worker = Worker {
@@ -5161,13 +5161,13 @@ mod tests {
         let revision = reopened.revision();
         assert!(matches!(
             reopened
-                .pull_owned(&owner, &replacement, &replaced.verifier(), &worker, Some(operation_id))
+                .pull_owned(&owner, &replacement, &replaced.verifier(&mut None).expect("verifier copy"), &worker, Some(operation_id))
                 .await,
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
             reopened
-                .pull_owned(&owner, &replacement, &replaced.verifier(), &worker, None)
+                .pull_owned(&owner, &replacement, &replaced.verifier(&mut None).expect("verifier copy"), &worker, None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -5183,7 +5183,7 @@ mod tests {
                 &client,
                 &owner,
                 &renewed,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 operation_id,
                 &key
             )
@@ -5192,13 +5192,13 @@ mod tests {
         );
         assert_eq!(
             reopened
-                .declare_operation(&owner, &renewed, &issuer.verifier(), original, key, None)
+                .declare_operation(&owner, &renewed, &issuer.verifier(&mut None).expect("verifier copy"), original, key, None)
                 .await?,
             CoordinatorApply::Replayed
         );
         assert!(matches!(
             reopened
-                .pull_owned(&owner, &renewed, &issuer.verifier(), &worker, Some(operation_id))
+                .pull_owned(&owner, &renewed, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(operation_id))
                 .await?,
             WorkPull::Claimed(_)
         ));
@@ -5210,18 +5210,18 @@ mod tests {
         let original = spec(OperationId::from_bytes([92; 16]), 0)?;
         let owner = original.owner.authority();
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        original.verify_owner(owner, &issuer.verifier())?;
+        original.verify_owner(owner, &issuer.verifier(&mut None).expect("verifier copy"))?;
         let foreign = Authority {
             kind: AggregateKind::Task,
             id: "foreign".into(),
         };
         let wrong_audience = AuthorityIssuer::new("test-runtime", [9; 32], foreign.clone());
         assert!(matches!(
-            original.verify_owner(owner, &wrong_audience.verifier()),
+            original.verify_owner(owner, &wrong_audience.verifier(&mut None).expect("verifier copy")),
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
-            original.verify_owner(&foreign, &issuer.verifier()),
+            original.verify_owner(&foreign, &issuer.verifier(&mut None).expect("verifier copy")),
             Err(Error::Unauthorized(_))
         ));
         let mut json =
@@ -5252,14 +5252,14 @@ mod tests {
         let tampered: OperationSpec =
             serde_json::from_value(json).map_err(|error| Error::Invalid(error.to_string()))?;
         assert!(matches!(
-            tampered.verify_owner(owner, &issuer.verifier()),
+            tampered.verify_owner(owner, &issuer.verifier(&mut None).expect("verifier copy")),
             Err(Error::Unauthorized(_))
         ));
         let mut insufficient = original.clone();
         insufficient.owner_scope =
             issuer.root("observe-only", Capabilities::new(["operation:observe"]));
         assert!(matches!(
-            insufficient.verify_owner(owner, &issuer.verifier()),
+            insufficient.verify_owner(owner, &issuer.verifier(&mut None).expect("verifier copy")),
             Err(Error::Unauthorized(_))
         ));
         Ok(())
@@ -5344,7 +5344,7 @@ mod tests {
                 .declare_operation(
                     &owner,
                     &empty,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     declaration.clone(),
                     IdempotencyKey::new("missing-capability")?,
                     None,
@@ -5357,7 +5357,7 @@ mod tests {
                 .declare_operation(
                     &other,
                     &granted,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     declaration.clone(),
                     IdempotencyKey::new("wrong-audience")?,
                     None,
@@ -5372,7 +5372,7 @@ mod tests {
                 .declare_operation(
                     &owner,
                     &granted,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     declaration,
                     IdempotencyKey::new("wrong-owner")?,
                     None,
@@ -5438,7 +5438,7 @@ mod tests {
             .observe_children(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 parent,
                 ChildOperationPageRequest {
                     expected_revision: None,
@@ -5454,7 +5454,7 @@ mod tests {
             .observe_children(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 parent,
                 ChildOperationPageRequest {
                     expected_revision: Some(first.revision),
@@ -5476,7 +5476,7 @@ mod tests {
             let mut io = crate::store::history::native_work_io(&native)
                 .expect("original hierarchy observer");
             let (page, retained) = coordinator.observe_children_with_work(
-                &owner, &scope, &issuer.verifier(), parent,
+                &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), parent,
                 ChildOperationPageRequest { expected_revision: Some(first.revision),
                     after_slot: None, maximum: 1 },
                 &mut Some(&mut io),
@@ -5496,7 +5496,7 @@ mod tests {
             let prefix = native.receipt().backend_read_operations;
             let mut io = crate::store::history::native_work_io(&native).expect("foreign observer");
             assert!(matches!(coordinator.observe_children_with_work(
-                &foreign, &foreign_scope, &foreign_issuer.verifier(), parent,
+                &foreign, &foreign_scope, &foreign_issuer.verifier(&mut None).expect("verifier copy"), parent,
                 ChildOperationPageRequest { expected_revision: None, after_slot: None, maximum: 1 },
                 &mut Some(&mut io),
             ).await, Err(Error::NativeBoundary { code: wire::ErrorCode::NotFound, .. })));
@@ -5505,7 +5505,7 @@ mod tests {
             let mut io = crate::store::history::native_work_io(&native).expect("cancelled observer");
             cancellation.cancel();
             assert!(coordinator.observe_children_with_work(
-                &owner, &scope, &issuer.verifier(), parent,
+                &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), parent,
                 ChildOperationPageRequest { expected_revision: None, after_slot: None, maximum: 1 },
                 &mut Some(&mut io),
             ).await.is_err());
@@ -5525,7 +5525,7 @@ mod tests {
                 .observe_children(
                     &owner,
                     &scope,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     parent,
                     ChildOperationPageRequest {
                         expected_revision: Some(first.revision),
@@ -5544,7 +5544,7 @@ mod tests {
             ).expect("original revision work");
             let mut io = crate::store::history::native_work_io(&native).expect("revision observer");
             assert!(matches!(coordinator.observe_children_with_work(
-                &owner, &scope, &issuer.verifier(), parent,
+                &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), parent,
                 ChildOperationPageRequest { expected_revision: Some(first.revision),
                     after_slot: first.next_after.as_deref(), maximum: 1 },
                 &mut Some(&mut io),
@@ -5704,7 +5704,7 @@ mod tests {
 
         assert_eq!(
             coordinator
-                .observe_operation(&owner, &scope, &issuer.verifier(), parent)?
+                .observe_operation(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), parent)?
                 .phase,
             OperationPhase::WaitingForDependencies
         );
@@ -5712,7 +5712,7 @@ mod tests {
             .cancel_operation(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 parent,
                 IdempotencyKey::new("cancel-control-tree")?,
                 true,
@@ -5732,7 +5732,7 @@ mod tests {
             .cancel_operation(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 parent,
                 IdempotencyKey::new("cancel-control-tree")?,
                 true,
@@ -5744,7 +5744,7 @@ mod tests {
                 .cancel_operation(
                     &owner,
                     &scope,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     parent,
                     IdempotencyKey::new("cancel-control-tree")?,
                     false,
@@ -5755,7 +5755,7 @@ mod tests {
         let reopened = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         assert_eq!(
             reopened
-                .observe_operation(&owner, &scope, &issuer.verifier(), child)?
+                .observe_operation(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), child)?
                 .outcome,
             Some(crate::Outcome::Cancelled)
         );
@@ -5767,7 +5767,7 @@ mod tests {
                 .cancel_operation(
                     &owner,
                     &observe_only,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     child,
                     IdempotencyKey::new("unauthorized-cancel")?,
                     false,
@@ -6008,7 +6008,7 @@ mod tests {
             .declare_operation(
                 &owner,
                 &signed,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 spec(root, 0)?,
                 IdempotencyKey::new(key)?,
                 None,
@@ -6018,7 +6018,7 @@ mod tests {
             .configure_session(
                 &owner,
                 &signed,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 root,
                 limits,
                 IdempotencyKey::new(format!(
@@ -6034,7 +6034,7 @@ mod tests {
                 .declare_session(
                     &owner,
                     &signed,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     spec(root, 0)?,
                     limits,
                     IdempotencyKey::new(key)?
@@ -6078,7 +6078,7 @@ mod tests {
             labels: BTreeMap::new(),
         };
         let WorkPull::Claimed(lease) = coordinator
-            .pull_owned(&owner, &scope, &issuer.verifier(), &worker, None)
+            .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, None)
             .await?
         else {
             return Err(Error::NotFound("owned pull".into()));
@@ -6092,7 +6092,7 @@ mod tests {
         );
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, None)
+                .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, None)
                 .await?,
             WorkPull::Idle
         ));
@@ -6135,7 +6135,7 @@ mod tests {
         declare(&mut coordinator, other, "foreign-blocked").await?;
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, None)
+                .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, None)
                 .await?,
             WorkPull::Idle
         ));
@@ -6149,7 +6149,7 @@ mod tests {
         let denied = issuer.root("denied", Capabilities::new(["operation:observe"]));
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &denied, &issuer.verifier(), &worker, None)
+                .pull_owned(&owner, &denied, &issuer.verifier(&mut None).expect("verifier copy"), &worker, None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -6183,7 +6183,7 @@ mod tests {
         };
         let first_before = coordinator.scheduler().operation(first).cloned();
         let WorkPull::Claimed(lease) = coordinator
-            .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(target))
+            .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(target))
             .await?
         else {
             return Err(Error::NotFound("target admission".into()));
@@ -6196,26 +6196,26 @@ mod tests {
         let tail = client.stream(COORDINATOR_PATH)?.tail().await?;
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(target))
+                .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(target))
                 .await?,
             WorkPull::Idle
         ));
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(first))
+                .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(first))
                 .await?,
             WorkPull::Idle
         ));
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(OperationId::from_bytes([63; 16])))
+                .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(OperationId::from_bytes([63; 16])))
                 .await,
             Err(Error::NotFound(_))
         ));
         let denied = issuer.root("denied", Capabilities::new(["operation:observe"]));
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &denied, &issuer.verifier(), &worker, Some(first))
+                .pull_owned(&owner, &denied, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(first))
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -6253,7 +6253,7 @@ mod tests {
         declare(&mut coordinator, spec(ready, 1)?, "target-ready").await?;
         let blocked_before = coordinator.scheduler().operation(blocked).cloned();
         let WorkPull::Claimed(lease) = coordinator
-            .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(ready))
+            .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(ready))
             .await?
         else {
             return Err(Error::NotFound("ready target behind blocked task".into()));
@@ -6269,7 +6269,7 @@ mod tests {
         );
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(blocked))
+                .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(blocked))
                 .await?,
             WorkPull::Idle
         ));
@@ -6341,7 +6341,7 @@ mod tests {
             };
             assert!(matches!(
                 coordinator
-                    .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(operation))
+                    .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(operation))
                     .await?,
                 WorkPull::Idle
             ));
@@ -6408,7 +6408,7 @@ mod tests {
                 .pull_owned_with_work(
                     &owner,
                     &scope,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     &worker,
                     targeted.then_some(operation), &mut None)
                 .await?
@@ -6438,7 +6438,7 @@ mod tests {
                     .pull_owned_with_work(
                         &owner,
                         &scope,
-                        &issuer.verifier(),
+                        &issuer.verifier(&mut None).expect("verifier copy"),
                         &worker,
                         targeted.then_some(operation), &mut None)
                     .await?
@@ -6457,7 +6457,7 @@ mod tests {
                     .pull_owned_with_work(
                         &owner,
                         &scope,
-                        &issuer.verifier(),
+                        &issuer.verifier(&mut None).expect("verifier copy"),
                         &worker,
                         targeted.then_some(operation), &mut None)
                     .await?,
@@ -6653,7 +6653,7 @@ mod tests {
                 .declare_session(
                     &owner,
                     &signed,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     spec(root, 0)?,
                     limits,
                     IdempotencyKey::new("lost-root")?,
@@ -6673,7 +6673,7 @@ mod tests {
                     .declare_session(
                         &owner,
                         &signed,
-                        &issuer.verifier(),
+                        &issuer.verifier(&mut None).expect("verifier copy"),
                         spec(root, 0)?,
                         limits,
                         IdempotencyKey::new("lost-root")?
@@ -6769,7 +6769,7 @@ mod tests {
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let signed = issuer.root("owner", Capabilities::new(["operation:declare"]));
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let one = crate::scheduler::SessionLimits {
             active_tasks: 1,
             total_tasks: 2,
@@ -6966,7 +6966,7 @@ mod tests {
             .configure_session(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 root,
                 limits,
                 IdempotencyKey::new("configure-budget")?,
@@ -7074,7 +7074,7 @@ mod tests {
                 .configure_session(
                     &owner,
                     &scope,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     root,
                     crate::scheduler::SessionLimits {
                         model_steps: 2,

@@ -117,7 +117,7 @@ pub use contract::{
     OperationId, Outcome, PolicyLayer, ProtocolIdentity, Result, SessionId, TaskId, TurnId,
     JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape,
     canonical_json_bytes_bounded, json_bytes_bounded,
-    json_from_slice_bounded_trusted, json_value_bounded, json_value_decode_owned_bytes,
+    json_from_slice_bounded, json_value_bounded, json_value_decode_owned_bytes,
     sdk_json_diagnostic_bytes,
     json_owned_value_conversion_additional_bytes, json_typed_diagnostic_owned_bytes,
     preparation_serde_diagnostic_label_bytes,
@@ -126,8 +126,7 @@ pub use contract::{
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use contract::{
      
-    json_from_slice_bounded_native_trusted, json_from_value_bounded_native_trusted,
-    json_from_value_owned_bounded_native_trusted, 
+    json_from_value_bounded,
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;

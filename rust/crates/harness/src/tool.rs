@@ -1123,7 +1123,7 @@ impl ToolRegistry {
         interaction_id: InteractionId,
         approval: &dyn ToolApprovalVerifier,
     ) -> Result<()> {
-        verifier.verify(scope)?;
+        verifier.verify(scope, &mut None)?;
         if !scope
             .capabilities()
             .contains(&format!("tool:install:{}", tool.definition.name))
@@ -1551,7 +1551,7 @@ mod tests {
                     tool.clone(),
                     OperationId::from_bytes([9; 16]),
                     &scope,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     interaction_id,
                     &approval
                 )
@@ -1563,7 +1563,7 @@ mod tests {
                 tool,
                 operation_id,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 interaction_id,
                 &approval,
             )

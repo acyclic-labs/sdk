@@ -21,7 +21,7 @@ async fn native_stock_mail_command_uses_original_atomic_v3_send_and_custody() ->
     let runtime = fixture.runtime().await?;
     let task = TaskId::from_bytes([104; 16]);
     let payloads = FilesystemSchedulerPayloadStore::new(
-        fixture.filesystem.clone(), fixture.volume.clone(), &fixture.issuer.verifier(), &fixture.signed, 65_536,
+        fixture.filesystem.clone(), fixture.volume.clone(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, 65_536,
     )?;
     let payload = payloads.stage(OperationId::from_bytes([106; 16]), "native-stock-mail-body", b"7").await?;
     let cancellation = CancellationToken::new();

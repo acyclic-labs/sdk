@@ -610,7 +610,7 @@ impl WasmTaskRuntime {
     ) -> std::result::Result<WasmTaskRuntime, JsValue> {
         let options: WasmBrowserTaskOptions = from_js(options)?;
         let scope: Scope = from_js(signed_scope)?;
-        let verifier = owner.issuer.verifier();
+        let verifier = owner.issuer.verifier(&mut None).expect("verifier copy");
         ContentGrant::verify(&verifier, &scope, &options.volume, VolumeOperation::Write)
             .map_err(js_error)?;
         let root = RuntimeScope::new(
