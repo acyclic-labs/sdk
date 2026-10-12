@@ -1056,7 +1056,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     assert_eq!(directory_names.value.entries.len(), 7);
     let directory = through_every_object_cut!(checkout.list_directory_records(
         &root_path()?,
-        None,
+        std::ops::Bound::Unbounded,
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -4673,7 +4673,7 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
     assert!(batch.value.entries[2].record.is_none());
     let records = poll_immediate(checkout.list_directory_records(
         &root_path()?,
-        None,
+        std::ops::Bound::Unbounded,
         16,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -4828,7 +4828,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     .value;
     let empty_directory = poll_immediate(checkout.list_directory_records(
         &directory,
-        None,
+        std::ops::Bound::Unbounded,
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -5070,7 +5070,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     assert!(
         poll_immediate(checkout.list_directory_records(
             &file,
-            None,
+            std::ops::Bound::Unbounded,
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -7273,7 +7273,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
     ready!(checkout.value.mutate(vec![crate::kernel::Mutation::Remove { path: path("renamed-link")?, expected_file_id: (Some(file_id)).map_or(crate::kernel::MetadataField::Unavailable, crate::kernel::MetadataField::Value) }], WorkBudget::UNBOUNDED, &cancellation));
     let listing = ready!(checkout.value.list_directory_records(
         &root_path()?,
-        None,
+        std::ops::Bound::Unbounded,
         32,
         WorkBudget::UNBOUNDED,
         &cancellation,
