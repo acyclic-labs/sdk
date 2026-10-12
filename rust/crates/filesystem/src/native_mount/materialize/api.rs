@@ -707,7 +707,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             drop(stage_root);
             let cleanup = stage_owner
                 .remove_identity(&stage_name.0, stage_identity, work)
-                .and_then(|()| stage_owner.sync(work));
+                .and_then(|()| crate::native_host::sync_directory_held(&stage_owner.directory, work));
             match (result, cleanup) {
                 (Ok(value), Ok(())) => Ok(value),
                 (Ok(_), Err(error)) => Err(restore_demand_error(error)),

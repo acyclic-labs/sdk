@@ -3770,15 +3770,13 @@ fn host_link_count(metadata: &HostStat) -> Result<u64, CaptureError> {
 /// The link count of the observed node, read by the same handle query as its identity, so it describes exactly the observed node.
 #[cfg(windows)]
 fn host_link_count(metadata: &HostStat) -> Result<u64, CaptureError> {
-    metadata.number_of_links()
-        .map(u64::from)
-        .ok_or_else(|| CaptureError::from(std::io::Error::other("host link count is unavailable")))
+    Ok(metadata.nlink())
 }
 
 impl HostSnapshot {
     fn from_metadata(metadata: &HostStat) -> Result<Self, CaptureError> {
         Ok(Self {
-            identity: metadata.identity().map_err(capture_demand_error)?,
+            identity: metadata.identity(),
             length: metadata.len(),
             metadata: capture_metadata(metadata),
         })
@@ -4450,12 +4448,12 @@ mod windows_name_tests {
         };
         let valid = LogicalName::new(
             NameEncoding::PosixBytes,
-            "uni-Ã©ä¸­.txt".as_bytes().to_vec(),
+            "uni-ÃƒÂ©Ã¤Â¸Â­.txt".as_bytes().to_vec(),
             255,
         )?;
         assert_eq!(
             host_path(valid)?,
-            std::ffi::OsString::from("uni-Ã©ä¸­.txt")
+            std::ffi::OsString::from("uni-ÃƒÂ©Ã¤Â¸Â­.txt")
         );
 
         let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?;
@@ -4477,7 +4475,7 @@ mod windows_name_tests {
             maximum_component_bytes: 510,
             ..crate::model::VolumeLimits::default()
         };
-        let host = std::path::Path::new("src/Ã¼nÃ¯cÃ¸de/æ—¥æœ¬èªž.rs");
+        let host = std::path::Path::new("src/ÃƒÂ¼nÃƒÂ¯cÃƒÂ¸de/Ã¦â€”Â¥Ã¦Å“Â¬Ã¨ÂªÅ¾.rs");
         let namespace = host_path_to_namespace(host, FilesystemProfile::Windows, limits)?;
         assert_eq!(namespace_to_host_path(&namespace)?, host);
         Ok(())
