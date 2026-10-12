@@ -284,8 +284,7 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
         request.binding.clone(), request.root.clone(), command.clone(), &work,
     ).await.unwrap();
     assert!(matches!(admission.0, Admission::Accepted(_)));
-    drop(admission.0);
-    drop(admission.1);
+    drop(admission);
     let mut changed = command.clone();
     changed.operation_id = OperationId::from_bytes([91; 16]);
     assert!(
@@ -621,33 +620,28 @@ fn native_owner_authority_preserves_original_grants_and_scope_names() {
     let baseline = work.live_allocation_bytes();
     let ordinary = owner.authority().unwrap();
     let native = owner.authority_with_native_work(&work).unwrap();
-    assert!(native.0.signed == ordinary.signed);
-    assert_eq!(native.0.scope.grants(), ordinary.scope.grants());
+    assert_eq!(native.0.signed, ordinary.signed);
+    assert_eq!(native.0.scope.grants(), &owner.policy.grants);
     native.0.validate_with_native_work(&owner.policy.journal, &work).unwrap();
-    drop(native.0);
-    drop(native.1);
-    let ordinary_conversation = owner.conversation_authority(
-        owner.policy.root_task, owner.policy.agent, owner.policy.grants.clone(),
-    ).unwrap();
+    drop(native);
     let conversation = owner.conversation_authority_with_native_work(
         owner.policy.root_task, owner.policy.agent, &owner.policy.grants, &work,
     ).unwrap();
-    assert!(conversation.0.0 == ordinary_conversation.0);
-    assert!(conversation.0.2 == ordinary_conversation.2);
-    drop(conversation.0);
-    drop(conversation.1);
-    let ordinary_issuer = owner.effect_issuer();
-    let ordinary_effect_scope = ordinary_issuer.root_for_agent(
-        owner.policy.agent, owner.policy.root_task.to_string(), owner.policy.grants.clone(),
-    );
+    assert_eq!(conversation.0.0.kind, AggregateKind::Conversation);
+    assert_eq!(conversation.0.0.id, owner.policy.root_task.to_string());
+    assert_eq!(conversation.0.2.id(), format!("pi:conversation:{}", owner.policy.root_task));
+    assert_eq!(conversation.0.2.agent(), Some(owner.policy.agent));
+    assert_eq!(conversation.0.2.capabilities(), &owner.policy.grants);
+    AuthorityIssuer::new(ISSUER, owner.key, conversation.0.0.clone()).verifier().verify(&conversation.0.2).unwrap();
+    drop(conversation);
     let effect = owner.effect_authority_with_native_work(&work).unwrap();
-    assert!(effect.0.2 == ordinary_effect_scope);
+    assert_eq!(effect.0.2.id(), owner.policy.root_task.to_string());
+    assert_eq!(effect.0.2.agent(), Some(owner.policy.agent));
+    assert_eq!(effect.0.2.capabilities(), &owner.policy.grants);
     let verifier = owner.effect_verifier_with_native_work(&work).unwrap();
     verifier.0.verify_with_native_work(&effect.0.2, &work).unwrap();
-    drop(verifier.0);
-    drop(verifier.1);
-    drop(effect.0);
-    drop(effect.1);
+    drop(verifier);
+    drop(effect);
     assert_eq!(work.live_allocation_bytes(), baseline);
 }
 

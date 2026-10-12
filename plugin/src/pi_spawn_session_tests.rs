@@ -109,7 +109,7 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
         acyclic_harness::fork::ResourceRevision::PrivateVolume { volume, paths, .. }
             if volume == &plan.source.private_volume && paths.is_empty())));
     let prepared = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal, &fixture.fence,
-        &plan, fixture.source.clone(), catalog_work.remaining().unwrap(), catalog_work.cancellation().clone()).await.unwrap().unwrap();
+        &plan, fixture.root_handle.workspace.clone(), catalog_work.remaining().unwrap(), catalog_work.cancellation().clone()).await.unwrap().unwrap();
     let results = prepared.binding.results.as_ref().unwrap();
     let PiScratchAllocation::Created(result_creation) = &results.allocation else { panic!("actual third creator"); };
     let PiScratchAllocation::Created(scratch_creation) = &prepared.binding.scratch.allocation else { panic!("actual scratch creator"); };

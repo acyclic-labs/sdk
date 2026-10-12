@@ -5,9 +5,7 @@ use acyclic_harness::workflow::{MachineCheckpoint, MachineRegistry, MachineTrans
 const DEPTH: usize = 8;
 
 fn inputs(command: &WorkflowCommand) -> Vec<Value> {
-    let completion =
-        |operation_id, value| json!({"commands":[{"operation_id":operation_id,"value":value}]});
-    let success = completion(
+    let success = result(
         command.operation_id,
         Outcome::Succeeded(command.payload.clone()),
     );
@@ -27,22 +25,22 @@ fn inputs(command: &WorkflowCommand) -> Vec<Value> {
         json!({"commands":[{},{}]}),
         json!({"commands":[],"unexpected":true}),
         success,
-        completion(
+        result(
             command.operation_id,
             Outcome::Succeeded(alternative),
         ),
-        completion(
+        result(
             OperationId::from_bytes([99; 16]),
             Outcome::Succeeded(command.payload.clone()),
         ),
-        completion(
+        result(
             command.operation_id,
             Outcome::Failed {
                 message: "known failure".to_owned(),
             },
         ),
-        completion(command.operation_id, Outcome::<FileRef>::Cancelled),
-        completion(
+        result(command.operation_id, Outcome::<FileRef>::Cancelled),
+        result(
             command.operation_id,
             Outcome::<FileRef>::Indeterminate {
                 operation_id: command.operation_id,
@@ -76,6 +74,7 @@ fn replay_step(
 }
 
 fn explore(execution: PiTaskExecution, command: &WorkflowCommand) {
+    let inputs = inputs(command);
     let original = work();
     let machine = PiTaskMachine::new(&original).unwrap();
     let state = machine
@@ -93,32 +92,30 @@ fn explore(execution: PiTaskExecution, command: &WorkflowCommand) {
             machine: machine.identity().clone(),
             revision: 0,
             state: state.0,
-        }, 0, state.1)];
-    let mut settled = 0;
+        }, state.1)];
+    let mut settled = false;
     for _ in 0..DEPTH {
         let mut next = Vec::new();
-        for (checkpoint, emitted, _custody) in frontier {
+        for (checkpoint, _custody) in frontier {
             let pinned = checkpoint.state.get("allocation").or_else(|| checkpoint.state.get("result"));
-            settled += usize::from(pinned.is_some());
-            for input in inputs(command) {
-                if let Ok((advanced, transition, custody)) = replay_step(&registry, &checkpoint, &input) {
-                    let emitted = emitted + transition.commands.len();
-                    assert!(emitted <= 1);
-                    assert!(transition.commands.iter().all(|actual| actual == command));
+            settled |= pinned.is_some();
+            for input in &inputs {
+                if let Ok((advanced, transition, custody)) = replay_step(&registry, &checkpoint, input) {
+                    assert_eq!(transition.commands.as_slice(),
+                        if checkpoint.revision == 0 { std::slice::from_ref(command) } else { &[] });
                     let next_pinned = advanced.state.get("allocation").or_else(|| advanced.state.get("result"));
                     if pinned.is_some() { assert_eq!(pinned, next_pinned); }
-                    if next_pinned.is_some() { assert_eq!(emitted, 1); }
                     assert_eq!(advanced.revision, checkpoint.revision + 1);
                     registry.validate_checkpoint_with_native_work(&advanced, custody.work()).unwrap();
                     drop(transition);
-                    next.push((advanced, emitted, custody));
+                    next.push((advanced, custody));
                 }
             }
         }
         frontier = next;
     }
     assert!(
-        settled > 0,
+        settled,
         "exploration never reached a successful settlement"
     );
 }

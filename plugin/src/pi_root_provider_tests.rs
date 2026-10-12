@@ -714,7 +714,7 @@ async fn pi_operator_input_original_upload_is_root_only_even_for_actual_created_
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let coordinator = fixture.coordinator(&crate::pi_fork::tests::work()).unwrap();
     let child = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal,
-        &fixture.fence, &plan, fixture.source.clone(), allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
+        &fixture.fence, &plan, fixture.root_handle.workspace.clone(), allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
     let attempt = fixture.runtime.runtime.run_operation_with_native_work(&Worker { id: "operator-child-read-denial".into(),
         available: Default::default(), labels: Default::default() }, child.binding.task_id,
         &fixture.runtime.runtime.commands(), 1, &native).await.unwrap();

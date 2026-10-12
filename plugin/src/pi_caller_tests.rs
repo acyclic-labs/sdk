@@ -62,8 +62,7 @@ fn native_caller_preserves_claims_and_rejects_extra_grants_or_owner_substitution
     replaced_binding.task_id = TaskId::from_bytes([73; 16]);
     assert!(verify(&owner, &replaced, &caller.0,
         &binding.native_session_id, &work).is_err());
-    drop(caller.0);
-    drop(caller.1);
+    drop(caller);
 }
 
 #[test]
@@ -78,8 +77,7 @@ fn native_caller_environment_retains_only_the_original_caller_proof() {
         &binding.native_session_id, &work).unwrap().task_id, binding.task_id);
     assert_eq!(caller.capabilities(), &Capabilities::new([CALLER_CAPABILITY]));
     drop(caller);
-    drop(environment.0);
-    drop(environment.1);
+    drop(environment);
 }
 
 #[test]
