@@ -49,7 +49,8 @@ pub use compaction_stage::*;
 mod allocations;
 pub use allocations::*;
 use durable::{context_stream_error, decode_context_json};
-use validation::verify_file;
+pub(crate) use validation::verify_file;
+use validation::validate_context_refs;
 use value::{ContextMessages, BorrowedContext};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use allocations::{context_contract_native, reserve_context_vec_native};
