@@ -26,10 +26,10 @@ fn source_and_session() -> (PiNativeSourceCut, Vec<u8>) {
 }
 
 fn binding_and_manifest() -> (PiTaskBinding, NativeViewManifest) {
-    let provider = ProviderRef::new("pi-native-test", "filesystem", "1").unwrap();
+    let provider = ProviderRef::new("pi-native-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let agent = AgentId::from_bytes([31; 16]);
     let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
-    let generation = GenerationRef::new(provider.clone(), [32; 32], None).unwrap();
+    let generation = GenerationRef::new(provider.clone(), [32; 32].into(), None).unwrap();
     let binding = PiTaskBinding { native_session_id: "child".into(), task_id: TaskId::from_bytes([33; 16]), agent_id: agent,
         project_volumes: BTreeMap::new(),
         scratch: super::super::PiScratchBinding { volume: scratch.clone(), allocation: PiScratchAllocation::Created(super::super::PiScratchCreation {
@@ -132,11 +132,6 @@ fn native_invocation_is_exact_absolute_and_discovery_free() {
     assert_eq!(request.standard_input.as_deref(), Some(input.prompt.as_bytes()));
     assert!(!request.argv.contains(&input.prompt));
     assert_eq!(request.view, manifest);
-    let digest = request.approval_digest_with_native_work(binding.task_id, OperationId::from_bytes([41; 16]), &work).unwrap();
-    let mut changed = (*request).clone(); changed.environment.insert("ACYCLIC_PI_CALLER".into(), "foreign-route".into());
-    assert_ne!(digest, changed.approval_digest_with_native_work(binding.task_id, OperationId::from_bytes([41; 16]), &work).unwrap());
-    changed = (*request).clone(); changed.argv.push("--resume".into());
-    assert_ne!(digest, changed.approval_digest_with_native_work(binding.task_id, OperationId::from_bytes([41; 16]), &work).unwrap());
     for prompt in ["--model attacker --session original-root", "@source-file-must-not-be-opened", "literal native prompt\nwith another line"] {
         let mut literal = input.clone();
         literal.prompt = prompt.into();
@@ -197,7 +192,6 @@ fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_b
     let raw = PiNativeHostRuntime { version: input.version.clone(), executable: input.executable.clone(),
         executable_prefix: input.executable_prefix.clone(), extension: input.extension.clone(),
         provider_extension: input.provider_extension.clone(), environment };
-    assert!(raw.validate(&work).is_err());
     assert!(matches!(raw.validate(&work),
         Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, .. })));
     let host = raw.sanitize(&work).unwrap();

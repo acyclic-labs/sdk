@@ -65,7 +65,7 @@ async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncObjectStore>
                 let name = entry
                     .name
                     .unicode_text()
-                    .ok_or_else(|| WorkspaceError::path("non-portable Git path"))?;
+                    .ok_or_else(|| WorkspaceError::Path("non-portable Git path".to_owned()))?;
                 let path = if directory_display.is_empty() {
                     name.to_string()
                 } else {
@@ -180,9 +180,7 @@ impl<'de> Deserialize<'de> for GitCommitId {
     }
 }
 
-/// A filtered tree's exact SDK fork origin, verified when core capture creates
-/// it. Durable JSON is checked structurally on reload, not revalidated against
-/// the SDK lineage store; it is not a cryptographic attestation.
+/// A filtered tree's exact SDK fork origin, verified when core capture creates it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitCaptureProof {
     fork_parent: GitTreeRef,
@@ -217,8 +215,7 @@ pub struct GitCommit {
     pub id: GitCommitId,
     /// Git-visible committed tree. Lazy trees retain unresolved source state.
     pub tree: GitTreeRef,
-    /// Complete live working tree captured by the commit. This may differ from
-    /// `tree` when newly ignored paths are omitted from compatibility history.
+    /// Complete live working tree captured by the commit.
     pub workspace_tree: GitTreeRef,
     /// SDK-verified fork origin when the Git-visible tree is a filtered fork.
     pub capture_proof: Option<GitCaptureProof>,
@@ -463,8 +460,6 @@ pub struct GitCompatState {
     /// Explicit commit records.
     pub commits: BTreeMap<GitCommitId, GitCommit>,
     /// Cross-repository parents introduced by direct child publication.
-    /// These identities are explicit graph boundaries, never silently missing
-    /// local records.
     pub external_parents: BTreeSet<GitCommitId>,
     /// Lightweight tags.
     pub tags: BTreeMap<String, GitCommitId>,
@@ -534,10 +529,7 @@ impl GitTransitionId {
     }
 }
 
-/// Byte widths and tagged-output names used by language bindings for the
-/// JSON compatibility projection. Keep these beside the canonical Git types
-/// so generated bindings cannot silently drift when an identity or output
-/// variant changes.
+/// Byte widths and tagged-output names used by language bindings for the JSON compatibility projection.
 pub const GIT_COMPAT_IDENTITY_WIRE_FIELDS: &[(&str, usize)] = &[
     ("workspace_id", std::mem::size_of::<WorkspaceId>()),
     ("source_workspace", std::mem::size_of::<WorkspaceId>()),
@@ -550,8 +542,7 @@ pub const GIT_COMPAT_IDENTITY_WIRE_FIELDS: &[(&str, usize)] = &[
     ("initial_generation", std::mem::size_of::<GenerationId>()),
 ];
 
-/// Field names that language bindings decode as owned byte arrays. `None`
-/// denotes an unbounded byte payload, currently the patch in `ApplyPatch`.
+/// Field names that language bindings decode as owned byte arrays.
 pub const GIT_COMPAT_BYTE_WIRE_FIELDS: &[(&str, Option<usize>)] = &[
     ("workspace_id", Some(std::mem::size_of::<WorkspaceId>())),
     ("source_workspace", Some(std::mem::size_of::<WorkspaceId>())),
@@ -883,10 +874,7 @@ pub enum GitCommand {
     },
 }
 
-/// Natural JavaScript command discriminators paired with the canonical Rust
-/// serde tags. The test below compares this table with the exhaustive enum
-/// inventory, so adding a Rust command cannot silently bypass the public
-/// parser.
+/// Natural JavaScript command discriminators paired with the canonical Rust serde tags.
 pub const GIT_COMPAT_PUBLIC_COMMAND_KINDS: &[(&str, &str)] = &[
     ("status", "Status"),
     ("diff", "Diff"),
@@ -926,11 +914,7 @@ fn public_git_command_variant(kind: &str) -> Option<&'static str> {
         .find_map(|(public, wire)| (*public == kind).then_some(*wire))
 }
 
-/// Parses the natural JavaScript command projection into the canonical serde
-/// command.  The JavaScript façade uses a small `kind` discriminator and
-/// camel-case names for the two fields whose public spelling differs from the
-/// Rust wire contract.  Keeping this translation here means native and WASM
-/// callers share the same defaults, enum validation, and integer bounds.
+/// Parses the natural JavaScript command projection into the canonical serde command.
 pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
     let mut value: serde_json::Value = serde_json::from_str(value)
         .map_err(|error| format!("invalid Git command JSON: {error}"))?;
@@ -1017,9 +1001,7 @@ pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
     serde_json::from_value(wire).map_err(|error| format!("invalid Git command: {error}"))
 }
 
-/// Validates and reserializes one canonical command output at a language
-/// binding boundary. This keeps malformed fixtures and executor adapters on
-/// the same serde path as the engine itself.
+/// Validates and reserializes one canonical command output at a language binding boundary.
 pub fn canonicalize_git_output_json(value: &str) -> Result<String, String> {
     let output: GitCommandOutput = serde_json::from_str(value)
         .map_err(|error| format!("invalid Git command output JSON: {error}"))?;
@@ -1087,8 +1069,7 @@ pub enum GitFilesystemAction {
     RestoreGeneration {
         /// Tree to install.
         tree: GitTreeRef,
-        /// Paths participating in a compatibility-history restore. `None`
-        /// requests an exact same-workspace head restoration (for stash).
+        /// Paths participating in a compatibility-history restore.
         paths: Option<BTreeSet<String>>,
     },
     /// Restore selected paths from an exact generation.
@@ -1229,10 +1210,6 @@ pub enum GitDirtyState {
 }
 
 /// Backend-neutral execution boundary for Git-shaped filesystem work.
-///
-/// Implementations receive a stable operation identity for every action. They
-/// must apply mutating actions idempotently and return only typed results; the
-/// compatibility repository retains all history and sequencer authority.
 pub trait GitFilesystemExecutor: Send + Sync {
     /// Executor failure.
     type Error: std::error::Error + Send + Sync + 'static;
@@ -1310,7 +1287,6 @@ pub enum GitCommandOutput {
 }
 
 /// Defines one canonical enum tag inventory and its exhaustive Rust matcher.
-/// The inventory and match arms must be updated together when an enum changes.
 macro_rules! git_compat_enum_contract {
     (
         $enum:ident,
@@ -1334,8 +1310,7 @@ macro_rules! git_compat_enum_contract {
     };
 }
 
-/// Defines a scalar enum inventory, its natural TypeScript literal values,
-/// and an exhaustive serde-tag matcher from one declaration.
+/// Defines a scalar enum inventory, its natural TypeScript literal values, and an exhaustive serde-tag matcher from one declaration.
 macro_rules! git_compat_scalar_contract {
     (
         $enum:ident,
@@ -1425,10 +1400,6 @@ git_compat_scalar_contract! {
 }
 
 /// Natural TypeScript projection for each canonical command variant.
-///
-/// The Rust serde enums remain the wire authority. These declarations describe
-/// the synchronous adapter surface generated for native callers, so a new
-/// canonical variant cannot silently disappear from the TypeScript union.
 pub const GIT_COMPAT_COMMAND_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     ("Status", r#"{ readonly kind: "status" }"#),
     (
@@ -1535,8 +1506,6 @@ pub const GIT_COMPAT_COMMAND_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
 ];
 
 /// Natural TypeScript projections for executor actions, results, and outputs.
-/// These are emitted with the Rust contract and consumed by the declaration
-/// generator; the adapter does not maintain a second variant shape table.
 pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     (
         "CaptureCommit",
@@ -1644,8 +1613,6 @@ pub const GIT_COMPAT_OUTPUT_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
 ];
 
 /// Shared nested TypeScript projections used by the variant declarations.
-/// Keeping these beside the serde model lets the schema fixture test inspect
-/// nested fields instead of only checking the outer enum tags.
 pub const GIT_COMPAT_NESTED_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     (
         "GitCompatStatus",
@@ -1924,12 +1891,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .map_err(|_| GitCompatError::InvalidState)
     }
 
-    /// Executes a command and all required filesystem work through one composed
-    /// recovery-safe boundary.
-    ///
-    /// Adapters normally need only this method. State-only commands return
-    /// immediately, action commands receive a deterministic operation identity,
-    /// and prepared sequencer mutations remain durable if the executor fails.
+    /// Executes a command and all required filesystem work through one composed recovery-safe boundary.
     pub async fn run<E: GitFilesystemExecutor, T: IntoGitTreeRef>(
         &self,
         command: GitCommand,
@@ -2035,9 +1997,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         Ok(GitCommandOutput::Filesystem(result))
     }
 
-    /// Parses argv following the `acyclic git` umbrella subcommand and executes
-    /// it through [`Self::run`]. This API never intercepts or invokes system
-    /// `git`.
+    /// Parses argv following the `acyclic git` umbrella subcommand and executes it through [`Self::run`].
     pub async fn run_argv<E: GitFilesystemExecutor, T: IntoGitTreeRef>(
         &self,
         argv: &[String],
@@ -2050,8 +2010,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         self.run(command, workspace_tree, executor).await
     }
 
-    /// Recovers the durable pending transition, if any, through the same
-    /// executor contract used by [`Self::run`].
+    /// Recovers the durable pending transition, if any, through the same executor contract used by [`Self::run`].
     pub async fn resume<E: GitFilesystemExecutor>(
         &self,
         executor: &E,
@@ -2234,9 +2193,6 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     }
 
     /// Commits a prepared transition using the executor's complete typed result.
-    ///
-    /// Capture and branch transitions require their full result so recovery can
-    /// publish compatibility state without reconstructing filesystem facts.
     pub async fn complete_transition_result(
         &self,
         transition: GitTransitionId,
@@ -2264,8 +2220,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         Err(GitCompatError::Contended)
     }
 
-    /// Clears an exact prepared transition after the executor proves that no
-    /// filesystem effects remain (or after the materializer rolls them back).
+    /// Clears an exact prepared transition after the executor proves that no filesystem effects remain (or after the materializer rolls them back).
     pub async fn abort_transition(
         &self,
         transition: GitTransitionId,
@@ -2284,9 +2239,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         Err(GitCompatError::Contended)
     }
 
-    /// Parses and executes argv following the `acyclic git` umbrella
-    /// subcommand. Callers strip the two-token prefix before invoking this
-    /// method; bare system `git` is outside this façade.
+    /// Parses and executes argv following the `acyclic git` umbrella subcommand.
     pub async fn execute_argv<T: IntoGitTreeRef>(
         &self,
         argv: &[String],
@@ -2299,10 +2252,6 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     }
 
     /// Completes a previously emitted [`GitFilesystemAction::ForkBranch`].
-    ///
-    /// The caller must create a real SDK child workspace first. Registration is
-    /// idempotent for the same branch/workspace/head tuple and rejects any
-    /// competing result.
     pub async fn register_branch_workspace(
         &self,
         branch: impl Into<String>,
@@ -2328,8 +2277,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         Err(GitCompatError::Contended)
     }
 
-    /// Records a compatibility commit after the core executor filters newly
-    /// ignored paths and returns the exact eligible generation.
+    /// Records a compatibility commit after the core executor filters newly ignored paths and returns the exact eligible generation.
     pub async fn record_commit(
         &self,
         expected_head: Option<GitCommitId>,
@@ -2360,8 +2308,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         .await
     }
 
-    /// Records a merge/publication performed by the distributed workspace
-    /// layer without reimplementing compatibility history in an adapter.
+    /// Records a merge/publication performed by the distributed workspace layer without reimplementing compatibility history in an adapter.
     pub async fn record_publication(
         &self,
         publication: GitPublicationRecord,
@@ -4326,11 +4273,6 @@ fn parse_log_maximum<E: std::error::Error + 'static>(
 }
 
 /// Git-compatible ignore policy used by commit and parent-join capture.
-///
-/// Already tracked paths always remain eligible. Rules are evaluated in order;
-/// later matches win and `!` negates an ignore rule. The matcher intentionally
-/// covers the portable Git subset (`*`, `?`, directory suffixes, and anchored
-/// paths) without consulting system Git.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitIgnorePolicy {
     rules: Vec<GitIgnoreRule>,
@@ -4348,9 +4290,7 @@ pub struct GitCapturedGeneration<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
-    /// Issues a capture proof only after the SDK has durably recorded its
-    /// authenticated direct-parent lineage. A caller cannot publish a proof
-    /// for a fork that recovery cannot reopen.
+    /// Issues a capture proof only after the SDK has durably recorded its authenticated direct-parent lineage.
     pub async fn authenticated_proof<S: crate::WorkspaceLineageStore>(
         &self,
         operation_id: OperationId,
@@ -4373,7 +4313,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
     }
 
     /// Authenticates this filtered snapshot against its original SDK fork.
-    /// An unfiltered tree has no proof and retains its original workspace.
     async fn verified_proof(
         &self,
         operation_id: OperationId,
@@ -4512,7 +4451,7 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 let name = entry
                     .name
                     .unicode_text()
-                    .ok_or_else(|| WorkspaceError::path("non-portable Git path"))?;
+                    .ok_or_else(|| WorkspaceError::Path("non-portable Git path".to_owned()))?;
                 let parent = directory.trim_start_matches('/');
                 let path = if parent.is_empty() {
                     name.to_string()
@@ -4637,9 +4576,7 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(GitGrepResult { matches, truncated })
 }
 
-/// Attributes UTF-8 lines using explicit oldest-to-newest compatibility
-/// snapshots. This deliberately follows exact line positions; rename and
-/// heuristic similarity detection remain presentation concerns.
+/// Attributes UTF-8 lines using explicit oldest-to-newest compatibility snapshots.
 pub async fn blame_git_generations<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     history_newest_first: &[(GitCommit, Generation<A, O>)],
     path: &str,
@@ -4653,7 +4590,7 @@ pub async fn blame_git_generations<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let next = if commit.tracked_paths.contains(relative) {
             let bytes = generation.read(&absolute, maximum_file_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             std::str::from_utf8(&bytes)
-                .map_err(|_| WorkspaceError::path("Git blame requires UTF-8 text"))?
+                .map_err(|_| WorkspaceError::Path("Git blame requires UTF-8 text".to_owned()))?
                 .lines()
                 .map(str::to_owned)
                 .collect::<Vec<_>>()
@@ -4697,7 +4634,6 @@ struct UnifiedHunk {
 }
 
 /// Applies a bounded UTF-8 unified patch as one atomic workspace transaction.
-/// System Git, a Git object database, and host-path writes are never involved.
 pub async fn apply_git_patch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
     patch: &[u8],
@@ -4976,9 +4912,6 @@ pub struct GitDiffCounts {
 }
 
 /// Compares exact generations using the ignore policy belonging to each side.
-///
-/// Unlike commit capture, this read-only operation never forks or pins a
-/// workspace. Only ignore files on changed paths are read.
 pub async fn git_compatible_diff_counts<A, O>(
     from: &Generation<A, O>,
     to: &Generation<A, O>,
@@ -5164,12 +5097,7 @@ where
     Ok((entries, nested_policies))
 }
 
-/// Captures the exact eligible compatibility tree without changing the live
-/// workspace. Already tracked paths remain eligible even when newly ignored.
-///
-/// The filtered snapshot is a cheap SDK fork. Its publication and retention
-/// identities derive from `operation_id`, so interrupted captures resume
-/// without rescanning or duplicating history.
+/// Captures the exact eligible compatibility tree without changing the live workspace.
 pub async fn capture_git_compatible_generation<A, O>(
     workspace: &Workspace<A, O>,
     policy: &GitIgnorePolicy,
@@ -5185,8 +5113,7 @@ where
         .await
 }
 
-/// Captures an ignore-aware compatibility tree from one exact immutable
-/// workspace generation. Later workspace updates cannot leak into the result.
+/// Captures an ignore-aware compatibility tree from one exact immutable workspace generation.
 pub async fn capture_git_compatible_generation_at<A, O>(
     workspace: &Workspace<A, O>,
     generation: GenerationId,
@@ -5296,12 +5223,7 @@ where
     })
 }
 
-/// Incrementally captures only paths changed since the preceding live
-/// generation, starting from the preceding filtered compatibility snapshot.
-///
-/// Equal Merkle subtrees are skipped. A `.gitignore` change deliberately
-/// falls back to an exact capture because eligibility may have changed for an
-/// otherwise unchanged path.
+/// Incrementally captures only paths changed since the preceding live generation, starting from the preceding filtered compatibility snapshot.
 #[allow(
     clippy::too_many_lines,
     reason = "eligibility and the single atomic path application form one operation"
@@ -5408,6 +5330,7 @@ where
             &eligible,
             capture_head.id(),
             IdempotencyKey::from_bytes(apply_bytes),
+            crate::PublicationPermit::Unrestricted,
         )
         .await?
     {
@@ -5470,9 +5393,7 @@ struct GitIgnoreRule {
 }
 
 impl GitIgnorePolicy {
-    /// Identifies changed, newly ignored paths whose child-side binding wins
-    /// during compatibility publication. Already tracked paths retain normal
-    /// filesystem merge behavior.
+    /// Identifies changed, newly ignored paths whose child-side binding wins during compatibility publication.
     pub async fn newly_ignored_paths_at<A, O>(
         &self,
         generation: &Generation<A, O>,
@@ -5779,7 +5700,7 @@ mod tests {
     fn workspace() -> WorkspaceId {
         WorkspaceId::derive(
             [9; 16],
-            &WorkspaceName::new("repo").expect("valid test workspace"),
+            &WorkspaceName::new("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid test workspace").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value
     }
@@ -6652,7 +6573,7 @@ mod tests {
         let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
         let foreign_workspace = WorkspaceId::derive(
             [8; 16],
-            &WorkspaceName::new("foreign").expect("valid foreign workspace"),
+            &WorkspaceName::new("foreign", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid foreign workspace").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         let executor = TestExecutor::returning(GitFilesystemResult::Applied {
@@ -6702,7 +6623,7 @@ mod tests {
         };
         let foreign = WorkspaceId::derive(
             [8; 16],
-            &WorkspaceName::new("foreign-result").expect("valid workspace"),
+            &WorkspaceName::new("foreign-result", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid workspace").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         assert!(matches!(
@@ -6754,7 +6675,7 @@ mod tests {
         let mut state = GitCompatState::new("main", workspace());
         let foreign = WorkspaceId::derive(
             [8; 16],
-            &WorkspaceName::new("foreign-persisted-tree").expect("workspace name"),
+            &WorkspaceName::new("foreign-persisted-tree", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("workspace name").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         let commit = GitCommit::new_with_metadata(
@@ -6907,7 +6828,7 @@ mod tests {
         ));
         let child = WorkspaceId::derive(
             [9; 16],
-            &WorkspaceName::new("feature-run").expect("valid workspace name"),
+            &WorkspaceName::new("feature-run", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid workspace name").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         let branch_executor = TestExecutor::returning(GitFilesystemResult::Forked {
@@ -6955,7 +6876,7 @@ mod tests {
             .expect("initial commit");
         let child = WorkspaceId::derive(
             [9; 16],
-            &WorkspaceName::new("recover-run").expect("valid workspace name"),
+            &WorkspaceName::new("recover-run", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid workspace name").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         repository
@@ -7048,7 +6969,7 @@ mod tests {
 
         let child = WorkspaceId::derive(
             [9; 16],
-            &WorkspaceName::new("merge-control").expect("valid workspace name"),
+            &WorkspaceName::new("merge-control", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid workspace name").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         let continued = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
@@ -7209,7 +7130,7 @@ mod tests {
         )
         .await
         .expect("pinned capture");
-        assert!(captured.generation.stat("/published.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok());
+        assert!(captured.generation.stat("/published.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.is_ok());
         assert!(captured.generation.stat("/later.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     }
 
@@ -7306,8 +7227,8 @@ mod tests {
         .await
         .expect("capture");
         assert!(captured.generation.stat("/src/drop.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
-        assert!(captured.generation.stat("/src/keep.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok());
-        assert!(captured.generation.stat("/outside.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok());
+        assert!(captured.generation.stat("/src/keep.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.is_ok());
+        assert!(captured.generation.stat("/outside.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.is_ok());
     }
 
     #[tokio::test]
@@ -7837,8 +7758,8 @@ mod tests {
             Some(previous_capture.generation.workspace_id()),
             "incremental capture must fork from the prior filtered capture"
         );
-        let reopened = crate::DistributedFs::new(fs.clone(), state_store)
-            .workspace(captured.generation.workspace_id())
+        let reopened = crate::WorkspaceGraph::new(state_store)
+            .workspace(&fs, captured.generation.workspace_id(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await
             .expect("reopen filtered capture from durable lineage");
         reopened
@@ -7918,7 +7839,7 @@ mod tests {
         .await
         .expect("capture");
         assert!(captured.generation.stat("/src/ignored.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
-        assert!(captured.generation.stat("/src/.gitignore", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok());
+        assert!(captured.generation.stat("/src/.gitignore", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.is_ok());
     }
 
     #[tokio::test]
@@ -8174,7 +8095,7 @@ mod tests {
         };
         let source = WorkspaceId::derive(
             [0x51; 16],
-            &WorkspaceName::new("publication-source").expect("workspace name"),
+            &WorkspaceName::new("publication-source", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("workspace name").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         repository
@@ -8328,7 +8249,7 @@ mod tests {
         assert!(switch);
         let child = WorkspaceId::derive(
             [9; 16],
-            &WorkspaceName::new("feature").expect("valid workspace name"),
+            &WorkspaceName::new("feature", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid workspace name").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         repository

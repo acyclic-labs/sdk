@@ -6,8 +6,7 @@ pub(super) fn require_family(
     bound: &NativeMaterializationWork, work: &NativeMaterializationWork,
 ) -> Result<()> {
     if !bound.shares_ledger(work) {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-            reason: "native provider work differs from its original binding" });
+        return Err(boundary(crate::wire::ErrorCode::Conflict, "native provider work differs from its original binding"));
     }
     Ok(())
 }
@@ -24,7 +23,7 @@ pub(super) fn require_view_family<P: StreamProvider>(
 pub(super) fn copy_plan_with_io(
     plan: &TaskEffectPlan, io: &PreparationIo,
 ) -> Result<TaskEffectPlan> {
-    let mut observer = io.history_io();
+    let mut observer = io;
     Ok(TaskEffectPlan {
         provider: crate::store::history::HistoryIo::clone_text(&mut observer, &plan.provider)?,
         guarantee: plan.guarantee,
@@ -37,7 +36,7 @@ pub(super) fn copy_plan_with_io(
 pub(super) fn shared_custody(
     mut custody: NativeAllocation, work: &NativeMaterializationWork,
 ) -> Result<Arc<NativeAllocation>> {
-    let mut slot = match work.claim(std::mem::size_of::<NativeAllocation>() as u64) {
+    let mut slot = match work.claim(std::mem::size_of::<NativeAllocation>() as u64, u64::from((std::mem::size_of::<NativeAllocation>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED) {
         Ok(slot) => slot,
         Err(cause) => return Err(Error::NativeWork { cause, custody: Some(custody) }),
     };
@@ -54,7 +53,7 @@ fn arc<T>(value: T, io: &PreparationIo) -> Result<Arc<T>> {
     Ok(Arc::new(value))
 }
 
-impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
+impl<P: StreamProvider> NativeProcessProvider<P> {
     /// Binds this exact prepared namespace to its original finite work family.
     pub fn new<'a>(
         owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: &'a TaskEffectPlan,
@@ -69,8 +68,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let plan = copy_plan_with_io(plan, &io)?;
             use crate::filesystem::native_contract::validation_error;
             require_view_family(view.as_ref(), work)?;
-            owner.verify_with_native_work(false, work).await?;
-            owner.require_effect_grants(&plan.provider, false, &mut Some(&mut io.history_io()))?;
+            owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+            owner.require_effect_grants(&plan.provider, false, &mut Some(&mut &io))?;
             owner.validate_input_file(&plan.request, Some(&io))?;
             owner.validate_input_file(&plan.result_schema, Some(&io))?;
             if authority.history_limits.maximum_events == 0 || authority.history_limits.maximum_bytes == 0 {
@@ -90,9 +89,9 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             drop(bytes);
             request.view.validate_with_io(Some(&io))?;
             for mapping in &request.view.volumes {
-                owner.require_volume_grant_with_native_work(&mapping.volume, crate::conversation::VolumeOperation::Read, work)?;
+                owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
                 if mapping.writable {
-                    owner.require_volume_grant_with_native_work(&mapping.volume, crate::conversation::VolumeOperation::Write, work)?;
+                    owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
                 }
             }
             request.validate(view.manifest(), &io)?;
@@ -118,7 +117,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let result_schema = crate::filesystem::retain_decoded(decoded);
             drop(schema);
             for operation in [crate::conversation::VolumeOperation::Write, crate::conversation::VolumeOperation::Read] {
-                owner.require_volume_grant_with_native_work(authority.results.volume(), operation, work)?;
+                owner.require_volume_grant(authority.results.volume(), operation, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
             }
             let approval_digest = request.approval_digest_with_io(owner.task_binding().0, command, Some(&io))?;
             authority.approvals.verify_with_native_work(approval, command, approval_digest, work)?.await?;
@@ -126,7 +125,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 view, request: arc(request, &io)?, result_schema: arc(result_schema, &io)?, approval_digest,
             };
             let provider = assemble(io, owner, command, plan, Some(invocation), approval, authority, work)?;
-            provider.owner.verify_with_native_work(false, work).await?;
+            provider.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             require_view_family(provider.invocation()?.view.as_ref(), work)?;
             Ok(provider)
         })
@@ -134,19 +133,18 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
 }
 
 
-pub(super) fn assemble<P: StreamProvider + 'static>(
+pub(super) fn assemble<P: StreamProvider>(
     io: PreparationIo, owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: TaskEffectPlan,
     invocation: Option<Invocation<P>>, approval: InteractionId,
     authority: NativeProcessAuthority, work: &NativeMaterializationWork,
 ) -> Result<NativeProcessProvider<P>> {
     let effect_id = crate::effect_host::task_effect_id(owner.task_binding().0, command,
-        &mut Some(&mut io.history_io()))?;
-    let history = HistoryReader::new_with_work(
-        &owner.stream(), authority.verifier.audience(), &authority.verifier, Some(&mut io.history_io()))?;
+        &mut Some(&mut &io))?;
+    let history = HistoryReader::new(&owner.stream(), authority.verifier.audience(), &authority.verifier, &mut Some(&mut &io))?;
     let plan = arc(plan, &io)?;
     let authority = arc(authority, &io)?;
     let history = arc(history, &io)?;
-    let supervisor = arc(NativeSupervisorControl { active: Mutex::new(None), completion: tokio::sync::Notify::new(), process: Mutex::new(None) }, &io)?;
+    let supervisor = arc(NativeSupervisorControl { active: Mutex::new(None), completion: tokio::sync::Notify::new() }, &io)?;
     let retained = io.owned_bytes()?;
     Ok(NativeProcessProvider { owner, command, plan, invocation, approval, authority,
         supervisor, effect_id, history, _arc_custody: None,

@@ -1,5 +1,6 @@
 
 use crate::{pi_fork::tests::Fixture, pi_native_host::PiNativeCommandHost, pi_owner::PiOwnerConfig};
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_native::{PiNativeHostRuntime, PI_NATIVE_VERSION};
 use acyclic_fs::CancellationToken;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
@@ -53,7 +54,7 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
     let task = prepared.binding.task_id;
     let expected_binding = prepared.binding.clone();
     let expected_snapshot = prepared.native_lazy;
-    let original_work = prepared.original_work().clone();
+    let original_work = prepared._metadata_custody.work().clone();
     host.register_prepared(prepared).await.unwrap();
     let entry = host.find_entry(task).unwrap();
     assert!(entry.native_custody.work().shares_ledger(&original_work));
@@ -101,7 +102,7 @@ async fn actual_registration_denial_never_allocates_a_native_entry() {
             acyclic_fs::WorkError::BudgetExceeded { counter: "allocation_operations", .. }), ..
     }));
     assert!(host.find_entry(task).is_none());
-    let original = prepared.original_work().clone();
+    let original = prepared._metadata_custody.work().clone();
     original.cancellation().cancel();
     let error = host.register_prepared(prepared).await.err().unwrap();
     assert!(matches!(error, acyclic_harness::Error::NativeWork {
@@ -143,7 +144,7 @@ async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
         .journal_owner_with_native_work(task, &fence, &query_work).await.unwrap()
         .into_native_shared(&query_work).unwrap();
     let context = fixture.runtime.runtime.task_context_with_native_work(task, &fence, &query_work).await.unwrap();
-    host.hydrate_child(&context, &owner, &fence, crate::pi_root_provider::allocation_budget(),
+    host.hydrate_child(&context, &owner, &fence,
         &query_cancellation, &query_work).await.unwrap();
     assert_eq!(host.binding(task, &query_work).unwrap().unwrap().0, original.binding);
     assert_eq!(host.frozen_source(task), Some(original.frozen_source));

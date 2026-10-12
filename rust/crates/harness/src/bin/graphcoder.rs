@@ -218,14 +218,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             { let _ = path; return Err(Error::Unsupported("native scenario requires filesystem-local,native-execution features".into()).into()); }
         }
     };
-    let mut backend = Some(backend);
     let handshake = wire::client_frame::Frame::Handshake(wire::HandshakeRequest {
         protocol: Some(current_protocol()), required: None,
     });
-    let api = backend.as_ref().ok_or_else(|| Error::Conflict("session missing".into()))?;
+    let api = &backend;
     terminal::dispatch(api.api(), handshake).await?;
     let mut cursor = api.cursor();
     let fixture_mode = matches!(api, Backend::Fixture(_));
+    let mut backend = Some(backend);
     let stdin = std::io::stdin();
     let stdin_is_terminal = stdin.is_terminal();
     let interactive = !headless && stdin_is_terminal;
@@ -281,9 +281,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         if command == "/help" { write!(output, "{HELP}")?; continue; }
         if command.is_empty() { continue; }
         if let Some(back) = command.strip_prefix("/back ") {
-            let result = back.parse::<usize>().ok().and_then(|back| {
-                if back < terminal::MAX_DISPLAY_PAGES { scrollback.page(back) } else { None }
-            });
+            let result = back.parse::<usize>().ok().and_then(|back| scrollback.page(back));
             if let Some(page) = result { write!(output, "{page}")?; }
             else { writeln!(output, "display page unavailable; request an explicit archival page")?; }
             continue;
@@ -494,8 +492,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let binding = native.caller_binding(request.caller).await?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
                 &binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
-            let reader = acyclic_harness::store::HistoryReader::new(
-                &native.stream, &binding.authority, verifier)?;
+            let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &binding.authority, &(verifier), &mut None)?;
             let cursor = match request.cursor {
                 Some(cursor) if cursor.authority == binding.authority => cursor,
                 Some(_) => return Err(Error::Unauthorized("history cursor belongs to a different caller conversation".into())),
@@ -504,7 +501,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let page = reader.read_page(&cursor, acyclic_harness::store::HistoryReadLimits {
                 maximum_events: terminal::MAX_PAGE_EVENTS as u32,
                 maximum_bytes: terminal::MAX_FRAME_BYTES as u64,
-            }).await?;
+            }, None).await?;
             return Ok(format!("history-json={}\n", serde_json::to_string(&page)
                 .map_err(|error| Error::Invalid(error.to_string()))?));
         }
@@ -531,7 +528,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
                 .ok_or_else(|| Error::Unsupported("original parent history verifier unavailable".into()))?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
                 &parent.issuer, parent.key, parent.authority.clone()).verifier(&mut None).expect("verifier copy");
-            let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &parent.authority, verifier)?;
+            let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &parent.authority, &(verifier), &mut None)?;
             let messages = reader.inherited_conversation_page(
                 &request.seed, child.agent()?, request.after_sequence,
                 acyclic_harness::store::HistoryReadLimits {

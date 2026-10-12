@@ -334,7 +334,7 @@ fn cursor_codec_rejects_profile_and_whole_path_bounds_before_allocation()
         );
         let error = NamespacePath::decode_cursor_with_accounting(
             &mut decoder, profile, bounded, &mut accounting, &cancellation,
-        ).expect_err("invalid borrowed shape must fail");
+        ).err().expect("invalid borrowed shape must fail");
         assert!(matches!(error, crate::FsError::Path(super::super::PathLookupError::NamespacePath(error)) if error == expected));
         drop(accounting);
         assert_eq!(work.allocation_operations, 0);

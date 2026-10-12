@@ -837,7 +837,7 @@ mod tests {
     fn file() -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("file-preflight", "filesystem", "1")?,
+                ProviderRef::new("file-preflight".into(), "filesystem".into(), "1".into(), &mut None)?,
                 "private",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([61; 16])),

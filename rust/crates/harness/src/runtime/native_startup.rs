@@ -9,12 +9,11 @@ pub(super) type StartupIo<'a> = Option<&'a ()>;
 
 pub(super) fn error(
     io: StartupIo<'_>, code: crate::wire::ErrorCode, reason: &'static str,
-    ordinary: impl FnOnce() -> Error,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if io.is_some() { return Error::NativeBoundary { code, reason }; }
-    let _ = (io, code, reason);
-    ordinary()
+    let _ = io;
+    scope_metadata_boundary(&None, code, reason)
 }
 
 pub(super) fn item(io: StartupIo<'_>, bytes: usize) -> Result<()> {

@@ -48,13 +48,9 @@ impl SessionController {
                 Ok(Self::from(host))
             }
             PluginTaskBinding::Pi(_) => {
-                // Admit the existing actor box payload before Box::new. This
-                // logical ownership claim is not a fabricated SDK allocator event.
-                let mut custody = work.retain_owned(std::mem::size_of::<PiSession>() as u64)
+                let mut custody = work.claim(std::mem::size_of::<PiSession>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
                 let session = PiSession::open(directory, loaded.0.0, loaded.0.1, resources, work).await?;
-                // The original state was moved, not copied: transfer its
-                // exclusive claim into the actor while every field is live.
                 custody.absorb(&mut loaded.1)
                     .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
                 Self::Pi(Box::new(session)).retain_original_input(custody)
@@ -100,8 +96,7 @@ impl SessionController {
         }
     }
 
-    /// Transfer the real startup metadata admission into its actual actor owner.
-    /// Failure destroys the controller's DTOs before either allocation guard.
+    /// Retains startup metadata until the controller's data drops.
     pub(crate) fn retain_original_input(self, custody: acyclic_fs::NativeAllocation)
         -> acyclic_harness::Result<Self>
     {
@@ -158,8 +153,7 @@ pub(crate) struct PiSession {
     native_jobs: BTreeMap<TaskId, (tokio::task::JoinHandle<acyclic_harness::Result<(
         Option<acyclic_harness::filesystem::TaskWorkerAttempt>, acyclic_fs::NativeAllocation,
     )>>, acyclic_fs::NativeAllocation)>,
-    // Declaration order keeps startup-owned data alive before its actual guard
-    // is released, including cancellation/error destruction of the actor.
+    // Drop startup data before its allocation guard.
     native_startup_custody: Option<acyclic_fs::NativeAllocation>,
     native_pending_backing_custody: Option<acyclic_fs::NativeAllocation>,
     // Incremental DTOs belong to their original commands, not startup's ledger.
@@ -186,12 +180,9 @@ struct PiStatusResponse<'a> {
     operation: Option<&'a Value>,
 }
 
+/// Mailbox acknowledgement body.
 #[derive(Serialize)]
-#[serde(untagged)]
-enum PiScopedBody<'a, T> {
-    Fields(&'a T),
-    Acknowledgement { acknowledgement: &'a T },
-}
+pub(crate) struct PiAcknowledgement<T> { pub(crate) acknowledgement: T }
 
 #[derive(Serialize)]
 struct PiScopedResponse<'a, T> {
@@ -199,26 +190,20 @@ struct PiScopedResponse<'a, T> {
     native_session: &'a str,
     caller_task: TaskId,
     #[serde(flatten)]
-    body: PiScopedBody<'a, T>,
+    body: &'a T,
 }
 
 /// Finite native replies carry their actual caller, not a fabricated graph.
 pub(crate) fn guarded_scoped_reply<T: Serialize>(
     session: &str, native_session: &str, caller: TaskId,
-    mut reply: (T, acyclic_fs::NativeAllocation), acknowledgement: bool,
+    mut reply: (T, acyclic_fs::NativeAllocation),
 ) -> acyclic_harness::Result<ControlDispatchResponse> {
-    let body = if acknowledgement {
-        PiScopedBody::Acknowledgement { acknowledgement: &reply.0 }
-    } else {
-        PiScopedBody::Fields(&reply.0)
-    };
-    let response = PiScopedResponse { session, native_session, caller_task: caller, body };
+    let response = PiScopedResponse { session, native_session, caller_task: caller, body: &reply.0 };
     let encoded = pi_root_provider::guarded_pi_value(
         &response, MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8, reply.1.work(),
     );
     drop(reply.0);
-    // Keeping each Value and guard in a tuple also preserves that destruction
-    // order if the SDK encoder or same-ledger transfer rejects this response.
+    // Drop each Value before its allocation guard.
     let mut encoded = encoded?;
     encoded.1.absorb(&mut reply.1).map_err(|cause| RootError::NativeWork { cause, custody: None })?;
     Ok((encoded.0, Some(encoded.1)))
@@ -245,8 +230,6 @@ impl PiSession {
             &resources.private_state_root, &relative_directory.0, work,
         )?;
         owner.validate_root(binding, work)?;
-        // Recovery never bootstraps a missing task provider. Original admission
-        // authentication below still rejects an empty or unrelated history.
         let stream_path = directory.join("stream");
         if !stream_path.is_dir() {
             return Err(RootError::Invalid("Pi original task provider is missing".to_owned()));
@@ -291,12 +274,6 @@ impl PiSession {
         Ok(owned.0)
     }
 
-    pub(super) fn replace_native_pending_backing_custody(
-        &mut self, custody: acyclic_fs::NativeAllocation,
-    ) -> Option<acyclic_fs::NativeAllocation> {
-        self.native_pending_backing_custody.replace(custody)
-    }
-
     pub(super) fn prepare_native_catalog_slot(
         &mut self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<()> {
@@ -309,20 +286,10 @@ impl PiSession {
                 code: acyclic_harness::wire::ErrorCode::Invalid,
                 reason: "Pi native catalog capacity overflow",
             })?;
-        let bytes = capacity.checked_mul(std::mem::size_of::<(
-            TaskId, NativeCatalogComponent, acyclic_fs::NativeAllocation,
-        )>()).ok_or(RootError::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Invalid,
-            reason: "Pi native catalog backing allowance overflow",
-        })?;
-        // The real new backing is funded in full before its allocation attempt.
-        // Its ledger can differ from the old backing and every resident DTO.
-        let custody = work.claim(bytes as u64)
-            .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
-        let replacement = Vec::with_capacity(capacity);
+        let replacement = pi_native::pi_native_vec(capacity, work)?;
         let old = (
-            std::mem::replace(&mut self.native_catalog_custody, replacement),
-            self.native_catalog_backing_custody.replace(custody),
+            std::mem::replace(&mut self.native_catalog_custody, replacement.0),
+            self.native_catalog_backing_custody.replace(replacement.1),
         );
         self.native_catalog_custody.extend(old.0);
         // extend consumes and physically frees the old Vec before this guard.
@@ -353,8 +320,7 @@ impl PiSession {
         Some(self.native_catalog_custody.swap_remove(index).2)
     }
 
-    /// Drives the original allocation command, then activates only its signed,
-    /// immutable successful output and actual provider-created resources.
+    /// Runs allocation and activates its authenticated output.
     async fn prepare_root(&mut self, work: &acyclic_fs::NativeMaterializationWork) -> acyclic_harness::Result<()> {
         self.prepare_root_with_allocation(true, work).await
     }
@@ -375,8 +341,7 @@ impl PiSession {
             return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root has no original task binding" });
         };
         let preparation = pi_root_inputs::PiRootPreparation::load(&self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.filesystem, binding, pi_recovery::PiTaskOrigin::RootState(&self.state), None, original_native_work).await?;
-        // Restore the original completed creator before running any Root
-        // checkpoint: a cold Root may already be waiting on a child command.
+        // Restore the creator before a checkpoint that may await a child.
         let observed = pi_root_provider::observe_root_allocation(
             Arc::clone(&owner), &self.resources, self.filesystem.clone(), self.stream.clone(),
             preparation, original_native_work,
@@ -403,9 +368,7 @@ impl PiSession {
                         None
                     }
                 };
-                // The producer's attempt custody covers lease/input metadata.
-                // Native failures carry their own intrinsic cause custody.
-                // Drop all non-error attempt DTOs before releasing that guard.
+                // Drop attempt metadata before its allocation guard.
                 drop(progress.1);
                 if let Some(error) = unresolved {
                     return Err(error);
@@ -502,18 +465,17 @@ impl PiSession {
         }
         self.roots.extend(handles);
         for (key, handle) in &self.roots {
-            let rebound = handle.workspace.rebind_source_with_native_work(original_native_work)
+            let rebound = handle.workspace.rebind_source(&acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(original_native_work, original_native_work.cancellation()).map_err(|source| RootError::NativeSource { source, custody: None })?)
                 .await.map_err(|source| RootError::NativeSource { source, custody: None })?;
             let original = allocation.0.1.roots.get_mut(key).ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi retained root handle is not selected by allocation" })?;
-            if rebound.0.source.identity != original.source_identity
-                || rebound.0.source.epoch < original.source_epoch
+            if rebound.as_state().source.identity != original.source_identity
+                || rebound.as_state().source.epoch < original.source_epoch
             {
                 return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root observation does not descend from original creation" });
             }
             // Only the genuine SDK rebind may advance the admitted creation epoch.
-            original.source_epoch = rebound.0.source.epoch;
-            drop(rebound.0);
-            drop(rebound.1);
+            original.source_epoch = rebound.as_state().source.epoch;
+            drop(rebound);
         }
         let PluginTaskBinding::Pi(binding) = &mut self.state.task_binding else {
             return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root binding changed during allocation" });
@@ -523,12 +485,10 @@ impl PiSession {
             self.state.roots.get_mut(&key).ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi allocated root disappeared" })?.allocation = RootAllocation::Created(creation);
         }
         self.slots.save_with_native_work(&self.resources.private_state_root, &self.relative_directory, &self.state, Survives::PowerLoss, original_native_work)?;
-        let distributed = DistributedFs::new(self.resources.fs.clone(), self.resources.store.clone());
+
         let PluginTaskBinding::Pi(binding) = &self.state.task_binding else {
             return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root binding changed during allocation" });
         };
-        // Admit the ordinary actor-to-SDK context DTO backing before copying.
-        // This logical retention is not a fabricated SDK allocation operation.
         let context_bytes = self.roots.keys().try_fold(
             self.roots.len() as u64 * std::mem::size_of::<WorkspaceContextRoot>() as u64,
             |bytes, key| {
@@ -540,12 +500,12 @@ impl PiSession {
                     })
             },
         )?;
-        let mut context_custody = original_native_work.retain_owned(context_bytes)
+        let mut context_custody = original_native_work.claim(context_bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
         let mut context_roots = Vec::with_capacity(self.roots.len());
         for (key, handle) in &self.roots {
             let root = self.state.roots.get(key).ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi created root disappeared" })?;
-            let lineage = distributed.lineage().register_root_with_native_work(
+            let lineage = WorkspaceGraph::new(self.resources.store.clone()).register_root_with_native_work(
                 handle.workspace.workspace(), original_native_work, original_native_work.cancellation(),
             ).await.map_err(|(source, custody)| RootError::NativeLineage { source, custody })?.into_parts();
             drop(lineage.0);
@@ -559,15 +519,11 @@ impl PiSession {
                 workspace_name: workspace_name.0,
                 parent_workspace_id: None, mount_path: None,
             });
-            // Move the genuine funded name into the context vector, retaining
-            // its same-ledger quota until that vector's final registration use.
             if let Err(cause) = context_custody.absorb(&mut workspace_name.1) {
                 drop(context_roots);
                 return Err(RootError::NativeWork { cause, custody: None });
             }
         }
-        // Refine the conservative admission to this sole transferred DTO's
-        // actual deep backing, never the source/owner handles held separately.
         let actual_context_bytes = context_roots.iter().try_fold(
             context_roots.capacity() as u64 * std::mem::size_of::<WorkspaceContextRoot>() as u64,
             |bytes, root| {
@@ -581,16 +537,13 @@ impl PiSession {
         )?;
         context_custody.resize_retained(actual_context_bytes)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
-        let context = distributed.contexts().register_root_with_native_work(
+        let context = WorkspaceContextRegistry::new(self.resources.store.clone()).register_root_with_native_work(
             WorkspaceContextId::from_bytes(self.state.root_context_id), (context_roots, context_custody),
             original_native_work, original_native_work.cancellation(),
         ).await.map_err(|(source, custody)| RootError::NativeContext { source, custody })?.into_parts();
         drop(context.0);
         drop(context.1);
         self.state.pending_root_registration = false;
-        // All variable-size observed allocation DTOs are now consumed; created
-        // state contains only fixed identities. The original source guards stay
-        // resident in their real physical handles, not a Pi retention map.
         drop(allocation.0.0);
         drop(allocation.1);
         self.slots.save_with_native_work(&self.resources.private_state_root, &self.relative_directory, &self.state, Survives::PowerLoss, original_native_work)
@@ -696,8 +649,6 @@ impl PiSession {
         struct Preparation<'a> {
             operation: &'a str, state: &'a str, child: Child<'a>, source: Source,
         }
-        // Planned paths are ordinary service transport metadata, not SDK source
-        // bodies. The SDK admits the actual outgoing Value before any growth.
         pi_root_provider::guarded_pi_value(&Preparation {
             operation: &sdk_operation, state: "preparing",
             child: Child { id: &alias, task, cwd: &paths.cwd,
@@ -757,7 +708,7 @@ impl PiSession {
         let work = self.mail_work(caller, owner, query_work).await?;
         let operation = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation, &work)?;
         let message = arguments.get("message").and_then(Value::as_str).ok_or_else(|| RootError::Invalid("Pi mail message must be a string".to_owned()))?;
-        let _envelope_custody = work.retain_owned(message.len() as u64)
+        let _envelope_custody = work.claim(message.len() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
         let envelope = pi_mail::PiMailEnvelope { kind, message: message.to_owned() };
         if caller == owner.policy().root_task {
@@ -896,13 +847,13 @@ impl PiSession {
                     let committed = self.spawn_commit(caller_task, &request.arguments, &owner, &query_work).await?;
                     let binding = self.binding(caller_task)?;
                     return guarded_scoped_reply(&self.state.root_session_id, &binding.native_session_id,
-                        caller_task, committed, false);
+                        caller_task, committed);
                 }
                 "TaskInspect" | "TaskDiff" | "TaskImport" | "TaskWriteback" => {
                     let selected = self.selected_control(caller_task, event, &request.arguments, &owner, &query_work).await?;
                     let binding = self.binding(caller_task)?;
                     return guarded_scoped_reply(&self.state.root_session_id, &binding.native_session_id,
-                        caller_task, selected, false);
+                        caller_task, selected);
                 }
                 "TaskWritebackStatus" => {
                     return self.writeback_status(caller_task, &request.arguments, &query_work).await;
@@ -918,7 +869,7 @@ impl PiSession {
                     ).await?;
                     let binding = self.binding(caller_task)?;
                     return guarded_scoped_reply(&self.state.root_session_id, &binding.native_session_id,
-                        caller_task, acknowledgement, true);
+                        caller_task, (PiAcknowledgement { acknowledgement: acknowledgement.0 }, acknowledgement.1));
                 }
                 "TaskReceive" => {
                     let after = request.arguments.get("after").and_then(Value::as_u64).ok_or_else(|| RootError::Invalid("Pi receive requires an exact mailbox cursor".to_owned()))?;
@@ -928,7 +879,7 @@ impl PiSession {
                         &self.runtime.runtime, binding, after, 1, &work,
                     ).await?;
                     return guarded_scoped_reply(&self.state.root_session_id, &binding.native_session_id,
-                        caller_task, received, false);
+                        caller_task, received);
                 }
                 "TaskWait" => {
                     let target = self.alias_task(&string(&request.arguments, "id").map_err(RootError::Invalid)?)?;
@@ -940,7 +891,7 @@ impl PiSession {
                         &work,
                     ).await?;
                     return guarded_scoped_reply(&self.state.root_session_id, &binding.native_session_id,
-                        caller_task, observed, false);
+                        caller_task, observed);
                 }
                 "TaskStatus" => {}
                 "TaskCancel" => {
@@ -956,8 +907,6 @@ impl PiSession {
         } else {
             return Err(RootError::Invalid("Pi workspace operations require their owning task runtime".to_owned()));
         }
-        // Observe the real complete SDK task graph under this request's original
-        // query scope. Borrow its DTOs; no second status Vec or boxed outcome.
         let mut observations = pi_recovery::observe_pi_session(
             &self.runtime.runtime, &self.state, &query_work,
         ).await?;

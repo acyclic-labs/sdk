@@ -22,7 +22,7 @@ use crate::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::Arc;
 
 mod native_stock;
@@ -35,7 +35,7 @@ pub(crate) use native_stock::{stock_vec_push, stock_key, stock_string_push,
 pub use native_stock::NativeStockExecutor;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use native_stock::{
-    native_boundary, replay_execution_with_native_work, stage_json_with_native_work, load_json_with_native_work,
+    replay_execution_with_native_work, stage_json_with_native_work, load_json_with_native_work,
     retained_model_step_with_native_work, completed_tool_projection_with_native_work,
 };
 
@@ -332,7 +332,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _operation_id: OperationId, _idempotency_key: &'a str,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.remaining()?;
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
             reason: "native original staged-payload observation is unavailable" })
     }
@@ -434,7 +434,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _operation: OperationId, _after: u64, _maximum: u32,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<ExecutionRecord>, acyclic_fs::NativeAllocation)>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution replay is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution replay is unavailable" })
     }
 
     /// Appends borrowed paid metadata; a custom journal must explicitly audit this producer.
@@ -443,7 +443,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _operation: OperationId, _key: &'a str, _event: &'a ExecutionEvent,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution append is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution append is unavailable" })
     }
 
     /// Claims exactly the same journal tail; false preserves lost-claim semantics.
@@ -452,7 +452,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _operation: OperationId, _tail: u64, _key: &'a str, _event: &'a ExecutionEvent,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, bool>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native atomic execution append is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native atomic execution append is unavailable" })
     }
 
     /// Stages borrowed immutable bytes before copying keys, metadata or provider input.
@@ -461,7 +461,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _operation: OperationId, _key: &'a str, _bytes: &'a [u8], _media: &'static str,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution staging is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution staging is unavailable" })
     }
 
     /// Resolves exact journal-owner bytes without substituting a remaining budget.
@@ -469,7 +469,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn load_with_native_work<'a>(
         &'a self, _reference: &'a FileRef, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution payload resolution is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution payload resolution is unavailable" })
     }
 
     /// Verifies the original user file authority before native turn admission.
@@ -477,7 +477,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn verify_input_file_with_native_work<'a>(
         &'a self, _reference: &'a FileRef, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native turn file verification is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native turn file verification is unavailable" })
     }
 
     /// Verifies data and original option bindings through the audited native engine.
@@ -485,7 +485,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn verify_model_content_with_native_work<'a>(
         &'a self, _content: &'a ModelContent, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native model content verification is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native model content verification is unavailable" })
     }
 
     /// Verifies the previously committed canonical selection under its original owner.
@@ -494,7 +494,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _operation: OperationId, _selected: &'a SelectedModelContext,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native selected context verification is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native selected context verification is unavailable" })
     }
 
     /// Opens the same admitted durable interaction without reconstructing authority.
@@ -503,7 +503,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _id: InteractionId, _interaction: &'a Interaction,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution interaction opening is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution interaction opening is unavailable" })
     }
 
     /// Reads the original outcome with custody through its actual last use.
@@ -511,7 +511,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn interaction_outcome_with_native_work<'a>(
         &'a self, _id: InteractionId, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<InteractionOutcome>, acyclic_fs::NativeAllocation)>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution interaction outcome is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution interaction outcome is unavailable" })
     }
 }
 
@@ -766,7 +766,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
         _journal: &'a dyn ExecutionJournal, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (TurnOutput, acyclic_fs::NativeAllocation)>> {
         _work.remaining()?;
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native executor is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native executor is unavailable" })
     }
 }
 
@@ -1277,7 +1277,7 @@ impl StockExecution<'_> {
         }
         for invocation in calls {
             let projection = completed_tool_projection(
-                journal, &records, step, &invocation, &request.tools, Some(self.stock.limits), self.io(),
+                journal, &records, step, &invocation, &request.tools, self.stock.limits, self.io(),
             ).await?;
             stock_vec_push(&mut request.messages,
                 ModelMessage {
@@ -1349,8 +1349,7 @@ impl StockExecution<'_> {
                 || context.scope().run_limits() != self.stock.tool_scope.run_limits()
                 || context.scope().extensions() != self.stock.tool_scope.extensions()
                 || self.stock.task.as_ref().is_some_and(|(_, task, fence)| !context.original_task_binding_matches(*task, fence)) {
-                return Err(native_boundary(crate::wire::ErrorCode::Unauthorized,
-                    "stock task context differs from execution binding"));
+                return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock task context differs from execution binding" });
             }
             return Ok(());
         }
@@ -1375,11 +1374,10 @@ impl StockExecution<'_> {
     ) -> Result<Option<crate::runtime::ToolContext>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = self.native {
-            let work = self.native_work().ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage,
-                "native tool context has no original work"))?;
+            let work = self.native_work().ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "native tool context has no original work" })?;
             let mut tool_context = crate::runtime::ToolContext::new_with_native_work(
                 Arc::clone(native.context), invocation.operation_id, &invocation.call_id, work,
-            )?.with_native_stock_scope(&self.stock.tool_scope, self.stock.limits, work)?;
+            )?.with_native_scope(&self.stock.tool_scope, self.stock.limits, work)?;
             if let Some(interactions) = native.interactions {
                 tool_context = tool_context.with_native_interactions(Arc::clone(interactions), work)?;
             }
@@ -1427,16 +1425,7 @@ impl StockExecution<'_> {
         }
         let io = self.io();
         let contracts = self.context_pipeline().contracts(io)?;
-        let tools = {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(io) = io && let Some(work) = io.original_native_work() {
-                let (tools, custody) = self.stock.tools.definitions_with_native_work(work)?;
-                io.absorb_native_custody(custody)?;
-                tools
-            } else { self.stock.tools.definitions()? }
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            { self.stock.tools.definitions()? }
-        };
+        let tools = self.stock.tools.definitions(io)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let binding = self.native.map(|native| (native.context.context(), native.operation));
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -1530,14 +1519,15 @@ impl StockExecution<'_> {
                     phase = crate::obs::Empty,
                     items = crate::obs::Empty,
                 );
-                tracing::Instrument::instrument(
-                    async move {
-                        crate::obs::outcome(
-                            self.dispatch_model_step(journal, input, step, prior_messages, purpose).await,
-                        )
-                    },
-                    span,
-                )
+                let operation = span.clone();
+                span.scope(async move {
+                    let result = self.dispatch_model_step(journal, input, step, prior_messages, purpose).await;
+                    operation.record("outcome", if result.is_ok() { "ok" } else { "err" });
+                    if let Err(error) = &result {
+                        operation.record("error.kind", error.kind());
+                    }
+                    result
+                })
             }).map(futures::future::Either::Right);
         }
         let span = obs_span!(
@@ -1761,10 +1751,10 @@ impl StockExecution<'_> {
                     .await?
             }
             Some((reference, accounting)) => (
-                load_json::<ResponseProjection>(journal, reference, self.io()).await?.into_retained(),
+                retain_preparation(load_json::<ResponseProjection>(journal, reference, self.io()).await?),
                 match accounting {
                     Some(reference) => {
-                        Some(load_json::<ContextAccounting>(journal, reference, self.io()).await?.into_retained())
+                        Some(retain_preparation(load_json::<ContextAccounting>(journal, reference, self.io()).await?))
                     }
                     None => None,
                 },
@@ -1803,7 +1793,7 @@ impl StockExecution<'_> {
                 }
                 let source = match &projection.canonical {
                     Some(reference) => {
-                        load_json::<crate::context::Context>(journal, reference, self.io()).await?.into_retained()
+                        retain_preparation(load_json::<crate::context::Context>(journal, reference, self.io()).await?)
                     }
                     None => crate::context::copy_context(&projection.context, self.io())?,
                 };
@@ -1847,23 +1837,23 @@ impl StockExecution<'_> {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "response context was compacted more than once"));
         }
         if let Some((retained, proof, final_accounting)) = first {
-            let retained = load_json::<ResponseProjection>(journal, retained, self.io()).await?.into_retained();
-            let proof = load_json::<crate::context::CompactionReference>(journal, proof, self.io()).await?.into_retained();
+            let retained = retain_preparation(load_json::<ResponseProjection>(journal, retained, self.io()).await?);
+            let proof = retain_preparation(load_json::<crate::context::CompactionReference>(journal, proof, self.io()).await?);
             let final_accounting =
-                load_json::<ContextAccounting>(journal, final_accounting, self.io()).await?.into_retained();
+                retain_preparation(load_json::<ContextAccounting>(journal, final_accounting, self.io()).await?);
             crate::context::validate_projected_context(&retained.context, self.stock.limits, self.io())?;
             if retained.canonical != projection.canonical {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "compacted canonical source changed"));
             }
             if let Some(checkpoint) = &retained.checkpoint {
                 let envelope =
-                    load_json::<crate::context::CanonicalContextCheckpoint>(journal, checkpoint, self.io())
-                        .await?.into_retained();
+                    retain_preparation(load_json::<crate::context::CanonicalContextCheckpoint>(journal, checkpoint, self.io())
+                        .await?);
                 envelope.validate(self.stock.limits, self.io())?;
                 let source =
-                    load_json::<crate::context::Context>(journal, &envelope.source, self.io()).await?.into_retained();
+                    retain_preparation(load_json::<crate::context::Context>(journal, &envelope.source, self.io()).await?);
                 let base =
-                    load_json::<crate::context::Context>(journal, &envelope.retained, self.io()).await?.into_retained();
+                    retain_preparation(load_json::<crate::context::Context>(journal, &envelope.retained, self.io()).await?);
                 envelope.validate_projection(&source, &base, &proof, self.stock.limits, self.io())?;
                 if projection.canonical.as_ref() != Some(&envelope.source)
                     || envelope.operation_id != input.operation_id
@@ -2069,7 +2059,7 @@ impl StockExecution<'_> {
             retained,
             compaction: crate::model::clone_file(compaction, self.io())?,
         };
-        let proof = load_json::<crate::context::CompactionReference>(journal, compaction, self.io()).await?.into_retained();
+        let proof = retain_preparation(load_json::<crate::context::CompactionReference>(journal, compaction, self.io()).await?);
         envelope.validate_projection(context, compacted, &proof, self.stock.limits, self.io())?;
         Ok(Some(
             stage_json(
@@ -2479,7 +2469,7 @@ impl StockExecution<'_> {
         let call = self.settle_tool_call(journal, operation_id, step, invocation, prior_messages);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.native.is_some() {
-            return tracing::Instrument::instrument(call, span).await;
+            return span.scope(call).await;
         }
         traced(span, call).await
     }
@@ -2521,7 +2511,7 @@ impl StockExecution<'_> {
             _ => None,
         });
         if let Some(existing) = started
-            && load_json::<ToolInvocation>(journal, existing, self.io()).await?.into_retained() != invocation
+            && retain_preparation(load_json::<ToolInvocation>(journal, existing, self.io()).await?) != invocation
         {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict,
                 "tool call identity is bound to another invocation"));
@@ -2555,10 +2545,10 @@ impl StockExecution<'_> {
             return Err(Error::Indeterminate(operation_id));
         }
         let content = if let Some(completed) = completed_tool {
-            let result = load_json::<ToolResult>(journal, completed.0, self.io()).await?.into_retained();
+            let result = retain_preparation(load_json::<ToolResult>(journal, completed.0, self.io()).await?);
             crate::contract::validate_json_schema_value(&tool.definition.output_schema, &result.value, "tool output", self.io())?;
-            let projection = load_json::<Value>(journal, completed.1, self.io()).await?.into_retained();
-            stock_projection_content(&tool.definition, &projection, self.stock.limits, self.io())?
+            let projection = retain_preparation(load_json::<Value>(journal, completed.1, self.io()).await?);
+            tool.definition.validate_projection(&projection, self.stock.limits, self.io())?
         } else {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(progress) = self.settle_native_tool_policy(
@@ -2977,7 +2967,7 @@ impl Executor for StockExecutor {
         native_execution_supported(self, context, journal, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            io.absorb_native_custody(work.retain_owned(std::mem::size_of::<TurnOutput>() as u64)?)?;
+            io.absorb_native_custody(work.claim(std::mem::size_of::<TurnOutput>() as u64, 0, acyclic_fs::WorkCounters::default())?)?;
             let output = {
                 let session = native_session(self, context, input.operation_id, &io, self.reconciliation_only, None);
                 session.execute_progress(input, journal).await?.into_output()?
@@ -2993,12 +2983,8 @@ impl Executor for StockExecutor {
 pub(crate) async fn completed_tool_projection(
     journal: &dyn ExecutionJournal, records: &[ExecutionRecord], step: u32,
     expected: &ToolInvocation, tools: &[crate::tool::ToolDefinition],
-    limits: Option<Limits>, io: Option<&PreparationIo>,
+    limits: Limits, io: Option<&PreparationIo>,
 ) -> Result<crate::model::ToolResultContent> {
-    if stock_is_native(io) && limits.is_none() {
-        return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
-            "native tool projection requires its original limits"));
-    }
     let invocation = records
         .iter()
         .find_map(|record| match &record.event {
@@ -3010,7 +2996,7 @@ pub(crate) async fn completed_tool_projection(
             _ => None,
         })
         .ok_or(Error::Indeterminate(expected.operation_id))?;
-    if load_json::<ToolInvocation>(journal, invocation, io).await?.into_retained() != *expected {
+    if retain_preparation(load_json::<ToolInvocation>(journal, invocation, io).await?) != *expected {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Conflict, "completed tool prefix invocation differs"));
     }
     let (result, projection) = records
@@ -3029,13 +3015,10 @@ pub(crate) async fn completed_tool_projection(
         .iter()
         .find(|tool| tool.name == expected.name)
         .ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Invalid, "completed tool prefix has no pinned schema"))?;
-    let result = load_json::<ToolResult>(journal, result, io).await?.into_retained();
-    let projection = load_json::<Value>(journal, projection, io).await?.into_retained();
+    let result = retain_preparation(load_json::<ToolResult>(journal, result, io).await?);
+    let projection = retain_preparation(load_json::<Value>(journal, projection, io).await?);
     crate::contract::validate_json_schema_value(&definition.output_schema, &result.value, "tool output", io)?;
-    match limits {
-        Some(limits) => stock_projection_content(definition, &projection, limits, io),
-        None => definition.validate_projection(&projection, Limits::default(), io),
-    }
+    definition.validate_projection(&projection, limits, io)
 }
 
 /// Validated retained model artifacts without provider dispatch.
@@ -3065,7 +3048,7 @@ pub(crate) async fn retained_model_step(
             && *event_step == step
             && *event_purpose == purpose
         {
-            let event = load_json::<ModelEvent>(journal, event, io).await?.into_retained();
+            let event = retain_preparation(load_json::<ModelEvent>(journal, event, io).await?);
             let index = events.len();
             stock_vec_push(&mut events, event, io)?;
             admission.observe(&events[index], limits, io)?;
@@ -3186,9 +3169,9 @@ pub async fn canonical_checkpoint_for_operation(
     };
     validate_checkpoint_json_reference(projection, limits, io)?;
     let projection = load_json::<ResponseProjection>(journal, projection, io).await?;
-    crate::context::validate_projected_context(&projection.context, limits, io)?;
-    let Some(reference) = projection.checkpoint.as_ref() else {
-        if projection.canonical.is_some() {
+    crate::context::validate_projected_context(&projection.0.context, limits, io)?;
+    let Some(reference) = projection.0.checkpoint.as_ref() else {
+        if projection.0.canonical.is_some() {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Storage, "canonical publication has no checkpoint"));
         }
         return Ok(None);
@@ -3196,10 +3179,10 @@ pub async fn canonical_checkpoint_for_operation(
     validate_checkpoint_json_reference(&reference, limits, io)?;
     let envelope =
         load_json::<crate::context::CanonicalContextCheckpoint>(journal, reference, io).await?;
-    envelope.validate(limits, io)?;
-    if envelope.operation_id != operation_id
-        || projection.canonical.as_ref() != Some(&envelope.source)
-        || &envelope.compaction != compaction
+    envelope.0.validate(limits, io)?;
+    if envelope.0.operation_id != operation_id
+        || projection.0.canonical.as_ref() != Some(&envelope.0.source)
+        || &envelope.0.compaction != compaction
     {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Storage, "checkpoint differs from its committed publication"));
     }
@@ -3247,7 +3230,12 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let receipt = history.pin_measured(0, io.remaining()?, io.cancellation()).await;
+            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let result = async {
+                read_work.preflight()?;
+                history.pin(0, Some(&mut read_work)).await
+            }.await;
+            let receipt = read_work.finish(result);
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
@@ -3276,7 +3264,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
             let before = io.owned_bytes()?;
             let mut observer = crate::store::history::native_work_io(
                 io.original_native_work().expect("native branch retains original work"),
-            ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            )?;
             let selection = history.operation_event(
                 envelope.operation_id, maximum_history_bytes, &mut Some(&mut observer),
             ).await?;
@@ -3287,8 +3275,12 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let receipt = history.operation_event_bounded_measured(envelope.operation_id,
-                maximum_history_bytes, io.remaining()?, io.cancellation()).await;
+            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let result = async {
+                read_work.preflight()?;
+                history.operation_event(envelope.operation_id, maximum_history_bytes, &mut Some(&mut read_work)).await
+            }.await;
+            let receipt = read_work.finish(result);
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
@@ -3375,7 +3367,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
             let before = io.owned_bytes()?;
             let mut observer = crate::store::history::native_work_io(
                 io.original_native_work().expect("native branch retains original work"),
-            ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            )?;
             let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
             let records = history.conversation_range(
                 cursor, after_sequence, through_sequence, range_limits, &mut work,
@@ -3479,9 +3471,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
             checkpoint: None,
         },
         &resolver,
-        limits.context_messages,
-        limits.attachments,
-        limits.render_bytes,
+        limits,
         limits.attachments,
         io,
     )
@@ -3590,27 +3580,27 @@ pub async fn load_canonical_checkpoint(
     validate_checkpoint_json_reference(reference, limits, io)?;
     let envelope =
         load_json::<crate::context::CanonicalContextCheckpoint>(journal, reference, io).await?;
-    envelope.validate(limits, io)?;
+    envelope.0.validate(limits, io)?;
     #[cfg(feature = "filesystem")]
     let publication_before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
     #[cfg(feature = "filesystem")]
     let _publication_hold;
-    let publication = canonical_checkpoint_for_operation(journal, envelope.operation_id, limits, io).await?;
+    let publication = canonical_checkpoint_for_operation(journal, envelope.0.operation_id, limits, io).await?;
     #[cfg(feature = "filesystem")]
     { _publication_hold = io.map(|io| io.guard_owned(io.owned_bytes()? - publication_before)).transpose()?; }
     if publication.as_ref() != Some(reference)
     {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Conflict, "checkpoint is not published by its owning execution"));
     }
-    for file in [&envelope.source, &envelope.retained, &envelope.compaction] {
+    for file in [&envelope.0.source, &envelope.0.retained, &envelope.0.compaction] {
         validate_checkpoint_json_reference(file, limits, io)?;
     }
-    let source = load_json::<crate::context::Context>(journal, &envelope.source, io).await?;
-    let retained = load_json::<crate::context::Context>(journal, &envelope.retained, io).await?;
+    let source = load_json::<crate::context::Context>(journal, &envelope.0.source, io).await?;
+    let retained = load_json::<crate::context::Context>(journal, &envelope.0.retained, io).await?;
     let proof =
-        load_json::<crate::context::CompactionReference>(journal, &envelope.compaction, io).await?;
-    envelope.validate_projection(&source, &retained, &proof, limits, io)?;
-    for file in retained.metadata.values() {
+        load_json::<crate::context::CompactionReference>(journal, &envelope.0.compaction, io).await?;
+    envelope.0.validate_projection(&source.0, &retained.0, &proof.0, limits, io)?;
+    for file in retained.0.metadata.values() {
         with_history_io(io, |work| limits.validate_file(file, work))?;
         if let Some(scope) = scope
             && !with_history_io(io, |work| crate::runtime::read_granted_with_work(scope.grants(), file, work))?
@@ -3620,13 +3610,13 @@ pub async fn load_canonical_checkpoint(
     }
     verify_model_contents_scoped(
         journal,
-        retained.messages.iter().map(|message| &message.content),
+        retained.0.messages.iter().map(|message| &message.content),
         limits,
         scope,
         io,
     )
     .await?;
-    for file in retained.metadata.values() {
+    for file in retained.0.metadata.values() {
         match io {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(io) if io.original_native_work().is_some() => {
@@ -3640,14 +3630,14 @@ pub async fn load_canonical_checkpoint(
             _ => journal.verify_input_file(file).await?,
         }
     }
-    if proof
+    if proof.0
         .summary
         .as_ref()
         .is_none_or(|summary| summary.step != 0)
     {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Storage, "canonical checkpoint summary belongs to another step"));
     }
-    Ok((envelope.into_retained(), retained.into_retained()))
+    Ok((retain_preparation(envelope), retain_preparation(retained)))
 }
 
 fn validate_checkpoint_json_reference(reference: &FileRef, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
@@ -3699,23 +3689,10 @@ pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {}
 #[cfg(not(feature = "filesystem"))]
 impl<T: serde::de::DeserializeOwned + Serialize> PreparationRecord for T {}
 
-/// Typed payload custody.
-pub(crate) struct LoadedPreparation<'a, T> {
-    pub(crate) value: T,
-    hold: Option<crate::conversation::ContentHold<'a>>,
-}
-
-impl<T> std::ops::Deref for LoadedPreparation<'_, T> {
-    type Target = T;
-    fn deref(&self) -> &T { &self.value }
-}
-
-impl<T> LoadedPreparation<'_, T> {
-    pub(crate) fn into_retained(self) -> T {
-        #[cfg(feature = "filesystem")]
-        if let Some(hold) = self.hold { hold.into_retained(); }
-        self.value
-    }
+pub(crate) fn retain_preparation<T>(decoded: (T, Option<crate::conversation::ContentHold<'_>>)) -> T {
+    #[cfg(feature = "filesystem")]
+    if let Some(hold) = decoded.1 { hold.into_retained(); }
+    decoded.0
 }
 
 #[cfg(feature = "filesystem")]
@@ -3767,9 +3744,10 @@ pub(crate) fn preparation_digest<T: Serialize>(
     crate::contract::canonical_json_digest(value)
 }
 
+// Values precede their temporary guards.
 pub(crate) async fn load_json<'a, T: PreparationRecord>(
     journal: &dyn ExecutionJournal, reference: &FileRef, io: Option<&'a PreparationIo>,
-) -> Result<LoadedPreparation<'a, T>> {
+) -> Result<(T, Option<crate::conversation::ContentHold<'a>>)> {
     let bytes = load_json_bytes(journal, reference, io).await?;
     #[cfg(feature = "filesystem")]
     let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
@@ -3778,7 +3756,7 @@ pub(crate) async fn load_json<'a, T: PreparationRecord>(
 
 pub(crate) fn decode_json<'a, T: PreparationRecord>(
     bytes: &[u8], io: Option<&'a PreparationIo>,
-) -> Result<LoadedPreparation<'a, T>> {
+) -> Result<(T, Option<crate::conversation::ContentHold<'a>>)> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         {
@@ -3792,7 +3770,7 @@ pub(crate) fn decode_json<'a, T: PreparationRecord>(
             }
         }
         let (value, hold) = io.decode(std::marker::PhantomData::<T>, bytes, crate::wire::ErrorCode::Storage)?;
-        return Ok(LoadedPreparation { value, hold: Some(hold) });
+        return Ok((value, Some(hold)));
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
@@ -3805,7 +3783,7 @@ pub(crate) fn decode_json<'a, T: PreparationRecord>(
     }
     let value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")))?;
-    Ok(LoadedPreparation { value, hold: None })
+    Ok((value, None))
 }
 
 #[derive(Default)]
@@ -3974,6 +3952,7 @@ impl ModelEventAdmission {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     fn uncompacted_executor(
         model: Model,
         provider: Arc<dyn ModelProvider>,
@@ -4151,7 +4130,7 @@ mod tests {
             ..crate::context::Context::default()
         };
         let executor = StockExecutor::new(
-            Model::new("synthetic", "fixed-context", "1", json!({}))?,
+            Model::new("synthetic".into(), "fixed-context".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "fixed",
@@ -4159,7 +4138,7 @@ mod tests {
                 Arc::new(source),
                 crate::context::ContextPlacement::Prepend,
             )) as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_limits(Limits {
             context_messages: 2,
@@ -4209,7 +4188,7 @@ mod tests {
             ..crate::context::Context::default()
         };
         let executor = StockExecutor::new(
-            Model::new("synthetic", "byte-counter", "1", json!({}))?,
+            Model::new("synthetic".into(), "byte-counter".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "history",
@@ -4217,7 +4196,7 @@ mod tests {
                 Arc::new(source),
                 crate::context::ContextPlacement::Prepend,
             )) as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         let input = TurnInput {
             operation_id: OperationId::new(),
@@ -4269,7 +4248,7 @@ mod tests {
             ..crate::context::Context::default()
         };
         let executor = StockExecutor::new(
-            Model::new("synthetic", "byte-counter", "1", json!({}))?,
+            Model::new("synthetic".into(), "byte-counter".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "history",
@@ -4277,7 +4256,7 @@ mod tests {
                 Arc::new(source),
                 crate::context::ContextPlacement::Prepend,
             )) as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         let input = TurnInput {
             operation_id: OperationId::new(),
@@ -4321,10 +4300,10 @@ mod tests {
             ..CountedModel::default()
         });
         let executor = StockExecutor::new(
-            Model::new("synthetic", "small", "1", json!({}))?,
+            Model::new("synthetic".into(), "small".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         assert!(
             executor
@@ -4361,10 +4340,10 @@ mod tests {
                 ..CountedModel::default()
             });
             let executor = StockExecutor::new(
-                Model::new("synthetic", "counter", "1", Value::Null)?,
+                Model::new("synthetic".into(), "counter".into(), "1".into(), Value::Null)?,
                 provider.clone(),
                 ContextPipeline::default(),
-                ToolRegistry::new(),
+                ToolRegistry::default(),
             );
             let input = TurnInput {
                 operation_id: OperationId::new(),
@@ -4448,7 +4427,7 @@ mod tests {
         });
         let source = Arc::new(ChangingCompactionSource(AtomicUsize::new(0)));
         let executor = StockExecutor::new(
-            Model::new("synthetic", "counter", "1", Value::Null)?,
+            Model::new("synthetic".into(), "counter".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "changing-history",
@@ -4456,7 +4435,7 @@ mod tests {
                 source.clone(),
                 crate::context::ContextPlacement::Prepend,
             )) as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         let input = TurnInput {
             operation_id: OperationId::new(),
@@ -4535,7 +4514,7 @@ mod tests {
                 ..CountedModel::default()
             });
             let executor = StockExecutor::new(
-                Model::new("synthetic", "counter", "1", Value::Null)?,
+                Model::new("synthetic".into(), "counter".into(), "1".into(), Value::Null)?,
                 provider.clone(),
                 ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                     "history",
@@ -4543,7 +4522,7 @@ mod tests {
                     Arc::new(context),
                     crate::context::ContextPlacement::Prepend,
                 )) as Arc<dyn crate::context::ContextStage>]),
-                ToolRegistry::new(),
+                ToolRegistry::default(),
             );
             let input = TurnInput {
                 operation_id,
@@ -4577,7 +4556,7 @@ mod tests {
         });
         let source = Arc::new(ChangingCompactionSource(AtomicUsize::new(0)));
         let executor = StockExecutor::new(
-            Model::new("synthetic", "byte-counter", "1", json!({}))?,
+            Model::new("synthetic".into(), "byte-counter".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "changing-history",
@@ -4585,7 +4564,7 @@ mod tests {
                 source.clone(),
                 crate::context::ContextPlacement::Prepend,
             )) as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         let input = TurnInput {
             operation_id: OperationId::new(),
@@ -4687,7 +4666,7 @@ mod tests {
             },
         )?)?;
         let harness =
-            crate::runtime::AgentHarness::new(tasks, ToolRegistry::new(), scope, 1, None)?;
+            crate::runtime::AgentHarness::new(tasks, ToolRegistry::default(), scope, 1, None)?;
         let definition = harness.task::<(), ()>("context-probe@1")?;
         assert!(matches!(
             harness.spawn(&definition, ()).await?.result().await?,
@@ -4767,7 +4746,7 @@ mod tests {
             calls: AtomicUsize::new(0),
             reconciles: AtomicUsize::new(0),
         });
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(Tool {
             definition: ToolDefinition {
                 name: "example.echo".into(),
@@ -4782,7 +4761,7 @@ mod tests {
         })?;
         let model = Arc::new(ScriptedModel::default());
         let base = StockExecutor::new(
-            Model::new("fixture", "exact", "1", Value::Null)?,
+            Model::new("fixture".into(), "exact".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -4890,10 +4869,10 @@ mod tests {
             ..Default::default()
         });
         let base = uncompacted_executor(
-            Model::new("test", "bounded-summary", "1", Value::Null)?,
+            Model::new("test".into(), "bounded-summary".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_max_output_tokens(1_024)?;
         let message = |length| ModelMessage {
@@ -4969,10 +4948,10 @@ mod tests {
                 ..Default::default()
             });
             let executor = uncompacted_executor(
-                Model::new("test", "explicit-summary", "1", Value::Null)?,
+                Model::new("test".into(), "explicit-summary".into(), "1".into(), Value::Null)?,
                 provider.clone(),
                 ContextPipeline::default(),
-                ToolRegistry::new(),
+                ToolRegistry::default(),
             )
             .with_max_output_tokens(output)?;
             let journal = Journal::default();
@@ -5004,10 +4983,10 @@ mod tests {
             ..Default::default()
         });
         let executor = uncompacted_executor(
-            Model::new("test", "explicit-summary", "1", Value::Null)?,
+            Model::new("test".into(), "explicit-summary".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_max_output_tokens(1_024)?;
         let journal = Journal::default();
@@ -5044,10 +5023,10 @@ mod tests {
     async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<()> {
         let provider = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
-            Model::new("test", "summary", "1", Value::Null)?,
+            Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_max_output_tokens(1024)?;
         let journal = Journal::default();
@@ -5102,10 +5081,10 @@ mod tests {
     async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<()> {
         let provider = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
-            Model::new("test", "summary", "1", Value::Null)?,
+            Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_max_output_tokens(1024)?;
         let journal = Journal::default();
@@ -5253,7 +5232,7 @@ mod tests {
                     };
                 }
                 let volume = VolumeRef::new(
-                    ProviderRef::new("test", "filesystem", "2")?,
+                    ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                     "journal".into(),
                     VolumeClass::AgentPrivate,
                     VolumeOwner::Agent(AgentId::from_bytes([0; 16])),
@@ -5298,7 +5277,7 @@ mod tests {
         let source = Arc::new(ChangingContextSource(AtomicUsize::new(0)));
         let provider = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
-            Model::new("test", "model", "1", json!({}))?,
+            Model::new("test".into(), "model".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "changing-source",
@@ -5306,7 +5285,7 @@ mod tests {
                 source.clone(),
                 crate::context::ContextPlacement::Prepend,
             )) as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         let input = TurnInput {
             operation_id: OperationId::new(),
@@ -5473,7 +5452,7 @@ mod tests {
             request: Interaction,
         ) -> BoxFuture<'a, Result<()>> {
             async move {
-                request.validate()?;
+                request.validate(&mut None)?;
                 let mut interactions = self
                     .2
                     .lock().unwrap();
@@ -5557,10 +5536,10 @@ mod tests {
         let stage = Arc::new(OnceStage(AtomicUsize::new(0)));
         let provider = Arc::new(PrefixBoundaryModel::default());
         let executor = uncompacted_executor(
-            Model::new("test", "model", "1", Value::Null)?,
+            Model::new("test".into(), "model".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::new([stage.clone() as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_max_output_tokens(8_192)?;
         let journal = Journal::default();
@@ -5612,7 +5591,7 @@ mod tests {
 
     #[tokio::test]
     async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
-        let model = Model::new("example", "model", "1", Value::Null)?;
+        let model = Model::new("example".into(), "model".into(), "1".into(), Value::Null)?;
         let root = crate::model::PreparedModelRequest::prepare(
             ModelRequest {
                 model: model.clone(),
@@ -5640,7 +5619,7 @@ mod tests {
             model,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_inherited_prefix(root_file, journal.clone())?;
         let input = TurnInput {
@@ -5668,7 +5647,7 @@ mod tests {
             root.request().model.clone(),
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         assert!(matches!(
             unbound.execute(input, journal.as_ref()).await,
@@ -5680,7 +5659,7 @@ mod tests {
     #[tokio::test]
     async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         let model = Arc::new(ScriptedModel::default());
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -5694,7 +5673,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let base = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -5770,7 +5749,7 @@ mod tests {
         for outcome in [InteractionOutcome::Approved, InteractionOutcome::Denied] {
             let model = Arc::new(ScriptedModel::default());
             let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-            let mut tools = ToolRegistry::new();
+            let mut tools = ToolRegistry::default();
             tools.register(crate::tool::Tool {
                 definition: crate::tool::ToolDefinition {
                     name: "example.echo".into(),
@@ -5786,7 +5765,7 @@ mod tests {
                 projection: Arc::new(Projection),
             })?;
             let executor = uncompacted_executor(
-                Model::new("example", "model", "1", Value::Null)?,
+                Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
                 model.clone(),
                 ContextPipeline::default(),
                 tools,
@@ -5893,7 +5872,7 @@ mod tests {
             model
         });
         let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -5907,7 +5886,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let executor = uncompacted_executor(
-            Model::new("example", "batch", "1", Value::Null)?,
+            Model::new("example".into(), "batch".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -6076,7 +6055,7 @@ mod tests {
     async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         let model = Arc::new(ScriptedModel::default());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -6090,7 +6069,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -6304,9 +6283,9 @@ mod tests {
             requests.get(1).map(|request| request
                 .messages
                 .iter()
-                .map(|message| message.role.as_str())
+                .map(|message| message.role)
                 .collect::<Vec<_>>()),
-            Some(vec!["user", "assistant", "tool"])
+            Some(vec![ModelRole::User, ModelRole::Assistant, ModelRole::Tool])
         );
         Ok(())
     }
@@ -6316,7 +6295,7 @@ mod tests {
     async fn stock_turn_emits_spans_without_prompt_or_tool_fields() -> Result<()> {
         use crate::obs::capture;
         let (seen, _guard) = capture::install();
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -6330,7 +6309,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             Arc::new(ScriptedModel::default()),
             ContextPipeline::default(),
             tools,
@@ -6371,7 +6350,7 @@ mod tests {
     async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> {
         let model = Arc::new(ScriptedModel::default());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -6385,7 +6364,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -6424,7 +6403,7 @@ mod tests {
     async fn malformed_tool_arguments_fail_closed_before_dispatch() -> Result<()> {
         let model = Arc::new(ScriptedModel::slipping());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -6442,7 +6421,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -6475,7 +6454,7 @@ mod tests {
     async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Result<()> {
         let model = Arc::new(ScriptedModel::slipping());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -6493,7 +6472,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             model,
             ContextPipeline::default(),
             tools,
@@ -6592,7 +6571,7 @@ mod tests {
                 )
                 .await?;
             let records = journal.replay(operation, 0, 64).await?;
-            let retained = completed_tool_projection(&journal, &records, 0, &invocation, std::slice::from_ref(&definition), None, None)
+            let retained = completed_tool_projection(&journal, &records, 0, &invocation, std::slice::from_ref(&definition), Limits::default(), None)
             .await;
             if accepted {
                 assert_eq!(
@@ -6623,7 +6602,7 @@ mod tests {
         ] {
             let model = Arc::new(ScriptedModel::default());
             let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-            let mut tools = ToolRegistry::new();
+            let mut tools = ToolRegistry::default();
             tools.register(crate::tool::Tool {
                 definition: crate::tool::ToolDefinition {
                     name: "example.echo".into(),
@@ -6637,7 +6616,7 @@ mod tests {
                 projection: Arc::new(Projection),
             })?;
             let executor = uncompacted_executor(
-                Model::new("example", "model", "1", Value::Null)?,
+                Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
                 model,
                 ContextPipeline::default(),
                 tools,
@@ -6669,7 +6648,7 @@ mod tests {
     async fn operation_identity_rejects_changed_input() -> Result<()> {
         let model = Arc::new(ScriptedModel::default());
         let executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             model,
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -6737,11 +6716,41 @@ mod tests {
                     Ok(())
                 })
             }
+        }
+
+        impl crate::runtime::TaskStateProvider for DispatchObserver {
             fn outcome<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
                 Box::pin(async { Err(Error::Unsupported("test observer".into())) })
             }
             fn cancel<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<()>> {
                 Box::pin(async { Err(Error::Unsupported("test observer".into())) })
+            }
+
+            fn policy_identity(&self) -> Option<ComponentIdentity> {
+                None
+            }
+
+            fn observe_admission<'a>(
+                &'a self,
+                _task_id: TaskId,
+            ) -> BoxFuture<'a, Result<crate::runtime::TaskAdmissionRecord>> {
+                Box::pin(async {
+                    Err(Error::Unsupported(
+                        "full durable admission observation is not bound".into(),
+                    ))
+                })
+            }
+
+            fn resume_scope<'a>(
+                &'a self,
+                _task_id: TaskId,
+                _operation_id: OperationId,
+            ) -> BoxFuture<'a, Result<RuntimeScope>> {
+                Box::pin(async {
+                    Err(Error::Unsupported(
+                        "durable task context authentication is not bound".into(),
+                    ))
+                })
             }
         }
         let host = Arc::new(DispatchObserver {
@@ -6750,7 +6759,7 @@ mod tests {
         });
         let model = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
-            Model::new("example", "recoverable", "1", Value::Null)?,
+            Model::new("example".into(), "recoverable".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -6924,10 +6933,10 @@ mod tests {
     #[tokio::test]
     async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
         let mut executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             Arc::new(ScriptedModel::default()),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         executor.limits.model_events_per_step = usize::MAX;
         executor.limits.tool_calls_per_step = usize::MAX;
@@ -7016,7 +7025,7 @@ mod tests {
         let adapter = Arc::new(FakeTool(AtomicUsize::new(0)));
         crate::tool::ToolExecutor::authorize(adapter.as_ref(), Some(&wide), &invocation)?;
         crate::contract::validate_json_byte_bound(&invocation, wide.limits().file_bytes)?;
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -7034,7 +7043,7 @@ mod tests {
             ..wide.limits()
         };
         let executor = StockExecutor::new(
-            Model::new("test", "scoped", "1", Value::Null)?,
+            Model::new("test".into(), "scoped".into(), "1".into(), Value::Null)?,
             Arc::new(ScriptedModel::default()),
             ContextPipeline::default(),
             tools,
@@ -7070,7 +7079,7 @@ mod tests {
         )?;
         let context = capture_admitted_context(scope.clone()).await?;
         let tool = crate::tool::files::write_file()?;
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(tool)?;
         let operation = OperationId::new();
         let invocation = ToolInvocation {
@@ -7080,7 +7089,7 @@ mod tests {
             arguments: json!({"path":"destination.txt","text":"body","media_type":"text/plain","display_name":"destination.txt"}),
         };
         let base = StockExecutor::new(
-            Model::new("test", "scoped", "1", Value::Null)?,
+            Model::new("test".into(), "scoped".into(), "1".into(), Value::Null)?,
             Arc::new(ScriptedModel::default()),
             ContextPipeline::new(Vec::<Arc<dyn crate::context::ContextStage>>::new()),
             tools,
@@ -7147,7 +7156,7 @@ mod tests {
         }
         let provider = Arc::new(Provider::default());
         let executor = StockExecutor::new(
-            Model::new("fixture", "identity", "1", Value::Null)?,
+            Model::new("fixture".into(), "identity".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),

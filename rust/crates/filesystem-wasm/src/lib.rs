@@ -39,8 +39,8 @@ mod bindings {
         ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
         StorageLocationId, StorageTier, StreamAuthorityStore, Transaction, TransactionCommit,
         RebaseConflict, DependencyState, DependencyRegion, DependencyUse,
-        TransactionRebase, ExtentSeekTarget, Volume, VolumeId, WorkBudget, Workspace,
-        WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage,
+        TransactionRebase, Volume, VolumeId, Workspace,
+        WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, DirectoryPage,
         WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase,
         WorkspaceRootId, WorkspaceStat, canonicalize_git_output_json,
         canonicalize_git_pending_transition_json, decode_generation_export_manifest,
@@ -834,7 +834,7 @@ mod bindings {
                     |_| {
                         std::future::ready(Ok(acyclic_fs::OperationReceipt {
                             value: (),
-                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                            work: acyclic_fs::WorkCounters::default(),
                         }))
                     },
                 ))
@@ -875,7 +875,7 @@ mod bindings {
                     |_| {
                         std::future::ready(Ok(acyclic_fs::OperationReceipt {
                             value: (),
-                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                            work: acyclic_fs::WorkCounters::default(),
                         }))
                     },
                 ))
@@ -1080,7 +1080,7 @@ mod bindings {
                 if_target,
                 idempotency_key,
             };
-            let result = browser_join_result(self.engine.apply(options).await.map_err(js_error)?);
+            let result = browser_join_result(self.engine.apply(options, acyclic_fs::PublicationPermit::Unrestricted).await.map_err(js_error)?);
             ts(result)
         }
     }
@@ -1221,10 +1221,15 @@ mod bindings {
         /// Retains this exact generation under one opaque identity.
         #[wasm_bindgen]
         pub async fn pin(&self, identity: String) -> Result<BrowserGeneration, JsValue> {
-            let engine = Box::pin(self.engine.pin(identity))
+            let engine = Box::pin(self.engine.pin(
+                identity,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            ))
                 .await
-                .map_err(js_error)?
-                .1;
+                .map(|receipt| receipt.value.1)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)?;
             Ok(BrowserGeneration { engine })
         }
     }
@@ -1670,7 +1675,7 @@ mod bindings {
     }
 
     fn browser_workspace_directory_page(
-        value: WorkspaceDirectoryPage,
+        value: DirectoryPage,
     ) -> BrowserWorkspaceDirectoryPage {
         BrowserWorkspaceDirectoryPage {
             entries: value
@@ -4591,7 +4596,7 @@ mod bindings {
                 .engine
                 .list_directory_records(
                     &path,
-                    after.as_ref(),
+                    after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                     maximum_entries,
                     acyclic_fs::performance::BOUNDARY_BUDGET,
                     &cancellation,
@@ -5258,7 +5263,7 @@ mod bindings {
                     |_| async {
                         acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt {
                             value: (),
-                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                            work: acyclic_fs::WorkCounters::default(),
                         })
                     },
                 )
@@ -6049,13 +6054,20 @@ mod bindings {
         match id {
             Some(id) => {
                 workspace
-                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                        id, label,
-                    )?)))
+                    .generation(
+                        acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(id, label)?)),
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
                     .await
             }
-            None => workspace.head().await,
+            None => workspace.head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            ).await,
         }
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
         .map_err(js_error)
     }
 
@@ -6081,9 +6093,9 @@ mod bindings {
             truncated: false,
         };
         match outcome {
-            JoinOutcome::Applied(value) => generation("applied", value.into_generation()),
+            JoinOutcome::Applied(value) => generation("applied", value.generation),
             JoinOutcome::AlreadyApplied(value) => {
-                generation("already-applied", value.into_generation())
+                generation("already-applied", value.generation)
             }
             JoinOutcome::NoChanges(value) => generation("no-changes", value),
             JoinOutcome::StaleTarget(value) => generation("stale-target", value),

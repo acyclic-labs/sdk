@@ -64,7 +64,7 @@ use acyclic_fs::native_host::HostRoot;
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
     ApplyOptions, CancellationToken, CaptureOptions, CapturePolicy, CheckoutCommitOutcome,
-    DefaultTextMergeDriver, DistributedFs, Generation, GitCommand, GitCommandOutput,
+    DefaultTextMergeDriver, Generation, GitCommand, GitCommandOutput,
     GitCompatRepository, GitDirtyState, GitFilesystemAction, GitFilesystemExecutor,
     GitFilesystemResult, GitGenerationRef, GitIgnorePolicy, GitPublicationRecord, GitTreeRef,
     IdempotencyKey, JoinOutcome, LazyMount, LazyWorkspace, LineageMultiRootPublicationAuthorizer,
@@ -74,6 +74,7 @@ use acyclic_fs::{
     MergeDriverRegistry, MountOptions, MultiRootMaterializer, MultiRootMergeCandidate,
     MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationCoordinator,
     MultiRootPublicationError, MultiRootPublicationPhase, NativeWatch, NativeWatchOptions,
+    WorkspaceGraph, WorkspaceContextRegistry, OperationWindowCoordinator,
     OperationId, OperationReconcileLimits, OperationWindowLease, Publication, PublicationPermit,
     TransactionCommit, WatchBatch, WatchChange, WorkBudget, Workspace,
     WorkspaceContextId, WorkspaceContextRoot, WorkspaceContextState, WorkspaceDelete,
@@ -455,7 +456,7 @@ fn guarded_cli_text(
             code: acyclic_harness::wire::ErrorCode::Invalid,
             reason: "native CLI metadata exceeds its byte bound",
         })?;
-    let allocation = work.claim(bytes as u64)
+    let allocation = work.claim(bytes as u64, u64::from((bytes as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
         .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
     let mut name = String::new();
     name.try_reserve_exact(bytes)

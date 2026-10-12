@@ -78,11 +78,11 @@ impl RootBootstrapContentRequest {
 fn copy_reference(
     source: &ResourceRef, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<ResourceRef> {
-    source.validate_with_work(quota.work())?;
+    source.validate(quota.work())?;
     let provider = crate::core::copy_provider(source.provider(), quota)?;
     let key = crate::core::copy_copy_vector(source.key(), quota)?;
     let version = source.version().map(|value| crate::core::copy_text(value, quota)).transpose()?;
-    ResourceRef::new_with_work(source.kind(), provider, key, version, quota.work())
+    ResourceRef::new(source.kind(), provider, key, version, quota.work())
 }
 
 /// Provider-authenticated ROOT content; only the private consumer grants access.
@@ -137,7 +137,7 @@ impl<'a> RootBootstrapContentContext<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn from_verified_original_root_with_native_work<P: acyclic_stream::StreamProvider>(
         host: &'a crate::durable_host::CoordinatorTaskHost<P>,
-        original: &'a (crate::scheduler::OperationSpec, crate::scheduler::LeaseFence),
+        original: &'a (crate::scheduler::OperationSpec, &'a crate::scheduler::LeaseFence),
         original_root: &'a TaskAdmissionRecord,
         binding: &'a crate::store::VerifiedRootBinding,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -215,8 +215,8 @@ pub(crate) fn preflight_root_bootstrap_with_native_work(
     let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
     created_access_step(&mut io)?;
     request.volume.validate(&mut io)?;
-    request.evidence.validate_with_work(&mut io)?;
-    request.generation.validate_with_work(&mut io)?;
+    request.evidence.validate(&mut io)?;
+    request.generation.validate(&mut io)?;
     if request.root_operation != context.original_root.operation_id
         || request.graph_root != context.original_root.task_id()
         || request.generation.as_resource().provider() != request.volume.provider()
@@ -416,7 +416,7 @@ mod tests {
     }
 
     fn request(role: RootBootstrapContentRole, agent: AgentId) -> Result<RootBootstrapContentRequest> {
-        let provider = ProviderRef::new("root-control", "filesystem", "1")?;
+        let provider = ProviderRef::new("root-control".into(), "filesystem".into(), "1".into(), &mut None)?;
         let volume = VolumeRef::new(provider.clone(), "original-volume".into(),
             match role {
                 RootBootstrapContentRole::Project => VolumeClass::Project,
@@ -431,7 +431,7 @@ mod tests {
             root_operation, graph_root: crate::runtime::task_id_for_admission(root_operation),
             role, volume,
             evidence: ResourceRef::new(crate::resources::ResourceKind::Workspace, provider.clone(),
-                b"protected-original-allocation".to_vec(), None)?,
+                b"protected-original-allocation".to_vec().into(), None, &mut None)?,
             generation: GenerationRef::new(provider, b"actual-selected-generation".to_vec(), None)?,
             native_snapshot: Some(serde_json::json!({"actual":"descriptor","selected":121})),
         })
@@ -540,7 +540,7 @@ mod tests {
                 0 => changed.native_snapshot = Some(serde_json::json!({"actual":"different"})),
                 1 => changed.generation = GenerationRef::new(original.volume.provider().clone(), b"other".to_vec(), None)?,
                 _ => changed.evidence = ResourceRef::new(crate::resources::ResourceKind::Workspace,
-                    original.volume.provider().clone(), b"other-evidence".to_vec(), None)?,
+                    original.volume.provider().clone(), b"other-evidence".to_vec().into(), None, &mut None)?,
             }
             unauthorized(verify_receipt_identity(context, &original, &changed, &audience, agent, None, &work));
         }

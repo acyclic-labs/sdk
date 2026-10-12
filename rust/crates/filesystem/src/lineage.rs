@@ -54,13 +54,13 @@ fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
     ) {
         (None, None) => record.fork_generation == record.initial_generation,
         (Some(parent_id), Some(parent_name)) => {
-            parent_id != record.workspace_id && crate::WorkspaceName::new(parent_name).is_ok()
+            parent_id != record.workspace_id && crate::WorkspaceName::new(parent_name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).is_ok()
         }
         _ => false,
     };
     record.version == LINEAGE_VERSION
         && record.revision > 0
-        && crate::WorkspaceName::new(&record.workspace_name).is_ok()
+        && crate::WorkspaceName::new(&record.workspace_name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).is_ok()
         && parent_shape
 }
 
@@ -142,11 +142,11 @@ impl LineageRegistrationWork<'_> {
             KernelAccounting::native(original, cancellation).record_completed(copied).map_err(lineage_filesystem_failure)?;
         }
         if let Some(parent_name) = &source.parent_workspace_name {
-            let mut parent_owner = self.copy_name(parent_name)?;
+            let parent_owner = self.copy_name(parent_name)?;
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(incoming) = &mut parent_owner.1 {
+            if let Some(mut incoming) = parent_owner.1 {
                 owned.allocation.as_mut().expect("native metadata retains its name guard")
-                    .absorb(incoming).map_err(|error| lineage_filesystem_failure(error.into()))?;
+                    .absorb(&mut incoming).map_err(|error| lineage_filesystem_failure(error.into()))?;
             }
             owned.record.parent_workspace_name = Some(parent_owner.0);
         }
@@ -160,7 +160,7 @@ impl LineageRegistrationWork<'_> {
             Self::Ordinary(_) => Ok(lineage_shape_is_valid(record)),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, cancellation } => {
-                let valid_name = |name: &str| match crate::WorkspaceName::new_with_native_work(name, original, cancellation) {
+                let valid_name = |name: &str| match crate::WorkspaceName::new(name, *original, cancellation) {
                     Ok(_) => Ok(true),
                     Err(WorkspaceError::Name(crate::WorkspaceNameError::Empty
                         | crate::WorkspaceNameError::Reserved | crate::WorkspaceNameError::TooLong
@@ -402,8 +402,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         crate::obs::outcome_on(
             &span,
             crate::obs::in_span(&span, async move {
-                let destination = crate::WorkspaceName::new(destination.as_ref())
-                    .map_err(WorkspaceError::from)?;
+                let destination = crate::WorkspaceName::new(destination.as_ref(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let generation = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let child_id = parent
                     .volume.fs.workspace_id(destination.as_str())
@@ -526,6 +525,18 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         workspace: WorkspaceId,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
         self.required(workspace).await
+    }
+
+    /// Reopens one durable workspace and checks its exact identity.
+    pub async fn workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &self, fs: &crate::Fs<A, O>, workspace_id: WorkspaceId,
+        budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
+    ) -> Result<Workspace<A, O>, WorkspaceLineageError<S::Error>> {
+        let record = self.resolve(workspace_id).await?;
+        let workspace = fs.open_workspace(&record.workspace_name, budget, cancellation).await
+            .map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        if workspace.id() != workspace_id { return Err(WorkspaceLineageError::IncompatibleState); }
+        Ok(workspace)
     }
 
     /// Returns the direct-parent chain, nearest parent first.
@@ -692,10 +703,10 @@ impl MemoryWorkspaceLineageStore {
 
     fn compare_and_swap_engine(
         &self, workspace_id: WorkspaceId, expected_revision: u64,
-        replacement: LineageOwnedRecord, control: &mut LineageRegistrationWork<'_>,
+        replacement: LineageOwnedRecord, _control: &mut LineageRegistrationWork<'_>,
     ) -> Result<bool, LineageFailure<MemoryWorkspaceLineageStoreError>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let LineageRegistrationWork::Native { original, cancellation } = control {
+        if let LineageRegistrationWork::Native { original, cancellation } = _control {
             let allocation = replacement.allocation.as_ref()
                 .ok_or_else(|| lineage_filesystem_failure(crate::NativeTreeMaterializationError::InvalidLayout.into()))?;
             let actual = replacement.record.workspace_name.capacity().checked_add(
@@ -716,7 +727,7 @@ impl MemoryWorkspaceLineageStore {
         let mut entry_allocation = None;
         #[cfg(not(target_arch = "wasm32"))]
         if !records.contains_key(&workspace_id) {
-            if let LineageRegistrationWork::Native { original, cancellation } = control {
+            if let LineageRegistrationWork::Native { original, cancellation } = _control {
                 // Logical entry storage is known; opaque B-tree nodes are not guessed.
                 let allocation = KernelAccounting::native(original, cancellation).claim_owned(
                     std::mem::size_of::<(WorkspaceId, MemoryLineageRecord)>() as u64, 0,
@@ -802,7 +813,7 @@ mod tests {
     use crate::{Digest, Fs, WorkspaceName};
 
     fn workspace(name: &str) -> WorkspaceId {
-        WorkspaceId::derive([9; 16], &WorkspaceName::new(name).expect("valid name"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded workspace identity").value
+        WorkspaceId::derive([9; 16], &WorkspaceName::new(name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid name").value, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded workspace identity").value
     }
 
     fn generation(byte: u8) -> GenerationId {

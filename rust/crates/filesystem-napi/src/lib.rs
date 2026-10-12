@@ -29,7 +29,7 @@ use acyclic_fs::{
     StorageLocationId, StorageTier, Transaction, TransactionCommit, RebaseConflict, DependencyState,
     DependencyRegion, DependencyUse, TransactionRebase, ExtentSeekTarget,
     VolumeId, WatchBatch, WatchChange, WatchInvalidationReason, WorkBudget, Workspace,
-    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage,
+    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, DirectoryPage,
     WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord,
     WorkspaceMetadata, WorkspaceOperationFinish, WorkspaceRebase, WorkspaceRootId, WorkspaceStat,
     canonicalize_git_output_json, canonicalize_git_pending_transition_json,
@@ -2505,7 +2505,7 @@ impl NativeJoinPlan {
             .apply(ApplyOptions {
                 if_target,
                 idempotency_key,
-            })
+            }, acyclic_fs::PublicationPermit::Unrestricted)
             .await
             .map(native_join_result)
             .map_err(napi_error)
@@ -2731,9 +2731,9 @@ fn native_join_result(
         truncated: false,
     };
     match outcome {
-        JoinOutcome::Applied(value) => generation("applied", value.into_generation()),
+        JoinOutcome::Applied(value) => generation("applied", value.generation),
         JoinOutcome::AlreadyApplied(value) => {
-            generation("already-applied", value.into_generation())
+            generation("already-applied", value.generation)
         }
         JoinOutcome::NoChanges(value) => generation("no-changes", value),
         JoinOutcome::StaleTarget(value) => generation("stale-target", value),
@@ -4761,7 +4761,7 @@ impl NativeCheckout {
                 maximum_paths,
                 maximum_extent_spans,
             },
-            &acyclic_fs::CapturePolicy::allow_all(),
+            &acyclic_fs::CapturePolicy::default(),
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
@@ -5614,7 +5614,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         let receipt = Box::pin(checkout.list_directory_records(
             &path,
-            after.as_ref(),
+            after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
             maximum_entries,
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
@@ -6367,7 +6367,7 @@ impl NativeWatcher {
                 maximum_paths,
                 maximum_extent_spans,
             },
-            &acyclic_fs::CapturePolicy::allow_all(),
+            &acyclic_fs::CapturePolicy::default(),
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
@@ -6522,7 +6522,7 @@ impl NativeWatcher {
                     maximum_paths,
                     maximum_extent_spans,
                 },
-                &acyclic_fs::CapturePolicy::allow_all(),
+                &acyclic_fs::CapturePolicy::default(),
                 acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             ))
@@ -6633,14 +6633,14 @@ pub fn native_capabilities() -> NativeCapabilities {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         local: true,
         native_watch: true,
-        native_watch_backend: watch.backend.as_str().to_owned(),
+        native_watch_backend: watch.backend.to_owned(),
         native_watch_persistent_restart: watch.persistent_restart,
         native_watch_root_identity_fencing: watch.root_identity_fencing,
         platform: std::env::consts::OS.to_owned(),
         architecture: std::env::consts::ARCH.to_owned(),
-        native_mount: mount.available,
-        writable_mount: mount.writable,
-        provider_process_io_observable: mount.provider_process_io_observable,
+        native_mount: mount.available(),
+        writable_mount: mount.available(),
+        provider_process_io_observable: mount.provider_process_io_observable(),
     }
 }
 
@@ -7831,7 +7831,7 @@ fn native_workspace_name(value: NativeWorkspaceName) -> Result<LogicalName> {
     LogicalName::new(encoding, value.bytes.to_vec(), u32::MAX).map_err(napi_error)
 }
 
-fn native_workspace_directory_page(value: WorkspaceDirectoryPage) -> NativeWorkspaceDirectoryPage {
+fn native_workspace_directory_page(value: DirectoryPage) -> NativeWorkspaceDirectoryPage {
     NativeWorkspaceDirectoryPage {
         entries: value
             .entries

@@ -24,37 +24,11 @@ pub type NativeEventWatcher = crate::fsevents::FsEventsWatcher;
 #[cfg(not(target_os = "macos"))]
 pub type NativeEventWatcher = notify::RecommendedWatcher;
 
-/// Native notification mechanism compiled for this target.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeWatchBackend {
-    /// Linux inotify; demand admission uses the held-root native producer.
-    LinuxInotify,
-    /// macOS `FSEvents`, loaded on first use; see [`NativeEventWatcher`].
-    MacosFsevents,
-    /// Windows directory-change notifications, with held-handle demand admission.
-    WindowsReadDirectoryChanges,
-    /// No target-specific native notification mechanism is available.
-    Unsupported,
-}
-
-impl NativeWatchBackend {
-    /// Stable SDK spelling used by generated-language capability surfaces.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::LinuxInotify => "linux-inotify",
-            Self::MacosFsevents => "macos-fsevents",
-            Self::WindowsReadDirectoryChanges => "windows-read-directory-changes",
-            Self::Unsupported => "unsupported",
-        }
-    }
-}
-
 /// Exact guarantees supplied by the compiled native watcher.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeWatchCapabilities {
     /// Host notification mechanism selected at compile time.
-    pub backend: NativeWatchBackend,
+    pub backend: &'static str,
     /// Whether descendants are observed recursively.
     pub recursive: bool,
     /// Whether a persisted cursor can prove continuity across process restart.
@@ -67,17 +41,17 @@ pub struct NativeWatchCapabilities {
 #[must_use]
 pub const fn native_watch_capabilities() -> NativeWatchCapabilities {
     #[cfg(target_os = "linux")]
-    let backend = NativeWatchBackend::LinuxInotify;
+    let backend = "linux-inotify";
     #[cfg(target_os = "macos")]
-    let backend = NativeWatchBackend::MacosFsevents;
+    let backend = "macos-fsevents";
     #[cfg(target_os = "windows")]
-    let backend = NativeWatchBackend::WindowsReadDirectoryChanges;
+    let backend = "windows-read-directory-changes";
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    let backend = NativeWatchBackend::Unsupported;
+    let backend = "unsupported";
 
     NativeWatchCapabilities {
         backend,
-        recursive: !matches!(backend, NativeWatchBackend::Unsupported),
+        recursive: cfg!(any(target_os = "linux", target_os = "macos", windows)),
         persistent_restart: false,
         root_identity_fencing: cfg!(any(unix, windows)),
     }
@@ -343,127 +317,39 @@ struct NativeEventContext {
 
 enum NativeWatchDriver {
     Adapter(NativeEventWatcher),
-    Source {
-        watcher: crate::source_watch::NativeSourceWatch,
-        root: PathBuf,
-        _root_allocation: Option<crate::NativeAllocation>,
-    },
+    Source(crate::source_watch::NativeSourceWatch),
     StartupFailure(Arc<crate::source_watch::SourceWatchStartupFailure>),
 }
 
-impl NativeWatchDriver {
-    fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
-        match self {
-            Self::Adapter(watcher) => watcher.watch(path, mode),
-            #[cfg(target_os = "linux")]
-            Self::Source { watcher, root, .. } => {
-                if mode != RecursiveMode::NonRecursive {
-                    return Err(notify::Error::generic("the source driver is nonrecursive"));
-                }
-                let relative = path.strip_prefix(root)
-                    .map_err(|_| notify::Error::generic("watch path escaped its held root"))?;
-                let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-                watcher.admit_measured(relative, &mut work)
-                    .map(|_| ()).map_err(|error| notify::Error::generic(&error.to_string()))
-            }
-            #[cfg(not(target_os = "linux"))]
-            Self::Source { root, .. } => {
-                if path == root { Ok(()) }
-                else { Err(notify::Error::generic("held child registrations use the native demand engine")) }
-            }
-            Self::StartupFailure(_) => Err(notify::Error::generic("native watcher startup is pending cleanup")),
-        }
-    }
-
-    fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
-        match self {
-            Self::Adapter(watcher) => watcher.unwatch(path),
-            #[cfg(target_os = "linux")]
-            Self::Source { watcher, root, .. } => {
-                let relative = path.strip_prefix(root)
-                    .map_err(|_| notify::Error::generic("unwatch path escaped its held root"))?;
-                let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-                watcher.unadmit_measured(relative, &mut work)
-                    .map_err(|error| notify::Error::generic(&error.to_string()))
-            }
-            #[cfg(not(target_os = "linux"))]
-            Self::Source { .. } => Err(notify::Error::generic("the original held root remains registered")),
-            Self::StartupFailure(_) => Err(notify::Error::generic("native watcher startup is pending cleanup")),
-        }
-    }
-
-    fn watch_with_work<W: crate::demand::SourceDemandReadWork>(
-        &mut self, path: &Path, mode: RecursiveMode, work: &mut W,
-    ) -> Result<(), crate::demand::DemandError> {
-        work.check()?;
-        match self {
-            #[cfg(target_os = "linux")]
-            Self::Source { watcher, root, .. } => {
-                if mode != RecursiveMode::NonRecursive {
-                    return Err(NativeWatchError::BoundedObservationUnavailable.into());
-                }
-                let relative = path.strip_prefix(root)
-                    .map_err(|_| NativeWatchError::UnrepresentablePath)?;
-                watcher.admit_with_work(relative, work).map(|_| ())
-            }
-            #[cfg(windows)]
-            Self::Source { root, .. } if path == root => Ok(()),
-            _ => Err(NativeWatchError::BoundedObservationUnavailable.into()),
-        }
-    }
-
-    fn unwatch_with_work<W: crate::demand::SourceDemandReadWork>(
-        &mut self, path: &Path, work: &mut W,
-    ) -> Result<(), crate::demand::DemandError> {
-        work.check()?;
-        match self {
-            #[cfg(target_os = "linux")]
-            Self::Source { watcher, root, .. } => {
-                let relative = path.strip_prefix(root)
-                    .map_err(|_| NativeWatchError::UnrepresentablePath)?;
-                watcher.unadmit_with_work(relative, work)
-            }
-            #[cfg(windows)]
-            Self::Source { watcher, root, .. } if path == root => watcher.stop_with_work(work),
-            _ => Err(NativeWatchError::BoundedObservationUnavailable.into()),
-        }
-    }
-}
-
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-struct RootHintInvalidation(Arc<Mutex<SharedState>>);
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-impl crate::source_watch::HostChangeSink for RootHintInvalidation {
+impl crate::source_watch::HostChangeSink for Mutex<SharedState> {
     fn logical_owned_bytes(&self) -> u64 { 0 }
     fn host_changed(
         &self, changes: &[crate::source_watch::HostChange], work: &mut crate::demand::DemandWork,
     ) -> Result<(), crate::demand::DemandError> {
-        self.host_changed_with_work(changes, work)
+        invalidate_root_hints(self, changes, work)
     }
 
     fn host_changed_with_native_work(
         &self, changes: &[crate::source_watch::HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
     ) -> Result<(), crate::demand::DemandError> {
-        self.host_changed_with_work(changes, work)
+        invalidate_root_hints(self, changes, work)
     }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-impl RootHintInvalidation {
-    fn host_changed_with_work<W: crate::demand::SourceDemandReadWork>(
-        &self, changes: &[crate::source_watch::HostChange], work: &mut W,
-    ) -> Result<(), crate::demand::DemandError> {
-        work.check()?;
-        for change in changes {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            if cfg!(target_os = "macos") || matches!(change, crate::source_watch::HostChange::Everything) {
-                self.0.lock().map_err(|_| NativeWatchError::StatePoisoned)?
-                    .invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
-            }
+fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
+    state: &Mutex<SharedState>, changes: &[crate::source_watch::HostChange], work: &mut W,
+) -> Result<(), crate::demand::DemandError> {
+    work.check()?;
+    for change in changes {
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+        if cfg!(target_os = "macos") || matches!(change, crate::source_watch::HostChange::Everything) {
+            state.lock().map_err(|_| NativeWatchError::StatePoisoned)?
+                .invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
         }
-        Ok(())
     }
+    Ok(())
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -656,76 +542,43 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
             return Err(DemandError::InvalidRequest);
         }
     }
-    let reserve = |allocations: &mut crate::kernel::allocation::AllocationLedger,
-                   counters: &mut WorkCounters, budget, cancellation: &CancellationToken| {
-        cancellation.check().map_err(NativeWatchError::Cancelled)?;
-        let backing = count.checked_mul(size_of::<LogicalName>()).ok_or(WorkError::Overflow)? as u64;
-        allocations.claim_bytes(backing, u64::from(backing != 0), counters, budget)
-            .map_err(|error| error.into_work_or(NativeWatchError::UnrepresentablePath))?;
-        let mut components = Vec::<LogicalName>::new();
-        components.try_reserve_exact(count).map_err(|_| {
-            NativeWatchError::Io(std::io::ErrorKind::OutOfMemory.into())
-        })?;
-        let actual = components.capacity().checked_mul(size_of::<LogicalName>())
-            .ok_or(WorkError::Overflow)? as u64;
-        if actual > backing {
-            allocations.record_owned_bytes(actual - backing, counters)
-                .map_err(|error| error.into_work_or(NativeWatchError::UnrepresentablePath))?;
-            counters.verify(budget)?;
-        }
-        Ok::<_, NativeWatchError>(components)
-    };
-    // The tuple's field order frees every physical name before retiring custody.
-    let mut owned = if let Some(original) = &original {
-        let (components, allocation) = original.allocations(reserve)?;
-        (components, Some(allocation))
+    let backing = count.checked_mul(size_of::<LogicalName>()).ok_or(WorkError::Overflow)? as u64;
+    let allocation = if let Some(original) = &original {
+        Some(original.claim(backing, u64::from(backing != 0), WorkCounters::UNCHARGED)
+            .map_err(crate::native_name::original_name_error)?)
     } else {
-        (work.with_original_leaf(|actual| {
-            let (allocations, counters, budget, cancellation) = actual.allocation_parts();
-            let before = allocations.live_bytes();
-            let result = reserve(allocations, counters, budget, cancellation);
-            if result.is_err() {
-                allocations.release(allocations.live_bytes() - before)
-                    .map_err(|error| error.into_work_or(NativeWatchError::UnrepresentablePath))?;
-            }
-            result
-        })?, None)
+        work.allocate(backing)?;
+        None
     };
-    let mut claimed = if original.is_some() { 0 } else {
-        owned.0.capacity().checked_mul(size_of::<LogicalName>()).ok_or(WorkError::Overflow)? as u64
-    };
+    // Drop physical components before their native allocation guard.
+    let mut owned = (Vec::<LogicalName>::new(), allocation);
+    let mut claimed = if owned.1.is_some() { 0 } else { backing };
     let result = (|| {
+        let reserved = owned.0.try_reserve_exact(count);
+        let actual = owned.0.capacity().checked_mul(size_of::<LogicalName>())
+            .ok_or(WorkError::Overflow)? as u64;
+        let reconciled = if let Some(allocation) = &mut owned.1 {
+            allocation.reconcile_capacity(actual).map_err(crate::native_name::original_name_error)
+        } else {
+            work.reconcile_allocation(&mut claimed, actual)
+        };
+        reserved.map_err(DemandError::Allocation)?;
+        reconciled?;
         for name in names {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
             let name = name?;
-            let ((encoding, bytes), mut allocation) = if let Some(original) = &original {
-                let result = match name {
-                    HintName::Host(name) => crate::native_name::host_name_bytes_with_native_work(
-                        name, profile, limits.maximum_component_bytes, original,
-                    ),
-                    #[cfg(windows)]
-                    HintName::Wide(name) => crate::native_name::host_wide_name_bytes_with_native_work(
-                        name, profile, limits.maximum_component_bytes, original,
-                    ),
-                };
-                let (name, allocation) = result.map_err(|error| match error {
-                    crate::NativeTreeMaterializationError::InvalidLayout => DemandError::InvalidRequest,
-                    error => NativeWatchError::NativeWork(error).into(),
-                })?;
-                (name, Some(allocation))
-            } else {
-                let name = work.with_original_leaf(|actual| match name {
-                    HintName::Host(name) => crate::native_name::host_name_bytes_measured(
-                        name, profile, limits.maximum_component_bytes, actual,
-                    ),
-                    #[cfg(windows)]
-                    HintName::Wide(name) => crate::native_name::host_wide_name_bytes_measured(
-                        name, profile, limits.maximum_component_bytes, actual,
-                    ),
-                })?;
-                claimed = claimed.checked_add(name.1.capacity() as u64).ok_or(WorkError::Overflow)?;
-                (name, None)
-            };
+            let ((encoding, bytes), mut allocation) = match name {
+                HintName::Host(name) => crate::native_name::host_name_bytes_with_source_work(
+                    name, profile, limits.maximum_component_bytes, work,
+                ),
+                #[cfg(windows)]
+                HintName::Wide(name) => crate::native_name::host_wide_name_bytes_with_source_work(
+                    name, profile, limits.maximum_component_bytes, work,
+                ),
+            }?;
+            if allocation.is_none() {
+                claimed = claimed.checked_add(bytes.capacity() as u64).ok_or(WorkError::Overflow)?;
+            }
             let name = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
                 .map_err(|_| DemandError::InvalidRequest)?;
             // Keep the name before its guard on every custody-transfer error.
@@ -1039,7 +892,7 @@ impl NativeWatchHeldRoot {
             cleanup
         };
         let root = self.root.take().expect("the held directory remains owned until close admission");
-        let ((), recorded) = cleanup.attempt_recorded(|| drop(root));
+        let ((), recorded) = cleanup.attempt(|| drop(root));
         drop(superseded_cleanup);
         recorded?;
         Ok(true)
@@ -1051,7 +904,7 @@ impl Drop for NativeWatchHeldRoot {
         if let Some(root) = self.root.take() {
             if let Some(cleanup) = self.cleanup.take() {
                 // This exact original close was reserved before opening. The primitive releases the meter before physical close.
-                let _ = cleanup.attempt_recorded(|| drop(root));
+                let _ = cleanup.attempt(|| drop(root));
             } else {
                 drop(root);
             }
@@ -1060,12 +913,6 @@ impl Drop for NativeWatchHeldRoot {
 }
 
 impl NativeWatch {
-    /// Returns exact guarantees for this watcher's compiled backend.
-    #[must_use]
-    pub const fn capabilities(&self) -> NativeWatchCapabilities {
-        native_watch_capabilities()
-    }
-
     /// Opens the platform-recommended event source.
     pub fn open(
         root: impl AsRef<Path>,
@@ -1121,7 +968,7 @@ impl NativeWatch {
             self.clear_windows_directories_with_work(&mut work).map_err(demand_watch_error)?;
         }
         match &self.watcher {
-            NativeWatchDriver::Source { watcher, .. } => {
+            NativeWatchDriver::Source(watcher) => {
                 watcher.stop_with_work(&mut work).map_err(demand_watch_error)?;
                 if !watcher.is_stopped() { return Err(NativeWatchError::SourceUnavailable); }
             }
@@ -1266,7 +1113,7 @@ impl NativeWatch {
         let queue_bytes = (capacity as u64).checked_mul(size_of::<WatchChange>() as u64)
             .ok_or(WorkError::Overflow)?;
         let queue_allocation = if let Some(original) = original {
-            Some(original.claim(queue_bytes)?)
+            Some(original.claim(queue_bytes, u64::from((queue_bytes) != 0), crate::WorkCounters::UNCHARGED)?)
         } else {
             work.allocate(queue_bytes).map_err(demand_watch_error)?;
             None
@@ -1324,15 +1171,10 @@ impl NativeWatch {
         } else {
             None
         };
-        let (driver_root, driver_allocation) = if use_adapter {
-            (PathBuf::new(), None)
-        } else {
-            Self::copy_startup_path(&root, work, original)?
-        };
         let mut watched_directories = Vec::new();
         if use_adapter {
             work.allocate(0).map_err(demand_watch_error)?;
-            watched_directories.try_reserve_exact(1).map_err(|_| NativeWatchError::AllocationFailed)?;
+            watched_directories.try_reserve_exact(1).map_err(|error| NativeWatchError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(error)))?;
             let (directory, _) = crate::native_host::clone_path_with_work(&root, work)
                 .map_err(demand_watch_error)?;
             watched_directories.push(directory);
@@ -1352,8 +1194,7 @@ impl NativeWatch {
                 sender: linux_sender, shared: Arc::clone(&shared),
                 queued: Arc::clone(&queued), fenced: Arc::clone(&fenced),
             });
-            Self::startup_control(work)?;
-            let sink = Arc::new(RootHintInvalidation(Arc::clone(&shared)));
+            let sink = Arc::clone(&shared);
             Some(crate::source_watch::NativeSourceWatch::start_with_events_with_work(
                 &held_root, sink, events, work,
             ))
@@ -1375,22 +1216,15 @@ impl NativeWatch {
         let source_result = if use_adapter {
             None
         } else {
-            Self::startup_control(work)?;
-            let sink = Arc::new(RootHintInvalidation(Arc::clone(&shared)));
+            let sink = Arc::clone(&shared);
             Some(crate::source_watch::NativeSourceWatch::start_with_work(&held_root, sink, work))
         };
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let source_result: Option<Result<crate::source_watch::NativeSourceWatch, crate::DemandError>> = None;
-        let mut startup_failure = None;
         let watcher = if let Some(source) = source_result {
             match source {
-                Ok(watcher) => NativeWatchDriver::Source {
-                    watcher, root: driver_root, _root_allocation: driver_allocation,
-                },
-                Err(crate::DemandError::SourceWatchStartup(owner)) => {
-                    startup_failure = Some(Arc::clone(&owner));
-                    NativeWatchDriver::StartupFailure(owner)
-                }
+                Ok(watcher) => NativeWatchDriver::Source(watcher),
+                Err(crate::DemandError::SourceWatchStartup(owner)) => NativeWatchDriver::StartupFailure(owner),
                 Err(error) => return Err(demand_watch_error(error)),
             }
         } else {
@@ -1426,8 +1260,8 @@ impl NativeWatch {
             root_allocation, owner_allocation: None,
             pending_source_watch: None,
         };
-        if let Some(cause) = startup_failure {
-            return Err(NativeWatchError::SourceStartupFailed { cause, watch });
+        if let NativeWatchDriver::StartupFailure(cause) = &watch.watcher {
+            return Err(NativeWatchError::SourceStartupFailed { cause: Arc::clone(cause), watch });
         }
         let checked = if let Some(original) = original {
             original.admit(WorkCounters::UNCHARGED)
@@ -1493,8 +1327,12 @@ impl NativeWatch {
         if self.watched_directories.contains(&candidate) {
             return Ok(());
         }
-        self.watcher.watch(&candidate, RecursiveMode::NonRecursive)
-            .map_err(NativeWatchError::Backend)?;
+        let NativeWatchDriver::Adapter(watcher) = &mut self.watcher else {
+            return Err(NativeWatchError::Backend(notify::Error::generic(
+                "held child registrations use the native demand engine",
+            )));
+        };
+        watcher.watch(&candidate, RecursiveMode::NonRecursive).map_err(NativeWatchError::Backend)?;
         let at = self.watched_directories.partition_point(|path| path < &candidate);
         self.watched_directories.insert(at, candidate);
         Ok(())
@@ -1555,7 +1393,7 @@ impl NativeWatch {
                 }
             }
             match &self.watcher {
-                NativeWatchDriver::Source { watcher, .. } => {
+                NativeWatchDriver::Source(watcher) => {
                     if !watcher.is_exact() {
                         return Err(NativeWatchError::BoundedObservationUnavailable.into());
                     }
@@ -1579,17 +1417,14 @@ impl NativeWatch {
     fn clear_linux_directories_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
-        let NativeWatchDriver::Source { watcher, .. } = &self.watcher else { return Ok(()); };
-        let result = (|| {
-            watcher.unadmit_with_work(Path::new(""), work)?;
-            while self.watched_directories.len() > 1 {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                let removed = self.watched_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
-                drop(removed);
-            }
-            Ok(())
-        })();
-        result
+        let NativeWatchDriver::Source(watcher) = &self.watcher else { return Ok(()); };
+        watcher.unadmit_with_work(Path::new(""), work)?;
+        while self.watched_directories.len() > 1 {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            let removed = self.watched_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
+            drop(removed);
+        }
+        Ok(())
     }
 
     #[cfg(windows)]
@@ -1735,21 +1570,18 @@ impl NativeWatch {
         &mut self, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
         work.check()?;
-        let result = (|| {
-            while let Some(observed) = self.windows_directories.last_mut() {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                observed.watcher.stop_with_work(work)?;
-                if !observed.watcher.is_stopped() {
-                    return Err(crate::demand::DemandError::WorkerUnavailable);
-                }
-                let removed = self.windows_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
-                drop(removed);
+        while let Some(observed) = self.windows_directories.last_mut() {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            observed.watcher.stop_with_work(work)?;
+            if !observed.watcher.is_stopped() {
+                return Err(crate::demand::DemandError::WorkerUnavailable);
             }
-            self.windows_directories = Vec::new();
-            drop(self.windows_backing_allocation.take());
-            Ok(())
-        })();
-        result
+            let removed = self.windows_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
+            drop(removed);
+        }
+        self.windows_directories = Vec::new();
+        drop(self.windows_backing_allocation.take());
+        Ok(())
     }
 
     /// Adds every directory beneath the root, except the root names in `excluded`, to a non-recursive native watcher: what a baseline that captures the whole tree needs before it starts, so a change to anything it captured is reported.
@@ -1803,7 +1635,7 @@ impl NativeWatch {
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<(), NativeWatchError> {
         #[cfg(any(target_os = "linux", windows))]
-        if matches!(self.watcher, NativeWatchDriver::Source { .. }) {
+        if matches!(self.watcher, NativeWatchDriver::Source(_)) {
             for change in changes {
                 let removed = match change {
                     WatchChange::Removed(path) => [Some(path), None],
@@ -1824,7 +1656,7 @@ impl NativeWatch {
                     let result = (|| {
                         #[cfg(target_os = "linux")]
                         {
-                            let NativeWatchDriver::Source { watcher, .. } = &self.watcher else {
+                            let NativeWatchDriver::Source(watcher) = &self.watcher else {
                                 unreachable!("the authoritative source driver remains owned");
                             };
                             // The source owns registrations; never copy an SDK root cache or adopt previously queued path data.
@@ -1898,7 +1730,9 @@ impl NativeWatch {
                 .filter(|watched| **watched != self.root && watched.starts_with(&removed))
                 .cloned().collect::<Vec<_>>();
             for watched in stale {
-                let _ = self.watcher.unwatch(&watched);
+                if let NativeWatchDriver::Adapter(watcher) = &mut self.watcher {
+                    let _ = watcher.unwatch(&watched);
+                }
                 self.watched_directories.retain(|candidate| candidate != &watched);
             }
         }
@@ -2002,14 +1836,11 @@ impl NativeWatch {
         }
         #[cfg(not(any(target_os = "linux", windows)))]
         if !self.recursive {
-            while let Some(index) = self.watched_directories.iter().position(|path| *path != self.root) {
+            if self.watched_directories.iter().any(|path| *path != self.root) {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
                     .map_err(demand_watch_error)?;
-                self.watcher.unwatch_with_work(&self.watched_directories[index], work)
-                    .map_err(demand_watch_error)?;
-                drop(self.watched_directories.remove(index));
-                work.with_original_leaf(|actual| actual.reconcile_native_controls())
-                    .map_err(NativeWatchError::Work)?;
+                work.check().map_err(demand_watch_error)?;
+                return Err(NativeWatchError::BoundedObservationUnavailable);
             }
         }
         Ok(self.epoch)
@@ -2115,7 +1946,7 @@ impl NativeWatch {
         replacement.1 = if shared_bytes == 0 {
             None
         } else if let Some(original) = original {
-            Some(original.claim(shared_bytes as u64)?)
+            Some(original.claim(shared_bytes as u64, u64::from((shared_bytes as u64) != 0), crate::WorkCounters::UNCHARGED)?)
         } else {
             work.allocate(shared_bytes as u64).map_err(demand_watch_error)?;
             None
@@ -2243,7 +2074,7 @@ impl NativeWatch {
                 .map_err(demand_watch_error)?;
         }
         let delivered = match &self.watcher {
-            NativeWatchDriver::Source { watcher, .. } => watcher
+            NativeWatchDriver::Source(watcher) => watcher
                 .fence_with_work(timeout.saturating_sub(started.elapsed()), work)
                 .map_err(demand_watch_error)?,
             NativeWatchDriver::StartupFailure(owner) => {
@@ -2416,7 +2247,7 @@ impl NativeWatch {
         // Data always drops before either its old payload or new buffer guards.
         let mut owned = (
             Vec::<WatchChange>::new(), WatchBatchOriginal::default(),
-            original.map(|original| original.retain_owned(0)).transpose()?,
+            original.map(|original| original.claim(0, 0, crate::WorkCounters::UNCHARGED)).transpose()?,
         );
         let mut ordinary_bytes = 0;
         let mut dequeued = false;
@@ -2438,7 +2269,7 @@ impl NativeWatch {
                     .map(crate::foundation::usize_to_u64).ok_or(WorkError::Overflow)?;
                 if capacity != 0 {
                     if let Some(original) = original {
-                        owned.2 = Some(original.claim(bytes)?);
+                        owned.2 = Some(original.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?);
                     } else {
                         work.allocate(bytes).map_err(demand_watch_error)?;
                         ordinary_bytes = bytes;
@@ -2565,19 +2396,6 @@ impl NativeWatch {
     }
 }
 
-fn admit_watch_work(
-    work: &mut WorkCounters,
-    proposed: WorkCounters,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<(), NativeWatchError> {
-    cancellation.check()?;
-    let next = work.checked_add(proposed)?;
-    next.verify(budget)?;
-    *work = next;
-    Ok(())
-}
-
 #[cfg(windows)]
 fn watch_claim_allocation<W: crate::demand::SourceDemandReadWork>(
     bytes: u64, work: &mut W,
@@ -2586,7 +2404,7 @@ fn watch_claim_allocation<W: crate::demand::SourceDemandReadWork>(
     if work.is_native_original() {
         let native = work.native_source_work()
             .ok_or(crate::demand::DemandError::NativeWorkUnavailable)?.materialization_work()?;
-        return native.claim(bytes).map(Some).map_err(|error| NativeWatchError::from(error).into());
+        return native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map(Some).map_err(|error| NativeWatchError::from(error).into());
     }
     work.allocate(bytes)?;
     Ok(None)
@@ -2741,64 +2559,59 @@ fn accept_native_event(
     {
         return;
     }
-    let mapped = event
-        .as_ref()
-        .map_err(|_| WatchInvalidationReason::BackendError)
-        .and_then(|event| map_native_event(event, context));
-    let changes = match mapped {
-        Ok(MappedNativeEvent::Changes(changes)) => changes,
+    let mapped = (|| {
+        let event = event.as_ref().map_err(|_| WatchInvalidationReason::BackendError)?;
+        validate_replayed_root_creation(event, &context.root, context.root_identity)?;
         #[cfg(target_os = "linux")]
-        Ok(MappedNativeEvent::RenameHalf {
-            tracker,
-            mode,
-            path,
-        }) => {
-            match mode {
-                RenameMode::From if state.pending_rename.is_none() => {
-                    if queued.load(Ordering::Acquire) >= context.maximum_queued_changes {
-                        state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-                        return;
+        if let EventKind::Modify(ModifyKind::Name(mode)) = event.kind {
+            if event.need_rescan() {
+                return Err(WatchInvalidationReason::NativeRescanRequired);
+            }
+            let tracker = event.attrs.tracker().ok_or(WatchInvalidationReason::AmbiguousRename)?;
+            if matches!(mode, RenameMode::From | RenameMode::To) {
+                let [path] = event.paths.as_slice() else {
+                    return Err(WatchInvalidationReason::AmbiguousRename);
+                };
+                let path = relative_namespace_path(&context.root, path, context.profile, context.limits)?;
+                if path.is_root() { return Err(WatchInvalidationReason::RootChanged); }
+                match mode {
+                    RenameMode::From if state.pending_rename.is_none() => {
+                        if queued.load(Ordering::Acquire) >= context.maximum_queued_changes {
+                            return Err(WatchInvalidationReason::QueueOverflow);
+                        }
+                        state.pending_rename = Some(PendingRename {
+                            tracker, from: path, to: None, allocation: None,
+                        });
                     }
-                    state.pending_rename = Some(PendingRename {
-                        tracker,
-                        from: path,
-                        to: None,
-                        allocation: None,
-                    });
-                }
-                RenameMode::To => {
-                    let Some(pending) = state.pending_rename.as_mut() else {
-                        state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
-                        return;
-                    };
-                    if pending.tracker != tracker || pending.to.is_some() {
-                        state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
-                    } else {
+                    RenameMode::To => {
+                        let pending = state.pending_rename.as_mut()
+                            .ok_or(WatchInvalidationReason::AmbiguousRename)?;
+                        if pending.tracker != tracker || pending.to.is_some() {
+                            return Err(WatchInvalidationReason::AmbiguousRename);
+                        }
                         pending.to = Some(path);
                     }
+                    _ => return Err(WatchInvalidationReason::AmbiguousRename),
                 }
-                _ => state.invalidation = Some(WatchInvalidationReason::AmbiguousRename),
+                return Ok(Vec::new());
             }
-            return;
-        }
-        #[cfg(target_os = "linux")]
-        Ok(MappedNativeEvent::RenameBoth {
-            tracker,
-            changes,
-        }) => {
-            let matched = state.pending_rename.as_ref().is_some_and(|pending| {
-                let Some(WatchChange::Renamed { from, to }) = changes.first() else { return false; };
-                pending.tracker == tracker
-                    && &pending.from == from
-                    && pending.to.as_ref() == Some(to)
-            });
-            if !matched {
-                state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
-                return;
+            if mode == RenameMode::Both {
+                let changes = map_event(event, &context.root, context.profile, context.limits)?;
+                let [WatchChange::Renamed { from, to }] = changes.as_slice() else {
+                    return Err(WatchInvalidationReason::AmbiguousRename);
+                };
+                let matched = state.pending_rename.as_ref().is_some_and(|pending| {
+                    pending.tracker == tracker && &pending.from == from && pending.to.as_ref() == Some(to)
+                });
+                if !matched { return Err(WatchInvalidationReason::AmbiguousRename); }
+                state.pending_rename = None;
+                return Ok(changes);
             }
-            state.pending_rename = None;
-            changes
         }
+        map_event(event, &context.root, context.profile, context.limits)
+    })();
+    let changes = match mapped {
+        Ok(changes) => changes,
         Err(reason) => {
             state.invalidation = Some(reason);
             return;
@@ -2824,62 +2637,6 @@ fn accept_native_event(
             }
         }
     }
-}
-
-enum MappedNativeEvent {
-    Changes(Vec<WatchChange>),
-    #[cfg(target_os = "linux")]
-    RenameHalf {
-        tracker: usize,
-        mode: RenameMode,
-        path: NamespacePath,
-    },
-    #[cfg(target_os = "linux")]
-    RenameBoth {
-        tracker: usize,
-        /// Bounded hints moved from the native queue without path copies.
-        changes: Vec<WatchChange>,
-    },
-}
-
-fn map_native_event(
-    event: &Event,
-    context: &NativeEventContext,
-) -> Result<MappedNativeEvent, WatchInvalidationReason> {
-    validate_replayed_root_creation(event, &context.root, context.root_identity)?;
-    #[cfg(target_os = "linux")]
-    if let EventKind::Modify(ModifyKind::Name(mode)) = event.kind {
-        if event.need_rescan() {
-            return Err(WatchInvalidationReason::NativeRescanRequired);
-        }
-        let tracker = event
-            .attrs
-            .tracker()
-            .ok_or(WatchInvalidationReason::AmbiguousRename)?;
-        if matches!(mode, RenameMode::From | RenameMode::To) {
-            let [path] = event.paths.as_slice() else {
-                return Err(WatchInvalidationReason::AmbiguousRename);
-            };
-            let relative =
-                relative_namespace_path(&context.root, path, context.profile, context.limits)?;
-            if relative.is_root() {
-                return Err(WatchInvalidationReason::RootChanged);
-            }
-            return Ok(MappedNativeEvent::RenameHalf {
-                tracker,
-                mode,
-                path: relative,
-            });
-        }
-        if mode == RenameMode::Both {
-            let changes = map_event(event, &context.root, context.profile, context.limits)?;
-            if !matches!(changes.as_slice(), [WatchChange::Renamed { .. }]) {
-                return Err(WatchInvalidationReason::AmbiguousRename);
-            }
-            return Ok(MappedNativeEvent::RenameBoth { tracker, changes });
-        }
-    }
-    map_event(event, &context.root, context.profile, context.limits).map(MappedNativeEvent::Changes)
 }
 
 fn validate_replayed_root_creation(
@@ -2947,7 +2704,7 @@ fn map_event(
                 from: from.clone(),
                 to: to.clone(),
             }]),
-            // inotify pairs both halves by cookie before they reach here (see `map_native_event`), so a lone half on Linux means the other half was lost.
+            // inotify pairs both halves by cookie before they reach here (see `accept_native_event`), so a lone half on Linux means the other half was lost.
             #[cfg(target_os = "linux")]
             _ => Err(WatchInvalidationReason::AmbiguousRename),
             // Windows identifies arrival and departure halves, so unpaired renames retain exact direction.
@@ -3122,9 +2879,6 @@ pub enum NativeWatchError {
     /// Process-local cursor arithmetic overflowed.
     #[error("native watcher sequence is exhausted")]
     SequenceExhausted,
-    /// Bounded output allocation failed.
-    #[error("native watcher output allocation failed")]
-    AllocationFailed,
     /// Polling was cooperatively cancelled.
     #[error(transparent)]
     Cancelled(#[from] CancellationError),
@@ -3157,7 +2911,7 @@ fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
         crate::demand::DemandError::InvalidRequest => NativeWatchError::InvalidRequest,
         crate::demand::DemandError::WorkerUnavailable => NativeWatchError::WorkerUnavailable,
         crate::demand::DemandError::OriginalWorkPoisoned => NativeWatchError::StatePoisoned,
-        crate::demand::DemandError::Allocation(_) => NativeWatchError::AllocationFailed,
+        crate::demand::DemandError::Allocation(error) => NativeWatchError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(error)),
         crate::demand::DemandError::NativeWorkUnavailable => NativeWatchError::NativeWorkUnavailable,
         #[cfg(feature = "native-mount")]
         crate::demand::DemandError::Mount(error) => NativeWatchError::Mount(error),
@@ -3233,32 +2987,7 @@ mod demand_admission_tests {
         assert!(matches!(failure.error, DemandError::Work(WorkError::BudgetExceeded {
             counter: "backend_read_operations", ..
         })));
-        let held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
-        assert_eq!(held.windows_directories.len(), 1);
-        assert_eq!(held.windows_directories[0].path.0.as_slice(), &[u16::from(b'a')]);
-        drop(held);
         watch.observe_directory(&namespace("/a/b")?, windows_budget(), &CancellationToken::new())?;
-        assert_eq!(watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?.windows_directories.len(), 2);
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_rebound_prefix_replaces_the_old_held_identity_without_pinning_its_name()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        std::fs::create_dir(root.path().join("a"))?;
-        let watch = watcher(root.path())?;
-        let path = namespace("/a")?;
-        watch.observe_directory(&path, windows_budget(), &CancellationToken::new())?;
-        let old_identity = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?
-            .windows_directories[0].identity;
-        std::fs::rename(root.path().join("a"), root.path().join("old"))?;
-        std::fs::create_dir(root.path().join("a"))?;
-        watch.observe_directory(&path, windows_budget(), &CancellationToken::new())?;
-        let held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
-        assert_eq!(held.windows_directories.len(), 1);
-        assert_ne!(held.windows_directories[0].identity, old_identity);
         Ok(())
     }
 
@@ -3271,6 +3000,10 @@ mod demand_admission_tests {
         std::fs::write(root.path().join("a/f"), b"before")?;
         let watch = watcher(root.path())?;
         watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?.accept_lazy_baseline()?;
+        watch.observe_directory(&namespace("/a")?, windows_budget(), &CancellationToken::new())?;
+        std::fs::rename(root.path().join("a"), root.path().join("old"))?;
+        std::fs::create_dir(root.path().join("a"))?;
+        std::fs::write(root.path().join("a/f"), b"before")?;
         watch.observe_directory(&namespace("/a")?, windows_budget(), &CancellationToken::new())?;
         std::fs::write(root.path().join("a/f"), b"after")?;
         let expected = namespace("/a/f")?;

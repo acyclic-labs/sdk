@@ -1,5 +1,6 @@
 //! Explicit browser consumers of the ordinary authenticated recursive workflow.
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::{
     core::Snapshot,
     filesystem::{ForkToolArguments, RecursiveForkConfig,
@@ -97,7 +98,7 @@ impl WasmRecursiveForkSource {
         #[wasm_bindgen(unchecked_param_type = "WasmForkPreparationLimits")] limits: JsValue,
         #[wasm_bindgen(unchecked_param_type = "readonly WasmFileRefWire[]")] input_files: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
-        let child = TaskAdmissionRecord::from_canonical_value(from_js(child)?).map_err(js_error)?;
+        let child = TaskAdmissionRecord::from_canonical_value(from_js(child)?, &mut None).map_err(js_error)?.0;
         if child.parent != Some(self.caller) {
             return Err(js_error(Error::Unauthorized("fork child has a different original caller".into())));
         }
@@ -142,7 +143,7 @@ impl WasmTaskRuntime {
         let operation = OperationId::parse(&operation).map_err(js_error)?;
         let owner = Arc::new(self.runtime.task_host().journal_owner(caller, context.owned_task_fence().map_err(js_error)?).await.map_err(js_error)?
             .with_invocation_cancellation(&cancellation));
-        let resolver = context.content_residency_verifier(owner.clone()).map_err(js_error)?;
+        let resolver = crate::runtime::content_residency_verifier(Arc::new(context.clone()), owner.clone(), None).map_err(js_error)?;
         let source_read = if let Some(selected) = arguments.source.filter(|selected| *selected != caller) {
             let policy = self.project_source_policy.as_ref().ok_or_else(|| js_error(Error::Unauthorized("foreign source lacks configured RootService policy".into())))?;
             let selected_project = config.selected_project.ok_or_else(|| js_error(Error::Invalid("foreign source requires exact project snapshot metadata".into())))?;
@@ -185,11 +186,11 @@ impl WasmTaskRuntime {
         let history_limits: HistoryReadLimits = from_js(history_limits)?;
         let snapshot = original_owner.reducer.snapshot(1, &mut None).map(|(snapshot, _)| snapshot).map_err(js_error)?;
         let head = snapshot.events.last().ok_or_else(|| js_error(Error::Unauthorized("fork source has no committed caller event".into())))?;
-        let reader = HistoryReader::new(&self.stream, original_owner.reducer.authority(), original_owner.issuer.verifier(&mut None).expect("verifier copy")).map_err(js_error)?;
+        let reader = HistoryReader::new(&self.stream, original_owner.reducer.authority(), &(original_owner.issuer.verifier(&mut None).expect("verifier copy")), &mut None).map_err(js_error)?;
         let revision = original_owner.reducer.revision();
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let page = reader.read_page(&HistoryCursor { authority: original_owner.reducer.authority().clone(),
-            after_revision: revision - 1, through_revision: revision }, history_limits).await.map_err(js_error)?;
+            after_revision: revision - 1, through_revision: revision }, history_limits, None).await.map_err(js_error)?;
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         if page.events.as_slice() != std::slice::from_ref(head) {
             return Err(js_error(Error::Unauthorized("original fork source head differs from canonical Stream".into())));
@@ -197,7 +198,7 @@ impl WasmTaskRuntime {
         let request: ForkRequest = from_js(request)?;
         let owner = Arc::new(self.runtime.task_host().journal_owner(caller, context.owned_task_fence().map_err(js_error)?).await.map_err(js_error)?
             .with_invocation_cancellation(&cancellation));
-        let resolver = context.content_residency_verifier(owner.clone()).map_err(js_error)?;
+        let resolver = crate::runtime::content_residency_verifier(Arc::new(context.clone()), owner.clone(), None).map_err(js_error)?;
         let source_read: Option<ProjectSourceReadHandle> = if let Some(authorization) = &request.authorized_source {
             Some(owner.restore_project_source_authorization(&context, authorization).await.map_err(js_error)?)
         } else { None };
@@ -227,7 +228,7 @@ impl WasmTaskRuntime {
         let lease = from_js(lease)?;
         self.validate_recursive_lease(source, &lease).await?;
         let commands = self.commands().with_fork_preparer(source.binding.preparer.clone());
-        work_to_js(&work_value(self.runtime.reconcile_task(lease, &commands, maximum_commands, maximum_wait_millis).await))
+        work_to_js(&work_value(self.runtime.reconcile_task(lease, &commands, maximum_commands, maximum_wait_millis, None).await))
     }
 }
 

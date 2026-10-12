@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::work;
 use crate::pi_fork::tests::Passive;
 use acyclic_harness::{Admission, AgentId, Capabilities,
@@ -21,7 +22,7 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Result<Self> {
-        let provider = ProviderRef::new("pi-mail", "filesystem", "2")?;
+        let provider = ProviderRef::new("pi-mail".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let agent = AgentId::from_bytes([71;16]);
         let volume = VolumeRef::new(provider, "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
@@ -137,7 +138,7 @@ async fn actual_mailbox_lost_ack_exact_sequence_and_original_sender() -> Result<
     child_context.send(parent, OperationId::from_bytes([81;16]), payload.clone()).await?;
     let mut stale = child_fence.clone(); stale.reservation_id.push_str("-replaced");
     assert!(reopened.task_host().send_owned(child, stale, parent, OperationId::from_bytes([82;16]), payload).await.is_err());
-    reopened.task_host().cancel_child_owned(parent, fence, child, OperationId::from_bytes([83;16])).await?;
+    reopened.task_host().cancel_child_owned(parent, &fence, child, OperationId::from_bytes([83;16]), &mut None).await?;
     assert!(child_owner.verify_dispatch().await.is_err());
     child_owner.verify_settlement().await?;
     assert!(authenticate(&child_context, &child_owner, &work).await.is_err());
@@ -162,8 +163,7 @@ async fn actual_passive_checkpoint_owner_replacement_rejects_original_mail_dispa
         .ok_or_else(|| Error::NotFound("actual child suspension".into()))?;
     let operation = OperationId::from_bytes([85;16]);
     let wake = fixture.file(operation, "replacement-wake.json", b"{}").await?;
-    runtime.task_host().resume_workflow(child, suspension.revision, wake,
-        acyclic_harness::IdempotencyKey::new("pi-mail-original-checkpoint-wake")?).await?;
+    runtime.task_host().resume_workflow(child, suspension.revision, wake, acyclic_harness::IdempotencyKey::new("pi-mail-original-checkpoint-wake")?, None).await?;
     let replacement = fixture.pull(&runtime).await?;
     assert_eq!(replacement.operation.operation_id.into_bytes(), child.into_bytes());
     let replacement_fence = LeaseFence::from(&replacement.reservation);

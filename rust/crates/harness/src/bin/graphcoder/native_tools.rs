@@ -78,14 +78,14 @@ pub fn source(config: &Config, stream: std::sync::Arc<LocalStream>, files: Arc<F
         return Err(Error::Invalid("native tools exceed the finite producer binding limit".into()));
     }
     let configured = ConfiguredRecursiveToolsConfig {
-        callers: config.tools.callers.iter().map(|caller| Ok(ConfiguredRecursiveCaller {
+        callers: config.tools.callers.iter().map(|caller| ConfiguredRecursiveCaller {
             task: caller.task,
-            owner: authority_binding(&caller.owner)?,
+            owner: authority_binding(&caller.owner),
             project: caller.project.clone(),
             private_volume: caller.private_volume.clone(),
             native_snapshot: caller.native_snapshot.clone(),
             result_volume: caller.result_volume.clone(),
-        })).collect::<Result<Vec<_>>>()?,
+        }).collect(),
         forks: config.tools.forks.iter().map(|fork| {
             let command = WorkflowCommand::deserialize(&fork.admission.input)
                 .map_err(|error| Error::Invalid(format!("native child model command: {error}")))?;
@@ -95,7 +95,7 @@ pub fn source(config: &Config, stream: std::sync::Arc<LocalStream>, files: Arc<F
             }
             Ok(ConfiguredRecursiveFork {
                 caller: fork.caller,
-                child: authority_binding(&fork.child)?,
+                child: authority_binding(&fork.child),
                 project: fork.project.clone(),
                 private_volume: fork.private_volume.clone(),
                 admission: fork.admission.clone(),
@@ -128,7 +128,7 @@ pub fn source(config: &Config, stream: std::sync::Arc<LocalStream>, files: Arc<F
     Source::new(configured, stream, files, &config.filesystem_provider, config.limits)
 }
 
-fn authority_binding(binding: &AuthorityBinding) -> Result<ConfiguredRecursiveAuthorityBinding> {
+fn authority_binding(binding: &AuthorityBinding) -> ConfiguredRecursiveAuthorityBinding {
     ConfiguredRecursiveAuthorityBinding::new(acyclic_harness::core::AuthorityIssuer::new(
         &binding.issuer, binding.key, binding.authority.clone()), binding.scope.clone())
 }
@@ -237,11 +237,11 @@ impl super::native::NativeSession {
         let (id, mut id_custody) = work.copy_bytes(binding.authority.id.as_bytes())?;
         let id = String::from_utf8(id).expect("authority ID is UTF-8");
         custody.absorb(&mut id_custody)?;
-        let mut host_custody = work.claim(std::mem::size_of::<ConversationEffectHost<LocalStream>>() as u64)?;
+        let mut host_custody = work.claim(std::mem::size_of::<ConversationEffectHost<LocalStream>>() as u64, u64::from((std::mem::size_of::<ConversationEffectHost<LocalStream>>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
         custody.absorb(&mut host_custody)?;
-        let effects = ConversationEffectHost::new_with_native_work(self.stream.clone(),
+        let effects = ConversationEffectHost::new(self.stream.clone(),
             acyclic_harness::core::Authority { kind: binding.authority.kind, id }, issuer, scope,
-            SchemaRegistry::default(), reader, registry, custody, &work)?;
+            SchemaRegistry::default(), reader, registry, Some(custody), Some(&work))?;
         let (status, _status_custody) = effects.run_task_effect_with_native_work(
             &owner, operation, &configured.plan, &work).await?;
         Ok(format!("command-json={}\n", serde_json::to_string(&status)

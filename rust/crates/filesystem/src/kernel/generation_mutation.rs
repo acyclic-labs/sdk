@@ -252,11 +252,11 @@ fn drop_owned<T>(owned: Owned<T>, bytes: u64, accounting: &mut KernelAccounting<
     release_allocation(allocation, bytes, accounting)
 }
 
-fn split_allocation(allocation: &mut KernelOwnedAllocation, bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
+fn split_allocation(allocation: &mut KernelOwnedAllocation, _bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
     match allocation {
         KernelOwnedAllocation::Standalone => Ok(KernelOwnedAllocation::Standalone),
         #[cfg(not(target_arch = "wasm32"))]
-        KernelOwnedAllocation::NativeOriginal(allocation) => allocation.split_off(bytes)
+        KernelOwnedAllocation::NativeOriginal(allocation) => allocation.split_off(_bytes)
             .map(KernelOwnedAllocation::NativeOriginal).map_err(Into::into),
     }
 }
@@ -335,7 +335,7 @@ impl Owned<TransactionState> {
             })?;
             drop_owned(mutations, bytes, accounting)?;
             self.leaf(accounting, |state, leaf| {
-                state.record_mut(leaf, id)?.working.payload = FilePayload::Directory { entries: receipt.root }; Ok(())
+                state.record_mut(leaf, id)?.working.payload = FilePayload::Directory { entries: receipt.value }; Ok(())
             })?;
             cursor = end;
         }
@@ -359,7 +359,7 @@ impl Owned<TransactionState> {
                 store, entries, None, 1, DecodeLimits::for_volume(config), accounting, cancellation.clone(), None,
             ).await.map_err(|error| {
                 if is_original(accounting) { error } else {
-                    GenerationMutationError::Directory(super::list::map_error(super::persistent_pagination::project_failure(error))).into()
+                    GenerationMutationError::Directory(super::persistent_pagination::project_failure(error)).into()
                 }
             })?;
             let listing = Owned { value: listing, allocation };
@@ -387,7 +387,7 @@ impl Owned<TransactionState> {
                 if is_original(accounting) { error } else {
                     GenerationMutationError::FileTable(super::file_table_mutation::project_file_table_error(error)).into()
                 }
-            })?.root
+            })?.value
         };
         drop_owned(mutations, bytes, accounting)?;
         let root = self.leaf(accounting, |state, leaf| state.clone_generation_root(leaf, generation, root))?;

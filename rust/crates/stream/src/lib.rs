@@ -25,7 +25,7 @@ mod http_codec;
 mod http_validation;
 #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 mod journal;
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod local;
 mod memory;
 #[cfg(all(
@@ -65,7 +65,7 @@ pub mod wire {
 }
 /// Canonical public descriptor set used by compatibility gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v1/stream_descriptor.bin");
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
 };
@@ -886,7 +886,7 @@ pub(crate) fn capture_commit(
     source: &CommitRequest,
     meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
 ) -> std::io::Result<crate::memory::MemoryOutput<CommitRequest>> {
-    let mut funding = crate::wire_codec::WireFunding::new(Some(meter));
+    let mut funding = crate::memory::MemoryOutput::fund(Some(meter));
     let mut conditions = funding.vector(source.conditions.len())?;
     for condition in &source.conditions {
         funding.examine(1)?;
@@ -913,7 +913,7 @@ pub(crate) fn capture_commit(
         mutations.push(mutation);
         funding.copy_completed(std::mem::size_of::<CommitMutation>())?;
     }
-    Ok(funding.finish(CommitRequest {
+    Ok(funding.map(|_| CommitRequest {
         conditions, mutations, idempotency_key: source.idempotency_key.clone(),
     }))
 }

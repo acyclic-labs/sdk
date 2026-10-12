@@ -162,7 +162,7 @@ where
             .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
         // Source authority data precedes its original decoder/constructor AL.
         let (agent, root_task) = authority.0.validate_with_native_work(journal, work)?;
-        let mut tools = ToolRegistry::new_with_native_work(work)?;
+        let mut tools = ToolRegistry::new(work)?;
         let builtin = super::pi_builtin::builtin_tool_definition_with_native_work(work)?;
         let executor = super::pi_builtin::builtin_tool_executor_with_native_work(work)?;
         let projection = Arc::new(acyclic_harness::tool::JsonToolProjection);
@@ -170,7 +170,7 @@ where
             builtin.0, builtin.1, executor, projection, &mut tools.1, work,
         )?;
         let resumable_tools = acyclic_harness::durable_tool::ResumableToolRegistry::default();
-        let slot = work.retain_owned(std::mem::size_of::<Self>() as u64)
+        let slot = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
         let retained_journal = journal.clone_with_native_work(work)?;
         let grants = authority.0.scope.grants().clone_with_native_work(work)?;
@@ -249,7 +249,7 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Admission<TaskId>, acyclic_fs::NativeAllocation)> {
         binding.validate_with_native_work(None, binding.project_volumes.keys().map(String::as_str), true, work)?;
-        root.validate_with_native_work(binding, work)?;
+        root.validate(binding, work)?;
         if binding.task_id != self.policy.root_task
             || binding.agent_id != self.policy.agent
             || !matches!(binding.scratch.allocation, PiScratchAllocation::Preparing) {

@@ -3,6 +3,7 @@ import type {
   WorkspaceCommit, WorkspaceDeleteStatus, WorkspaceRebaseResult, WorkspaceRebaseStatus,
   WasmRawMergeConflict,
 } from "./contracts.js";
+import { copyFixedBytes, copyName } from "./binding-values.js";
 
 export function decodeMergeConflict(raw: unknown): MergeConflict {
   if (typeof raw !== "object" || raw === null) throw new TypeError("binding returned a malformed conflict");
@@ -18,17 +19,9 @@ export function decodeMergeConflict(raw: unknown): MergeConflict {
       (name.encoding === "utf8" || name.encoding === "posix-bytes" || name.encoding === "windows-utf16le") &&
       name.bytes instanceof Uint8Array) {
     return { kind: "binding", directoryId: Uint8Array.from(directoryId),
-      name: { encoding: name.encoding, bytes: Uint8Array.from(name.bytes) } };
+      name: copyName(name) };
   }
   throw new TypeError("binding returned a malformed conflict");
-}
-
-function copyGenerationId(value: unknown): Uint8Array | undefined {
-  if (value === undefined) return undefined;
-  if (!(value instanceof Uint8Array) || value.byteLength !== 32) {
-    throw new TypeError("binding has an invalid generation identity");
-  }
-  return Uint8Array.from(value);
 }
 
 export function parseMergePreparation(
@@ -40,7 +33,7 @@ export function parseMergePreparation(
     readonly work: WorkCounters;
   },
 ): MergePreparationResult {
-  const generationId = copyGenerationId(value.generationId);
+  const generationId = copyFixedBytes(value.generationId, 32, "generation identity");
   if (value.status === "prepared" && generationId !== undefined &&
       value.conflicts.length === 0 && !value.truncated) {
     return { status: "prepared", generationId,
@@ -55,7 +48,7 @@ export function parseMergePreparation(
 
 interface RawResult {
   readonly status: string;
-  readonly generationId: Uint8Array | undefined;
+  readonly generationId?: Uint8Array | undefined;
   readonly conflicts: readonly unknown[];
   readonly truncated: boolean;
 }
@@ -83,7 +76,7 @@ function parseResult<Status extends string>(
   if (!isStatus(statuses, value.status)) throw new TypeError("binding result has an invalid status");
   return {
     status: value.status,
-    generationId: copyGenerationId(value.generationId),
+    generationId: copyFixedBytes(value.generationId, 32, "generation identity"),
     conflicts: value.conflicts.map(decodeMergeConflict),
     truncated: value.truncated,
   };
@@ -108,5 +101,5 @@ export function parseWorkspaceCommit(value: unknown): WorkspaceCommit {
   if (typeof candidate.status !== "string" || !isStatus(commitStatuses, candidate.status)) {
     throw new TypeError("workspace commit has an invalid status");
   }
-  return { status: candidate.status, generationId: copyGenerationId(candidate.generationId) };
+  return { status: candidate.status, generationId: copyFixedBytes(candidate.generationId, 32, "generation identity") };
 }

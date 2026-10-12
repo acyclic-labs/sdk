@@ -4,10 +4,8 @@ import type {
   CommittedMutation as WireCommittedMutation, CommittedEnvelope as WireCommittedEnvelope,
   CommitResponse as WireCommitResponse, AppendResponse as WireAppendResponse,
   IdempotencyObservation as WireIdempotencyObservation,
-  CommitRequest as WireCommitRequest, CommitCondition as WireCommitCondition,
-  CommitMutation as WireCommitMutation, TailCondition as WireTailCondition,
-  AbsentCondition as WireAbsentCondition, AppendMutation as WireAppendMutation,
-  ForkMutation as WireForkMutation,
+  CommitCondition as WireCommitCondition,
+  CommitMutation as WireCommitMutation,
   CommitConflict as WireCommitConflict, TailCommitConflict as WireTailCommitConflict,
   ExistsCommitConflict as WireExistsCommitConflict,
   ForkReceipt as WireForkReceipt,
@@ -18,7 +16,6 @@ import type {
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type { TokenOperation } from "./token-operations.js";
 import type { StreamErrorCode as RustStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
-export { TOKEN_OPERATIONS } from "./token-operations.js";
 export type { TokenOperation } from "./token-operations.js";
 
 type PublicWire<Wire, Overrides extends object = object, Omitted extends keyof Wire = never> =

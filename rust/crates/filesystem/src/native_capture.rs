@@ -31,29 +31,20 @@ pub(crate) const MAX_NATIVE_EXACT_CAPTURE_PATHS: usize = 65_536;
 pub(crate) struct NativeViewBaseline {
     root_identity: NativeRootIdentity,
     read_only: bool,
-    _allocation: Option<crate::NativeAllocation>,
+    _allocation: crate::NativeAllocation,
 }
 
 impl NativeViewBaseline {
-    #[cfg(any(feature = "native-mount", all(test, unix)))]
-    pub(crate) fn new(root_identity: NativeRootIdentity) -> Self {
-        Self {
-            root_identity,
-            read_only: false,
-            _allocation: None,
-        }
-    }
-
     /// Creates the actual shared baseline control on the original invocation.
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn new_with_native_work(
+    #[cfg(any(feature = "native-mount", all(test, unix)))]
+    pub(crate) fn new(
         root_identity: NativeRootIdentity,
         read_only: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>, crate::NativeTreeMaterializationError> {
-        let allocation = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let allocation = work.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(std::sync::Arc::new(Self {
-            root_identity, read_only, _allocation: Some(allocation),
+            root_identity, read_only, _allocation: allocation,
         }))
     }
     fn restore_canonical_stamps(
@@ -112,7 +103,9 @@ mod native_view_baseline_tests {
         std::fs::write(directory.path().join("file"), b"body")?;
         let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let identity = root.identity();
-        let baseline = NativeViewBaseline::new(identity);
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+        let baseline = NativeViewBaseline::new(identity, false, &work)?;
         let snapshot = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("file"))?)?;
         let prior = FileMetadata {
             changed_ns: MetadataField::Value(-123),
@@ -164,14 +157,6 @@ pub struct CapturePolicy {
 }
 
 impl CapturePolicy {
-    /// Admits every path.
-    #[must_use]
-    pub const fn allow_all() -> Self {
-        Self {
-            excluded_prefixes: Vec::new(),
-        }
-    }
-
     /// Creates a policy from canonical namespace prefixes.
     pub fn excluding(mut prefixes: Vec<NamespacePath>) -> Result<Self, CaptureError> {
         if prefixes.iter().any(NamespacePath::is_root) {
@@ -226,6 +211,20 @@ mod capture_policy_tests {
         )?)
     }
 
+    fn batch(changes: Vec<WatchChange>) -> WatchBatch {
+        WatchBatch::Changes {
+            original: Default::default(), epoch: 1, first_sequence: 1,
+            next_sequence: 1 + changes.len() as u64, changes,
+        }
+    }
+
+    fn options(root: &Path, maximum_paths: u32) -> Result<CaptureOptions, CaptureError> {
+        Ok(CaptureOptions {
+            source_root: root.to_path_buf(), expected_root_identity: capture_root_identity(root)?,
+            maximum_paths, maximum_extent_spans: 8,
+        })
+    }
+
     #[test]
     fn canonical_policy_uses_the_nearest_sorted_prefix() -> Result<(), Box<dyn std::error::Error>> {
         let policy = CapturePolicy::excluding(vec![
@@ -246,56 +245,38 @@ mod capture_policy_tests {
     }
 
     #[tokio::test]
-    async fn watch_hint_observes_only_missing_ancestors_of_a_nested_file()
+    async fn nested_hints_hydrate_missing_or_stale_ancestors_without_expanding_siblings()
     -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        std::fs::create_dir(temporary.path().join("sub"))?;
-        std::fs::write(temporary.path().join("sub/changed.txt"), b"changed")?;
-        std::fs::write(temporary.path().join("sub/unrelated.txt"), b"unrelated")?;
-        let workspace = crate::Fs::memory()
-            .create_workspace("watch-ancestor", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let changed = path("/sub/changed.txt")?;
-        capture_watch_batch(
-            &mut checkout,
-            WatchBatch::Changes {
-                original: Default::default(),
-                epoch: 1,
-                first_sequence: 1,
-                next_sequence: 2,
-                changes: vec![WatchChange::Modified(changed.clone())],
-            },
-            &CaptureOptions {
-                source_root: temporary.path().to_path_buf(),
-                expected_root_identity: capture_root_identity(temporary.path())?,
-                maximum_paths: 2,
-                maximum_extent_spans: 8,
-            },
-            &crate::CapturePolicy::allow_all(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?;
-        let token = CancellationToken::new();
-        let parent = checkout
-            .lookup_no_follow(&path("/sub")?, WorkBudget::UNBOUNDED, &token)
-            .await?;
-        assert_eq!(
-            parent.value.record.map(|record| record.kind),
-            Some(FileKind::Directory)
-        );
-        let file = checkout
-            .lookup_no_follow(&changed, WorkBudget::UNBOUNDED, &token)
-            .await?;
-        assert_eq!(
-            file.value.record.map(|record| record.kind),
-            Some(FileKind::Regular)
-        );
-        let unrelated = checkout
-            .lookup_no_follow(&path("/sub/unrelated.txt")?, WorkBudget::UNBOUNDED, &token)
-            .await?;
-        assert!(unrelated.value.record.is_none());
+        for (workspace_name, child_name, contents, prior) in [
+            ("watch-ancestor", "/sub/changed.txt", "changed", None),
+            ("watch-stale-ancestor", "/sub/new.txt", "new", Some("old")),
+        ] {
+            let temporary = tempfile::tempdir()?;
+            std::fs::create_dir(temporary.path().join("sub"))?;
+            std::fs::write(temporary.path().join(&child_name[1..]), contents.as_bytes())?;
+            if prior.is_none() {
+                std::fs::write(temporary.path().join("sub/unrelated.txt"), b"unrelated")?;
+            }
+            let workspace = crate::Fs::memory()
+                .create_workspace(workspace_name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            if let Some(contents) = prior { workspace.write_text("/sub", contents).await?; }
+            let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let child = path(child_name)?;
+            let hint = if prior.is_some() { WatchChange::Created(child.clone()) }
+                else { WatchChange::Modified(child.clone()) };
+            capture_watch_batch(&mut checkout, batch(vec![hint]), &options(temporary.path(), 2)?,
+                &CapturePolicy::default(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+            let token = CancellationToken::new();
+            let parent = checkout.lookup_no_follow(&path("/sub")?, WorkBudget::UNBOUNDED, &token).await?;
+            assert_eq!(parent.value.record.map(|record| record.kind), Some(FileKind::Directory));
+            let file = checkout.lookup_no_follow(&child, WorkBudget::UNBOUNDED, &token).await?;
+            assert_eq!(file.value.record.map(|record| record.kind), Some(FileKind::Regular));
+            if prior.is_none() {
+                let unrelated = checkout.lookup_no_follow(&path("/sub/unrelated.txt")?, WorkBudget::UNBOUNDED, &token).await?;
+                assert!(unrelated.value.record.is_none());
+            }
+        }
         Ok(())
     }
 
@@ -308,31 +289,20 @@ mod capture_policy_tests {
             .create_workspace("watch-directory", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let options = CaptureOptions {
-            source_root: temporary.path().to_path_buf(),
-            expected_root_identity: capture_root_identity(temporary.path())?,
-            maximum_paths: 8,
-            maximum_extent_spans: 8,
-        };
+        let options = options(temporary.path(), 8)?;
         capture_baseline(
             &mut checkout,
             &options,
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
         .await?;
         capture_watch_batch(
             &mut checkout,
-            WatchBatch::Changes {
-                original: Default::default(),
-                epoch: 1,
-                first_sequence: 1,
-                next_sequence: 2,
-                changes: vec![WatchChange::Modified(path("/pkg")?)],
-            },
+            batch(vec![WatchChange::Modified(path("/pkg")?)]),
             &options,
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
@@ -347,66 +317,6 @@ mod capture_policy_tests {
         assert_eq!(
             file.value.record.map(|record| record.kind),
             Some(FileKind::Regular)
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn watch_rename_creates_an_unobserved_destination_parent_first()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        std::fs::create_dir(temporary.path().join("sub"))?;
-        std::fs::write(temporary.path().join("old.txt"), b"old")?;
-        let workspace = crate::Fs::memory()
-            .create_workspace("watch-rename-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        workspace.write_text("/old.txt", "old").await?;
-        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        std::fs::rename(
-            temporary.path().join("old.txt"),
-            temporary.path().join("sub/new.txt"),
-        )?;
-        let old = path("/old.txt")?;
-        let new = path("/sub/new.txt")?;
-        capture_watch_batch(
-            &mut checkout,
-            WatchBatch::Changes {
-                original: Default::default(),
-                epoch: 1,
-                first_sequence: 1,
-                next_sequence: 2,
-                changes: vec![WatchChange::Renamed {
-                    from: old.clone(),
-                    to: new.clone(),
-                }],
-            },
-            &CaptureOptions {
-                source_root: temporary.path().to_path_buf(),
-                expected_root_identity: capture_root_identity(temporary.path())?,
-                maximum_paths: 2,
-                maximum_extent_spans: 8,
-            },
-            &crate::CapturePolicy::allow_all(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?;
-        let token = CancellationToken::new();
-        assert!(
-            checkout
-                .lookup_no_follow(&old, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
-                .record
-                .is_none()
-        );
-        assert!(
-            checkout
-                .lookup_no_follow(&new, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
-                .record
-                .is_some()
         );
         Ok(())
     }
@@ -444,26 +354,15 @@ mod capture_policy_tests {
         let child = path("/new/file.txt")?;
         capture_watch_batch(
             &mut checkout,
-            WatchBatch::Changes {
-                original: Default::default(),
-                epoch: 1,
-                first_sequence: 1,
-                next_sequence: 3,
-                changes: vec![
+            batch(vec![
                     WatchChange::Renamed {
                         from: old.clone(),
                         to: new.clone(),
                     },
                     WatchChange::Modified(child.clone()),
-                ],
-            },
-            &CaptureOptions {
-                source_root: temporary.path().to_path_buf(),
-                expected_root_identity: capture_root_identity(temporary.path())?,
-                maximum_paths: 3,
-                maximum_extent_spans: 8,
-            },
-            &crate::CapturePolicy::allow_all(),
+                ]),
+            &options(temporary.path(), 3)?,
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
@@ -514,23 +413,12 @@ mod capture_policy_tests {
         let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         capture_watch_batch(
             &mut checkout,
-            WatchBatch::Changes {
-                original: Default::default(),
-                epoch: 1,
-                first_sequence: 1,
-                next_sequence: 3,
-                changes: vec![
+            batch(vec![
                     WatchChange::Modified(path("/modified")?),
                     WatchChange::Arrived(path("/arrived")?),
-                ],
-            },
-            &CaptureOptions {
-                source_root: temporary.path().to_path_buf(),
-                expected_root_identity: capture_root_identity(temporary.path())?,
-                maximum_paths: 8,
-                maximum_extent_spans: 8,
-            },
-            &CapturePolicy::allow_all(),
+                ]),
+            &options(temporary.path(), 8)?,
+            &CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
@@ -558,59 +446,6 @@ mod capture_policy_tests {
     }
 
     #[tokio::test]
-    async fn watch_nested_file_replaces_a_stale_non_directory_ancestor()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        std::fs::create_dir(temporary.path().join("sub"))?;
-        std::fs::write(temporary.path().join("sub/new.txt"), b"new")?;
-        let workspace = crate::Fs::memory()
-            .create_workspace("watch-stale-ancestor", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        workspace.write_text("/sub", "old").await?;
-        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let child = path("/sub/new.txt")?;
-        capture_watch_batch(
-            &mut checkout,
-            WatchBatch::Changes {
-                original: Default::default(),
-                epoch: 1,
-                first_sequence: 1,
-                next_sequence: 2,
-                changes: vec![WatchChange::Created(child.clone())],
-            },
-            &CaptureOptions {
-                source_root: temporary.path().to_path_buf(),
-                expected_root_identity: capture_root_identity(temporary.path())?,
-                maximum_paths: 2,
-                maximum_extent_spans: 8,
-            },
-            &CapturePolicy::allow_all(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?;
-        let token = CancellationToken::new();
-        assert_eq!(
-            checkout
-                .lookup_no_follow(&path("/sub")?, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
-                .record
-                .map(|record| record.kind),
-            Some(FileKind::Directory)
-        );
-        assert!(
-            checkout
-                .lookup_no_follow(&child, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
-                .record
-                .is_some()
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn watch_rename_chain_observes_intermediate_parent()
     -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
@@ -623,12 +458,7 @@ mod capture_policy_tests {
         let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         capture_watch_batch(
             &mut checkout,
-            WatchBatch::Changes {
-                original: Default::default(),
-                epoch: 1,
-                first_sequence: 1,
-                next_sequence: 3,
-                changes: vec![
+            batch(vec![
                     WatchChange::Renamed {
                         from: path("/old.txt")?,
                         to: path("/sub/intermediate.txt")?,
@@ -637,15 +467,9 @@ mod capture_policy_tests {
                         from: path("/sub/intermediate.txt")?,
                         to: path("/final.txt")?,
                     },
-                ],
-            },
-            &CaptureOptions {
-                source_root: temporary.path().to_path_buf(),
-                expected_root_identity: capture_root_identity(temporary.path())?,
-                maximum_paths: 3,
-                maximum_extent_spans: 8,
-            },
-            &crate::CapturePolicy::allow_all(),
+                ]),
+            &options(temporary.path(), 3)?,
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
@@ -704,12 +528,6 @@ pub enum CaptureError {
     /// The exact capability opened for capture is not the admitted root.
     #[error("native capture root identity changed")]
     RootChanged,
-    /// A held capture source no longer matches the observed version.
-    #[error("native capture source version changed")]
-    StaleVersion,
-    /// Cancellation stopped capture before the next admitted producer operation.
-    #[error("native capture cancelled")]
-    Cancelled,
     /// Watcher hints are invalid until the caller completes a fresh baseline.
     #[error("watcher epoch {epoch} requires a new baseline: {reason}")]
     RescanRequired {
@@ -733,27 +551,29 @@ pub enum CaptureError {
     /// Exact canonical logical-name construction retained its validation cause.
     #[error(transparent)]
     Name(#[from] crate::kernel::TreePageError),
-    /// The original native invocation was poisoned; no new work was admitted.
-    #[error("original native capture work state is poisoned")]
-    OriginalWorkPoisoned,
-    /// Constructing the canonical original native work boundary failed.
-    #[error(transparent)]
-    NativeKernel(crate::NativeTreeMaterializationError),
     /// The canonical original filesystem operation retained its typed cause.
     #[error(transparent)]
-    Kernel(crate::FsError),
+    Kernel(#[from] crate::FsError),
     /// A fixed capture/SDK progress invariant failed without formatting data.
     #[error("{0}")]
     Invariant(&'static str),
-    /// Source filesystem operation failed.
-    #[error("source filesystem operation failed: {0}")]
-    Io(#[from] std::io::Error),
-    /// A concrete capture-owned container could not allocate its capacity.
-    #[error("native capture allocation failed: {0}")]
-    Allocation(#[from] std::collections::TryReserveError),
-    /// Exact work overflowed or exceeded the admitted budget.
-    #[error(transparent)]
-    Work(#[from] WorkError),
+
+}
+
+impl From<crate::CancellationError> for CaptureError {
+    fn from(error: crate::CancellationError) -> Self { Self::Kernel(error.into()) }
+}
+impl From<crate::NativeTreeMaterializationError> for CaptureError {
+    fn from(error: crate::NativeTreeMaterializationError) -> Self { Self::Kernel(crate::FsError::NativeKernel(error)) }
+}
+impl From<WorkError> for CaptureError {
+    fn from(error: WorkError) -> Self { Self::Kernel(crate::FsError::Work(error)) }
+}
+impl From<std::io::Error> for CaptureError {
+    fn from(error: std::io::Error) -> Self { crate::NativeTreeMaterializationError::Io(error).into() }
+}
+impl From<std::collections::TryReserveError> for CaptureError {
+    fn from(error: std::collections::TryReserveError) -> Self { crate::NativeTreeMaterializationError::AllocationFailed(error).into() }
 }
 
 /// Reads a bounded set of final host states and applies one atomic checkout transaction.
@@ -785,30 +605,8 @@ pub async fn capture_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     capture_original_result(&original, result)
 }
 
-/// Captures a large explicit path set as bounded transactions on one private checkout candidate.
 #[cfg(feature = "native-mount")]
-pub(crate) async fn capture_paths_batched_with_baseline<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
->(
-    checkout: &mut Checkout<A, O>,
-    paths: &[NamespacePath],
-    options: &CaptureOptions,
-    batch_size: usize,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    baseline: Option<&NativeViewBaseline>,
-) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
-    let native = capture_work(budget, cancellation)?;
-        let original = native.original_demand_work();
-    let result = capture_paths_batched_with_native_work(
-        checkout, paths, options, batch_size, cancellation, baseline, &native,
-    ).await;
-    capture_original_result(&original, result)
-}
-
-#[cfg(feature = "native-mount")]
-pub(crate) async fn capture_paths_batched_with_native_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(crate) async fn capture_paths_batched<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     paths: &[NamespacePath],
     options: &CaptureOptions,
@@ -840,8 +638,7 @@ async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: AsyncObjectSt
         if batch_size == 0 || paths.len() > MAX_NATIVE_EXACT_CAPTURE_PATHS {
             return Err(CaptureError::InvalidOptions);
         }
-        cancellation.check()
-        .map_err(|_| CaptureError::Cancelled)?;
+        cancellation.check()?;
         meter.source().check()
         .map_err(capture_demand_error)?;
         if paths.is_empty() {
@@ -859,12 +656,12 @@ async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: AsyncObjectSt
         ? {
             return Err(CaptureError::InvalidOptions);
         }
-        let mut receipt = CaptureReceipt::default();
-        let candidate = checkout.private_candidate(&meter.native, &cancellation).map_err(CaptureError::Kernel)?;
+        let receipt = CaptureReceipt::default();
+        let candidate = checkout.private_candidate(&meter.native, &cancellation)?;
         (receipt, candidate, unique)
     };
     let observed = observe_unique_paths(unique, &source_root, &cancellation, meter)?;
-    let mut states = lookup_capture_states(&mut candidate, observed, batch_size, meter).await?;
+    let states = lookup_capture_states(&mut candidate, observed, batch_size, meter).await?;
     let mut host_links = CaptureMap::new();
     let states_bytes = states.capacity() as u64 * std::mem::size_of::<CapturePathState>() as u64;
     let mut states = states.into_iter();
@@ -889,11 +686,11 @@ async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: AsyncObjectSt
             meter,
         ).await?;
         receipt.examined_paths = receipt.examined_paths.checked_add(captured.examined_paths)
-        .ok_or(CaptureError::Work(WorkError::Overflow))?;
+        .ok_or(CaptureError::from(WorkError::Overflow))?;
         receipt.changed_paths = receipt.changed_paths.checked_add(captured.changed_paths)
-        .ok_or(CaptureError::Work(WorkError::Overflow))?;
+        .ok_or(CaptureError::from(WorkError::Overflow))?;
         receipt.staged_file_bytes = receipt.staged_file_bytes.checked_add(captured.staged_file_bytes)
-        .ok_or(CaptureError::Work(WorkError::Overflow))?;
+        .ok_or(CaptureError::from(WorkError::Overflow))?;
     }
     drop(states);
     {
@@ -902,8 +699,7 @@ async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: AsyncObjectSt
         meter.source().check()
         .map_err(capture_demand_error)?;
     }
-    cancellation.commit_if_live(|| { *checkout = candidate; })
-    .map_err(|_| CaptureError::Cancelled)?;
+    cancellation.commit_if_live(|| { *checkout = candidate; })?;
     Ok(receipt)
 
 }
@@ -919,7 +715,7 @@ pub async fn capture_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let native = capture_work(budget, cancellation)?;
     let original = native.original_demand_work();
     let result = capture_subtrees_with_native_work(
-        checkout, &[root], options, &CapturePolicy::allow_all(), cancellation, None, &native,
+        checkout, &[root], options, &CapturePolicy::default(), cancellation, None, &native,
     ).await;
     capture_original_result(&original, result)
 }
@@ -927,7 +723,7 @@ pub async fn capture_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 fn capture_work(budget: WorkBudget, cancellation: &CancellationToken,
 ) -> Result<crate::NativeMaterializationWork, OperationFailure<CaptureError>> {
     crate::NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(error, completed)| OperationFailure::new(CaptureError::NativeKernel(error), completed))
+        .map_err(|(error, completed)| OperationFailure::new(CaptureError::from(error), completed))
 }
 
 fn capture_original_result<T>(
@@ -958,9 +754,9 @@ impl CaptureWorkScope {
         -> Result<Self, OperationFailure<CaptureError>>
     {
         let custody = crate::demand::CaptureTransientCustody::new_native(native)
-            .map_err(|error| OperationFailure::new(CaptureError::NativeKernel(error), native.receipt()))?;
+            .map_err(|error| OperationFailure::new(CaptureError::from(error), native.receipt()))?;
         let view = native.with_capture_custody(&custody)
-            .map_err(|error| OperationFailure::new(CaptureError::NativeKernel(error), native.receipt()))?;
+            .map_err(|error| OperationFailure::new(CaptureError::from(error), native.receipt()))?;
         Ok(Self {
             native: view,
             custody: Some(custody),
@@ -971,7 +767,7 @@ impl CaptureWorkScope {
         crate::demand::NativeSourceWork::from_native_materialization_work(&self.native)
     }
 
-    fn release(&mut self) -> Result<(), OperationFailure<CaptureError>> {
+    fn release(&mut self) -> Result<(), CaptureError> {
         // Accepted workers and source packets keep the token until their payloads retire.
         let Some(custody) = self.custody.take() else { return Ok(()) };
         while std::sync::Arc::strong_count(&custody) != 1 {
@@ -979,10 +775,8 @@ impl CaptureWorkScope {
         }
         let bytes = custody.take_retained_bytes();
         drop(custody);
-        let (released, completed) = self.native.with_original_leaf(|work| {
-            (work.with_capture(None, |work| work.release(bytes)), work.work)
-        });
-        released.map_err(|error| OperationFailure::new(capture_demand_error(error), completed))
+        self.native.with_original_leaf(|work| work.with_capture(None, |work| work.release(bytes)))
+            .map_err(capture_demand_error)
     }
 }
 
@@ -1005,8 +799,8 @@ pub(crate) fn capture_runtime_meter_owner(
     if !capture.owns_native_work(native) {
         return Err(crate::NativeTreeMaterializationError::InvalidLayout);
     }
-    let header = native.claim(std::mem::size_of::<CapturedRuntimeReadMeter>() as u64)?;
-    let base = native.runtime_meter_owner();
+    let header = native.claim(std::mem::size_of::<CapturedRuntimeReadMeter>() as u64, u64::from((std::mem::size_of::<CapturedRuntimeReadMeter>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
+    let base = native.runtime_meter();
     Ok(std::sync::Arc::new(CapturedRuntimeReadMeter {
         base, _header: header, _capture: std::sync::Arc::clone(capture),
     }))
@@ -1078,7 +872,7 @@ fn native_device_control_in_scope(
     code: u32, input: &[u8], output: &mut [u8], scope: &CaptureWorkScope,
 ) -> Result<usize, DemandError> {
     acyclic_native_runtime::device_control_in_place(
-        file, code, input, output, Some((scope.native.runtime_meter(), acyclic_native_runtime::NativeOperationKind::Read)),
+        file, code, input, output, Some((scope.native.runtime_meter().as_ref(), acyclic_native_runtime::NativeOperationKind::Read)),
     ).map_err(|error| scope.native.native_read_meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error)))
 }
@@ -1089,28 +883,24 @@ fn capture_scope_result<T>(
 ) -> Result<OperationReceipt<T>, OperationFailure<CaptureError>> {
     let released = scope.release();
     let completed = scope.native.native_read_meter().lock().work;
-    match result {
-        Err(error) => Err(OperationFailure::new(error, completed)),
-        Ok(value) => {
-            released?;
-            Ok(OperationReceipt { value, work: completed })
-        }
-    }
+    result.and_then(|value| released.map(|()| value))
+        .map(|value| OperationReceipt { value, work: completed })
+        .map_err(|error| OperationFailure::new(error, completed))
 }
 
-async fn capture_sdk<'a, F, T>(
-    create: impl FnOnce(&'a crate::NativeMaterializationWork) -> F,
-    meter: &'a CaptureWorkScope,
+async fn capture_sdk<F, T>(
+    future: F,
+    meter: &CaptureWorkScope,
     cancellation: &CancellationToken,
 ) -> Result<T, CaptureError>
 where
     F: std::future::Future<Output = Result<T, crate::FsError>>,
 {
-    cancellation.check().map_err(|_| CaptureError::Cancelled)?;
-    meter.native.admit(WorkCounters::UNCHARGED).map_err(CaptureError::NativeKernel)?;
-    let value = create(&meter.native).await.map_err(CaptureError::Kernel)?;
-    cancellation.check().map_err(|_| CaptureError::Cancelled)?;
-    meter.native.admit(WorkCounters::UNCHARGED).map_err(CaptureError::NativeKernel)?;
+    cancellation.check()?;
+    meter.native.admit(WorkCounters::UNCHARGED).map_err(CaptureError::from)?;
+    let value = future.await?;
+    cancellation.check()?;
+    meter.native.admit(WorkCounters::UNCHARGED).map_err(CaptureError::from)?;
     Ok(value)
 }
 
@@ -1143,8 +933,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
             return Err(CaptureError::InvalidOptions);
         }
-        cancellation.check()
-        .map_err(|_| CaptureError::Cancelled)?;
+        cancellation.check()?;
         meter.source().check()
         .map_err(capture_demand_error)?;
         if roots.is_empty() {
@@ -1180,7 +969,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let expected_identity = options.expected_root_identity;
     let worker = meter.native.clone();
     let capture = std::sync::Arc::clone(meter.custody.as_ref().expect("capture scope is live"));
-    let task_meter = meter.native.runtime_meter_owner();
+    let task_meter = meter.native.runtime_meter();
     let task = acyclic_native_runtime::run_blocking_io(move || {
         let worker = CaptureWorkScope { native: worker, custody: None };
         let result = (|| {
@@ -1212,7 +1001,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let (source_root, observed) = result?;
     let lookup_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
     let current = capture_sdk(
-        |native| checkout.lookup_batch_no_follow_with_native_work(&canonical, native, &lookup_cancellation),
+        checkout.lookup_batch_no_follow_with_native_work(&canonical, &meter.native, &lookup_cancellation),
         meter, &lookup_cancellation,
     ).await?;
 
@@ -1251,12 +1040,12 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 
 fn capture_demand_error(error: DemandError) -> CaptureError {
     match error {
-        DemandError::Work(error) => CaptureError::Work(error),
-        DemandError::Io(error) => CaptureError::Io(error),
-        DemandError::Allocation(error) => CaptureError::Allocation(error),
-        DemandError::StaleVersion => CaptureError::StaleVersion,
-        DemandError::Cancelled => CaptureError::Cancelled,
-        DemandError::OriginalWorkPoisoned => CaptureError::OriginalWorkPoisoned,
+        DemandError::Work(error) => CaptureError::from(error),
+        DemandError::Io(error) => CaptureError::from(error),
+        DemandError::Allocation(error) => CaptureError::from(error),
+        DemandError::StaleVersion => CaptureError::Kernel(crate::FsError::SourceSnapshotStale),
+        DemandError::Cancelled => crate::CancellationError.into(),
+        DemandError::OriginalWorkPoisoned => crate::NativeTreeMaterializationError::OriginalWorkPoisoned.into(),
         _ => CaptureError::InvalidOptions,
     }
 }
@@ -1302,15 +1091,9 @@ impl<K: CaptureKey, V> CaptureMap<K, V> {
     fn get_measured(&self, key: &K, meter: &CaptureWorkScope) -> Result<Option<&V>, CaptureError> {
         Ok(self.position_measured(key, meter)?.ok().map(|index| &self.entries[index].1))
     }
-    fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
-        self.entries.iter().map(|entry| (&entry.0, &entry.1))
-    }
-    fn keys(&self) -> impl Iterator<Item = &K> {
-        self.entries.iter().map(|entry| &entry.0)
-    }
     fn insert_at(&mut self, index: usize, key: K, value: V, meter: &CaptureWorkScope) -> Result<(), CaptureError> {
         let copied = (self.entries.len() - index).checked_mul(std::mem::size_of::<(K, V)>())
-            .ok_or(CaptureError::Work(WorkError::Overflow))? as u64;
+            .ok_or(CaptureError::from(WorkError::Overflow))? as u64;
         let delta = WorkCounters { bytes_copied: copied, ..WorkCounters::UNCHARGED };
         capture_reserve(&mut self.entries, 1, meter)?;
         capture_charge(meter, delta)?;
@@ -1349,7 +1132,7 @@ impl<K: CaptureKey, V> CaptureMap<K, V> {
     fn remove_measured(&mut self, key: &K, meter: &CaptureWorkScope) -> Result<Option<(K, V)>, CaptureError> {
         let Ok(index) = self.position_measured(key, meter)? else { return Ok(None) };
         let copied = (self.entries.len() - index - 1).checked_mul(std::mem::size_of::<(K, V)>())
-            .ok_or(CaptureError::Work(WorkError::Overflow))? as u64;
+            .ok_or(CaptureError::from(WorkError::Overflow))? as u64;
         capture_charge(meter, WorkCounters { bytes_copied: copied, ..WorkCounters::UNCHARGED })?;
         Ok(Some(self.entries.remove(index)))
     }
@@ -1406,20 +1189,9 @@ fn clone_capture_name(name: &LogicalName, meter: &CaptureWorkScope) -> Result<Lo
         bytes_copied: name.as_bytes().len() as u64, ..WorkCounters::UNCHARGED };
     meter.source().admit(copied).map_err(capture_demand_error)?;
     let mut bytes = capture_vec(name.as_bytes().len(), meter)?;
-    let retained = bytes.capacity() as u64;
     bytes.extend_from_slice(name.as_bytes());
-    if let Err(error) = meter.source().record(copied) {
-        drop(bytes);
-        meter.source().release(retained).map_err(capture_demand_error)?;
-        return Err(capture_demand_error(error));
-    }
-    match LogicalName::new(name.encoding(), bytes, u32::MAX) {
-        Ok(name) => Ok(name),
-        Err(error) => {
-            meter.source().release(retained).map_err(capture_demand_error)?;
-            Err(CaptureError::Name(error))
-        }
-    }
+    meter.source().record(copied).map_err(capture_demand_error)?;
+    LogicalName::new(name.encoding(), bytes, u32::MAX).map_err(CaptureError::Name)
 }
 
 fn clone_capture_prefix(path: &NamespacePath, depth: usize, limits: crate::model::VolumeLimits,
@@ -1429,76 +1201,32 @@ fn clone_capture_prefix(path: &NamespacePath, depth: usize, limits: crate::model
     NamespacePath::validate_component_lengths(names.iter().map(|name| name.as_bytes().len()), limits)
         .map_err(CaptureError::Path)?;
     let mut components = capture_vec(depth, meter)?;
-    for name in names {
-        match clone_capture_name(name, meter) {
-            Ok(name) => components.push(name),
-            Err(error) => {
-                capture_drop_components(components, meter)?;
-                return Err(error);
-            }
-        }
-    }
-    let retained = capture_components_bytes(&components)?;
-    match NamespacePath::new(components, limits) {
-        Ok(path) => Ok(path),
-        Err(error) => {
-            meter.source().release(retained).map_err(capture_demand_error)?;
-            Err(CaptureError::Path(error))
-        }
-    }
-}
-
-fn capture_components_bytes(components: &Vec<LogicalName>) -> Result<u64, CaptureError> {
-    components.iter().try_fold(
-        components.capacity() as u64 * std::mem::size_of::<LogicalName>() as u64,
-        |bytes, name| bytes.checked_add(name.retained_bytes() as u64)
-            .ok_or(CaptureError::Work(WorkError::Overflow)),
-    )
-}
-
-fn capture_drop_components(components: Vec<LogicalName>, meter: &CaptureWorkScope)
-    -> Result<(), CaptureError> {
-    let bytes = capture_components_bytes(&components)?;
-    drop(components);
-    meter.source().release(bytes).map_err(capture_demand_error)
+    for name in names { components.push(clone_capture_name(name, meter)?); }
+    NamespacePath::new(components, limits).map_err(CaptureError::Path)
 }
 
 fn capture_vec<T>(count: usize, meter: &CaptureWorkScope) -> Result<Vec<T>, CaptureError> {
-    let bytes = count.checked_mul(std::mem::size_of::<T>()).ok_or(CaptureError::Work(WorkError::Overflow))?;
+    let bytes = count.checked_mul(std::mem::size_of::<T>()).ok_or(CaptureError::from(WorkError::Overflow))?;
     capture_allocate(meter, bytes as u64)?;
     let mut retained = bytes as u64;
     let mut values = Vec::new();
     let reserved = values.try_reserve_exact(count);
-    let actual = match values.capacity().checked_mul(std::mem::size_of::<T>()) {
-        Some(actual) => actual as u64,
-        None => {
-            drop(values);
-            meter.native.with_original_leaf(|work| work.release(retained)).map_err(capture_demand_error)?;
-            return Err(CaptureError::Work(WorkError::Overflow));
-        }
-    };
-    // Completed capacity, including any capacity retained on allocator failure, belongs to the original ledger before the late cancellation/budget check.
+    let actual = values.capacity().checked_mul(std::mem::size_of::<T>())
+        .ok_or(CaptureError::from(WorkError::Overflow))? as u64;
+    // Reconcile completed capacity before any late refusal; the scope retires failed payloads.
     let reconciled = meter.native.with_original_leaf(|work| work.reconcile_native_allocation(&mut retained, actual));
-    if let Err(error) = reserved {
-        drop(values);
-        meter.native.with_original_leaf(|work| work.release(retained)).map_err(capture_demand_error)?;
-        return Err(CaptureError::Allocation(error));
-    }
-    if let Err(error) = reconciled {
-        drop(values);
-        meter.native.with_original_leaf(|work| work.release(retained)).map_err(capture_demand_error)?;
-        return Err(capture_demand_error(error));
-    }
+    reserved.map_err(CaptureError::from)?;
+    reconciled.map_err(capture_demand_error)?;
     Ok(values)
 }
 
 fn capture_reserve<T>(values: &mut Vec<T>, additional: usize, meter: &CaptureWorkScope) -> Result<(), CaptureError> {
     meter.native.with_original_leaf(|work| work.check()).map_err(capture_demand_error)?;
-    let wanted = values.len().checked_add(additional).ok_or(CaptureError::Work(WorkError::Overflow))?;
+    let wanted = values.len().checked_add(additional).ok_or(CaptureError::from(WorkError::Overflow))?;
     if wanted <= values.capacity() { return Ok(()); }
     let size = std::mem::size_of::<T>();
-    let old = values.capacity().checked_mul(size).ok_or(CaptureError::Work(WorkError::Overflow))?;
-    let copied = values.len().checked_mul(size).ok_or(CaptureError::Work(WorkError::Overflow))?;
+    let old = values.capacity().checked_mul(size).ok_or(CaptureError::from(WorkError::Overflow))?;
+    let copied = values.len().checked_mul(size).ok_or(CaptureError::from(WorkError::Overflow))?;
     let grown = wanted.max(values.capacity().saturating_mul(2).max(4));
     let capacity = match grown.checked_mul(size) {
         Some(bytes) if bytes as u64 <= meter.native.with_original_leaf(|work| work.remaining())
@@ -1506,12 +1234,7 @@ fn capture_reserve<T>(values: &mut Vec<T>, additional: usize, meter: &CaptureWor
         _ => wanted,
     };
     let mut replacement = capture_vec(capacity, meter)?;
-    if let Err(error) = capture_charge(meter, WorkCounters { bytes_copied: copied as u64, ..WorkCounters::UNCHARGED }) {
-        let retained = replacement.capacity() as u64 * size as u64;
-        drop(replacement);
-        meter.native.with_original_leaf(|work| work.release(retained)).map_err(capture_demand_error)?;
-        return Err(error);
-    }
+    capture_charge(meter, WorkCounters { bytes_copied: copied as u64, ..WorkCounters::UNCHARGED })?;
     replacement.append(values);
     let old_values = std::mem::replace(values, replacement);
     drop(old_values);
@@ -1535,20 +1258,10 @@ fn clone_capture_paths(
     meter: &CaptureWorkScope,
 ) -> Result<Vec<NamespacePath>, CaptureError> {
     let mut result = capture_vec(paths.len(), meter)?;
-    let copied = (|| {
-        for path in paths {
-            capture_charge(meter, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            if let Some(policy) = policy
-                && capture_excludes(policy, path, meter)? {
-                continue;
-            }
-            result.push(clone_capture_path(path, meter)?);
-        }
-        Ok::<(), CaptureError>(())
-    })();
-    if let Err(error) = copied {
-        release_capture_paths(result, meter)?;
-        return Err(error);
+    for path in paths {
+        capture_charge(meter, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+        if let Some(policy) = policy && capture_excludes(policy, path, meter)? { continue; }
+        result.push(clone_capture_path(path, meter)?);
     }
     Ok(result)
 }
@@ -1557,13 +1270,16 @@ fn release_capture_paths(paths: Vec<NamespacePath>, meter: &CaptureWorkScope) ->
     let bytes = paths.iter().try_fold(
         paths.capacity() as u64 * std::mem::size_of::<NamespacePath>() as u64,
         |bytes, path| bytes.checked_add(path.retained_bytes())
-            .ok_or(CaptureError::Work(WorkError::Overflow)),
+            .ok_or(CaptureError::from(WorkError::Overflow)),
     )?;
     drop(paths);
     meter.source().release(bytes).map_err(capture_demand_error)
 }
 fn capture_drop_host_path(path: CaptureHostPath, meter: &CaptureWorkScope) -> Result<(), CaptureError> {
-    let bytes = capture_host_path_bytes(&path);
+    #[cfg(unix)]
+    let bytes = path.capacity() as u64;
+    #[cfg(windows)]
+    let bytes = path.capacity() as u64 * 2;
     drop(path);
     meter.source().release(bytes).map_err(capture_demand_error)
 }
@@ -1582,19 +1298,12 @@ fn canonical_subtree_roots_measured(
     roots: &[NamespacePath], policy: &CapturePolicy, meter: &CaptureWorkScope,
 ) -> Result<Vec<NamespacePath>, CaptureError> {
     let mut sorted = clone_capture_paths(roots, Some(policy), meter)?;
-    let examined = (|| {
-        capture_sort_by(&mut sorted, Ord::cmp, meter)?;
-        for root in &sorted {
-            capture_charge(meter, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            for _ in root.components() {
-                capture_charge(meter, WorkCounters { source_path_components: 1, ..WorkCounters::UNCHARGED })?;
-            }
+    capture_sort_by(&mut sorted, Ord::cmp, meter)?;
+    for root in &sorted {
+        capture_charge(meter, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+        for _ in root.components() {
+            capture_charge(meter, WorkCounters { source_path_components: 1, ..WorkCounters::UNCHARGED })?;
         }
-        Ok::<(), CaptureError>(())
-    })();
-    if let Err(error) = examined {
-        release_capture_paths(sorted, meter)?;
-        return Err(error);
     }
     let mut failure = None;
     sorted.dedup_by(|root, ancestor| {
@@ -1605,18 +1314,14 @@ fn canonical_subtree_roots_measured(
         failure = capture_drop_path(removed, meter).err();
         true
     });
-    if let Some(error) = failure {
-        release_capture_paths(sorted, meter)?;
-        return Err(error);
-    }
+    if let Some(error) = failure { return Err(error); }
     Ok(sorted)
 }
 
 fn clone_capture_path(path: &NamespacePath, meter: &CaptureWorkScope) -> Result<NamespacePath, CaptureError> {
     use crate::kernel::{ReadAllocationStep, NamespacePathStep};
     let cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
-    let mut retained = 0_u64;
-    let result = path.clone_with_steps(&cancellation, &mut |step| -> Result<(), CaptureError> {
+    path.clone_with_steps(&cancellation, &mut |step| -> Result<(), CaptureError> {
         match step {
                 NamespacePathStep::Admit(delta) => {
                     let mut delta = *delta;
@@ -1630,21 +1335,15 @@ fn clone_capture_path(path: &NamespacePath, meter: &CaptureWorkScope) -> Result<
                 }
                 NamespacePathStep::Charge(delta) => capture_charge(meter, *delta),
                 NamespacePathStep::Allocation(ReadAllocationStep::Allocate { bytes, operations }) => {
-                    let total = retained.checked_add(bytes).ok_or(CaptureError::Work(WorkError::Overflow))?;
-                    meter.native.with_original_leaf(|work| work.claim_allocation(bytes, operations)).map_err(capture_demand_error)?;
-                    retained = total;
-                    Ok(())
+                    meter.native.with_original_leaf(|work| work.claim_allocation(bytes, operations)).map_err(capture_demand_error)
                 }
                 NamespacePathStep::Allocation(ReadAllocationStep::Capacity { admitted_bytes, actual_bytes }) => {
                     let mut allocation = admitted_bytes;
-                    let result = meter.native.with_original_leaf(|work| work.reconcile_native_allocation(&mut allocation, actual_bytes));
-                    retained = retained.checked_sub(admitted_bytes)
-                        .and_then(|bytes| bytes.checked_add(allocation))
-                        .ok_or(CaptureError::Work(WorkError::Overflow))?;
-                    result.map_err(capture_demand_error)
+                    meter.native.with_original_leaf(|work| work.reconcile_native_allocation(&mut allocation, actual_bytes))
+                        .map_err(capture_demand_error)
                 }
                 NamespacePathStep::Allocation(ReadAllocationStep::ReserveFailed(error)) =>
-                    Err(CaptureError::Allocation(error)),
+                    Err(CaptureError::from(error)),
                 NamespacePathStep::Allocation(ReadAllocationStep::BeforeCopy(bytes)) =>
                     meter.source().admit(WorkCounters { bytes_copied: bytes, source_bytes_read: bytes,
                         ..WorkCounters::UNCHARGED }).map_err(capture_demand_error),
@@ -1664,15 +1363,7 @@ fn clone_capture_path(path: &NamespacePath, meter: &CaptureWorkScope) -> Result<
                 NamespacePathStep::Allocation(ReadAllocationStep::Item) =>
                     capture_charge(meter, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }),
         }
-    });
-    match result {
-        Ok(path) => Ok(path),
-        Err(error) => {
-            // The canonical producer has already dropped every partial buffer.
-            meter.source().release(retained).map_err(capture_demand_error)?;
-            Err(error)
-        }
-    }
+    })
 }
 
 #[cfg(unix)]
@@ -1886,7 +1577,7 @@ fn collect_host_walk_measured(
                     let (encoding, bytes) = if profile == FilesystemProfile::Windows {
                         let text = std::str::from_utf8(raw).map_err(|_| CaptureError::UnrepresentablePath)?;
                         let length = text.encode_utf16().count().checked_mul(2)
-                            .ok_or(CaptureError::Work(WorkError::Overflow))?;
+                            .ok_or(CaptureError::from(WorkError::Overflow))?;
                         let mut bytes = capture_vec(length, meter)?;
                         for unit in text.encode_utf16() {
                             capture_charge(meter, WorkCounters { bytes_copied: 2, ..WorkCounters::UNCHARGED })?;
@@ -1906,7 +1597,7 @@ fn collect_host_walk_measured(
                 let name = {
                     let (encoding, bytes) = if profile == FilesystemProfile::Windows {
                         let mut bytes = capture_vec(entry.name.len().checked_mul(2)
-                            .ok_or(CaptureError::Work(WorkError::Overflow))?, meter)?;
+                            .ok_or(CaptureError::from(WorkError::Overflow))?, meter)?;
                         for unit in &entry.name {
                             capture_charge(meter, WorkCounters { bytes_copied: 2, ..WorkCounters::UNCHARGED })?;
                             bytes.extend_from_slice(&unit.to_le_bytes());
@@ -1917,7 +1608,7 @@ fn collect_host_walk_measured(
                         for character in char::decode_utf16(entry.name.iter().copied()) {
                             meter.source().check().map_err(capture_demand_error)?;
                             length = length.checked_add(character.map_err(|_| CaptureError::UnrepresentablePath)?.len_utf8())
-                                .ok_or(CaptureError::Work(WorkError::Overflow))?;
+                                .ok_or(CaptureError::from(WorkError::Overflow))?;
                         }
                         let mut bytes = capture_vec(length, meter)?;
                         for character in char::decode_utf16(entry.name.iter().copied()) {
@@ -1967,57 +1658,25 @@ fn collect_host_walk_measured(
     Ok(())
 }
 
-fn capture_host_path_bytes(path: &CaptureHostPath) -> u64 {
-    #[cfg(unix)]
-    { path.capacity() as u64 }
-    #[cfg(windows)]
-    { path.capacity() as u64 * 2 }
-}
-
 fn append_path_measured(
     parent: &NamespacePath,
     name: LogicalName,
     limits: crate::model::VolumeLimits,
     meter: &CaptureWorkScope,
 ) -> Result<NamespacePath, CaptureError> {
-    let name_bytes = name.retained_bytes() as u64;
-    let result = (|| {
-        meter.source().check().map_err(capture_demand_error)?;
-        NamespacePath::validate_component_lengths(
-            parent.components().iter().chain(std::iter::once(&name)).map(|name| name.as_bytes().len()), limits,
-        ).map_err(CaptureError::Path)?;
-        let depth = parent.depth().checked_add(1).ok_or(CaptureError::Work(WorkError::Overflow))?;
-        capture_charge(meter, WorkCounters { source_path_components: 1, items_examined: 1,
-            ..WorkCounters::UNCHARGED })?;
-        let mut components = capture_vec(depth, meter)?;
-        for component in parent.components() {
-            match clone_capture_name(component, meter) {
-                Ok(component) => components.push(component),
-                Err(error) => {
-                    capture_drop_components(components, meter)?;
-                    return Err(error);
-                }
-            }
-        }
-        Ok(components)
-    })();
-    let mut components = match result {
-        Ok(components) => components,
-        Err(error) => {
-            drop(name);
-            meter.source().release(name_bytes).map_err(capture_demand_error)?;
-            return Err(error);
-        }
-    };
-    components.push(name);
-    let retained = capture_components_bytes(&components)?;
-    match NamespacePath::new(components, limits) {
-        Ok(path) => Ok(path),
-        Err(error) => {
-            meter.source().release(retained).map_err(capture_demand_error)?;
-            Err(CaptureError::Path(error))
-        }
+    meter.source().check().map_err(capture_demand_error)?;
+    NamespacePath::validate_component_lengths(
+        parent.components().iter().chain(std::iter::once(&name)).map(|name| name.as_bytes().len()), limits,
+    ).map_err(CaptureError::Path)?;
+    let depth = parent.depth().checked_add(1).ok_or(CaptureError::from(WorkError::Overflow))?;
+    capture_charge(meter, WorkCounters { source_path_components: 1, items_examined: 1,
+        ..WorkCounters::UNCHARGED })?;
+    let mut components = capture_vec(depth, meter)?;
+    for component in parent.components() {
+        components.push(clone_capture_name(component, meter)?);
     }
+    components.push(name);
+    NamespacePath::new(components, limits).map_err(CaptureError::Path)
 }
 
 
@@ -2032,7 +1691,7 @@ fn observe_unique_paths(
         observations.push(observe_host_path(source_root, &host_path, meter)?);
         capture_drop_host_path(host_path, meter)?;
     }
-    cancellation.check().map_err(|_| CaptureError::Cancelled)?;
+    cancellation.check()?;
     Ok((observations, paths))
 }
 
@@ -2073,7 +1732,7 @@ mod host_observation_tests {
         ] {
             assert!(matches!(
                 classify_host_observation(Err(DemandError::Io(kind.into()))),
-                Err(CaptureError::Io(_))
+                Err(CaptureError::Kernel(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Io(_))))
             ));
         }
         let directory = tempfile::tempdir()?;
@@ -2145,8 +1804,7 @@ async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectSt
 ) -> Result<CaptureReceipt, CaptureError> {
     let states_bytes = states.capacity() as u64 * std::mem::size_of::<CapturePathState>() as u64;
     let (mut receipt, mut prepared, cancellation) = {
-        cancellation.check()
-            .map_err(|_| CaptureError::Cancelled)?;
+        cancellation.check()?;
         meter.source().check()
             .map_err(capture_demand_error)?;
         let prepared = capture_vec(states.len(), meter)
@@ -2160,7 +1818,7 @@ async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectSt
     for (observation, path, current) in states {
         let plan = prepare_final_path(checkout,
     path,
-    CurrentRecord::Known(current),
+    current,
     CaptureIntent::Complete,
     source_root,
     observation,
@@ -2194,7 +1852,7 @@ async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectSt
 ).await?;
     {
         meter.native.receipt().verify(meter.native.with_original_leaf(|work| work.budget))
-            .map_err(CaptureError::Work)?;
+            .map_err(CaptureError::from)?;
     }
     Ok(receipt)
 }
@@ -2216,7 +1874,7 @@ async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let count = paths.len().min(page_size);
         let page = &paths.as_slice()[..count];
         let lookup = capture_sdk(
-            |native| checkout.lookup_batch_no_follow_with_native_work(page, native, &cancellation),
+            checkout.lookup_batch_no_follow_with_native_work(page, &meter.native, &cancellation),
             meter, &cancellation,
         ).await?;
         for ((path, observation), entry) in paths.by_ref().take(count)
@@ -2292,7 +1950,7 @@ pub(crate) async fn capture_baseline_with_native_work<A: AsyncAuthorityStore, O:
         return Err(OperationFailure::new(CaptureError::InvalidOptions, completed));
     }
     cancellation.check()
-        .map_err(|_| OperationFailure::new(CaptureError::Cancelled, completed))?;
+        .map_err(|error| OperationFailure::new(error.into(), completed))?;
     let (checked, completed) = {
         let held = meter.lock();
         (held.check(), held.work)
@@ -2412,91 +2070,78 @@ fn collect_host_subtree_roots(source_root: &HostRoot,
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn collect_checkout_subtree_paths<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
->(checkout: &mut Checkout<A, O>,
-        limits: crate::model::VolumeLimits,
-        root: NamespacePath,
-        policy: &CapturePolicy,
-        maximum: usize,
-        paths: &mut CaptureMap<NamespacePath, ()>,
-        cancellation: &CancellationToken,
-        meter: &CaptureWorkScope,
+async fn walk_checkout_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>, root: NamespacePath, page_size: u32,
+    meter: &CaptureWorkScope,
+    mut visit: impl FnMut(&NamespacePath, &crate::DirectoryRecordEntry, &mut Vec<NamespacePath>)
+        -> Result<(), CaptureError>,
 ) -> Result<(), CaptureError> {
-    const PAGE_ENTRIES: u32 = 1024;
-    let mut pending = {
-        cancellation.check()
-            .map_err(|_| CaptureError::Cancelled)?;
-        capture_vec(1, meter)?
-    };
+    let mut pending = capture_vec(1, meter)?;
     pending.push(root);
     while let Some(directory) = pending.pop() {
         let mut after = None;
         loop {
-            let page_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
+            let cancellation = meter.native.cancellation().clone();
             let page = capture_sdk(
-                |native| checkout.list_directory_records_with_native_work(
-                    &directory, after.as_ref(), PAGE_ENTRIES, native, &page_cancellation,
+                checkout.list_directory_records_with_native_work(
+                    &directory, after.as_ref(), page_size, &meter.native, &cancellation,
                 ),
-                meter, &page_cancellation,
+                meter, &cancellation,
             ).await?;
-
-            let has_more = {
-                { capture_charge(meter,
-                    WorkCounters { items_examined: page.0.entries.len() as u64, ..WorkCounters::UNCHARGED }) }?;
-                if page.0.has_more && page.0.entries.is_empty() {
-                    return Err(CaptureError::Invariant("directory pagination made no progress"));
-                }
-                for entry in &page.0.entries {
-                    let child = { capture_charge(meter, WorkCounters { source_entries_visited: 1, ..WorkCounters::UNCHARGED })?;
-                        let name = clone_capture_name(&entry.name, meter)?;
-                        append_path_measured(&directory, name, limits, meter) }?;
-                    if capture_excludes(policy, &child, meter)? {
-                        capture_drop_path(child, meter)?;
-                        continue;
-                    }
-                    let scanned = clone_capture_path(&child, meter)?;
-                    append_scanned_path(paths, scanned, maximum, meter)?;
-                    if entry.record.kind == FileKind::Directory {
-                        capture_reserve(&mut pending, 1, meter)?;
-                        pending.push(child);
-                    } else {
-                        capture_drop_path(child, meter)?;
-                    }
-                }
-                if let Some(previous) = after.take() {
-                    let bytes = previous.as_bytes().len() as u64;
-                    drop(previous);
-                    meter.source().release(bytes).map_err(capture_demand_error)?;
-                }
-                after = match page.0.entries.last() {
-                    Some(entry) => Some(clone_capture_name(&entry.name, meter)?),
-                    None => None,
-                };
-                let has_more = page.0.has_more;
-                drop(page);
-                has_more
-            };
-            if !has_more {
-                break;
+            capture_charge(meter, WorkCounters {
+                items_examined: page.0.entries.len() as u64, ..WorkCounters::UNCHARGED
+            })?;
+            if page.0.has_more && page.0.entries.is_empty() {
+                return Err(CaptureError::Invariant("directory pagination made no progress"));
             }
-        }
-        {
-            if let Some(cursor) = after {
-                let bytes = cursor.as_bytes().len() as u64;
-                drop(cursor);
+            for entry in &page.0.entries {
+                visit(&directory, entry, &mut pending)?;
+            }
+            let next = if page.0.has_more {
+                let last = page.0.entries.last()
+                    .ok_or(CaptureError::Invariant("directory pagination made no progress"))?;
+                Some(clone_capture_name(&last.name, meter)?)
+            } else { None };
+            if let Some(previous) = after.take() {
+                let bytes = previous.retained_bytes() as u64;
+                drop(previous);
                 meter.source().release(bytes).map_err(capture_demand_error)?;
             }
-            capture_drop_path(directory, meter)?;
+            let has_more = page.0.has_more;
+            drop(page);
+            after = next;
+            if !has_more { break; }
         }
+        capture_drop_path(directory, meter)?;
     }
-    let pending_bytes = pending.capacity() as u64 * std::mem::size_of::<NamespacePath>() as u64;
-    drop(pending);
+    release_capture_paths(pending, meter)
+}
 
-    meter.source().release(pending_bytes).map_err(capture_demand_error)?;
-    Ok(())
+#[allow(clippy::too_many_arguments)]
+async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>, limits: crate::model::VolumeLimits,
+    root: NamespacePath, policy: &CapturePolicy, maximum: usize,
+    paths: &mut CaptureMap<NamespacePath, ()>, cancellation: &CancellationToken,
+    meter: &CaptureWorkScope,
+) -> Result<(), CaptureError> {
+    cancellation.check()?;
+    walk_checkout_subtree(checkout, root, 1024, meter, |directory, entry, pending| {
+        capture_charge(meter, WorkCounters { source_entries_visited: 1, ..WorkCounters::UNCHARGED })?;
+        let name = clone_capture_name(&entry.name, meter)?;
+        let child = append_path_measured(directory, name, limits, meter)?;
+        if capture_excludes(policy, &child, meter)? {
+            return capture_drop_path(child, meter);
+        }
+        let scanned = clone_capture_path(&child, meter)?;
+        append_scanned_path(paths, scanned, maximum, meter)?;
+        if entry.record.kind == FileKind::Directory {
+            capture_reserve(pending, 1, meter)?;
+            pending.push(child);
+        } else {
+            capture_drop_path(child, meter)?;
+        }
+        Ok(())
+    }).await
 }
 
 fn append_scanned_path(
@@ -2535,7 +2180,7 @@ fn capture_watch_owned_bytes(changes: &[WatchChange], incoming: &crate::watch::W
                 capture_charge(meter, WorkCounters { source_path_components: 1, items_examined: 1,
                     ..WorkCounters::UNCHARGED })?;
             }
-            bytes = bytes.checked_add(path.retained_bytes()).ok_or(CaptureError::Work(WorkError::Overflow))?;
+            bytes = bytes.checked_add(path.retained_bytes()).ok_or(CaptureError::from(WorkError::Overflow))?;
         }
     }
     Ok(bytes)
@@ -2622,14 +2267,13 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
 ) -> Result<WatchCaptureReceipt, CaptureError> {
     // The facade opens fixed accounting leaves only; owned helpers and drops remain outside those short meter-meter loans.
     let cancellation = {
-        cancellation.check()
-        .map_err(|_| CaptureError::Cancelled)?;
+        cancellation.check()?;
         meter.source().check()
         .map_err(capture_demand_error)?;
         if let WatchBatch::Changes { changes, original: incoming, .. } = &batch {
             let storage_bytes = if incoming.has_native_changes_storage_custody() { 0 } else {
                 (changes.capacity() as u64).checked_mul(std::mem::size_of::<WatchChange>() as u64)
-                .ok_or(CaptureError::Work(WorkError::Overflow))?
+                .ok_or(CaptureError::from(WorkError::Overflow))?
             };
             let bytes = capture_watch_owned_bytes(changes, incoming, storage_bytes, meter)
             ?;
@@ -2747,9 +2391,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                 ordinary.get_or_insert_measured(path, (current, CaptureIntent::MetadataOnly), meter).map(|_| ())?;
             }
             WatchChange::Renamed { from, to } => {
-                cancellation.check().map_err(|_| {
-                        CaptureError::Cancelled
-                })?;
+                cancellation.check()?;
                 let prior_source = ordinary.remove_measured(&from, meter)?;
                 let prior_source = if let Some((key, value)) = prior_source {
                     capture_drop_path(key, meter)?;
@@ -2767,7 +2409,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                     None
                 } else {
                     let source = capture_sdk(
-                        |native| checkout.lookup_no_follow(&from, native, &cancellation),
+                        checkout.lookup_no_follow(&from, &meter.native, &cancellation),
                         meter, &cancellation,
                     ).await?;
                     source.record
@@ -2819,9 +2461,8 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
 
     // A watcher may report a nested file before any ancestor has been observed in this lazy checkout. Capture only the missing ancestors, rather than expanding their entire host subtrees as event roots.
     let maximum_paths = usize::try_from(options.maximum_paths).unwrap_or(usize::MAX);
-    let ancestors = watch_ancestor_candidates(ordinary
-        .keys()
-        .chain(rename_records.keys())
+    let ancestors = watch_ancestor_candidates(ordinary.entries.iter().map(|(path, _)| path)
+        .chain(rename_records.entries.iter().map(|(path, _)| path))
         .chain(rename_destinations.iter()),
         &ordinary,
         &rename_records,
@@ -2843,14 +2484,14 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
     .await?;
 
     let mut lookup_paths = capture_vec(ordinary.len(), meter)?;
-    for (path, (current, _)) in ordinary.iter() {
+    for (path, (current, _)) in &ordinary.entries {
         if matches!(current, CurrentRecord::Lookup) {
             lookup_paths.push(clone_capture_path(path, meter)?);
         }
     }
     if !lookup_paths.is_empty() {
         let lookup = capture_sdk(
-            |native| checkout.lookup_batch_no_follow_with_native_work(&lookup_paths, native, &cancellation),
+            checkout.lookup_batch_no_follow_with_native_work(&lookup_paths, &meter.native, &cancellation),
             meter, &cancellation,
         ).await?;
 
@@ -2863,7 +2504,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                 ) }?
             {
                 let prior = capture_sdk(
-                    |native| checkout.lookup_no_follow(&prior_path, native, &cancellation),
+                    checkout.lookup_no_follow(&prior_path, &meter.native, &cancellation),
                     meter, &cancellation,
                 ).await?;
                 record = prior.record;
@@ -2890,7 +2531,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
 
     let mut host_links = CaptureMap::new();
     let mut prepared = { capture_vec(
-            rename_records.len().checked_add(ordinary.len()).ok_or(CaptureError::Work(WorkError::Overflow))?, meter) }?;
+            rename_records.len().checked_add(ordinary.len()).ok_or(CaptureError::from(WorkError::Overflow))?, meter) }?;
     // A rename can target a directory that has never been observed in this lazy checkout. Materialize only those host ancestors before the rename, preserving the event order for all remaining mutations.
     { capture_sort_by(&mut missing_ancestors, |left, right| {
                 left.depth()
@@ -2900,7 +2541,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
     let rename_mutations = std::mem::take(&mut mutations);
     let missing_bytes = missing_ancestors.capacity() as u64 * std::mem::size_of::<NamespacePath>() as u64;
     for path in missing_ancestors {
-        let Some((key, (current, intent))) = ordinary.remove_measured(&path, meter)? else {
+        let Some((key, (CurrentRecord::Known(current), intent))) = ordinary.remove_measured(&path, meter)? else {
             return Err(CaptureError::Invariant("capture ancestor path disappeared"));
         };
         capture_drop_path(key, meter)?;
@@ -2941,7 +2582,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
         }
         let plan = prepare_final_path(checkout,
             path,
-            CurrentRecord::Known(Some(record)),
+            Some(record),
             CaptureIntent::Complete,
             &source_root,
             None,
@@ -2962,6 +2603,9 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
     let mut observed_ordinary = capture_vec(ordinary.len(), meter)?;
     let ordinary_bytes = ordinary.storage_bytes();
     for (path, (current, intent)) in ordinary.entries {
+        let CurrentRecord::Known(current) = current else {
+            return Err(CaptureError::Invariant("incomplete capture lookup"));
+        };
         let host_path = namespace_to_host_path_measured(&path, meter)
         ?;
         let observation = observe_host_path(&source_root, &host_path, meter)
@@ -2986,7 +2630,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
             }, meter) }?;
-    let observed_bytes = ordinary.capacity() as u64 * std::mem::size_of::<(NamespacePath, CurrentRecord, CaptureIntent, Option<HostStat>)>() as u64;
+    let observed_bytes = ordinary.capacity() as u64 * std::mem::size_of::<(NamespacePath, Option<FileRecord>, CaptureIntent, Option<HostStat>)>() as u64;
     for (path, current, intent, observation) in ordinary {
         let plan = prepare_final_path(checkout,
             path,
@@ -3027,10 +2671,10 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
         .await?;
     } else {
         // Compile binding changes before final-state mutations on one atomic candidate.
-        let mut candidate = checkout.private_candidate(&meter.native, &cancellation).map_err(CaptureError::Kernel)?;
+        let mut candidate = checkout.private_candidate(&meter.native, &cancellation)?;
         let final_state = { let count = mutations.len() - namespace_boundary;
             let bytes = count.checked_mul(std::mem::size_of::<AuthoredMutation>())
-            .ok_or(CaptureError::Work(WorkError::Overflow))? as u64;
+            .ok_or(CaptureError::from(WorkError::Overflow))? as u64;
             let copied = WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED };
             meter.source().admit(copied).map_err(capture_demand_error)?;
             let mut final_state = capture_vec(count, meter)?;
@@ -3047,12 +2691,9 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
             meter,
         )
         .await?;
-        { cancellation.check().map_err(|_| CaptureError::Cancelled)?;
+        { cancellation.check()?;
             meter.source().check().map_err(capture_demand_error) }?;
-        cancellation.commit_if_live(|| {
-                *checkout = candidate;
-                Ok::<(), CaptureError>(())
-        }).map_err(|_| CaptureError::Cancelled)??;
+        cancellation.commit_if_live(|| { *checkout = candidate; })?;
     }
     Ok(WatchCaptureReceipt {
             epoch,
@@ -3066,6 +2707,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
 #[cfg(test)]
 mod shared_watch_capture_tests {
     use super::*;
+    use crate::demand::NativeDemandReadMeter;
     use crate::storage::{
         ObjectId, ObjectRead, ObjectReadRequest, ObjectResult, ObjectWrite,
     };
@@ -3074,7 +2716,7 @@ mod shared_watch_capture_tests {
 
     struct ReenteringObjects {
         inner: crate::memory::MemoryObjectStore,
-        meter: Arc<Mutex<Option<Arc<NativeDemandReadMeter>>>>,
+        meter: Arc<Mutex<Option<Arc<crate::demand::NativeDemandReadMeter>>>>,
         calls: Arc<AtomicUsize>,
     }
 
@@ -3161,7 +2803,7 @@ mod shared_watch_capture_tests {
         let native = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
         let original = native.original_demand_work();
-        let meter = Arc::clone(original.meter());
+        let meter = Arc::clone(&original.state);
         *binding.lock().expect("fixture binding") = Some(Arc::clone(&meter));
         let limits = checkout.volume_config().limits;
         let path = NamespacePath::from_portable(
@@ -3182,7 +2824,7 @@ mod shared_watch_capture_tests {
                 next_sequence: 4,
                 changes: vec![WatchChange::Created(path)],
             },
-            &options, &CapturePolicy::allow_all(), &cancellation, &native,
+            &options, &CapturePolicy::default(), &cancellation, &native,
         ).await?;
         assert!(calls.load(Ordering::Relaxed) > 0);
         assert_eq!(captured.value.epoch, 9);
@@ -3286,7 +2928,7 @@ async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObjectStore>(ch
             None
         } else {
             let lookup = capture_sdk(
-                |native| checkout.lookup_no_follow(&path, native, cancellation),
+                checkout.lookup_no_follow(&path, &meter.native, cancellation),
                 meter, cancellation,
             ).await?;
             lookup.record
@@ -3382,16 +3024,14 @@ enum CaptureIntent {
     Replace,
 }
 
-struct PreparedRegular {
-    path: NamespacePath,
-    host_path: CaptureHostPath,
-    snapshot: HostSnapshot,
-    exists_with_kind: bool,
-    canonical_metadata: FileMetadata,
-}
-
 enum PreparedPath {
-    Regular(PreparedRegular),
+    Regular {
+        path: NamespacePath,
+        host_path: CaptureHostPath,
+        snapshot: HostSnapshot,
+        exists_with_kind: bool,
+        canonical_metadata: FileMetadata,
+    },
     HardLink {
         source: NamespacePath,
         destination: NamespacePath,
@@ -3416,7 +3056,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(che
     let limits = checkout.volume_config().limits;
     let profile = checkout.volume_config().profile;
     let mut roots = capture_vec(ordinary.len(), meter)?;
-    for (path, (_, intent)) in ordinary.iter() {
+    for (path, (_, intent)) in &ordinary.entries {
         // Expand newly arrived directories; ordinary directory hints already name changed children.
         if !cfg!(target_os = "macos")
         && !matches!(intent, CaptureIntent::Replace | CaptureIntent::Arrived)
@@ -3436,7 +3076,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(che
         }
     }
     let mut paths = CaptureMap::new();
-    for path in ordinary.keys() {
+    for (path, _) in &ordinary.entries {
         { let path = clone_capture_path(path, meter)?;
             paths.insert_measured(path, (), meter).map(|_| ()) }?;
     }
@@ -3448,7 +3088,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(che
             |path, _, meter| append_scanned_path(&mut paths, path, maximum, meter),
         )?;
         let lookup = capture_sdk(
-            |native| checkout.lookup_no_follow(&volume_path, native, cancellation),
+            checkout.lookup_no_follow(&volume_path, &meter.native, cancellation),
             meter, cancellation,
         ).await?;
         if lookup
@@ -3484,7 +3124,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(che
 #[allow(clippy::too_many_lines)]
 async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(checkout: &mut Checkout<A, O>,
     path: NamespacePath,
-    current: CurrentRecord,
+    current: Option<FileRecord>,
     intent: CaptureIntent,
     source_root: &HostRoot,
     observation: Option<HostStat>,
@@ -3496,21 +3136,8 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(checkou
     cancellation: &CancellationToken,
     meter: &CaptureWorkScope,
 ) -> Result<Option<PreparedPath>, CaptureError> {
-    cancellation.check().map_err(|_| {
-        CaptureError::Cancelled
-    })?;
+    cancellation.check()?;
     let host_path = namespace_to_host_path_measured(&path, meter)?;
-    let current = match current {
-        CurrentRecord::Known(record) => record,
-        CurrentRecord::Lookup => {
-            let lookup_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
-            let lookup = capture_sdk(
-                |native| checkout.lookup_no_follow(&path, native, &lookup_cancellation),
-                meter, &lookup_cancellation,
-            ).await?;
-            lookup.record
-        }
-    };
     let observation = match observation {
         Some(observation) => Some(observation),
         None => {
@@ -3598,7 +3225,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(checkou
             }) {
                 let lookup_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
                 let prior = capture_sdk(
-                    |native| checkout.read_metadata_by_id(record.file_id, native, &lookup_cancellation),
+                    checkout.read_metadata_by_id(record.file_id, &meter.native, &lookup_cancellation),
                     meter, &lookup_cancellation,
                 ).await?;
                 prior_metadata = Some(prior);
@@ -3642,13 +3269,13 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(checkou
                 None
             } else if host_kind == FileKind::Regular {
                 // Staging opens the file once and proves it is still the observed node before reading a byte.
-                Some(PreparedPath::Regular(PreparedRegular {
+                Some(PreparedPath::Regular {
                     path,
                     host_path,
                     snapshot,
                     exists_with_kind,
                     canonical_metadata,
-                }))
+                })
             } else {
                 append_final_state(path,
     source_root,
@@ -3730,54 +3357,23 @@ async fn push_subtree_removals<A: AsyncAuthorityStore, O: AsyncObjectStore>(chec
             queued.insert_measured(path, (), meter)?;
         }
     }
-    let mut pending = capture_vec(1, meter)?;
-    pending.push(clone_capture_path(root, meter)?);
     let mut found: Vec<(NamespacePath, FileRecord)> = Vec::new();
-    while let Some(directory) = pending.pop() {
-        let mut after: Option<LogicalName> = None;
-        loop {
-            let page_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
-            let page = capture_sdk(
-                |native| checkout.list_directory_records_with_native_work(&directory, after.as_ref(), PAGE, native, &page_cancellation),
-                meter, &page_cancellation,
-            ).await?;
-
-            { capture_charge(meter,
-                WorkCounters { items_examined: page.0.entries.len() as u64, ..WorkCounters::UNCHARGED }) }?;
-            if page.0.has_more && page.0.entries.is_empty() {
-                return Err(CaptureError::Invariant("directory pagination made no progress"));
-            }
-            for entry in &page.0.entries {
-                let child = { let name = clone_capture_name(&entry.name, meter)?;
-                    append_path_measured(&directory, name, limits, meter) }?;
-                if entry.record.kind == FileKind::Directory {
-                    capture_reserve(&mut pending, 1, meter)?;
-                    pending.push(clone_capture_path(&child, meter)?);
-                }
-                if !queued.contains_key_measured(&child, meter)? {
-                    capture_reserve(&mut found, 1, meter)?;
-                    found.push((child, entry.record));
-                } else {
-                    capture_drop_path(child, meter)?;
-                }
-            }
-            let next = if page.0.has_more {
-                let last = page.0.entries.last().ok_or_else(|| CaptureError::Invariant("directory pagination made no progress"))?;
-                Some(clone_capture_name(&last.name, meter)?)
-            } else { None };
-            if let Some(previous) = after.take() {
-                let bytes = previous.as_bytes().len() as u64;
-                drop(previous);
-                meter.source().release(bytes).map_err(capture_demand_error)?;
-            }
-            let has_more = page.0.has_more;
-            drop(page);
-            after = next;
-            if !has_more { break; }
+    let root = clone_capture_path(root, meter)?;
+    walk_checkout_subtree(checkout, root, PAGE, meter, |directory, entry, pending| {
+        let name = clone_capture_name(&entry.name, meter)?;
+        let child = append_path_measured(directory, name, limits, meter)?;
+        if entry.record.kind == FileKind::Directory {
+            capture_reserve(pending, 1, meter)?;
+            pending.push(clone_capture_path(&child, meter)?);
         }
-        capture_drop_path(directory, meter)?;
-    }
-    release_capture_paths(pending, meter)?;
+        if !queued.contains_key_measured(&child, meter)? {
+            capture_reserve(&mut found, 1, meter)?;
+            found.push((child, entry.record));
+        } else {
+            capture_drop_path(child, meter)?;
+        }
+        Ok(())
+    }).await?;
     release_capture_set(queued, meter)?;
     { capture_sort_by(&mut found,
         |left, right| right.0.depth().cmp(&left.0.depth()), meter) }?;
@@ -3824,7 +3420,7 @@ fn capture_mutation_owned_bytes(
         capture_charge(meter, WorkCounters { source_path_components: path.depth() as u64
             + second.map_or(0, |path| path.depth() as u64), ..WorkCounters::UNCHARGED })?;
         bytes = bytes.checked_add(mutation.logical_owned_bytes())
-            .ok_or(CaptureError::Work(WorkError::Overflow))?;
+            .ok_or(CaptureError::from(WorkError::Overflow))?;
     }
     Ok(bytes)
 }
@@ -3842,13 +3438,17 @@ async fn apply_capture_transaction<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     let input = (mutations, meter.native.transfer_capture_allocation(
         mutation_bytes, meter.custody.as_ref().expect("capture scope is live"),
-    ).map_err(CaptureError::NativeKernel)?);
+    ).map_err(CaptureError::from)?);
     let apply_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
     capture_sdk(
-        |native| {
-            checkout.apply_authored_bulk_transaction_with_native_work(
-                input.0, input.1, native, &apply_cancellation,
-            )
+        async {
+            // Preflight abandonment drops mutation data before its guard.
+            let input = input;
+            let mut accounting = crate::kernel::allocation::KernelAccounting::native(&meter.native, &apply_cancellation);
+            checkout.apply_authored_bulk_transaction_with_accounting(
+                crate::kernel::Owned { value: input.0, bytes: input.1.bytes(), allocation: crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(input.1) },
+                &mut accounting, &apply_cancellation,
+            ).await
         },
         meter, &apply_cancellation,
     ).await?;
@@ -3859,7 +3459,7 @@ fn checked_increment(value: u64,
 ) -> Result<u64, CaptureError> {
     value
         .checked_add(1)
-        .ok_or(CaptureError::Work(WorkError::Overflow))
+        .ok_or(CaptureError::from(WorkError::Overflow))
 }
 
 fn append_hard_link(source: NamespacePath,
@@ -3891,85 +3491,39 @@ fn append_final_state(path: NamespacePath,
         mutations: &mut Vec<AuthoredMutation>,
         meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
-    let appended = (|| {
-        capture_reserve(mutations, if exists_with_kind { 2 } else { 1 }, meter)?;
-        let target = if kind == FileKind::SymbolicLink {
-            Some(read_link_bytes(source_root, host_path, meter)?)
+    capture_reserve(mutations, if exists_with_kind { 2 } else { 1 }, meter)?;
+    match kind {
+        FileKind::Regular => unreachable!("regular files are staged after preparation"),
+        FileKind::Directory => mutations.push(if exists_with_kind {
+            AuthoredMutation::SetMetadata { path, metadata: canonical_metadata }
         } else {
-            None
-        };
-        {
-            match kind {
-                FileKind::Regular => unreachable!("regular files are staged after preparation"),
-                FileKind::Directory => mutations.push(if exists_with_kind {
-                    AuthoredMutation::SetMetadata { path, metadata: canonical_metadata }
-                } else {
-                    AuthoredMutation::CreateDirectory { path, metadata: canonical_metadata }
-                }),
-                FileKind::SymbolicLink => {
-                    let target = target.expect("the symbolic link target was read before mutation");
-                    if exists_with_kind {
-                        mutations.push(AuthoredMutation::Remove { path: clone_capture_path(&path, meter)?, expected_file_id: None });
-                    }
-                    let target = capture_link_target(target, meter)?;
-                    mutations.push(AuthoredMutation::CreateSymbolicLink { path, target: target.into(), metadata: canonical_metadata });
-                }
-                FileKind::Fifo | FileKind::Socket => mutations.push(if exists_with_kind {
-                    AuthoredMutation::SetMetadata { path, metadata: canonical_metadata }
-                } else {
-                    AuthoredMutation::CreateEmptySpecial { path, kind, metadata: canonical_metadata }
-                }),
-                FileKind::CharacterDevice | FileKind::BlockDevice => {
-                    let (major, minor) = host_device_identity(metadata)?;
-                    if exists_with_kind {
-                        mutations.push(AuthoredMutation::Remove { path: clone_capture_path(&path, meter)?, expected_file_id: None });
-                    }
-                    mutations.push(AuthoredMutation::CreateDevice { path, kind, major, minor, metadata: canonical_metadata });
-                }
-                FileKind::ReparsePoint | FileKind::MountBoundary => return Err(CaptureError::UnsupportedKind),
+            AuthoredMutation::CreateDirectory { path, metadata: canonical_metadata }
+        }),
+        FileKind::SymbolicLink => {
+            let target = read_link_bytes(source_root, host_path, meter)?;
+            if exists_with_kind {
+                mutations.push(AuthoredMutation::Remove { path: clone_capture_path(&path, meter)?, expected_file_id: None });
             }
+            let target = capture_link_target(target, meter)?;
+            mutations.push(AuthoredMutation::CreateSymbolicLink { path, target: target.into(), metadata: canonical_metadata });
         }
-        let observed = capture_stat(source_root, host_path, meter).map_err(capture_demand_error)?;
-        ensure_same_host_node(&snapshot, &observed)?;
-        meter.source().check().map_err(capture_demand_error)
-    })();
-
-    appended
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn finish_prepared_regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager: &Checkout<A, O>,
-    source_root: &HostRoot,
-    prepared: PreparedRegular,
-    maximum_extent_spans: u32,
-    mutations: &mut Vec<AuthoredMutation>,
-    receipt: &mut CaptureReceipt,
-    cancellation: &CancellationToken,
-    meter: &CaptureWorkScope,
-) -> Result<(), CaptureError> {
-    let staged = stage_regular_body(stager,
-    source_root,
-    &prepared.host_path,
-    &prepared.snapshot,
-    maximum_extent_spans,
-    cancellation,
-    meter,
-    &mut receipt.staged_file_bytes,
-)
-    .await?;
-    let host_path_bytes = capture_host_path_bytes(&prepared.host_path);
-    drop(prepared.host_path);
-    { meter.source().release(host_path_bytes)
-        .map_err(capture_demand_error) }?;
-    append_staged_regular_state(prepared.path,
-    prepared.snapshot.length,
-    prepared.exists_with_kind,
-    prepared.canonical_metadata,
-    staged,
-    mutations,
-    meter,
-)?;
-    Ok(())
+        FileKind::Fifo | FileKind::Socket => mutations.push(if exists_with_kind {
+            AuthoredMutation::SetMetadata { path, metadata: canonical_metadata }
+        } else {
+            AuthoredMutation::CreateEmptySpecial { path, kind, metadata: canonical_metadata }
+        }),
+        FileKind::CharacterDevice | FileKind::BlockDevice => {
+            let (major, minor) = host_device_identity(metadata)?;
+            if exists_with_kind {
+                mutations.push(AuthoredMutation::Remove { path: clone_capture_path(&path, meter)?, expected_file_id: None });
+            }
+            mutations.push(AuthoredMutation::CreateDevice { path, kind, major, minor, metadata: canonical_metadata });
+        }
+        FileKind::ReparsePoint | FileKind::MountBoundary => return Err(CaptureError::UnsupportedKind),
+    }
+    let observed = capture_stat(source_root, host_path, meter).map_err(capture_demand_error)?;
+    ensure_same_host_node(&snapshot, &observed)?;
+    meter.source().check().map_err(capture_demand_error)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3986,11 +3540,13 @@ async fn finish_prepared_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(stag
     // A pending alias is planned only after its source, so staging preserves their dependency order.
     for path in prepared {
         match path {
-            PreparedPath::Regular(plan) => {
-                finish_prepared_regular(
-                    stager, source_root, plan, maximum_extent_spans, mutations, receipt,
-                    cancellation, meter,
-                ).await?;
+            PreparedPath::Regular { path, host_path, snapshot, exists_with_kind, canonical_metadata } => {
+                let staged = stage_regular_body(stager, source_root, &host_path,
+                    &snapshot, maximum_extent_spans, cancellation, meter,
+                    &mut receipt.staged_file_bytes).await?;
+                capture_drop_host_path(host_path, meter)?;
+                append_staged_regular_state(path, snapshot.length,
+                    exists_with_kind, canonical_metadata, staged, mutations, meter)?;
             }
             PreparedPath::HardLink { source, destination, current } => {
                 append_hard_link(source, destination, current, mutations, meter)?;
@@ -4012,7 +3568,7 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
     staged_file_bytes: &mut u64,
 ) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
     let opened = (|| {
-        cancellation.check().map_err(|_| CaptureError::Cancelled)?;
+        cancellation.check()?;
         #[cfg(unix)]
         let file = source_root.open_file_positional_with_work(host_path, &mut meter.source())
             .map_err(capture_demand_error)?;
@@ -4023,19 +3579,19 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
         let metadata = source_root.stat_file_with_work(&file, &mut meter.source())
             .map_err(capture_demand_error)?;
         if !metadata.file_type().is_file() {
-            return Err(CaptureError::StaleVersion);
+            return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale));
         }
         ensure_same_host_node(snapshot, &metadata)?;
         let logical_bytes = metadata.len();
         let ranges = allocated_data_ranges(
             &file, 0, logical_bytes, maximum_extent_spans, &mut meter.source(),
-            |work| work.original_arc().lock().remaining(),
+            |work| work.original.lock().remaining(),
             #[cfg(windows)]
             |file, code, input, output, _work| {
                 native_device_control_in_scope(file, code, input, output, meter)
             },
         ).map_err(capture_demand_error)?;
-        let positional = native_positional_file_measured(file, meter)?;
+        let positional = native_positional_file(file, &meter.native)?;
         capture_allocate(meter, std::mem::size_of::<acyclic_native_runtime::NativeFile>() as u64)?;
         let native = std::sync::Arc::new(positional);
         Ok((metadata, ranges, native))
@@ -4065,14 +3621,14 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
 ).await;
     let content = staged?;
     let verified = (|| {
-        cancellation.check().map_err(|_| CaptureError::Cancelled)?;
+        cancellation.check()?;
         let after = source_root.stat_file_with_work(native.as_file(), &mut meter.source())
             .map_err(capture_demand_error)?;
         ensure_same_host_node(snapshot, &after)?;
         let current = capture_stat(source_root, host_path, meter)
             .map_err(capture_demand_error)?;
         ensure_same_host_node(snapshot, &current)?;
-        cancellation.check().map_err(|_| CaptureError::Cancelled)?;
+        cancellation.check()?;
         meter.source().check().map_err(capture_demand_error)
     })();
     let ranges_bytes = ranges.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64;
@@ -4101,7 +3657,7 @@ fn append_staged_regular_state(path: NamespacePath,
 ) -> Result<(), CaptureError> {
     { let ranges_bytes = ranges.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
         let count = ranges.len().checked_add(2 + usize::from(logical_bytes != 0))
-            .ok_or(CaptureError::Work(WorkError::Overflow))?;
+            .ok_or(CaptureError::from(WorkError::Overflow))?;
         capture_reserve(mutations, count, meter)?;
         if exists_with_kind {
             mutations.push(AuthoredMutation::Resize { path: clone_capture_path(&path, meter)?, logical_bytes: 0 });
@@ -4141,7 +3697,7 @@ fn host_link_count(metadata: &HostStat) -> Result<u64, CaptureError> {
 fn host_link_count(metadata: &HostStat) -> Result<u64, CaptureError> {
     metadata.number_of_links()
         .map(u64::from)
-        .ok_or_else(|| CaptureError::Io(std::io::Error::other("host link count is unavailable")))
+        .ok_or_else(|| CaptureError::from(std::io::Error::other("host link count is unavailable")))
 }
 
 impl HostSnapshot {
@@ -4190,7 +3746,7 @@ fn ensure_same_host_snapshot(
         || expected.length != observed.length
         || expected_metadata != observed_metadata
     {
-        return Err(CaptureError::StaleVersion);
+        return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale));
     }
     Ok(())
 }
@@ -4201,11 +3757,11 @@ fn ensure_current_host_node(source_root: &HostRoot,
         cancellation: &CancellationToken,
         meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
-    cancellation.check().map_err(|_| CaptureError::Cancelled)?;
+    cancellation.check()?;
     meter.source().check().map_err(capture_demand_error)?;
     let observed = capture_stat(source_root, host_path, meter).map_err(capture_demand_error)?;
     ensure_same_host_node(expected, &observed)?;
-    cancellation.check().map_err(|_| CaptureError::Cancelled)?;
+    cancellation.check()?;
     meter.source().check().map_err(capture_demand_error)
 }
 
@@ -4251,7 +3807,7 @@ mod host_file_race_tests {
         let opened = root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         assert!(matches!(
             ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?),
-            Err(CaptureError::StaleVersion)
+            Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale))
         ));
         Ok(())
     }
@@ -4268,7 +3824,7 @@ mod host_file_race_tests {
         std::fs::write(&current, b"changed body")?;
         assert!(matches!(
             ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?),
-            Err(CaptureError::StaleVersion)
+            Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale))
         ));
         Ok(())
     }
@@ -4288,13 +3844,13 @@ mod host_file_race_tests {
         std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o600))?;
         assert!(matches!(
             ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?),
-            Err(CaptureError::StaleVersion)
+            Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale))
         ));
         Ok(())
     }
 
     #[test]
-    fn accepts_an_unobservable_creation_time_in_either_direction()
+    fn creation_time_changes_require_two_observable_values()
     -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("current"), b"first")?;
@@ -4304,26 +3860,12 @@ mod host_file_race_tests {
         expected.metadata.created_ns = MetadataField::Value(123);
         let mut observed = expected;
         observed.metadata.created_ns = MetadataField::Unavailable;
-        // The exact musl case: path statx sees birth time, held fstat cannot.
         ensure_same_host_snapshot(&expected, &observed)?;
-        // Also allow the reverse observation order.
         ensure_same_host_snapshot(&observed, &expected)?;
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_an_observable_creation_time_change() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        std::fs::write(temporary.path().join("current"), b"first")?;
-        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let metadata = test_host_stat(&root, Path::new("current"))?;
-        let mut expected = HostSnapshot::from_metadata(&metadata)?;
-        expected.metadata.created_ns = MetadataField::Value(123);
-        let mut observed = expected;
         observed.metadata.created_ns = MetadataField::Value(124);
         assert!(matches!(
             ensure_same_host_snapshot(&expected, &observed),
-            Err(CaptureError::StaleVersion)
+            Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale))
         ));
         Ok(())
     }
@@ -4350,7 +3892,7 @@ mod host_file_race_tests {
     &CancellationToken::new(),
     &scope,
 ),
-            Err(CaptureError::StaleVersion)
+            Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale))
         ));
         Ok(())
     }
@@ -4364,23 +3906,23 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager: 
 ) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
     let mut staged = capture_vec(ranges.len(), meter)?;
     for range in ranges {
-        let mut bounded = NativeRangeSource::new_captured(
-            acyclic_native_runtime::AsyncRangeReader::new(
+        let mut bounded = NativeRangeSource {
+            reader: acyclic_native_runtime::AsyncRangeReader::new(
                 std::sync::Arc::clone(native), range.offset, range.length,
             ),
-            meter,
-        );
+            capture_custody: std::sync::Arc::clone(meter.custody.as_ref().expect("capture scope is live")),
+        };
         let stage_cancellation = meter.native.cancellation().clone();
         let content = capture_sdk(
-            |original| stager.stage(&mut bounded, range.length, original, &stage_cancellation),
+            stager.stage(&mut bounded, range.length, &meter.native, &stage_cancellation),
             meter, &stage_cancellation,
         ).await;
         drop(bounded);
 
         let content = content?;
-        if content.logical_bytes() != range.length { return Err(CaptureError::StaleVersion); }
+        if content.logical_bytes() != range.length { return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale)); }
         *staged_file_bytes = staged_file_bytes.checked_add(range.length)
-            .ok_or(CaptureError::Work(WorkError::Overflow))?;
+            .ok_or(CaptureError::from(WorkError::Overflow))?;
         staged.push((*range, content));
     }
     Ok(staged)
@@ -4409,28 +3951,28 @@ async fn settled_sparse_ranges(native: &std::sync::Arc<acyclic_native_runtime::N
             std::sync::Arc::clone(native), range.offset, range.length,
         );
         let end = range.offset.checked_add(range.length).ok_or_else(|| {
-            CaptureError::Work(WorkError::Overflow)
+            CaptureError::from(WorkError::Overflow)
         })?;
         let mut position = range.offset;
         let mut report_stands = false;
         while position < end {
             let wanted = (CHUNK - position % CHUNK).min(end - position);
             let read = (async {
-                cancellation.check().map_err(|_| CaptureError::Cancelled)?;
+                cancellation.check()?;
                 meter.native.admit(WorkCounters { source_bytes_read: wanted,
                     ..WorkCounters::UNCHARGED })
-                    .map_err(CaptureError::NativeKernel)?;
+                    .map_err(CaptureError::from)?;
                 let runtime = capture_runtime_meter_owner(&meter.native,
                     meter.custody.as_ref().expect("capture scope is live"))
-                    .map_err(CaptureError::NativeKernel)?;
+                    .map_err(CaptureError::from)?;
                 let value = reader.read(wanted as usize, runtime, true)
                     .await.map_err(|error| {
                         let cause = if let Some(cause) = meter.native.native_read_meter().take_native_io_failure() {
                             capture_demand_error(cause)
                         } else if error.kind() == std::io::ErrorKind::UnexpectedEof {
-                            CaptureError::StaleVersion
+                            CaptureError::Kernel(crate::FsError::SourceSnapshotStale)
                         } else {
-                            CaptureError::Io(error)
+                            CaptureError::from(error)
                         };
                         cause
                     })?;
@@ -4489,7 +4031,7 @@ fn keep_sparse_range(
     meter.source().check().map_err(capture_demand_error)?;
     if let Some(last) = ranges.last_mut() {
         if last.offset.checked_add(last.length) == Some(offset) {
-            last.length = last.length.checked_add(length).ok_or(CaptureError::Work(WorkError::Overflow))?;
+            last.length = last.length.checked_add(length).ok_or(CaptureError::from(WorkError::Overflow))?;
             return Ok(true);
         }
     }
@@ -4516,40 +4058,20 @@ fn keep_sparse_range(
     Ok(true)
 }
 
-/// The native file a handle from [`HostRoot::open_file_positional`] reads through.
-#[cfg(all(test, windows))]
-#[allow(
-    unsafe_code,
-    reason = "adopts the overlapped handle into the native runtime"
-)]
-fn native_positional_file(
-    file: std::fs::File,
-) -> std::io::Result<acyclic_native_runtime::NativeFile> {
-    // SAFETY: a positional handle is opened overlapped; this fresh file object is attached to no port, and this sole duplicate carries all of its I/O.
-    unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, None).map_err(|(error, _)| error) }
-}
-
-/// The native file a handle from [`HostRoot::open_file_positional`] reads through.
-#[cfg(all(test, not(windows)))]
-fn native_positional_file(
-    file: std::fs::File,
-) -> std::io::Result<acyclic_native_runtime::NativeFile> {
-    acyclic_native_runtime::NativeFile::from_file(file, None).map_err(|(error, _)| error)
-}
-
 struct NativeRangeSource {
     reader: acyclic_native_runtime::AsyncRangeReader,
     capture_custody: std::sync::Arc<crate::demand::CaptureTransientCustody>,
 }
 
 #[allow(unsafe_code, reason = "the measured host opener transfers its fresh positional handle")]
-fn native_positional_file_measured(
+fn native_positional_file(
     file: std::fs::File,
-    scope: &CaptureWorkScope,
+    original: &crate::NativeMaterializationWork,
 ) -> Result<acyclic_native_runtime::NativeFile, CaptureError> {
-    let meter = scope.native.runtime_meter_owner();
+    let meter = original.runtime_meter();
     #[cfg(windows)]
     let result = unsafe {
+        // SAFETY: the fresh positional handle is overlapped and has no prior completion port.
         acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
     };
     #[cfg(not(windows))]
@@ -4557,16 +4079,9 @@ fn native_positional_file_measured(
     result.map_err(|(error, file)| {
         // This is an ordinary std file, not an explicit SDK close operation. Retire its physical handle before projecting the original failure.
         drop(file);
-        capture_demand_error(scope.native.native_read_meter().take_native_io_failure()
+        capture_demand_error(original.native_read_meter().take_native_io_failure()
             .unwrap_or_else(|| native_demand_error(error)))
     })
-}
-
-impl NativeRangeSource {
-    fn new_captured(reader: acyclic_native_runtime::AsyncRangeReader, scope: &CaptureWorkScope) -> Self {
-        Self { reader, capture_custody: std::sync::Arc::clone(
-            scope.custody.as_ref().expect("capture scope is live")) }
-    }
 }
 
 impl crate::kernel::AsyncBlobSource for NativeRangeSource {
@@ -4664,7 +4179,7 @@ mod native_range_tests {
             .map_err(|(error, _)| error)?;
         let mut scope = CaptureWorkScope::new(&original)?;
         cancellation.cancel();
-        assert!(matches!(native_positional_file_measured(file, &scope), Err(CaptureError::Cancelled)));
+        assert!(matches!(native_positional_file(file, &scope.native), Err(CaptureError::Kernel(crate::FsError::Cancelled(_)))));
         assert_eq!(unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
         scope.release()?;
         Ok(())
@@ -4681,9 +4196,11 @@ mod native_range_tests {
         let original = crate::NativeMaterializationWork::new(budget(), &cancellation)
             .map_err(|(error, _)| error)?;
         let mut scope = CaptureWorkScope::new(&original)?;
-        let native = std::sync::Arc::new(native_positional_file_measured(fixture_file(&path)?, &scope)?);
+        let native = std::sync::Arc::new(native_positional_file(fixture_file(&path)?, &scope.native)?);
         let reader = acyclic_native_runtime::AsyncRangeReader::new(std::sync::Arc::clone(&native), 0, 8);
-        let mut source = NativeRangeSource::new_captured(reader, &scope);
+        let mut source = NativeRangeSource {
+            reader, capture_custody: std::sync::Arc::clone(scope.custody.as_ref().expect("capture scope is live")),
+        };
         std::fs::write(&path, b"abc")?;
         let mut destination = [0xa5; 8];
         assert!(matches!(source.read_with_native_work(
@@ -4708,7 +4225,7 @@ mod native_range_tests {
         let original = crate::NativeMaterializationWork::new(budget(), &cancellation)
             .map_err(|(error, _)| error)?;
         let mut scope = CaptureWorkScope::new(&original)?;
-        let native = std::sync::Arc::new(native_positional_file_measured(fixture_file(&path)?, &scope)?);
+        let native = std::sync::Arc::new(native_positional_file(fixture_file(&path)?, &scope.native)?);
         let meter = crate::native_capture::capture_runtime_meter_owner(&original,
             scope.custody.as_ref().expect("live scope"))?;
         let (started, start) = std::sync::mpsc::channel();
@@ -4758,10 +4275,11 @@ mod native_range_tests {
             let original = crate::NativeMaterializationWork::new(limit, &cancellation)
                 .expect("fund original accounting state");
             let scope = CaptureWorkScope::new(&original)?;
-            let native = std::sync::Arc::new(native_positional_file_measured(fixture_file(&path)?, &scope)?);
-            let mut source = NativeRangeSource::new_captured(
-                acyclic_native_runtime::AsyncRangeReader::new(native, 0, 3), &scope,
-            );
+            let native = std::sync::Arc::new(native_positional_file(fixture_file(&path)?, &scope.native)?);
+            let mut source = NativeRangeSource {
+                reader: acyclic_native_runtime::AsyncRangeReader::new(native, 0, 3),
+                capture_custody: std::sync::Arc::clone(scope.custody.as_ref().expect("capture scope is live")),
+            };
             let baseline = original.receipt();
             let live = original.live_allocation_bytes();
             let mut destination = [0xa5; 8];
@@ -4874,12 +4392,12 @@ mod windows_sparse_tests {
         maximum_ranges: u32,
     ) -> std::io::Result<Vec<(u64, u64)>> {
         let root = HostRoot::open(directory, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let file = root.open_file_positional(Path::new(name))?;
+        let file = root.open_file_positional_with_work(Path::new(name), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new(name)).map_err(std::io::Error::other)?;
-        let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| std::io::Error::other(error))?;
+        let native = std::sync::Arc::new(native_positional_file(file.into_std(), &original).map_err(std::io::Error::other)?);
         let mut scope = CaptureWorkScope::new(&original)
             .map_err(|failure| std::io::Error::other(failure.error))?;
         scope.native.with_original_leaf(|work| work.adopt(reported.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64))
@@ -4895,20 +4413,13 @@ mod windows_sparse_tests {
         .map_err(std::io::Error::other)?;
         let converted = ranges.into_iter()
             .map(|range| (range.offset, range.length)).collect();
-        scope.release().map_err(|failure| std::io::Error::other(failure.error.to_string()))?;
+        scope.release().map_err(std::io::Error::other)?;
         Ok(converted)
     }
 
     #[tokio::test]
-    #[allow(
-        unsafe_code,
-        reason = "queries the file's allocated ranges through the Win32 API"
-    )]
     async fn written_zeros_in_a_sparse_file_capture_as_holes() -> std::io::Result<()> {
         use std::io::{Seek as _, SeekFrom, Write as _};
-        use std::os::windows::io::AsRawHandle as _;
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::System::IO::DeviceIoControl;
         use windows::Win32::System::Ioctl::FSCTL_SET_SPARSE;
 
         let directory = tempfile::tempdir()?;
@@ -4924,20 +4435,7 @@ mod windows_sparse_tests {
         );
 
         let mut file = std::fs::File::create(directory.path().join("sparse.bin"))?;
-        // SAFETY: no buffers are passed and the handle stays live.
-        unsafe {
-            DeviceIoControl(
-                HANDLE(file.as_raw_handle()),
-                FSCTL_SET_SPARSE,
-                None,
-                0,
-                None,
-                0,
-                None,
-                None,
-            )
-            .map_err(std::io::Error::other)?;
-        }
+        acyclic_native_runtime::device_control_in_place(&file, FSCTL_SET_SPARSE, &[], &mut [], None)?;
         file.set_len(length)?;
         file.write_all(&[1; 10])?;
         // Zeros written, so allocated, around the data block at 40 KiB.
@@ -4959,15 +4457,17 @@ mod windows_sparse_tests {
 
         // Every byte read is charged, and the scan stops at the budget or once cancelled.
         let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let file = root.open_file_positional(Path::new("sparse.bin"))?;
+        let file = root.open_file_positional_with_work(Path::new("sparse.bin"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new("sparse.bin")).map_err(std::io::Error::other)?;
-        let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
+        let file_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| std::io::Error::other(error))?;
+        let native = std::sync::Arc::new(native_positional_file(file.into_std(), &file_work).map_err(std::io::Error::other)?);
         let scan = |budget: WorkBudget, cancellation: CancellationToken| {
             let (native, metadata) = (std::sync::Arc::clone(&native), metadata.clone());
             async move {
                 let reported = whole();
                 let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-                    .map_err(|(error, work)| OperationFailure::new(CaptureError::NativeKernel(error), work))?;
+                    .map_err(|(error, work)| OperationFailure::new(CaptureError::from(error), work))?;
                 let mut scope = CaptureWorkScope::new(&original)?;
                 {
                     let mut work = &scope;
@@ -4982,7 +4482,7 @@ mod windows_sparse_tests {
     &scope,
 )
                 .await.map(drop);
-                scope.release()?;
+                scope.release().map_err(|error| OperationFailure::new(error, original.receipt()))?;
                 let work = original.receipt();
                 result.map(|()| ((), work))
                     .map_err(|error| OperationFailure::new(error, work))
@@ -4994,7 +4494,7 @@ mod windows_sparse_tests {
         };
         assert!(matches!(
             scan(short, CancellationToken::new()).await,
-            Err(failure) if matches!(failure.error, CaptureError::Work(_))
+            Err(failure) if matches!(failure.error, CaptureError::Kernel(crate::FsError::Work(_) | crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))))
         ));
         let cancelled = CancellationToken::new();
         cancelled.cancel();
@@ -5078,18 +4578,9 @@ fn host_device_identity(_: &HostStat) -> Result<(u32, u32), CaptureError> {
 }
 
 fn capture_link_target(target: Vec<u8>, meter: &CaptureWorkScope) -> Result<bytes::Bytes, CaptureError> {
-    let admitted = (|| {
-        meter.source().check().map_err(capture_demand_error)?;
-        if target.len() != target.capacity() {
-            meter.native.with_original_leaf(|work| work.claim_allocation(0, 1)).map_err(capture_demand_error)?;
-        }
-        Ok(())
-    })();
-    if let Err(error) = admitted {
-        let bytes = target.capacity() as u64;
-        drop(target);
-        let _ = meter.source().release(bytes);
-        return Err(error);
+    meter.source().check().map_err(capture_demand_error)?;
+    if target.len() != target.capacity() {
+        meter.native.with_original_leaf(|work| work.claim_allocation(0, 1)).map_err(capture_demand_error)?;
     }
     Ok(bytes::Bytes::from(target))
 }
@@ -5105,15 +4596,12 @@ fn read_link_bytes(root: &HostRoot, path: &CaptureHostPath, meter: &CaptureWorkS
     #[cfg(windows)]
     {
         let (units, allocation) = root.read_link_wide_with_work(path, maximum, &mut meter.source()).map_err(capture_demand_error)?;
-        let bytes = (|| {
-            let length = units.len().checked_mul(2).ok_or(CaptureError::Work(WorkError::Overflow))?;
-            let mut bytes = capture_vec(length, meter)?;
-            for unit in &units {
-                capture_charge(meter, WorkCounters { bytes_copied: 2, ..WorkCounters::UNCHARGED })?;
-                bytes.extend_from_slice(&unit.to_le_bytes());
-            }
-            Ok::<_, CaptureError>(bytes)
-        })()?;
+        let length = units.len().checked_mul(2).ok_or(CaptureError::from(WorkError::Overflow))?;
+        let mut bytes = capture_vec(length, meter)?;
+        for unit in &units {
+            capture_charge(meter, WorkCounters { bytes_copied: 2, ..WorkCounters::UNCHARGED })?;
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
         drop(units);
         meter.source().release(allocation).map_err(capture_demand_error)?;
         Ok(bytes)

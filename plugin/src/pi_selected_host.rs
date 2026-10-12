@@ -4,6 +4,7 @@ use crate::{AdapterState, PiTaskBinding, PluginTaskBinding, ServiceResources,
     pi_owner::PiOwnerConfig, pi_root_provider::PiRootHandle,
     pi_task::{PiTaskExecution, PiTaskInput},
     pi_fork::{original_operation, derived}, pi_inspection::*};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{CancellationToken, LazySnapshotRef, WorkCounters};
 use acyclic_harness::{Error, Result, TaskId, OperationId, durable_host::TaskJournalOwner,
     filesystem::{TaskCommandProgress, TaskSourceInspection},
@@ -241,14 +242,14 @@ impl<'a> PiControlHost<'a> {
             }
         }
         let pinned = cursor.as_ref().and_then(|cursor| match &cursor.cursor {
-            PageCursor::Inspect(cursor) => Some(cursor.snapshot), PageCursor::Diff(cursor) => Some(cursor.after_snapshot()),
+            PageCursor::Inspect(cursor) => Some(cursor.snapshot), PageCursor::Diff(cursor) => Some(cursor.after.snapshot),
         });
         let base_selection_operation = derived(operation, if command.kind == "acyclic.pi.writeback" {
             "selected-writeback" } else { "selected-import" }, &work)?;
         let import_operation = if command.kind == "acyclic.pi.writeback" {
             derived(base_selection_operation, "writeback-import", &work)? } else { base_selection_operation };
         let prior_import = if matches!(command.kind.as_str(), "acyclic.pi.import" | "acyclic.pi.writeback") {
-            self.read_import_intent(&context, import_operation, cancellation, work).await?
+            self.read_import_intent(&context, import_operation, work).await?
         } else { None };
         let pinned = pinned.or_else(|| prior_import.as_ref().map(|(intent, _)| intent.source_snapshot));
         let selected_custody = self.selected(&context, native_context, &owner, input.source,
@@ -339,7 +340,7 @@ fn encode_cursor<T: Serialize>(value: &T, cancellation: &CancellationToken,
     let (encoded, encoded_custody) = crate::pi_root_provider::guarded_pi_bytes(value, maximum, work)?;
     let result = (|| {
         let hex_length = (encoded.len() as u64).checked_mul(2).ok_or_else(|| invalid("cursor hex length overflow"))?;
-        let hex_custody = work.claim(hex_length).map_err(native_error)?;
+        let hex_custody = work.claim(hex_length, u64::from((hex_length) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         work.charge(WorkCounters { bytes_copied: hex_length, allocation_operations: u64::from(hex_length != 0),
             ..WorkCounters::default() }).map_err(native_error)?;
         cancellation.check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
@@ -356,7 +357,7 @@ fn decode_cursor<T: serde::de::DeserializeOwned>(value: &str, cancellation: &Can
     }
     cancellation.check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
     let length = value.len() as u64 / 2;
-    let bytes_custody = work.claim(length).map_err(native_error)?;
+    let bytes_custody = work.claim(length, u64::from((length) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     work.charge(WorkCounters { bytes_copied: length, allocation_operations: u64::from(length != 0),
         ..WorkCounters::default() }).map_err(native_error)?;
     let bytes = hex::decode(value).map_err(|_| invalid("selected cursor is not canonical hexadecimal"))?;
@@ -498,7 +499,7 @@ impl PiControlHost<'_> {
         acyclic_fs::PublicationPermit::Unrestricted
     } else { return Err(denied("destination live owner unavailable")); };
     let import_operation = if writeback { derived(operation, "writeback-import", &work)? } else { operation };
-    let prior = self.read_import_intent(context, import_operation, cancellation, work).await?;
+    let prior = self.read_import_intent(context, import_operation, work).await?;
     let resuming_import = prior.is_some();
     let intent_custody = if let Some((intent, _custody)) = &prior {
         if intent.caller != input.caller || intent.source != input.source || intent.root != key
@@ -591,7 +592,7 @@ impl PiControlHost<'_> {
     self.writeback(context, native_context,
         owner, input, key, volume, selected.volume(), imported, operation, publication,
         &verifier.0, scope, import_receipt, reconcile, cancellation, work).await }
-    async fn read_import_intent(&self, context: &TaskContext, operation: OperationId, _cancellation: &CancellationToken,
+    async fn read_import_intent(&self, context: &TaskContext, operation: OperationId,
         work: &acyclic_fs::NativeMaterializationWork) -> Result<Option<(SelectedImportIntent, acyclic_fs::NativeAllocation)>> {
         crate::pi_root_provider::read_pi_input_with_native_work(&self.protected, &self.filesystem,
             operation, "selected-import-intent", crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
@@ -694,8 +695,8 @@ impl PiControlHost<'_> {
         command: PiSelectedCommand::normalized(input, key),
         operation, approval_digest: &prepared.approval_digest,
         private_volume: &root_binding.scratch.volume,
-        source_snapshot: prepared.original_snapshot(), selected_snapshot: import_receipt.selected_snapshot,
-        imported: prepared.imported(), import_receipt,
+        source_snapshot: prepared.generations.original_snapshot, selected_snapshot: import_receipt.selected_snapshot,
+        imported: prepared.generations.imported, import_receipt,
         journal: &prepared.journal, canonical_digest_input: &prepared.canonical_digest_input,
         root_path: &root_display.0, source_path: source_display.as_ref().map_or("", |(value, _)| value),
     };
@@ -712,8 +713,8 @@ impl PiControlHost<'_> {
         return Err(denied("user approval does not match this exact prepared original-root plan"));
     }
     crate::pi_operator_host::require_resolved_approval(&self.filesystem, &self.stream, &self.protected, descriptor, work).await?;
-    let published = publish_writeback(&prepared, &root, context, owner, verifier, scope, &generations,
-        &self.resources.store, approval, true, &options, &[".git"], cancellation, work).await?;
+    let published = publish_writeback(&prepared, context, owner, verifier, scope,
+        &self.resources.store, approval, true, cancellation, work).await?;
     if published.phase != acyclic_fs::MaterializationPhase::Applied { return Ok(TaskCommandProgress::Pending); }
     owner.native_view_owner().verify_with_native_work(work).await?;
     ready(&PiWritebackResponse { status: "published", source: input.source, root: key,
@@ -768,7 +769,7 @@ pub(crate) async fn read_imported_selected_files(
         .ok_or_else(|| invalid("selected evidence path count overflow"))?;
     let path_slots = path_capacity.checked_mul(std::mem::size_of::<&str>())
         .ok_or_else(|| invalid("selected evidence path allocation overflow"))?;
-    let path_custody = work.claim(path_slots as u64).map_err(native_error)?;
+    let path_custody = work.claim(path_slots as u64, u64::from((path_slots as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     work.charge(WorkCounters { allocation_operations: u64::from(path_capacity != 0),
         items_examined: (descriptor.command.paths.len() + descriptor.journal.plan.edits.len()) as u64,
         ..WorkCounters::default() }).map_err(native_error)?;
@@ -799,15 +800,13 @@ pub(crate) async fn read_imported_selected_files(
         }
     }
     let capacity = paths.0.len();
-    let slots = capacity.checked_mul(std::mem::size_of::<(&str, Option<String>)>()
-        + std::mem::size_of::<acyclic_fs::NativeAllocation>())
+    let slots = capacity.checked_mul(std::mem::size_of::<(&str, Option<String>)>())
         .ok_or_else(|| invalid("selected evidence payload allocation overflow"))?;
-    let payload_custody = work.claim(slots as u64).map_err(native_error)?;
-    work.charge(WorkCounters { allocation_operations: if capacity == 0 { 0 } else { 2 },
+    let payload_custody = work.claim(slots as u64, u64::from((slots as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
+    work.charge(WorkCounters { allocation_operations: u64::from(capacity != 0),
         ..WorkCounters::default() }).map_err(native_error)?;
-    let mut payload = (Vec::<(&str, Option<String>)>::with_capacity(capacity), None,
-        Vec::with_capacity(capacity), payload_custody);
-    let (files, cursor, allocations, _) = &mut payload;
+    let mut payload = (Vec::<(&str, Option<String>)>::with_capacity(capacity), None, payload_custody);
+    let (files, cursor, custody) = &mut payload;
     let mut remaining = u64::from(maximum);
     let start = evidence.map(|request| request.path.as_str());
     for &path in &paths.0 {
@@ -844,7 +843,7 @@ pub(crate) async fn read_imported_selected_files(
         if bytes.len() as u64 != count { return Err(denied("candidate evidence range differs from its authenticated immutable length")); }
         let encoded_length = count.checked_add(2).and_then(|size| size.checked_div(3))
             .and_then(|size| size.checked_mul(4)).ok_or_else(|| invalid("file evidence encoded size overflow"))?;
-        allocations.push(work.claim(encoded_length).map_err(native_error)?);
+        custody.grow(encoded_length).map_err(native_error)?;
         work.charge(WorkCounters { bytes_encoded: encoded_length,
             allocation_operations: u64::from(encoded_length != 0),
             ..WorkCounters::default() }).map_err(native_error)?;

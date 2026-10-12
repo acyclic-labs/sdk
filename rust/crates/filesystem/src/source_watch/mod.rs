@@ -106,8 +106,7 @@ pub(super) const fn arc_control_bytes<T>() -> u64 {
     (payload_offset + std::mem::size_of::<T>()) as u64
 }
 
-/// Transfers a genuine before-birth terminal allowance into the existing
-/// original reservation engine. Ordinary watchers keep their ordinary engine.
+/// Transfers a genuine before-birth terminal allowance into the existing original reservation engine.
 #[cfg(windows)]
 pub(super) fn prepare_native_cleanup_credit<W: SourceDemandReadWork>(
     work: &mut W, maximum: WorkCounters,
@@ -164,21 +163,16 @@ pub(super) fn record_cleanup_credits(work: &mut DemandWork, delta: WorkCounters)
 /// One change the host reported beneath a watched root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum HostChange {
-    /// This root-relative path (empty: the root itself) may bind another
-    /// entry, or none, and so may everything reached through it.
+    /// This root-relative path (empty: the root itself) may bind another entry, or none, and so may everything reached through it.
     Rebound(PathBuf),
-    /// The entry at this root-relative path may have changed in place: its
-    /// content or attributes. The path still binds it.
+    /// The entry at this root-relative path may have changed in place: its content or attributes.
     Altered(PathBuf),
-    /// The file with this host file index, on the root's volume, may have
-    /// changed under every name bound to it.
+    /// The file with this host file index, on the root's volume, may have changed under every name bound to it.
     #[cfg(windows)]
     File(u64),
     /// Notifications were lost: anything may have changed.
     Everything,
-    /// Changes may not all have been delivered yet, though none is known to
-    /// have been lost: a fence that cannot prove delivery (see the macOS and
-    /// Windows backends) reports this instead.
+    /// Changes may not all have been delivered yet, though none is known to have been lost: a fence that cannot prove delivery (see the macOS and Windows backends) reports this instead.
     #[cfg(any(target_os = "macos", windows))]
     Unconfirmed,
 }
@@ -193,8 +187,7 @@ pub(crate) enum HostChangeWide<'a> {
 
 /// Receives each batch of changes, in the order the host reported them.
 pub(crate) trait HostChangeSink: Send + Sync {
-    /// SDK payload owned by this watch's concrete sink wrapper, excluding
-    /// borrowed caller controls and provider-private allocator metadata.
+    /// SDK payload owned by this watch's concrete sink wrapper, excluding borrowed caller controls and provider-private allocator metadata.
     fn logical_owned_bytes(&self) -> u64;
     /// Called with no watch lock held that a lookup could wait on.
     fn host_changed(
@@ -259,8 +252,7 @@ impl Drop for RestoreCallback {
     }
 }
 
-/// A callback borrows the original invocation; only legacy watches own a
-/// callback-local allowance. Neither variant runs opaque callbacks in a leaf.
+/// A callback borrows the original invocation; only legacy watches own a callback-local allowance.
 pub(super) enum CallbackWork<'a> {
     Ordinary(DemandWork),
     Original(NativeSourceWork<'a>),
@@ -506,8 +498,8 @@ impl Delivery {
         let Some(birth) = &self.original else { return false; };
         let Some(current) = work.native_source_work() else { return false; };
         let current = current.original_demand_work();
-        Arc::ptr_eq(birth.meter(), current.meter())
-            && match (birth.resource_allowance(), current.resource_allowance()) {
+        Arc::ptr_eq(&birth.state, &current.state)
+            && match (birth.resource.as_ref(), current.resource.as_ref()) {
                 (None, None) => true,
                 (Some(birth), Some(current)) => Arc::ptr_eq(birth, current),
                 _ => false,
@@ -595,8 +587,7 @@ impl Delivery {
         }
     }
 
-    /// The host stopped reporting changes exactly: report everything once,
-    /// after which the watch is inexact for good.
+    /// The host stopped reporting changes exactly: report everything once, after which the watch is inexact for good.
     fn abandon(&self) {
         if self.exact.swap(false, Ordering::AcqRel) {
             self.deliver(&[HostChange::Everything]);
@@ -613,8 +604,7 @@ pub(crate) struct NativeSourceWatch {
     platform: PlatformWatch,
 }
 
-/// An original startup failure retaining its actual native owner. This fixed
-/// control is admitted before startup; publishing failure allocates nothing.
+/// An original startup failure retaining its actual native owner.
 pub struct SourceWatchStartupFailure {
     cause: std::sync::OnceLock<DemandError>,
     watch: std::sync::Mutex<Option<NativeSourceWatch>>,
@@ -673,11 +663,7 @@ impl SourceWatchStartupFailure {
         DemandError::SourceWatchStartup(Arc::clone(self))
     }
 
-    /// Quiesces the retained owner using the current cleanup invocation. Its
-    /// original accounting guard remains resident until physical retirement.
-    ///
-    /// # Errors
-    /// Returns current cancellation, quota, or the actual shutdown failure.
+    /// Quiesces the retained owner using the current cleanup invocation.
     pub fn stop_with_native_work(
         &self, work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), DemandError> {
@@ -685,20 +671,11 @@ impl SourceWatchStartupFailure {
     }
 
     /// Retires the retained original watch using only its birth-paid cleanup.
-    /// Independent cancellation or unavailable custody keeps the same owner.
-    ///
-    /// # Errors
-    /// Preserves the actual shutdown cause and physical owner for retry. A
-    /// poisoned custody slot is reported even if native retirement succeeds.
     pub fn stop_with_cleanup_wait(&self, wait: &crate::CancellationToken) -> Result<(), DemandError> {
         self.stop_original_with_wait(Some(wait))
     }
 
     /// Retires only the retained owner's already-accepted physical resources.
-    /// This creates no new work allowance or observer cancellation token.
-    ///
-    /// # Errors
-    /// Retains the same unresolved native owner and original failure cause.
     pub fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         self.stop_original_with_wait(None)
     }
@@ -748,13 +725,7 @@ impl SourceWatchStartupFailure {
 }
 
 impl NativeSourceWatch {
-    /// Starts reporting changes beneath `root`, whose held directory is
-    /// `directory`, to `sink`.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the host refuses the watch; the caller then treats the
-    /// root as unobserved.
+    /// Starts reporting changes beneath `root`, whose held directory is `directory`, to `sink`.
     pub(crate) fn start(
         directory: &crate::native_host::HostRoot,
         sink: Arc<dyn HostChangeSink>,
@@ -766,24 +737,6 @@ impl NativeSourceWatch {
             crate::demand::DemandError::Io(error) => error,
             error => std::io::Error::other(error),
         })
-    }
-
-    /// Starts the ordinary NativeWatch root service. Its native bootstrap is
-    /// outside that constructor's started-request receipt; callbacks retain
-    /// the constructor's actual allowance and original cancellation token.
-    #[cfg(windows)]
-    pub(crate) fn start_held_with_sink(
-        directory: &crate::native_host::HostRoot, sink: Arc<dyn HostChangeSink>,
-        complete: bool, recursive: bool, budget: crate::performance::WorkBudget,
-        cancellation: &crate::cancellation::CancellationToken,
-    ) -> std::io::Result<Self> {
-        let callback = crate::demand::DemandWork::new(budget, cancellation);
-        let delivery = Arc::new(Delivery::new_measured(sink, &callback));
-        let ordinary = crate::cancellation::CancellationToken::new();
-        let mut bootstrap = crate::demand::DemandWork::new(crate::performance::WorkBudget::UNBOUNDED, &ordinary);
-        PlatformWatch::start_held_root_with_work(directory, delivery, complete, recursive, &mut bootstrap)
-            .map(|platform| Self { platform })
-            .map_err(|error| std::io::Error::other(error.to_string()))
     }
 
     #[cfg(windows)]
@@ -906,9 +859,7 @@ impl NativeSourceWatch {
         self.fence_with_work(timeout, work)
     }
 
-    /// Starts the existing Windows driver over one already validated held
-    /// directory. No Path/OsString conversion or startup queue-drain loop is
-    /// hidden behind this measured registration boundary.
+    /// Starts the existing Windows driver over one already validated held directory.
     #[cfg(windows)]
     pub(crate) fn start_directory_measured(
         directory: &cap_std::fs::Dir,
@@ -940,10 +891,7 @@ impl NativeSourceWatch {
             + arc_control_bytes::<Delivery>()
     }
 
-    /// Admits native shutdown before mutating the original owner, then waits
-    /// for actual quiescence. Pre-admission cancellation, budget denial, and
-    /// self-callback shutdown leave the owner retained; retry that shutdown from
-    /// an independent thread after `WorkerUnavailable`.
+    /// Admits native shutdown before mutating the original owner, then waits for actual quiescence.
     pub(crate) fn stop_measured(
         &self, work: &mut crate::demand::DemandWork,
     ) -> Result<(), crate::demand::DemandError> {
@@ -956,8 +904,7 @@ impl NativeSourceWatch {
         self.platform.stop_with_work(work)
     }
 
-    /// Uses the platform's existing original birth cleanup and native stop
-    /// suffix. No caller budget, new root, or replacement watcher is created.
+    /// Uses the platform's existing original birth cleanup and native stop suffix.
     pub(crate) fn stop_with_cleanup_wait(&self, wait: &crate::CancellationToken) -> Result<(), DemandError> {
         self.platform.stop_with_cleanup_wait(wait)
     }
@@ -987,21 +934,13 @@ impl NativeSourceWatch {
         self.platform.fence_for(timeout)
     }
 
-    /// Watches the root-relative directory `directory`, and every directory
-    /// on the way to it, before the source reads beneath it. Returns whether
-    /// `directory` itself became watched by this call, after which a fact
-    /// about it read before the call must be read again.
-    ///
-    /// Only Linux watches directory by directory; elsewhere one watch covers
-    /// the whole root.
+    /// Watches the root-relative directory `directory`, and every directory on the way to it, before the source reads beneath it.
     #[cfg(target_os = "linux")]
     pub(crate) fn admit(&self, directory: &std::path::Path) -> bool {
         self.platform.admit(directory)
     }
 
-    /// Admits each Linux prefix with cancellation, native-call and allocation
-    /// admission before the corresponding work. Other hosts already cover the
-    /// whole root and perform no directory admission work.
+    /// Admits each Linux prefix with cancellation, native-call and allocation admission before the corresponding work.
     pub(crate) fn admit_measured(
         &self,
         directory: &std::path::Path,
@@ -1025,20 +964,9 @@ impl NativeSourceWatch {
         }
     }
 
-    /// Returns once every change that completed before the call has been
-    /// delivered.
-    ///
-    /// # Errors
-    ///
-    /// Fails only when the host cannot be read; the watch is then inexact.
+    /// Returns once every change that completed before the call has been delivered.
     pub(crate) fn fence(&self) -> std::io::Result<()> {
         self.platform.fence()
-    }
-
-    pub(crate) fn fence_measured(
-        &self, timeout: std::time::Duration, work: &mut crate::demand::DemandWork,
-    ) -> Result<bool, crate::demand::DemandError> {
-        self.fence_with_work(timeout, work)
     }
 
     pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
@@ -1053,7 +981,6 @@ impl NativeSourceWatch {
     }
 
     /// Whether every change still reaches the sink.
-    /// A successfully stopped watch is not exact and accepts no future events.
     pub(crate) fn is_exact(&self) -> bool {
         self.platform.delivery().is_exact()
     }

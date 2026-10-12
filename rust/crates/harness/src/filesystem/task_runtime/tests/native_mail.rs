@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::conversation::FileRef;
 use crate::test_stream::LostSessionAck;
 use crate::filesystem::PreparationIo;
@@ -39,7 +40,7 @@ impl MailFixture {
             let operation = OperationId::from_bytes([byte; 16]);
             let payload = payloads.stage(operation, "command", &crate::contract::canonical_json_bytes(
                 &super::super::super::ToolTaskCommand { name: "test.deadline".into(), revision: "1".into(), arguments: Value::Null },
-            )?).await?;
+            )?, None)?.await?;
             assert!(matches!(runtime.harness().admit(operation, &definition,
                 json!({"command": WorkflowCommand { operation_id: operation,
                     kind: super::super::super::TOOL_TASK_COMMAND_KIND.into(), payload }}), None).await?,
@@ -53,13 +54,13 @@ impl MailFixture {
             runtime.task_host().start_task(&lease, None).await?;
             tasks.push((TaskId::from_bytes(lease.operation.operation_id.into_bytes()), LeaseFence::from(&lease.reservation)));
         }
-        let payload = payloads.stage(OperationId::from_bytes([193; 16]), "mail-source", b"actual native mailbox source").await?;
+        let payload = payloads.stage(OperationId::from_bytes([193; 16]), "mail-source", b"actual native mailbox source", None)?.await?;
         Ok(Self { fixture, sdk, runtime, tasks, payload })
     }
 
     async fn send(&self, recipient: usize, operation: OperationId, io: &PreparationIo) -> Result<crate::conversation::FileRef> {
         let payload = self.payload.clone_with_io(io)?;
-        self.runtime.task_host().send_owned_with_io(self.tasks[0].0, &self.tasks[0].1,
+        self.runtime.task_host().send_mail(self.tasks[0].0, &self.tasks[0].1,
             self.tasks[recipient].0, operation, payload, Some(io)).await
     }
 }
@@ -120,7 +121,7 @@ async fn native_mail_cancellation_and_page_quota_deny_before_more_sdk_io() -> Re
     cancellation.cancel();
     fixture.sdk.reset_io();
     let before = original.receipt();
-    assert!(matches!(fixture.runtime.task_host().send_owned_with_io(fixture.tasks[0].0, &fixture.tasks[0].1,
+    assert!(matches!(fixture.runtime.task_host().send_mail(fixture.tasks[0].0, &fixture.tasks[0].1,
         fixture.tasks[1].0, OperationId::from_bytes([196; 16]), payload, Some(&io)).await,
         Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     assert!(matches!(fixture.runtime.task_host().inbox_with_native_work(fixture.tasks[1].0, 0, 1, &original).await,

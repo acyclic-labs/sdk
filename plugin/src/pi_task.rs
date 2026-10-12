@@ -89,13 +89,6 @@ struct ControlResults {
     commands: Vec<PiControlReply>,
 }
 
-/// Closed first-party decoder contracts: never select a schema for arbitrary T.
-#[cfg(not(target_arch = "wasm32"))]
-trait NativeMetadata: serde::de::DeserializeOwned {
-    const VALUE_SCHEMA: acyclic_harness::JsonValueSchema;
-    const DIAGNOSTIC_LABEL_BYTES: u64;
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 const PI_COMMAND_DIAGNOSTIC_LABEL_BYTES: u64 =
     super::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
@@ -112,50 +105,28 @@ pub(crate) const PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES: u64 =
     ]);
 
 #[cfg(not(target_arch = "wasm32"))]
-impl NativeMetadata for PiTaskInput {
-    const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::None;
-    const DIAGNOSTIC_LABEL_BYTES: u64 = PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES;
-}
+const CONTROL_INPUT_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
+    + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&["PiControlInput", "command"]);
 
 #[cfg(not(target_arch = "wasm32"))]
-impl NativeMetadata for PiControlInput {
-    const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::None;
-    const DIAGNOSTIC_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
-        + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&["PiControlInput", "command"]);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeMetadata for CommandResults {
-    // Outcome<FileRef> is a closed typed terminal/indeterminate outcome.
-    const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::None;
-    const DIAGNOSTIC_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
+const COMMAND_RESULTS_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
         + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
             "CommandResults", "commands", "CommandResult", "operation_id", "value",
             "Outcome", "Succeeded", "Failed", "Cancelled", "Indeterminate", "message",
         ]);
-}
-
 #[cfg(not(target_arch = "wasm32"))]
-impl NativeMetadata for PiTaskState {
-    const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::Root;
-    const DIAGNOSTIC_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
+const STATE_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
         + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
             "PiTaskState", "state", "preparing", "command", "allocating", "operation",
             "hosting", "allocation", "reply", "controlling", "ready", "awaiting",
             "completed", "result", "failed", "message",
             "PiControlReply", "operation_id", "value",
         ]);
-}
-
 #[cfg(not(target_arch = "wasm32"))]
-impl NativeMetadata for ControlResults {
-    // Likewise covers commands[*].value through the genuine SDK shape scan.
-    const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::Root;
-    const DIAGNOSTIC_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
+const CONTROL_RESULTS_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
         + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
             "ControlResults", "commands", "PiControlReply", "operation_id", "value",
         ]);
-}
 pub(crate) struct PiTaskMachine {
     identity: MachineIdentity,
     schema: Value,
@@ -186,7 +157,7 @@ impl PiTaskMachine {
         let alignment = std::mem::align_of::<Self>();
         let header = 2 * std::mem::size_of::<usize>();
         let bytes = (header.div_ceil(alignment) * alignment + std::mem::size_of::<Self>()) as u64;
-        let mut publication = work.retain_owned(bytes).map_err(native_work_error)?;
+        let mut publication = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
         identity.1.absorb(&mut publication).map_err(native_work_error)?;
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1, ..acyclic_fs::WorkCounters::default()
@@ -395,7 +366,8 @@ pub(crate) fn control_reply(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> acyclic_harness::Result<(Option<PiControlReply>, acyclic_fs::NativeAllocation)> {
     let (metadata, custody) = native_metadata::<PiTaskState>(
-        &MetadataValue(&state, MetadataRole::State), work,
+        &MetadataValue(&state, MetadataRole::State), acyclic_harness::JsonValueSchema::Root,
+        STATE_LABEL_BYTES, work,
     )?;
     let PiTaskState::Hosting { reply: Some(mut reply), .. } = metadata else { return Ok((None, custody)); };
     reply.value = state.get_mut("reply").and_then(Value::as_object_mut)
@@ -433,8 +405,9 @@ impl ResumableMachine for PiTaskMachine {
         input: &Value,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Value, acyclic_fs::NativeAllocation)> {
-        let mut decoded = native_metadata::<PiTaskInput>(input, work)?;
-        let state = initial_state(decoded.0)?;
+        let mut decoded = native_metadata::<PiTaskInput>(input, acyclic_harness::JsonValueSchema::None,
+            PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
+        let state = initial_state(decoded.0, work)?;
         let mut encoded = super::pi_root_provider::guarded_pi_value(
             &state, NATIVE_METADATA_MAXIMUM, work,
         )?;
@@ -461,20 +434,23 @@ impl ResumableMachine for PiTaskMachine {
     ) -> acyclic_harness::Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
         use super::pi_root_provider::guarded_pi_value;
         let mut state_metadata = native_metadata::<PiTaskState>(
-            &MetadataValue(state, MetadataRole::State), work,
+            &MetadataValue(state, MetadataRole::State), acyclic_harness::JsonValueSchema::Root,
+            STATE_LABEL_BYTES, work,
         )?;
         let unchanged_hosting = matches!(&state_metadata.0, PiTaskState::Hosting { .. }) && input.is_null();
         let mut moved_reply = None;
         let typed_input = match &state_metadata.0 {
             PiTaskState::Hosting { .. } if !input.is_null() => {
-                let mut decoded = native_metadata::<PiControlInput>(&input, work)?;
+                let mut decoded = native_metadata::<PiControlInput>(&input, acyclic_harness::JsonValueSchema::None,
+                    CONTROL_INPUT_LABEL_BYTES, work)?;
                 state_metadata.1.absorb(&mut decoded.1).map_err(native_work_error)?;
                 TransitionInput::Control(decoded.0)
             }
             PiTaskState::Controlling { .. } => {
                 require_single_command(&input)?;
                 let mut decoded = native_metadata::<ControlResults>(
-                    &MetadataValue(&input, MetadataRole::Results), work,
+                    &MetadataValue(&input, MetadataRole::Results), acyclic_harness::JsonValueSchema::Root,
+                    CONTROL_RESULTS_LABEL_BYTES, work,
                 )?;
                 state_metadata.1.absorb(&mut decoded.1).map_err(native_work_error)?;
                 moved_reply = Some(take_result_body(&mut input)?);
@@ -482,7 +458,8 @@ impl ResumableMachine for PiTaskMachine {
             }
             PiTaskState::Allocating { .. } | PiTaskState::Awaiting { .. } => {
                 require_single_command(&input)?;
-                let mut decoded = native_metadata::<CommandResults>(&input, work)?;
+                let mut decoded = native_metadata::<CommandResults>(&input, acyclic_harness::JsonValueSchema::None,
+                    COMMAND_RESULTS_LABEL_BYTES, work)?;
                 state_metadata.1.absorb(&mut decoded.1).map_err(native_work_error)?;
                 TransitionInput::Results(decoded.0)
             }
@@ -541,7 +518,7 @@ impl ResumableMachine for PiTaskMachine {
 
 
 
-fn initial_state(input: PiTaskInput) -> acyclic_harness::Result<PiTaskState> {
+fn initial_state(input: PiTaskInput, work: &acyclic_fs::NativeMaterializationWork) -> acyclic_harness::Result<PiTaskState> {
     input.binding.validate(None,
         input.binding.project_volumes.keys().map(String::as_str), true)?;
     if let PiScratchAllocation::Created(creation) = &input.binding.scratch.allocation {
@@ -553,7 +530,7 @@ fn initial_state(input: PiTaskInput) -> acyclic_harness::Result<PiTaskState> {
             if !matches!(input.binding.scratch.allocation, PiScratchAllocation::Preparing) {
                 return Err(transition_error("Pi root admission must precede scratch allocation"));
             }
-            root.validate(&input.binding).map_err(|_| transition_error("Pi root intent differs from its admitted binding"))?;
+            root.validate(&input.binding, work)?;
             validate_effect_command(&preparation).map_err(|error| native_validation(
                 error, "Pi task requires the existing effect command",
             ))?;
@@ -714,8 +691,8 @@ fn native_metadata_quota<T>(bytes: u64, lexical_items: u64) -> acyclic_harness::
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_metadata<T: NativeMetadata>(
-    value: &impl Serialize,
+fn native_metadata<T: serde::de::DeserializeOwned>(
+    value: &impl Serialize, schema: acyclic_harness::JsonValueSchema, label_bytes: u64,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> acyclic_harness::Result<(T, acyclic_fs::NativeAllocation)> {
     let before_items = work.receipt().items_examined;
@@ -734,7 +711,7 @@ fn native_metadata<T: NativeMetadata>(
         }
     };
     let decoded = super::pi_root_provider::guarded_pi_decode::<T>(
-        &bytes, NATIVE_METADATA_MAXIMUM, quota, acyclic_harness::wire::ErrorCode::Invalid, T::VALUE_SCHEMA, T::DIAGNOSTIC_LABEL_BYTES, work,
+        &bytes, NATIVE_METADATA_MAXIMUM, quota, acyclic_harness::wire::ErrorCode::Invalid, schema, label_bytes, work,
     );
     drop(bytes);
     drop(bytes_custody);

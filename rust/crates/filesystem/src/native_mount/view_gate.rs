@@ -1,4 +1,4 @@
-use super::{MountSourceError, MountViewLease};
+use super::MountSourceError;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::cell::Cell;
@@ -314,8 +314,6 @@ struct WaitingWriter {
     registered: bool,
 }
 
-impl MountViewLease for ViewReadLease {}
-
 impl ViewReadLease {
     /// Transfers an already admitted visible owner payload to this original lease.
     pub(super) fn attach_owned_payload(&mut self, bytes: u64) -> Result<(), MountSourceError> {
@@ -434,7 +432,7 @@ impl ViewGate {
     pub(super) fn new_with_native_work(
         original: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, MountSourceError> {
-        let allocation = original.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
+        let allocation = original.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
         let mut value = Self::new();
         value._native_allocation = Some(allocation);

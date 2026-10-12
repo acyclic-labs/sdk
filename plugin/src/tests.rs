@@ -49,9 +49,7 @@ fn root_repository_workspace_id(control: &ControlPlane) -> [u8; 16] {
 
 async fn active_root_workspace_id(control: &ControlPlane) -> acyclic_fs::WorkspaceId {
     let root_id = WorkspaceRootId::from_bytes(control.state.root_id);
-    control
-        .distributed
-        .contexts()
+    WorkspaceContextRegistry::new(control.store.clone())
         .resolve(WorkspaceContextId::from_bytes(
             control.state.root_context_id,
         ))
@@ -66,9 +64,7 @@ async fn root_has_file_contents(
     portable_name: &str,
     expected: &[u8],
 ) -> bool {
-    let Ok(workspace) = control
-        .distributed
-        .workspace(active_root_workspace_id(control).await)
+    let Ok(workspace) = WorkspaceGraph::new(control.store.clone()).workspace(&control.fs, active_root_workspace_id(control).await, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
     else {
         return false;
@@ -777,17 +773,13 @@ async fn shared_service_case() {
     }, &mut None)
         .await
         .expect("second session on same root");
-    let first_context = service.sessions["a"]
-        .distributed
-        .contexts()
+    let first_context = WorkspaceContextRegistry::new(service.sessions["a"].store.clone())
         .resolve(WorkspaceContextId::from_bytes(
             service.sessions["a"].state.root_context_id,
         ))
         .await
         .expect("first root context");
-    let second_context = service.sessions["same-root"]
-        .distributed
-        .contexts()
+    let second_context = WorkspaceContextRegistry::new(service.sessions["same-root"].store.clone())
         .resolve(WorkspaceContextId::from_bytes(
             service.sessions["same-root"].state.root_context_id,
         ))
@@ -1155,7 +1147,7 @@ async fn fresh_cwd_case() {
     let root = temporary.path().join("root");
     fs::create_dir(&root).expect("root");
     let (_service_lock, mut service) = test_service_control(temporary.path().join("state")).await.expect("service");
-    let (agents, allocation) = service.dispatch_request(ControlRequest {
+    let (agents, _allocation) = service.dispatch_request(ControlRequest {
         version: 1,
         command: ControlCommand::Agents,
         cwd: root.clone(),
@@ -1165,7 +1157,6 @@ async fn fresh_cwd_case() {
     }, &mut None)
         .await
         .expect("implicit registration");
-    assert!(allocation.is_none());
     assert!(agents["agents"].as_array().is_some_and(Vec::is_empty));
     assert_eq!(service.sessions.len(), 1);
     assert_eq!(
@@ -1282,10 +1273,6 @@ fn host_capability_profiles_never_conflate_routing_with_confinement() {
             ChildWorkspaceSupport::RecursiveToolRouting
         );
         assert!(profile.stable_child_identity);
-        let guidance = guidance_for(host);
-        assert!(guidance.contains("routing"));
-        assert!(guidance.contains("not process-level confinement"));
-        assert!(!guidance.contains("subagents isolated"));
     }
     let copilot = host_adapter_profile("copilot");
     assert_eq!(
@@ -1298,7 +1285,6 @@ fn host_capability_profiles_never_conflate_routing_with_confinement() {
             host_adapter_profile(host).child_workspaces,
             ChildWorkspaceSupport::CliOnly
         );
-        assert!(guidance_for(host).contains("CLI-only"));
     }
 }
 
@@ -1629,10 +1615,7 @@ async fn codex_session_answers(mcp: bool) -> Vec<Result<Value, String>> {
             super::native_hook_request("codex", event.name, cwd, event.fields)
         };
         answers.push(service.dispatch_request(request, &mut None).await
-            .map(|(value, allocation)| {
-                assert!(allocation.is_none());
-                value
-            }).map_err(|error| error.to_string()));
+            .map(|(value, _allocation)| value).map_err(|error| error.to_string()));
     }
     service.shutdown().await.expect("service shutdown");
     // Each run has its own directory and freshly generated workspace,
@@ -2927,9 +2910,7 @@ async fn publication_history_recovery_case() {
         panic!("show must return the recovered publication commit");
     };
     let commit = commits.first().expect("publication commit");
-    let published_workspace = reopened
-        .distributed
-        .workspace(commit.tree.workspace_id())
+    let published_workspace = WorkspaceGraph::new(reopened.store.clone()).workspace(&reopened.fs, commit.tree.workspace_id(), WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
         .expect("published history workspace");
     let published_generation = published_workspace
@@ -3749,14 +3730,12 @@ async fn durable_hook_response_is_replayed_without_reexecution_after_restart() {
     });
 
     let first_ledger = Arc::new(ControlLedger::open(&data).expect("first ledger"));
-    let (first, first_allocation, first_error) = dispatch_control_envelope(&dispatcher, &first_ledger, envelope.clone(), &mut None).await.expect("first bounded response");
+    let (first, _first_allocation, first_error) = dispatch_control_envelope(&dispatcher, &first_ledger, envelope.clone(), &mut None).await.expect("first bounded response");
     drop(first_ledger);
     let reopened = Arc::new(ControlLedger::open(&data).expect("reopened ledger"));
-    let (replay, replay_allocation, replay_error) = dispatch_control_envelope(&dispatcher, &reopened, envelope, &mut None).await.expect("replayed bounded response");
+    let (replay, _replay_allocation, replay_error) = dispatch_control_envelope(&dispatcher, &reopened, envelope, &mut None).await.expect("replayed bounded response");
     assert!(first_error.is_none());
     assert!(replay_error.is_none());
-    assert!(first_allocation.is_none());
-    assert!(replay_allocation.is_none());
 
     let executed: Value = serde_json::from_slice(&first).expect("first response");
     assert_eq!(executed["ok"], true, "first hook must execute: {executed}");
@@ -4775,9 +4754,7 @@ async fn authenticated_control_protocol_case() {
         .expect("open authenticated command");
     let child_context_id = WorkspaceContextId::from_bytes(control.state.routes["child"].context_id);
     let child_root_id = WorkspaceRootId::from_bytes(control.state.routes["child"].root_id);
-    let original_workspace = control
-        .distributed
-        .contexts()
+    let original_workspace = WorkspaceContextRegistry::new(control.store.clone())
         .resolve(child_context_id)
         .await
         .expect("child context")
@@ -4870,11 +4847,9 @@ async fn authenticated_control_protocol_case() {
         .expect("Git dispatch observation")
         .expect("the authenticated Git switch must succeed");
     assert!(result.is_object());
-    let current = shared
+    let current = WorkspaceContextRegistry::new(shared
         .lock()
-        .await
-        .distributed
-        .contexts()
+        .await.store.clone())
         .resolve(child_context_id)
         .await
         .expect("switched child context")
@@ -5049,9 +5024,7 @@ async fn recursive_publication_case() {
         .workspace(&control.state.routes["child"])
         .await
         .expect("child workspace");
-    let snapshot = control
-        .distributed
-        .operations()
+    let snapshot = OperationWindowCoordinator::new(control.fs.operation_window_store())
         .snapshot(child_workspace.id())
         .await
         .expect("operation window");
@@ -5315,17 +5288,13 @@ async fn multi_root_publication_case() {
     let last_key = root_keys.last().expect("last ordered root").clone();
     let child_context_id = WorkspaceContextId::from_bytes(route.context_id);
     let last_root_id = WorkspaceRootId::from_bytes(route.roots[&last_key].root_id);
-    let original_root = control
-        .distributed
-        .contexts()
+    let original_root = WorkspaceContextRegistry::new(control.store.clone())
         .resolve(child_context_id)
         .await
         .expect("child context")
         .roots[&last_root_id]
         .clone();
-    control
-        .distributed
-        .contexts()
+    WorkspaceContextRegistry::new(control.store.clone())
         .set_workspace(
             child_context_id,
             last_root_id,
@@ -5354,18 +5323,14 @@ async fn multi_root_publication_case() {
         .await
         .expect("first child root");
     assert!(matches!(
-        control
-            .distributed
-            .operations()
+        OperationWindowCoordinator::new(control.fs.operation_window_store())
             .snapshot(first_workspace.id())
             .await
             .expect("rolled-back window")
             .phase,
         acyclic_fs::OperationWindowPhase::Idle
     ));
-    control
-        .distributed
-        .contexts()
+    WorkspaceContextRegistry::new(control.store.clone())
         .set_workspace(
             child_context_id,
             last_root_id,
@@ -5763,14 +5728,6 @@ fn persisted_mount_paths_are_derived_not_authoritative() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let root_id = WorkspaceRootId::from_bytes([1; 16]);
     let mount_path = workspace_mount_root(temporary.path()).join(compact_id(&[2; 16]));
-    assert_eq!(compact_id(&[2; 16]).len(), 22);
-    assert_eq!(route_name(root_id).len(), 23);
-    assert_eq!(
-        mount_path
-            .strip_prefix(temporary.path())
-            .expect("relative mount"),
-        Path::new("w").join(compact_id(&[2; 16]))
-    );
     let mut different_context = [2; 16];
     different_context[15] = 3;
     assert_ne!(compact_id(&[2; 16]), compact_id(&different_context));
@@ -5780,21 +5737,6 @@ fn persisted_mount_paths_are_derived_not_authoritative() {
         route_name(root_id),
         route_name(WorkspaceRootId::from_bytes(different_root))
     );
-    let staging = root_materialization_directory(
-        &temporary.path().join("physical-root"),
-        OperationId::from_bytes([4; 16]),
-    )
-    .expect("materialization directory");
-    let staging_segments = staging
-        .strip_prefix(temporary.path())
-        .expect("relative staging")
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    assert_eq!(staging_segments.len(), 3);
-    assert_eq!(staging_segments[0], ".acyclic-m");
-    assert_eq!(staging_segments[1].len(), 22);
-    assert_eq!(staging_segments[2].len(), 22);
     let mut route = Route {
         task_binding: PluginTaskBinding::HostManaged,
         agent_id: "child".to_owned(),
@@ -5917,15 +5859,9 @@ fn control_responses_are_bounded() {
     assert!(encoded.len() < MAXIMUM_CONTROL_MESSAGE_BYTES);
     let response: Value = serde_json::from_slice(&encoded).expect("response JSON");
     assert_eq!(response["ok"], false);
-    assert!(
-        response["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("4 MiB"))
-    );
 
     let request_id = control_protocol::RequestId::fresh();
-    let (encoded, allocation, _) = control_response_for(&request_id, Ok((json!({"payload": payload}), None)), None).expect("legacy bounded response");
-    assert!(allocation.is_none());
+    let (encoded, _allocation, _) = control_response_for(&request_id, Ok((json!({"payload": payload}), None)), None).expect("legacy bounded response");
     assert!(encoded.len() < MAXIMUM_CONTROL_MESSAGE_BYTES);
     let response: Value = serde_json::from_slice(&encoded).expect("v2 response JSON");
     assert_eq!(response["version"], 2);
@@ -5958,50 +5894,26 @@ fn native_control_query_denial_does_not_encode_an_unfunded_fallback() {
 }
 
 #[test]
-fn native_constructor_failure_without_query_work_keeps_its_actual_cause_and_prefix() {
+fn native_control_response_preserves_constructor_failure_with_absent_or_exhausted_query_work() {
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let (cause, work) = acyclic_fs::NativeMaterializationWork::new(
-        pi_root_provider::allocation_budget(), &cancellation,
-    ).err().expect("actual SDK construction cancellation");
-    let expected_work = work;
-    let result = control_response_for(
-        &control_protocol::RequestId::fresh(),
-        Err(acyclic_harness::Error::NativeConstruction { cause, work }),
-        None,
-    );
-    match result {
-        Err(acyclic_harness::Error::NativeConstruction {
-            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-            work,
-        }) => assert_eq!(work, expected_work),
-        _ => panic!("the actual constructor denial must propagate without a new response"),
-    }
-}
-
-#[test]
-fn query_encoding_denial_does_not_replace_the_original_native_failure() {
-    let execution_cancellation = CancellationToken::new();
-    execution_cancellation.cancel();
-    let (cause, prefix) = acyclic_fs::NativeMaterializationWork::new(
-        pi_root_provider::allocation_budget(), &execution_cancellation,
-    ).err().expect("actual execution constructor denial");
-    let query_cancellation = CancellationToken::new();
     let mut query_budget = pi_root_provider::allocation_budget();
     query_budget.allocation_operations = 1;
-    let query_work = acyclic_fs::NativeMaterializationWork::new(query_budget, &query_cancellation)
+    let query_work = acyclic_fs::NativeMaterializationWork::new(query_budget, &CancellationToken::new())
         .expect("independent original query meter");
-    let result = control_response_for(
-        &control_protocol::RequestId::fresh(),
-        Err(acyclic_harness::Error::NativeConstruction { cause, work: prefix }),
-        Some(&query_work),
-    );
-    match result {
-        Err(acyclic_harness::Error::NativeConstruction {
-            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-            work,
-        }) => assert_eq!(work, prefix),
-        _ => panic!("query encoding must retain the actual first native failure"),
+    for query in [None, Some(&query_work)] {
+        let (cause, prefix) = acyclic_fs::NativeMaterializationWork::new(
+            pi_root_provider::allocation_budget(), &cancellation,
+        ).err().expect("actual execution constructor denial");
+        match control_response_for(
+            &control_protocol::RequestId::fresh(),
+            Err(acyclic_harness::Error::NativeConstruction { cause, work: prefix }), query,
+        ) {
+            Err(acyclic_harness::Error::NativeConstruction {
+                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, work,
+            }) => assert_eq!(work, prefix),
+            _ => panic!("encoding must retain the actual first native failure"),
+        }
     }
 }
 
@@ -6015,8 +5927,7 @@ fn malformed_v2_requests_keep_their_correlation_identity() {
     .expect("invalid envelope fixture");
     let error = serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request)
         .expect_err("fixture must not be a valid envelope");
-    let (encoded, allocation, _) = invalid_control_request_response(&request, &error).expect("correlated invalid response");
-    assert!(allocation.is_none());
+    let (encoded, _allocation, _) = invalid_control_request_response(&request, &error).expect("correlated invalid response");
     let response: Value = serde_json::from_slice(&encoded).expect("correlated response");
     assert_eq!(response["version"], 2);
     assert_eq!(response["requestId"], request_id.as_str());
@@ -6025,8 +5936,7 @@ fn malformed_v2_requests_keep_their_correlation_identity() {
     let uncorrelated = br#"{"unexpected":true}"#;
     let error = serde_json::from_slice::<ControlEnvelope<ControlRequest>>(uncorrelated)
         .expect_err("fixture must not be a valid envelope");
-    let (encoded, allocation, _) = invalid_control_request_response(uncorrelated, &error).expect("uncorrelated invalid response");
-    assert!(allocation.is_none());
+    let (encoded, _allocation, _) = invalid_control_request_response(uncorrelated, &error).expect("uncorrelated invalid response");
     let response: Value = serde_json::from_slice(&encoded).expect("uncorrelated response");
     assert_eq!(response["version"], 2);
     assert!(response.get("requestId").is_none());

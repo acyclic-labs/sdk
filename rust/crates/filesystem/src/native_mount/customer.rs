@@ -910,7 +910,7 @@ where
                 (E::from(MountLifecycleError::Native(error)), spent)
             })?;
         let result = async {
-            let plan_allocation = work.retain_owned(plan.logical_owned_bytes())
+            let plan_allocation = work.claim(plan.logical_owned_bytes(), 0, crate::WorkCounters::UNCHARGED)
                 .map_err(|error| E::from(MountLifecycleError::Native(NativeMountError::Materialization(error))))?;
             self.import_selected_work_guarded(
                 destination, plan, plan_allocation, operation, permit, &work,
@@ -1218,7 +1218,7 @@ where
                 .map_err(native_demand_lifecycle_error)?;
             session.stop_with_meter(native_work)
                 .map_err(MountLifecycleError::Native)?;
-            if !session.cleanup_state().cleanup_complete {
+            if !session.cleanup_state().cleanup_complete() {
                 return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
             }
             owner.take();
@@ -1244,7 +1244,7 @@ where
         let result = (|| {
             if let Some(session) = owner.as_mut() {
                 session.stop_with_cleanup_wait(wait).map_err(MountLifecycleError::Native)?;
-                if !session.cleanup_state().cleanup_complete {
+                if !session.cleanup_state().cleanup_complete() {
                     return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
                 }
             } else {
@@ -1315,7 +1315,9 @@ pub enum MountLifecycleError {
     #[error("{source}")]
     NativeWorkspace {
         #[source]
+        /// Original workspace failure.
         source: WorkspaceError,
+        /// Allocation custody retained until the cause drops.
         custody: Option<crate::NativeAllocation>,
     },
     /// Lazy source or sparse-overlay admission failed.
@@ -1325,7 +1327,9 @@ pub enum MountLifecycleError {
     #[error("{source}")]
     NativeLazy {
         #[source]
+        /// Original lazy workspace failure.
         source: LazyWorkspaceError,
+        /// Allocation custody retained until the cause drops.
         custody: Option<crate::NativeAllocation>,
     },
     /// Native driver admission or teardown failed.
@@ -1336,7 +1340,9 @@ pub enum MountLifecycleError {
     #[error("native capture or namespace cleanup failed: {source}")]
     NativeCaptureFailure {
         #[source]
+        /// Original native capture failure.
         source: NativeMountError,
+        /// Distinct namespace cleanup failure.
         cleanup_failure: Option<NativeMountError>,
     },
     /// Native callback publication failed.
@@ -1419,7 +1425,7 @@ where
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             (&original, &mut frame_custody),
             |(work, custody), bytes| {
-                **custody = Some(work.claim(bytes)?);
+                **custody = Some(work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?);
                 Ok::<(), crate::NativeTreeMaterializationError>(())
             },
             |(work, _)| async move {
@@ -1428,12 +1434,10 @@ where
                         "native working-set root must be absolute",
                     ));
                 }
-                let exact = self.exactify_subtree_with_native_work(
-                    subdirectory, permit, work, cancellation,
-                ).await?;
+                let exact = (async { let accounting = LazyTreapWork::native_with_work(work, cancellation)?; self.exactify(subdirectory, permit, &accounting).await }).await?;
                 let mut mount = (
                     MountOptions::read_write().publication(MountPublication::Manual),
-                    work.retain_owned(0)?,
+                    work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
                 );
                 if subdirectory != "/" {
                     let (subdirectory, mut custody) = work.display(&subdirectory)?;
@@ -1647,7 +1651,7 @@ where
                 std::borrow::Cow::Borrowed(_) => 0,
                 std::borrow::Cow::Owned(value) => value.capacity() as u64,
             };
-            let _options_custody = original.retain_owned(options_bytes)
+            let _options_custody = original.claim(options_bytes, 0, crate::WorkCounters::UNCHARGED)
                 .map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
             let options = options;
             if options.writable && options.publication == MountPublication::PerMutation {
@@ -1672,7 +1676,7 @@ where
             let lazy = self.clone().into_arc_with_native_work(&original)
                 .map_err(MountLifecycleError::Lazy)?;
             // Admit the actual existing payload slot before starting its watch.
-            let mut source_allocation = original.claim_allocation(
+            let mut source_allocation = original.claim(
                 std::mem::size_of::<LazyMountSource<A, O, D, S>>() as u64, 1, crate::WorkCounters::UNCHARGED,
             ).map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
             let mut source = Arc::<LazyMountSource<A, O, D, S>>::new_uninit();
@@ -1752,24 +1756,6 @@ fn native_demand_lifecycle_error(error: crate::demand::DemandError) -> MountLife
 }
 
 
-fn portable_namespace_path(
-    path: &crate::kernel::NamespacePath,
-) -> Result<String, MountLifecycleError> {
-    let mut value = String::new();
-    for component in path.components() {
-        value.push('/');
-        value.push_str(std::str::from_utf8(component.as_bytes()).map_err(|_| {
-            MountLifecycleError::Source(MountSourceError::Unsupported(
-                "lazy portable mounts cannot root at a non-UTF-8 path".to_owned(),
-            ))
-        })?);
-    }
-    if value.is_empty() {
-        value.push('/');
-    }
-    Ok(value)
-}
-
 impl<A, O> Workspace<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -1846,18 +1832,18 @@ where
         &self, options: &crate::MaterializeOptions,
         work: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::MaterializationReceipt, MountLifecycleError> {
+    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, MountLifecycleError> {
         let original = work.clone();
         let mut frame_custody = None;
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             (&original, &mut frame_custody),
             |(original, custody), bytes| {
-                **custody = Some(original.claim(bytes)?);
+                **custody = Some(original.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?);
                 Ok::<(), crate::NativeTreeMaterializationError>(())
             },
             |(original, _)| async move {
                 let workspace = self.workspace();
-                let reader = workspace.readonly_pinned_reader_with_native_work(
+                let reader = workspace.reader(
                     self.id(), original, cancellation,
                 ).await?;
                 super::materialize_checkout_with_work(&reader, options, work).await
@@ -1994,7 +1980,7 @@ where
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             (&original, &mut frame_custody),
             |(original, custody), bytes| {
-                **custody = Some(original.claim(bytes)?);
+                **custody = Some(original.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?);
                 Ok::<(), crate::NativeTreeMaterializationError>(())
             },
             |(original, _)| async move {
@@ -2026,9 +2012,9 @@ where
                 let config = checkout.volume_config();
                 let root = original.allocations(
                     |allocations, work, budget, cancellation| {
-                        crate::workspace::customer_path_measured(
-                            &mount.subdirectory, config, allocations, work, budget, cancellation,
-                        ).map_err(MountLifecycleError::Workspace)
+                        crate::kernel::NamespacePath::parse_in_profile_with_ledger(
+                            &mount.subdirectory, config.profile, config.limits, allocations, work, budget, cancellation,
+                        ).map_err(|error| MountLifecycleError::Workspace(WorkspaceError::from(error)))
                     },
                 )?;
                 if checkout.lookup_no_follow(&root.0, original, cancellation)
@@ -2059,7 +2045,7 @@ where
                 let source_identity = prepare_root_identity_with_work(
                     &source_root.0, &selected_root.0, meter, expected_root_identity,
                 )?;
-                let baseline = NativeViewBaseline::new_with_native_work(
+                let baseline = NativeViewBaseline::new(
                     source_identity, !mount.writable, original,
                 )?;
                 let shared = SharedCheckout::with_publication_meter(
@@ -2174,8 +2160,8 @@ mod tests {
         std::fs::write(physical.path().join("unselected/cold.txt"), b"unread sibling")?;
         let fs = Fs::memory();
         let demand = Arc::new(NativeDemandSource::open(
-            physical.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
-        ).await?);
+            std::borrow::Cow::Owned(std::path::Path::new(physical.path()).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
         let lazy = LazyWorkspace::attach(
             &fs, "measured-customer-root", demand, MemoryLazyWorkspaceStore::default(),
         ).await?;
@@ -2278,8 +2264,8 @@ mod tests {
         let destination = tempfile::tempdir()?;
         let fs = Fs::memory();
         let demand = Arc::new(NativeDemandSource::open(
-            physical.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
-        ).await?);
+            std::borrow::Cow::Owned(std::path::Path::new(physical.path()).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
         let lazy = LazyWorkspace::attach(
             &fs, "measured-native-customer", demand, MemoryLazyWorkspaceStore::default(),
         ).await?;
@@ -2316,7 +2302,7 @@ mod tests {
         };
         // The source watcher is real cleanup custody even before a driver or
         // destination fence exists.
-        assert!(!startup.owner().cleanup_state().cleanup_complete);
+        assert!(!startup.owner().cleanup_state().cleanup_complete());
         assert!(startup.owner().cleanup_state().source_retained);
         let cancelled_startup_cleanup = crate::CancellationToken::new();
         cancelled_startup_cleanup.cancel();
@@ -2324,11 +2310,11 @@ mod tests {
             crate::WorkBudget::UNBOUNDED, &cancelled_startup_cleanup,
         ).err().ok_or("cancelled startup cleanup discarded the source watcher")?;
         assert_eq!(retained.1, crate::WorkCounters::UNCHARGED);
-        assert!(!startup.owner().cleanup_state().cleanup_complete);
+        assert!(!startup.owner().cleanup_state().cleanup_complete());
         assert!(startup.owner().cleanup_state().source_retained);
         startup.owner_mut().stop_measured(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        assert!(startup.owner().cleanup_state().cleanup_complete);
+        assert!(startup.owner().cleanup_state().cleanup_complete());
         assert!(!startup.owner().cleanup_state().source_retained);
         let mounted = lazy.mount_measured(
             destination.path(), options, crate::WorkBudget::UNBOUNDED, &cancellation,
@@ -2339,7 +2325,7 @@ mod tests {
             .map_err(|(error, _)| error)?;
         assert!(!payload_work.shares_ledger(mount._destination_custody.work()));
         let payload_bytes = std::mem::size_of_val(&mount) as u64;
-        let mut payload_custody = payload_work.claim(payload_bytes)?;
+        let mut payload_custody = payload_work.claim(payload_bytes, u64::from((payload_bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let mut slot = Arc::new_uninit();
         let before_transfer = payload_work.receipt();
         mount.retain_payload_allocation(&mut payload_custody)?;
@@ -2348,7 +2334,7 @@ mod tests {
         assert_eq!(mount.payload_custody.as_ref().map(crate::NativeAllocation::bytes), Some(payload_bytes));
         let foreign_work = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let mut foreign_custody = foreign_work.claim(8)?;
+        let mut foreign_custody = foreign_work.claim(8, 1, crate::WorkCounters::UNCHARGED)?;
         let foreign_data = Box::new([0u8; 8]);
         let foreign_prefix = foreign_work.receipt();
         assert!(matches!(
@@ -2417,7 +2403,7 @@ mod tests {
                 }
             }).await?
         }).await??;
-        assert_eq!(bytes, b"source");
+        assert_eq!(bytes.as_ref(), b"source");
         assert!(io_work.receipt().source_bytes_read >= 6);
         assert_eq!(unrelated.receipt().source_bytes_read, 0);
         drop(bytes);
@@ -2504,7 +2490,7 @@ mod tests {
         let operation = crate::OperationId::new();
         let child = lazy.fork("selected-import-child", IdempotencyKey::new()).await?;
         child.workspace().write_text("/selected-import.txt", "selected SDK import").await?;
-        let child_snapshot = child.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        let child_snapshot = child.snapshot(&LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)).await?;
         let plan = { let plan_cancellation = &cancellation; let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, plan_cancellation); let result = child.prepare_selected_import(child_snapshot, std::slice::from_ref(&imported_path), &accounting).await.map(|phase| match phase { LazyReadonlyNode::Portable(plan) => plan, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary plan uses ordinary funding") }); accounting.measured(result, crate::OperationFailure::new) }?.value;
         let actual = mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation)
             .await.map_err(|(error, _)| error)?;
@@ -2594,7 +2580,7 @@ mod tests {
             assert!(state.driver_retained);
             assert!(state.destination_fence_retained);
             assert!(state.measured_cleanup_failed);
-            assert!(!state.cleanup_complete);
+            assert!(!state.cleanup_complete());
         }
         let original_mount_work = mount._destination_custody.work().clone();
         let denied_wait = mount.retire_with_work(&cancelled)
@@ -2605,7 +2591,7 @@ mod tests {
             let state = owner.as_ref().ok_or("cancelled wait lost physical cleanup ownership")?.cleanup_state();
             assert!(state.driver_retained);
             assert!(state.destination_fence_retained);
-            assert!(!state.cleanup_complete);
+            assert!(!state.cleanup_complete());
         }
         original_mount_work.cancellation().cancel();
         let before_retire = original_mount_work.receipt();
@@ -2632,7 +2618,7 @@ mod tests {
         let fs = Fs::memory();
         let workspace = fs.create_workspace("native-carrier-admission", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        transaction.create_directory("/selected-é").await?;
+        transaction.create_directory("/selected-é", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let directory = tempfile::tempdir()?;
@@ -2735,7 +2721,7 @@ mod tests {
         let capture_work = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED, &capture_token,
         ).map_err(|(error, _)| error)?;
-        let caller_payload = capture_work.claim(64)?;
+        let caller_payload = capture_work.claim(64, 1, crate::WorkCounters::UNCHARGED)?;
         let mut caller_buffer = Vec::<u8>::new();
         caller_buffer.try_reserve_exact(64)?;
         assert_eq!(caller_payload.bytes(), caller_buffer.capacity() as u64);
@@ -2815,7 +2801,7 @@ mod tests {
                 .is_err()
         );
         assert_eq!(
-            workspace.read("/file.txt", 64).await?.as_ref(),
+            workspace.read("/file.txt", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"newer concurrent"
         );
         Ok(())
@@ -2836,11 +2822,11 @@ mod tests {
         let fs = Fs::memory();
         let demand = Arc::new(
             NativeDemandSource::open(
-                source.path(),
+                std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(), None, None,
+                VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
             )
-            .await?,
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         );
         let lazy = LazyWorkspace::attach(
             &fs,
@@ -2974,7 +2960,7 @@ mod tests {
         assert_eq!(published.snapshot().generation(), working_set.workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id());
         assert!(publication.receipt().items_examined > 0);
         assert_eq!(
-            lazy.workspace().read("/hot/file.txt", 32).await?.as_ref(),
+            lazy.workspace().read("/hot/file.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"native-edit"
         );
         std::fs::write(working.join("hot/created.txt"), b"new")?;
@@ -2984,8 +2970,8 @@ mod tests {
             .await?;
         assert_eq!(
             lazy.workspace()
-                .read("/hot/created.txt", 16)
-                .await?
+                .read("/hot/created.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
                 .as_ref(),
             b"new"
         );
@@ -2997,8 +2983,8 @@ mod tests {
             .await?;
         assert_eq!(
             lazy.workspace()
-                .read("/hot/unreported.txt", 32)
-                .await?
+                .read("/hot/unreported.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
                 .as_ref(),
             b"unreported"
         );
@@ -3008,8 +2994,8 @@ mod tests {
             .await?;
         assert!(
             lazy.workspace()
-                .read("/hot/unreported.txt", 32)
-                .await
+                .read("/hot/unreported.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .is_err()
         );
         std::fs::remove_dir_all(working.join("hot/sub"))?;
@@ -3019,13 +3005,13 @@ mod tests {
             .sync_with_permit(PublicationPermit::Unrestricted)
             .await?;
         assert_eq!(
-            lazy.workspace().read("/hot/sub", 32).await?.as_ref(),
+            lazy.workspace().read("/hot/sub", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"replacement"
         );
         assert!(
             lazy.workspace()
-                .read("/hot/sub/child.txt", 32)
-                .await
+                .read("/hot/sub/child.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .is_err()
         );
         lazy.write("/later.txt", bytes::Bytes::from_static(b"later"))
@@ -3042,8 +3028,8 @@ mod tests {
         ));
         assert_eq!(
             lazy.workspace()
-                .read("/hot/conflict.txt", 16)
-                .await?
+                .read("/hot/conflict.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
                 .as_ref(),
             b"parent"
         );

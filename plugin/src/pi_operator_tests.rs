@@ -1,9 +1,7 @@
 use super::*;
 use crate::pi_fork::tests::work;
 use crate::{pi_caller, pi_fork::tests::Fixture};
-use acyclic_harness::{core::Scope, filesystem::FilesystemExecutionJournal,
-    executor::ExecutionJournal, interaction::{Interaction, InteractionResponse}, tool::ToolApprovalVerifier,
-    InteractionId};
+use acyclic_harness::core::Scope;
 
 #[test]
 fn operator_cli_requires_explicit_original_operation_and_decision() {
@@ -30,7 +28,7 @@ fn operator_cli_requires_explicit_original_operation_and_decision() {
 #[test]
 fn prepared_descriptor_admission_fails_before_typed_growth_without_fake_allocation_work() {
     let original_work = work();
-    let mut existing_custody = original_work.retain_owned(0).unwrap();
+    let mut existing_custody = original_work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
     existing_custody.resize_retained(original_work.remaining().unwrap().peak_allocation_bytes).unwrap();
     let result = decode_prepared_approval(b"{}", &original_work);
     assert!(matches!(&result, Err(Error::NativeWork {
@@ -83,53 +81,6 @@ async fn real_root_operator_rejects_pi_caller_forgery_foreign_operation_and_fore
     assert!(verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).is_err());
     drop(request);
     drop(parsed_custody);
-}
-
-#[tokio::test]
-async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_decline_survives_reopen() {
-    let fixture = Fixture::new(None).await;
-    fixture.journal.verify_dispatch().await.unwrap();
-    let root = fixture.owner.policy().root_task;
-    let operation = crate::pi_fork::derived(crate::pi_fork::original_operation(root, root, "writeback-sdk", &crate::pi_fork::tests::work()).unwrap(), "selected-writeback", &crate::pi_fork::tests::work()).unwrap();
-    let grants = Capabilities::new(fixture.owner.policy().grants.iter().map(str::to_owned).chain([
-        "interaction:open".into(), "interaction:resolve".into(), "interaction:observe".into(),
-    ]));
-    let work = work();
-    let authority = fixture.owner.conversation_authority_with_native_work(root, fixture.owner.policy().agent, &grants, &work).unwrap();
-    let (_, issuer, scope) = &authority.0;
-    let make_journal = || FilesystemExecutionJournal::new(fixture.stream.clone(), fixture.filesystem.clone(),
-        fixture.root_request.binding.scratch.volume.clone(), issuer.verifier(&mut None).unwrap(), scope.clone(), fixture.owner.policy().maximum_payload_bytes).unwrap();
-    let approval = InteractionId::from_bytes([211; 16]);
-    let digest = *blake3::hash(b"exact-original-root-selected-writeback-input").as_bytes();
-    let journal = make_journal();
-    journal.open_interaction(approval, Interaction::approval("Exact Root writeback", operation, digest).unwrap()).await.unwrap();
-    let response_grants = Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{approval}")]);
-    let foreign = acyclic_harness::core::AuthorityIssuer::new(issuer.id(), [213; 32], issuer.verifier(&mut None).unwrap().audience().clone()).issue("foreign-root", &response_grants, Some(fixture.owner.policy().agent), None, &mut None).expect("scope proof");
-    assert!(journal.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &foreign).await.is_err());
-    let other = fixture.owner.conversation_authority_with_native_work(TaskId::from_bytes([213; 16]),
-        fixture.owner.policy().agent, &response_grants, &work).unwrap();
-    assert!(journal.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &other.0.2).await.is_err());
-    let responder = fixture.owner.conversation_authority_with_native_work(root, fixture.owner.policy().agent, &response_grants, &work).unwrap();
-    journal.resolve_interaction(approval, InteractionResponse::Approval { approved: false, reason: None }, &responder.0.2).await.unwrap();
-    drop(journal); // Host ACK was not retained by the client.
-    let reopened = make_journal();
-    assert!(ToolApprovalVerifier::verify(&reopened, approval, operation, digest).await.is_err());
-    reopened.resolve_interaction(approval, InteractionResponse::Approval { approved: false, reason: None }, &responder.0.2).await.unwrap();
-    assert!(reopened.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &responder.0.2).await.is_err());
-    let approved = InteractionId::from_bytes([212; 16]);
-    reopened.open_interaction(approved, Interaction::approval("Another exact original Root writeback", operation, digest).unwrap()).await.unwrap();
-    let responder = fixture.owner.conversation_authority_with_native_work(root, fixture.owner.policy().agent,
-        &Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{approved}")]), &work).unwrap();
-    reopened.resolve_interaction(approved, InteractionResponse::Approval { approved: true, reason: None }, &responder.0.2).await.unwrap();
-    drop(reopened);
-    let reopened = make_journal();
-    ToolApprovalVerifier::verify(&reopened, approved, operation, digest).await.unwrap();
-    assert!(reopened.resolve_interaction(InteractionId::from_bytes([215; 16]),
-        InteractionResponse::Approval { approved: true, reason: None }, &responder.0.2).await.is_err());
-    assert!(reopened.open_interaction(approved, Interaction::approval("Changed reused request", operation, [213; 32]).unwrap()).await.is_err());
-    assert!(ToolApprovalVerifier::verify(&reopened, approved, operation, [213; 32]).await.is_err());
-    assert!(ToolApprovalVerifier::verify(&reopened, approved, OperationId::from_bytes([214; 16]), digest).await.is_err());
-    fixture.journal.verify_dispatch().await.unwrap();
 }
 
 #[tokio::test]

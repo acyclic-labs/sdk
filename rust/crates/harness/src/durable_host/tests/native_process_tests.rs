@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::filesystem::NativeProcessStopKind;
 use crate::{
     conversation::{ContentGrant, ContentPublisher, VolumeOperation},
@@ -663,6 +664,7 @@ where
             SchemaRegistry::new(),
             self.content.clone(),
             registry,
+            None, None,
         )
     }
 }
@@ -701,7 +703,7 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     let before = work.receipt().source_bytes_read;
     let project = issued.read_builtin_file(operation, Path::new("src/cold.txt"), 64, &work)?.await?;
     assert_eq!(project.as_slice(), b"genuine cold project");
-    assert!(project.matches_meter(&fixture.lazy_work.as_ref().expect("original seeded volume work").runtime_meter_owner()));
+    assert!(project.matches_meter(&fixture.lazy_work.as_ref().expect("original seeded volume work").runtime_meter()));
     assert!(work.receipt().source_bytes_read - before >= project.len() as u64);
     drop(project);
     issued.verify_with_native_work(&work)?.await?;
@@ -719,7 +721,7 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     let foreign = test_work(acyclic_fs::performance::work_budget(100_000_000, 100_000_000), &cancellation)?;
     assert!(issued.read_builtin_file(operation, Path::new("src/cold.txt"), 64, &foreign).is_err());
     assert_eq!(foreign.receipt().source_bytes_read, 0);
-    fixture.owner.verify_with_native_work(false, &work).await?;
+    fixture.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
     fixture.lazy_mount.as_ref().expect("actual fixture lazy mount")
         .abandon_with_work(&fixture.lazy_work.as_ref().expect("original seeded volume work").clone())?;
     Ok(())
@@ -826,7 +828,7 @@ async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_own
     assert_eq!(work.receipt().backend_write_operations, before_guards.backend_write_operations);
     let legacy = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     assert!(legacy.view.task_working_view_with_native_work(&legacy.owner, &work)?.await.is_err());
-    fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
+    fixture.task.task_host().cancel(fixture.owner.task_binding().0, None).await?;
     let before = work.receipt().backend_write_operations;
     assert!(issued.verify_with_native_work(&work)?.await.is_err());
     assert!(issued.write_builtin_file(OperationId::from_bytes([215; 16]),
@@ -865,10 +867,10 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let provider = ProviderRef::new("native-test", "filesystem", "1")?;
+    let provider = ProviderRef::new("native-test".into(), "filesystem".into(), "1".into(), &mut None)?;
     let files = Arc::new(FilesystemHost::new(filesystem.clone(), provider.clone())?);
     let agent = AgentId::from_bytes([61; 16]);
-    let auxiliary_provider = ProviderRef::new("native-test-aux", "filesystem", "1")?;
+    let auxiliary_provider = ProviderRef::new("native-test-aux".into(), "filesystem".into(), "1".into(), &mut None)?;
     let auxiliary_host = Arc::new(FilesystemHost::new(
         auxiliary_filesystem,
         auxiliary_provider.clone(),
@@ -1020,7 +1022,7 @@ where
         use crate::store::history::HistoryIo as _;
         let original = original_work.expect("protected Root births require original work");
         let mut metadata = crate::store::history::native_work_io(original)?;
-        metadata.retain_owned(std::mem::size_of::<(Authority, AuthorityIssuer, Scope)>() as u64)?;
+        metadata.claim(std::mem::size_of::<(Authority, AuthorityIssuer, Scope)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         let mut authority = (metadata.clone_authority(issuer.audience())?, metadata.into_custody());
         let mut copied_issuer = issuer.clone_with_native_work(original)?;
         authority.1.absorb(&mut copied_issuer.1)?;
@@ -1241,7 +1243,7 @@ where
                 std::mem::size_of::<crate::runtime::NativeVolumeCallbackGuard<P>>(),
             ).ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "native source guard slot count overflow" })?;
-            let custody = work.claim_allocation(guard_bytes as u64, u64::from(guard_bytes != 0), Default::default())?;
+            let custody = work.claim(guard_bytes as u64, u64::from(guard_bytes != 0), Default::default())?;
             let mut guards = (Vec::with_capacity(borrowed.len()), custody);
             for _ in &borrowed {
                 guards.0.push(context.volume_callback_guard_with_native_work(
@@ -1254,9 +1256,9 @@ where
                 std::fs::create_dir(&physical).map_err(|error| Error::Storage(error.to_string()))?;
                 std::fs::write(physical.join("cold.txt"), b"genuine cold project")
                     .map_err(|error| Error::Storage(error.to_string()))?;
-                let demand = Arc::new(acyclic_fs::NativeDemandSource::open(&physical,
-                    acyclic_fs::FilesystemProfile::Portable, acyclic_fs::VolumeLimits::default(), None, None)
-                    .await.map_err(|error| Error::Storage(error.to_string()))?);
+                let demand = Arc::new(acyclic_fs::NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(&physical).to_path_buf()),
+                    acyclic_fs::FilesystemProfile::Portable, acyclic_fs::VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| Error::Storage(error.to_string()))?);
                 let workspace = files.open_volume_with_native_work(&source, work).await?;
                 let lazy = acyclic_fs::LazyWorkspace::open_or_attach(workspace, demand,
                     acyclic_fs::MemoryLazyWorkspaceStore::default()).await
@@ -1266,7 +1268,7 @@ where
                 let (path, _path_custody) = volume_work.path(&options.root, Some(std::path::Path::new("src")))?;
                 volume_work.create_owned_directory(&options.root, preparation_root.expected_identity,
                     std::path::Path::new("src"), true)?;
-                let mut allocation = volume_work.claim_allocation(std::mem::size_of::<acyclic_fs::LazyMount<
+                let mut allocation = volume_work.claim(std::mem::size_of::<acyclic_fs::LazyMount<
                     A, O, acyclic_fs::NativeDemandSource, acyclic_fs::MemoryLazyWorkspaceStore>>() as u64, 1, Default::default())?;
                 let mut mount = lazy.mount_with_work(&path, acyclic_fs::MountOptions::read_only()
                     .publication(acyclic_fs::MountPublication::Manual), Some(callback),
@@ -1415,7 +1417,7 @@ where
         .open_interaction(
             approval,
             Interaction::approval(
-                "Run the exact admitted process",
+                "Run the exact admitted process".into(),
                 command,
                 request.approval_digest(owner.task_binding().0, command)?,
             )?,
@@ -1774,7 +1776,7 @@ async fn native_builtin_current_volume_grants_and_unmounted_results_deny_before_
         fixture.options.budget_for_volume_count(fixture.bindings.len())?, &cancellation,
     )?;
     assert!(fixture.owner
-        .require_volume_grant_with_native_work(&seed.source, VolumeOperation::Write, &work).is_err());
+        .require_volume_grant(&seed.source, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(&work)?)).is_err());
     for path in ["a-source/input.txt", "results/unmounted.txt", "../results/escape.txt"] {
         assert!(view.write_builtin_file(&fixture.owner, OperationId::from_bytes([212; 16]),
             Path::new(path), "forbidden", true, None, &work).await.is_err());
@@ -1807,7 +1809,7 @@ async fn native_builtin_rejects_same_uuid_foreign_original_owner_and_cancelled_c
     assert!(view.read_builtin_file(&foreign.owner, operation,
         Path::new("a-source/input.txt"), 32, &work).await.is_err());
     assert_eq!(work.receipt().source_bytes_read, 0);
-    fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
+    fixture.task.task_host().cancel(fixture.owner.task_binding().0, None).await?;
     assert!(view.write_builtin_file(&fixture.owner, operation,
         Path::new("b-destination/after-cancel"), "forbidden", true, None, &work).await.is_err());
     assert_eq!(work.receipt().output_bytes, 0);
@@ -2313,7 +2315,7 @@ async fn reopen_native(
         Fs::local(acyclic_fs::LocalOptions::new(storage.join("filesystem")))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-        ProviderRef::new("native-test", "filesystem", "1")?,
+        ProviderRef::new("native-test".into(), "filesystem".into(), "1".into(), &mut None)?,
     )?);
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),
@@ -2378,6 +2380,7 @@ async fn reopen_native(
         SchemaRegistry::new(),
         content,
         registry,
+        None, None,
     )?;
     Ok(LocalNativeRecovery {
         files,
@@ -2504,7 +2507,7 @@ async fn actual_host_termination_reopens_launch_only_receipt_without_replay_or_s
     if output.exists() {
         std::fs::remove_file(&output).map_err(|error| Error::Storage(error.to_string()))?;
     }
-    task.task_host().cancel(seed.task).await?;
+    task.task_host().cancel(seed.task, None).await?;
     assert!(owner.verify(false, &mut None).await.is_err());
     assert!(owner.verify(true, &mut None).await.is_ok());
     assert_eq!(
@@ -3593,7 +3596,7 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
     fixture
         .task
         .task_host()
-        .cancel(fixture.owner.task_binding().0)
+        .cancel(fixture.owner.task_binding().0, None)
         .await?;
     let recovered = Process::recover(
         fixture.owner.clone(),
@@ -3675,7 +3678,7 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
     fixture
         .task
         .task_host()
-        .settle_task(task, fence, Outcome::Cancelled, &mut None)
+        .settle_task(task, &fence, Outcome::Cancelled, &mut None)
         .await?;
     assert_eq!(
         fixture.task.task_host().outcome(task).await?,
@@ -3821,7 +3824,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             fixture.files.write(&destination, "/release-check.txt", b"settled").await?;
         } else {
             let receipt = reserved?;
-            assert!(matches!(receipt.permit(), acyclic_fs::PublicationPermit::Reservation {
+            assert!(matches!(receipt.0, acyclic_fs::PublicationPermit::Reservation {
                 operation_id, ..
             } if operation_id == operation.to_bytes()));
             let before_query = work.receipt().backend_write_operations;
@@ -3847,7 +3850,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
                 &work, &cancellation, &cleanup_cancellation,
             ).await?;
             let recovered = reopened.ok_or_else(|| Error::NotFound("actual original SDK gate after query".into()))?;
-            assert_eq!(recovered.permit(), receipt.permit());
+            assert_eq!(recovered.0, receipt.0);
             assert_eq!(work.receipt().backend_write_operations, before_query);
             drop(recovered);
             let foreign = fixture.owner.recover_publication(
@@ -3858,7 +3861,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             assert!(foreign.is_none());
             assert_eq!(work.receipt().backend_write_operations, before_query);
             let denied_work = test_work(budget, &cleanup_cancellation)?;
-            let mut failed = receipt.into_cleanup().release(&fixture.owner, &denied_work, &cleanup_cancellation).await
+            let mut failed = receipt.1.release(&fixture.owner, &denied_work, &cleanup_cancellation).await
                 .err().ok_or_else(|| Error::Storage("foreign cleanup family denial was not exercised".into()))?;
             let retained = crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
                 ::from_error(&failed).expect("whole denied cleanup owner and cause");
@@ -3977,7 +3980,7 @@ async fn original_warm_supervisor_stop_settles_after_real_task_cancellation() ->
     let attempt = crate::EffectAttemptId::from_bytes(
         task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes(),
     );
-    fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
+    fixture.task.task_host().cancel(fixture.owner.task_binding().0, None).await?;
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(fixture.view.manifest().validation_budget()?, &cleanup_cancellation)?;
     process.signal_stop(attempt, &work, &cleanup_cancellation).await

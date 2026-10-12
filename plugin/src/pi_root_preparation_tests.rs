@@ -1,5 +1,6 @@
 
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::{pi_root_inputs::PiRootPreparation, pi_runtime::PiTaskRuntime};
 use acyclic_harness::{
     IdempotencyKey, OperationId, effect_host::TaskEffectPlan, workflow::WorkflowCommand,
@@ -8,11 +9,8 @@ use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::sync::Arc;
 
 type Host = FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
-type Runtime =
-    PiTaskRuntime<LocalStream>;
-
 struct Fixture {
-    runtime: Runtime,
+    runtime: PiTaskRuntime<LocalStream>,
     filesystem: Arc<Host>,
     raw: acyclic_fs::LocalFs,
     owner: PiOwnerConfig,
@@ -25,7 +23,7 @@ struct Fixture {
 }
 
 async fn open_runtime(session: &Path, owner: &PiOwnerConfig, filesystem: Arc<Host>,
-    work: &acyclic_fs::NativeMaterializationWork) -> Runtime {
+    work: &acyclic_fs::NativeMaterializationWork) -> PiTaskRuntime<LocalStream> {
     let stream = Arc::new(
         LocalStream::open(session.join("stream"), LocalStreamLimits::default())
             .await
@@ -279,7 +277,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
         .await
         .is_err()
     );
-    host.cancel(fixture.request.binding.task_id).await.unwrap();
+    host.cancel(fixture.request.binding.task_id, None).await.unwrap();
     assert!(owner.verify_dispatch().await.is_err());
     assert!(
         async {

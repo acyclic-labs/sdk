@@ -13,14 +13,7 @@ import type {
 } from "./index.js";
 import { machineId, operationId } from "./index.js";
 
-/**
- * The generated Rust DTO is already the public object graph. Brands are
- * compile-time only, so this constrained cast keeps the ergonomic API without
- * rebuilding every nested union and array in TypeScript.  `Public` must still
- * be assignable to the generated DTO; if Rust adds or changes a required field
- * the public type aliases fail here instead of hiding the drift behind
- * `unknown`.
- */
+/** Constrained cast preserving assignability to the generated DTO. */
 export function asPublic<Generated, Public extends Generated>(value: Generated): Public {
   return value as unknown as Public;
 }

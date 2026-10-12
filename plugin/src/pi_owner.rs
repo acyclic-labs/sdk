@@ -58,7 +58,7 @@ pub(crate) struct PiOwnerPolicy {
 impl PiOwnerPolicy {
     /// The original journal and grant producers fund their own field copies.
     fn clone_with_native_work(&self, work: &NativeMaterializationWork) -> Result<(Self, NativeAllocation)> {
-        let slot = work.retain_owned(std::mem::size_of::<Self>() as u64).map_err(native_work_error)?;
+        let slot = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
         let journal = self.journal.clone_with_native_work(work)?;
         let grants = self.grants.clone_with_native_work(work)?;
         combine_native_metadata((Self {
@@ -103,7 +103,7 @@ impl PiOwnerConfig {
         policy: &PiOwnerPolicy, runtime: Option<&super::pi_native::PiNativeHostRuntime>,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
-        let custody = work.retain_owned(std::mem::size_of::<Self>() as u64).map_err(native_work_error)?;
+        let custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
         let policy = policy.clone_with_native_work(work)?;
         let runtime = runtime.map(|runtime| runtime.clone_with_native_work(work)).transpose()?;
         let mut key = protection::new_key().map_err(native_owner_io)?;
@@ -281,7 +281,7 @@ impl PiOwnerConfig {
         work: &NativeMaterializationWork,
     ) -> Result<((Authority, AuthorityIssuer, acyclic_harness::core::Scope), NativeAllocation)> {
         self.conversation_authority_parts_with_native_work(
-            task, agent, grants, &format_args!("pi:conversation:{task}"), work,
+            task, agent, grants, format_args!("pi:conversation:{task}"), work,
         )
     }
 
@@ -291,12 +291,12 @@ impl PiOwnerConfig {
     ) -> Result<((Authority, AuthorityIssuer, acyclic_harness::core::Scope), NativeAllocation)> {
         self.conversation_authority_parts_with_native_work(
             self.policy.root_task, self.policy.agent, &self.policy.grants,
-            &self.policy.root_task, work,
+            format_args!("{}", self.policy.root_task), work,
         )
     }
 
-    fn conversation_authority_parts_with_native_work<D: std::fmt::Display + ?Sized>(
-        &self, task: TaskId, agent: AgentId, grants: &Capabilities, scope_id: &D,
+    fn conversation_authority_parts_with_native_work(
+        &self, task: TaskId, agent: AgentId, grants: &Capabilities, scope_id: std::fmt::Arguments<'_>,
         work: &NativeMaterializationWork,
     ) -> Result<((Authority, AuthorityIssuer, acyclic_harness::core::Scope), NativeAllocation)> {
         let original = self.authority_with_native_work(work)?;
@@ -304,18 +304,8 @@ impl PiOwnerConfig {
         drop(original.1);
         let audience_id = work.display(&task).map_err(native_work_error)?;
         let audience = (Authority { kind: AggregateKind::Conversation, id: audience_id.0 }, audience_id.1);
-        let issuer_audience_id = work.display(&audience.0.id).map_err(native_work_error)?;
-        let issuer_audience = (Authority {
-            kind: AggregateKind::Conversation, id: issuer_audience_id.0,
-        }, issuer_audience_id.1);
-        let issuer_id = work.display(ISSUER).map_err(native_work_error)?;
-        work.charge(acyclic_fs::WorkCounters {
-            bytes_copied: self.key.len() as u64, ..acyclic_fs::WorkCounters::UNCHARGED
-        }).map_err(native_work_error)?;
-        let issuer = combine_native_metadata((AuthorityIssuer::new(
-            issuer_id.0, self.key, issuer_audience.0,
-        ), issuer_id.1, [issuer_audience.1]))?;
-        let scope_id = work.display(scope_id).map_err(native_work_error)?;
+        let issuer = self.issuer_with_native_work(AggregateKind::Conversation, task, work)?;
+        let scope_id = work.display(&scope_id).map_err(native_work_error)?;
         let scope = issuer.0.root_for_agent_with_native_work(agent, &scope_id.0, grants, work)?;
         drop(scope_id.0);
         drop(scope_id.1);
@@ -515,14 +505,13 @@ pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
         .with_result_resolver_with_native_work(content.clone(), work)?;
     providers.register_with_native_work(provider, work)?;
     let ((audience, issuer, scope), custody) = authorization;
-    ConversationEffectHost::new_with_native_work(
+    ConversationEffectHost::new(
         stream, audience, issuer, scope, SchemaRegistry::new(),
-        content, providers, custody, work,
+        content, providers, Some(custody), Some(work),
     )?.into_arc_with_native_work(work)
 }
 
-// Tuple layout keeps every original payload ahead of all of its guards on
-// cancellation or a failed merge. Retired guards are empty only after absorb.
+// Drop tuple payloads before their allocation guards.
 fn combine_native_metadata<T, const N: usize>(
     mut owned: (T, NativeAllocation, [NativeAllocation; N]),
 ) -> Result<(T, NativeAllocation)> {

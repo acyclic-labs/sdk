@@ -1,6 +1,6 @@
 //! Durable logical Objects v1, backed by private state deltas and immutable bodies.
 pub use super::memory::persistence::LocalOpenError;
-use super::{Error, MemoryObjects, NativeBatchObjects, Object, ObjectsProvider, wire};
+use super::{Error, MemoryObjects, Object, ObjectsProvider, wire};
 use acyclic_stream::OwnedBytes;
 use futures::executor::block_on;
 use std::path::Path;
@@ -8,7 +8,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 use super::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt};
-
 
 fn spawn_native_read<F>(
     future: F,
@@ -18,8 +17,8 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let mut future = super::GuardedFuture {
-        future: tracing::Instrument::in_current_span(future),
+    let mut future = super::Guarded {
+        value: tracing::Instrument::in_current_span(future),
         _allocation: None,
     };
     future._allocation = Some(ReadAllocation::new(meter, std::mem::size_of_val(&future))?);
@@ -122,6 +121,78 @@ impl LocalObjects {
 
 #[async_trait::async_trait]
 impl ObjectsProvider for LocalObjects {
+    async fn put_batch(
+        &self,
+        requests: Vec<(wire::PutObjectHeader, OwnedBytes)>,
+    ) -> Vec<Result<wire::ObjectInfo, Error>> {
+        let count = requests.len();
+        if count == 0 {
+            return Vec::new();
+        }
+        self.mutate(move |core| Ok(block_on(core.put_batch(requests))))
+            .await
+            .unwrap_or_else(|error| vec![Err(error); count])
+    }
+
+    fn put_batch_native(
+        &self,
+        input: ObjectsNativeRequest<Vec<(wire::PutObjectHeader, OwnedBytes)>>,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
+        super::native_input_meter(&meter, &input)?;
+        super::native_future(Arc::clone(&meter), async move {
+            let input = input;
+            if input.data().is_empty() {
+                return ObjectsBatch::new(Vec::new(), ReadAllocation::empty(&meter));
+            }
+            let worker_meter = Arc::clone(&meter);
+            self.mutate_with_meter(Some(meter), move |core| {
+                block_on(core.put_batch_native(input, worker_meter)?)
+            }).await
+        })
+    }
+    async fn get_batch(
+        &self,
+        requests: Vec<(wire::GetObjectRequest, u64)>,
+    ) -> Vec<Result<Object, Error>> {
+        let count = requests.len();
+        if count == 0 {
+            return Vec::new();
+        }
+        let core = self.core.clone();
+        let body_io = self.body_io.clone();
+        tokio::spawn(tracing::Instrument::in_current_span(async move {
+            let _lease = body_io.read_owned().await;
+            core.get_batch(requests).await
+        }))
+        .await
+        .unwrap_or_else(|_| (0..count).map(|_| Err(wire::ErrorCode::Unavailable.into())).collect())
+    }
+
+    fn get_batch_native(
+        &self,
+        input: ObjectsNativeRequest<Vec<(wire::GetObjectRequest, u64)>>,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
+        super::native_input_meter(&meter, &input)?;
+        super::native_future(Arc::clone(&meter), async move {
+            let input = input;
+            if input.data().is_empty() {
+                return ObjectsBatch::new(Vec::new(), ReadAllocation::empty(&meter));
+            }
+            let core = self.core.clone();
+            let body_io = Arc::clone(&self.body_io);
+            let task_meter = Arc::clone(&meter);
+            spawn_native_read(async move {
+                let input = input;
+                // Detached work retains the original input custody and store root.
+                let _lease = body_io.read_owned().await;
+                core.get_batch_native(input, task_meter)?.await
+            }, &meter)?.await
+                .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
+        })
+    }
+
     async fn create_bucket(&self, query: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> {
         self.mutate(move |core| block_on(core.create_bucket(query)))
             .await
@@ -250,107 +321,18 @@ impl ObjectsProvider for LocalObjects {
             .await
     }
 }
-#[async_trait::async_trait]
-impl NativeBatchObjects for LocalObjects {
-    async fn put_batch(
-        &self,
-        requests: Vec<(wire::PutObjectHeader, OwnedBytes)>,
-    ) -> Vec<Result<wire::ObjectInfo, Error>> {
-        let count = requests.len();
-        if count == 0 {
-            return Vec::new();
-        }
-        self.mutate(move |core| Ok(block_on(core.put_batch(requests))))
-            .await
-            .unwrap_or_else(|error| vec![Err(error); count])
-    }
 
-    fn put_batch_native(
-        &self,
-        input: ObjectsNativeRequest<Vec<(wire::PutObjectHeader, OwnedBytes)>>,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
-        super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
-            let input = input;
-            if input.data().is_empty() {
-                return ObjectsBatch::new(Vec::new(), ReadAllocation::empty(&meter));
-            }
-            let worker_meter = Arc::clone(&meter);
-            self.mutate_with_meter(Some(meter), move |core| {
-                block_on(core.put_batch_native(input, worker_meter)?)
-            }).await
-        })
-    }
-    async fn get_batch(
-        &self,
-        requests: Vec<(wire::GetObjectRequest, u64)>,
-    ) -> Vec<Result<Object, Error>> {
-        let count = requests.len();
-        if count == 0 {
-            return Vec::new();
-        }
-        let core = self.core.clone();
-        let body_io = self.body_io.clone();
-        tokio::spawn(tracing::Instrument::in_current_span(async move {
-            let _lease = body_io.read_owned().await;
-            core.get_batch(requests).await
-        }))
-        .await
-        .unwrap_or_else(|_| (0..count).map(|_| Err(wire::ErrorCode::Unavailable.into())).collect())
-    }
-
-    fn get_batch_native(
-        &self,
-        input: ObjectsNativeRequest<Vec<(wire::GetObjectRequest, u64)>>,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
-        super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
-            let input = input;
-            if input.data().is_empty() {
-                return ObjectsBatch::new(Vec::new(), ReadAllocation::empty(&meter));
-            }
-            let core = self.core.clone();
-            let body_io = Arc::clone(&self.body_io);
-            let task_meter = Arc::clone(&meter);
-            spawn_native_read(async move {
-                let input = input;
-                // Detached work retains the original input custody and store root.
-                let _lease = body_io.read_owned().await;
-                core.get_batch_native(input, task_meter)?.await
-            }, &meter)?.await
-                .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
-        })
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::v1::tests::{bucket, get, identity};
     mod collection;
-    fn bucket() -> Option<wire::BucketRef> {
-        Some(wire::BucketRef {
-            name: "customer.inputs".into(),
-        })
-    }
-    fn identity(key: &str) -> Option<wire::MutationIdentity> {
-        Some(wire::MutationIdentity {
-            idempotency_key: key.into(),
-        })
-    }
     fn put(key: &str) -> wire::PutObjectHeader {
         wire::PutObjectHeader {
             bucket: bucket(),
             object_key: key.into(),
             mutation: identity(key),
-            ..Default::default()
-        }
-    }
-    fn get(key: &str) -> wire::GetObjectRequest {
-        wire::GetObjectRequest {
-            bucket: bucket(),
-            object_key: key.into(),
             ..Default::default()
         }
     }

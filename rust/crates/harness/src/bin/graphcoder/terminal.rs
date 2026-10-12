@@ -80,7 +80,7 @@ pub async fn dispatch(
             let control = validate_observe_request(&request)?;
             api.authorize_operation_control(&control).await?;
             let response = api.observe(request.clone()).await?;
-            validate_operation_status(&request, &response)?;
+            validate_operation_status(&request.operation_id, request.owner.as_ref(), &response)?;
             Ok(Some(Response::Status(response)))
         }
         Request::Cancel(request) => {

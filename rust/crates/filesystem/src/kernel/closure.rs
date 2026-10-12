@@ -10,7 +10,7 @@ use crate::foundation::{FileId, GenerationId, usize_to_u64};
 use crate::model::FilesystemProfile;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
-use crate::{CancellationToken, async_storage};
+use crate::CancellationToken;
 use std::mem::size_of;
 use thiserror::Error;
 
@@ -58,20 +58,7 @@ pub struct GenerationProof {
 pub type GenerationProofFailure = OperationFailure<ClosureError>;
 
 /// Proves the complete immutable object closure and namespace/file-table consistency.
-pub fn prove_generation_closure<S: crate::ImmediateObjectStore>(
-    store: &S,
-    generation_root: ObjectId,
-    limits: ClosureLimits,
-    budget: WorkBudget,
-) -> Result<GenerationProof, GenerationProofFailure> {
-    let cancellation = CancellationToken::new();
-    async_storage::poll_immediate(prove_generation_closure_async(
-        store, generation_root, limits, budget, &cancellation,
-    ))
-}
-
-/// Asynchronously proves a complete immutable generation closure.
-pub async fn prove_generation_closure_async<S: crate::AsyncObjectStore>(
+pub async fn prove_generation_closure<S: crate::AsyncObjectStore>(
     store: &S,
     generation_root: ObjectId,
     limits: ClosureLimits,
@@ -903,7 +890,7 @@ fn closure_error(error: crate::FsError) -> ClosureError {
 
 // Shared standalone state is borrowed only by synchronous accounting leaves.
 // Native mode keeps the actual original meter, never a reconstructed receipt.
-struct StandaloneProofState {
+pub(crate) struct StandaloneProofState {
     allocations: super::allocation::AllocationLedger,
     work: WorkCounters,
     budget: WorkBudget,
@@ -1058,75 +1045,27 @@ impl<'a> ProofMeter<'a> {
     fn decode_root(
         &self, read: &crate::storage::ObjectRead, limits: DecodeLimits,
     ) -> Result<(GenerationRoot, ProofGuard), crate::FsError> {
-        self.decode_accounted(|collector| {
-            let mut admitted = 0;
-            super::generation::decode_generation_root(&read.bytes, limits, |step| {
-                use super::codec::ReadAllocationStep;
-                use super::generation::GenerationRootDecodeStep;
-                match step {
-                    GenerationRootDecodeStep::Wire(step) => collector.observe(step)?,
-                    GenerationRootDecodeStep::BeforeParentsAllocation(count) => {
-                        admitted = proof_capacity_bytes::<GenerationId>(count)?;
-                        collector.observe(ReadAllocationStep::Allocate {
-                            bytes: admitted, operations: u64::from(count != 0),
-                        })?;
-                    }
-                    GenerationRootDecodeStep::ParentsCapacity(capacity) => {
-                        collector.observe(ReadAllocationStep::Capacity {
-                            admitted_bytes: admitted,
-                            actual_bytes: proof_capacity_bytes::<GenerationId>(capacity)?,
-                        })?;
-                    }
-                    GenerationRootDecodeStep::BeforeParent => collector.admit(WorkCounters {
-                        bytes_copied: usize_to_u64(size_of::<GenerationId>()),
-                        items_examined: 1, ..WorkCounters::UNCHARGED
-                    })?,
-                    GenerationRootDecodeStep::ParentCopied => collector.record_completed(WorkCounters {
-                        bytes_copied: usize_to_u64(size_of::<GenerationId>()),
-                        items_examined: 1, ..WorkCounters::UNCHARGED
-                    })?,
-                    GenerationRootDecodeStep::ReserveFailed(error) =>
-                        collector.observe(ReadAllocationStep::ReserveFailed(error))?,
-                }
-                Ok::<(), super::file_read::ReadDecodeError>(())
-            })
+        self.decode_steps(|observe| {
+            super::generation::decode_generation_root(&read.bytes, limits, observe)
         })
     }
 
     fn decode_steps<T>(
         &self,
         decode: impl FnOnce(&mut dyn FnMut(super::codec::ReadAllocationStep)
-            -> Result<(), super::file_read::ReadDecodeError>)
-            -> Result<T, super::file_read::ReadDecodeError>,
-    ) -> Result<(T, ProofGuard), crate::FsError> {
-        self.decode_accounted(|collector| decode(&mut |step| collector.observe(step)))
-    }
-
-    // The canonical projector retains claims until parser-owned data has died.
-    fn decode_accounted<T>(
-        &self,
-        decode: impl FnOnce(&mut super::file_read::OriginalReadAccounting<'_, '_>)
-            -> Result<T, super::file_read::ReadDecodeError>,
+            -> Result<(), crate::FsError>)
+            -> Result<T, crate::FsError>,
     ) -> Result<(T, ProofGuard), crate::FsError> {
         self.owned(|accounting| {
             let mut collector = super::file_read::OriginalReadAccounting::new(accounting)?;
-            match decode(&mut collector) {
+            match decode(&mut |step| collector.observe(step)) {
                 Ok(value) => {
                     let (allocation, bytes) = collector.into_parts();
                     Ok((value, allocation, bytes))
                 }
                 Err(error) => {
                     collector.release_failed()?;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if matches!(&self.kind, ProofMeterKind::Native(_)) {
-                        return Err(error.into_original_fs_error());
-                    }
-                    Err(match error {
-                        super::file_read::ReadDecodeError::Canonical(error) => error.into(),
-                        super::file_read::ReadDecodeError::AllocationFailed(_) =>
-                            super::CanonicalDecodeError::AllocationFailed.into(),
-                        super::file_read::ReadDecodeError::Accounting(error) => error,
-                    })
+                    Err(error)
                 }
             }
         })
@@ -1228,11 +1167,15 @@ impl ProofGuard {
 
 impl Drop for ProofGuard {
     fn drop(&mut self) {
-        if let Self::Standalone { state, bytes } = self {
-            if *bytes != 0 {
-                state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .allocations.release(*bytes).expect("proof allocation ownership invariant");
+        match self {
+            Self::Standalone { state, bytes } => {
+                if *bytes != 0 {
+                    state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .allocations.release(*bytes).expect("proof allocation ownership invariant");
+                }
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native(_) => {}
         }
     }
 }

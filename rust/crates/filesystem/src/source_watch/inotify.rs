@@ -168,7 +168,7 @@ fn close_measured<W: SourceDemandReadWork>(
 ) -> Result<(), DemandError> {
     // SAFETY: exclusive custody was removed from its owner after quiescence.
     let status = unsafe { libc::close(descriptor) };
-    let error = (status < 0).then(last_error);
+    let error = (status < 0).then(io::Error::last_os_error);
     record(work)?;
     match error {
         Some(error) => Err(error.into()),
@@ -182,7 +182,7 @@ fn close_component<W: SourceDemandReadWork>(
     let descriptor = directory.into_raw_fd();
     let (error, recorded) = work.attempt_cleanup_write(reservation, || {
         // SAFETY: the consumed temporary directory owns this descriptor.
-        (unsafe { libc::close(descriptor) } < 0).then(last_error)
+        (unsafe { libc::close(descriptor) } < 0).then(io::Error::last_os_error)
     });
     recorded?;
     match error { Some(error) => Err(error.into()), None => Ok(()) }
@@ -268,10 +268,6 @@ fn prepare_insert_with_work<W: SourceDemandReadWork>(
     Ok(path.to_path_buf())
 }
 
-fn last_error() -> io::Error {
-    io::Error::last_os_error()
-}
-
 /// Renders the held descriptor without an owned formatting buffer.
 fn proc_fd_path(descriptor: i32) -> ([u8; 24], usize) {
     let mut path = [0_u8; 24];
@@ -328,7 +324,7 @@ fn watch_ancestors<W: SourceDemandReadWork>(
                 libc::readlink(proc_path.as_ptr().cast(), path.as_mut_ptr().cast(), path.len())
             };
             if length < 0 {
-                return Err(last_error().into());
+                return Err(io::Error::last_os_error().into());
             }
             work.record(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::default() })?;
             if (length as usize) < capacity {
@@ -393,7 +389,7 @@ fn watch_ancestors<W: SourceDemandReadWork>(
                 libc::inotify_add_watch(inotify.as_raw_fd(), c_path.as_ptr().cast(), ANCESTRAL)
             };
             if descriptor < 0 {
-                return Err(last_error().into());
+                return Err(io::Error::last_os_error().into());
             }
             c_path = Vec::new();
             work.release(bytes)?;
@@ -444,7 +440,7 @@ extern "C" fn run_reader(payload: *mut libc::c_void) -> *mut libc::c_void {
 
 fn owned(descriptor: i32) -> Result<OwnedFd, DemandError> {
     if descriptor < 0 {
-        return Err(last_error().into());
+        return Err(io::Error::last_os_error().into());
     }
     // SAFETY: a non-negative descriptor a system call just returned is ours.
     Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
@@ -544,7 +540,7 @@ impl PlatformWatch {
                 libc::inotify_add_watch(held_inotify.as_raw_fd(), root_path.as_ptr().cast(), WATCHED)
             };
             if descriptor < 0 {
-                return Err(last_error().into());
+                return Err(io::Error::last_os_error().into());
             }
             watches.push((PathBuf::new(), descriptor));
             let initialized = shared.as_ref().expect("shared initialized");
@@ -703,23 +699,17 @@ impl PlatformWatch {
         &self, wait: &crate::CancellationToken,
     ) -> Result<(), DemandError> {
         // Only the original owner carries credits accepted before native birth. The caller's token controls waiting, never that owner's authority.
-        self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
+        let original = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
         if wait.is_cancelled() { return Err(DemandError::Cancelled); }
-        self.stop_from_birth_prepaid_with_wait(Some(wait))?;
+        self.stop(&mut crate::demand::NativeSourceWork::from_original_work(original), Some(wait), true)?;
         if wait.is_cancelled() { return Err(DemandError::Cancelled); }
         Ok(())
     }
 
     pub(super) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
-        self.stop_from_birth_prepaid_with_wait(None)
-    }
-
-    fn stop_from_birth_prepaid_with_wait(
-        &self, wait: Option<&crate::CancellationToken>,
-    ) -> Result<(), DemandError> {
         self.shared.delivery.ensure_stop_available()?;
         let original = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
-        self.stop(&mut crate::demand::NativeSourceWork::from_original_work(original), wait, true)
+        self.stop(&mut crate::demand::NativeSourceWork::from_original_work(original), None, true)
     }
 
     fn stop<W: SourceDemandReadWork>(
@@ -801,7 +791,7 @@ impl PlatformWatch {
                 let one = 1_u64.to_ne_bytes();
                 // SAFETY: the existing read custody lock excludes terminal descriptor retirement throughout this actual wake attempt.
                 let wake = unsafe { libc::write(descriptor, one.as_ptr().cast(), one.len()) };
-                let error = (wake < 0).then(last_error);
+                let error = (wake < 0).then(io::Error::last_os_error);
                 result = self.shared.record_cleanup(WorkCounters {
                     backend_write_operations: 1, ..WorkCounters::default()
                 }, work);
@@ -950,10 +940,6 @@ impl Shared {
         recorded
     }
 
-    fn lock_watches(&self) -> std::sync::MutexGuard<'_, Vec<(PathBuf, i32)>> {
-        self.watches.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     fn record_cleanup<W: SourceDemandReadWork>(&self, delta: WorkCounters, work: &mut W) -> Result<(), DemandError> {
         let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
         if self.delivery.birth_matches(work) || (self.delivery.original.is_none() && cleanup.covers(delta)) {
@@ -1004,7 +990,7 @@ impl Shared {
         let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(original) = &self.delivery.original {
             cleanup.records -= 1;
-            original.meter().with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
+            original.state.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
         } else if self.delivery.birth_matches(work) {
             cleanup.records -= 1;
             work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
@@ -1014,7 +1000,7 @@ impl Shared {
     /// Called only without a worker or after its successful join.
     fn clear_measured<W: SourceDemandReadWork>(&self, work: &mut W) -> Result<(), DemandError> {
         let mut reading = self.reading.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut watches = self.lock_watches();
+        let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
         let mut ancestors = self.ancestors.lock().unwrap_or_else(PoisonError::into_inner);
         let records = reading.cleanup.len().checked_add(watches.len())
             .and_then(|count| count.checked_add(ancestors.len())).ok_or(WorkError::Overflow)?;
@@ -1067,23 +1053,10 @@ impl Shared {
         &self, directory: i32, relative: &Path, work: &mut W,
     ) -> Result<i32, DemandError> {
         if self.stopping.load(Ordering::Acquire) { return Err(DemandError::Cancelled); }
-        // Render the held descriptor on the stack: only the final C path is owned, and it is admitted before any bytes are copied.
-        let mut digits = [0_u8; 10];
-        let mut start = digits.len();
-        let mut descriptor = directory as u32;
-        loop {
-            start -= 1;
-            digits[start] = b'0' + (descriptor % 10) as u8;
-            descriptor /= 10;
-            if descriptor == 0 {
-                break;
-            }
-        }
+        let (prefix, prefix_length) = proc_fd_path(directory);
         let relative = relative.as_os_str().as_bytes();
-        let prefix = b"/proc/self/fd/";
-        let length = prefix.len()
-            .checked_add(digits.len() - start)
-            .and_then(|length| length.checked_add(usize::from(!relative.is_empty())))
+        let length = prefix_length
+            .checked_add(usize::from(!relative.is_empty()))
             .and_then(|length| length.checked_add(relative.len()))
             .and_then(|length| length.checked_add(1))
             .ok_or(WorkError::Overflow)?;
@@ -1093,8 +1066,7 @@ impl Shared {
             work.allocate(bytes)?;
             work.record(WorkCounters { bytes_copied: bytes - 1, ..WorkCounters::default() })?;
             let mut path = Vec::with_capacity(length);
-            path.extend_from_slice(prefix);
-            path.extend_from_slice(&digits[start..]);
+            path.extend_from_slice(&prefix[..prefix_length]);
             if !relative.is_empty() {
                 path.push(b'/');
                 path.extend_from_slice(relative);
@@ -1110,7 +1082,7 @@ impl Shared {
                 libc::inotify_add_watch(self.inotify.load(Ordering::Acquire), path.as_ptr(), WATCHED)
             };
             if descriptor < 0 {
-                Err(last_error().into())
+                Err(io::Error::last_os_error().into())
             } else {
                 Ok(descriptor)
             }
@@ -1126,7 +1098,7 @@ impl Shared {
         if !self.delivery.is_exact() || directory.as_os_str().is_empty() {
             return Ok(false);
         }
-        let mut watches = self.lock_watches();
+        let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
         if self.stopping.load(Ordering::Acquire) { return Ok(false); }
         let bytes = directory.as_os_str().len() as u64;
         let mut abandoned = false;
@@ -1225,7 +1197,7 @@ impl Shared {
         &self, directory: &Path, work: &mut W,
     ) -> Result<(), DemandError> {
         work.check()?;
-        let mut watches = self.lock_watches();
+        let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
         if self.stopping.load(Ordering::Acquire) { return Ok(()); }
         let mut at = 0;
         while at < watches.len() {
@@ -1254,7 +1226,7 @@ impl Shared {
                 work.with_original_leaf(|work| work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() }))?;
                 // SAFETY: removes only this instance's admitted descriptor.
                 if unsafe { libc::inotify_rm_watch(self.inotify.load(Ordering::Acquire), descriptor) } < 0 {
-                    let error = last_error();
+                    let error = io::Error::last_os_error();
                     if error.raw_os_error() != Some(libc::EINVAL) { return Err(error.into()); }
                 }
             }
@@ -1297,7 +1269,7 @@ impl Shared {
             let directory = unsafe { libc::openat(parent, name.as_ptr(),
                 libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
             if directory < 0 {
-                Err(last_error().into())
+                Err(io::Error::last_os_error().into())
             } else {
                 // SAFETY: the successful open returned one exclusively owned fd.
                 Ok(unsafe { OwnedFd::from_raw_fd(directory) })
@@ -1349,7 +1321,7 @@ impl Shared {
             #[cfg(test)]
             self.polling.store(false, Ordering::Release);
             if ready < 0 {
-                let error = last_error();
+                let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::Interrupted { continue; }
                 self.delivery.failed_with_work(error.into(), &mut work);
                 return;
@@ -1432,7 +1404,7 @@ impl Shared {
                         libc::read(self.inotify.load(Ordering::Acquire), reading.buffer.as_mut_ptr().cast(), maximum)
                     };
                     if read < 0 {
-                        let error = last_error();
+                        let error = io::Error::last_os_error();
                         match error.kind() {
                             io::ErrorKind::WouldBlock => return Ok(self.delivery.is_exact()),
                             io::ErrorKind::Interrupted => continue,
@@ -1512,7 +1484,7 @@ impl Shared {
                         self.delivery.invalidate_with_work(work)?;
                         return Ok(false);
                     }
-                    let watches = self.lock_watches();
+                    let watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
                     if reading.alias_cursor >= watches.len() { break; }
                     work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                     let (alias, watched) = &watches[reading.alias_cursor];
@@ -1623,7 +1595,7 @@ impl Shared {
                     }
                 }
                 if mask & libc::IN_IGNORED != 0 {
-                    let mut watches = self.lock_watches();
+                    let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
                     let mut at = 0;
                     while at < watches.len() {
                         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
@@ -1658,6 +1630,15 @@ mod admission_tests {
     use super::*;
     use crate::cancellation::CancellationToken;
     use crate::source_watch::HostChangeSink;
+
+    #[cfg(feature = "native-mount")]
+    const ORIGINAL_BUDGET: WorkBudget = WorkBudget {
+        backend_read_operations: 128, backend_write_operations: 128,
+        source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
+        items_examined: 4096, items_returned: 4096,
+        allocation_operations: 128, peak_allocation_bytes: 1024 * 1024,
+        ..WorkBudget::UNCHARGED
+    };
 
     struct Ignored;
     impl HostChangeSink for Ignored {
@@ -1697,7 +1678,7 @@ mod admission_tests {
         for descriptor in descriptors {
             // SAFETY: querying a closed descriptor does not reuse it.
             assert_eq!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) }, -1);
-            assert_eq!(last_error().raw_os_error(), Some(libc::EBADF));
+            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
         }
         watch.stop_with_work(&mut work)?;
         let mut replacements = Vec::new();
@@ -1729,8 +1710,8 @@ mod admission_tests {
         assert!(matches!(watch.admit_with_work(Path::new("a/b"), &mut work),
             Err(DemandError::Work(WorkError::BudgetExceeded { .. }))));
 
-        assert!(watch.shared.lock_watches().iter().any(|(path, _)| path == Path::new("a")));
-        assert!(!watch.shared.lock_watches().iter().any(|(path, _)| path == Path::new("a/b")));
+        assert!(watch.shared.watches.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|(path, _)| path == Path::new("a")));
+        assert!(!watch.shared.watches.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|(path, _)| path == Path::new("a/b")));
         assert!(watch.delivery().is_exact());
 
         let mut work = DemandWork::new(WorkBudget {
@@ -1753,8 +1734,8 @@ mod admission_tests {
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
         assert!(!watch.admit_with_work(Path::new("a/child"), &mut work)?);
 
-        assert!(!watch.shared.lock_watches().iter().any(|(path, _)| path == Path::new("a")));
-        assert!(!watch.shared.lock_watches().iter().any(|(path, _)| path == Path::new("a/child")));
+        assert!(!watch.shared.watches.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|(path, _)| path == Path::new("a")));
+        assert!(!watch.shared.watches.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|(path, _)| path == Path::new("a/child")));
         Ok(())
     }
 
@@ -1772,13 +1753,13 @@ mod admission_tests {
         assert!(matches!(watch.unadmit_with_work(Path::new("a"), &mut denied),
             Err(DemandError::Work(_))));
 
-        assert!(watch.shared.lock_watches().iter().any(|(path, _)| path == Path::new("a")));
+        assert!(watch.shared.watches.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|(path, _)| path == Path::new("a")));
         let mut allowed = DemandWork::new(WorkBudget {
             backend_write_operations: 1, peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED
         }, &CancellationToken::new());
         watch.unadmit_with_work(Path::new("a"), &mut allowed)?;
 
-        assert!(!watch.shared.lock_watches().iter().any(|(path, _)| path == Path::new("a")));
+        assert!(!watch.shared.watches.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|(path, _)| path == Path::new("a")));
         Ok(())
     }
 
@@ -1790,12 +1771,7 @@ mod admission_tests {
         let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
-            WorkBudget {
-                backend_read_operations: 128, backend_write_operations: 128,
-                source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
-                items_examined: 4096, allocation_operations: 128,
-                peak_allocation_bytes: 1024 * 1024, ..WorkBudget::default()
-            }, &cancellation,
+            WorkBudget { items_returned: 0, ..ORIGINAL_BUDGET }, &cancellation,
         ))));
         let mut work = crate::demand::NativeSourceWork::new(&original);
         let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
@@ -1867,12 +1843,7 @@ mod admission_tests {
         let root = tempfile::tempdir()?;
         let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
-            WorkBudget {
-                backend_read_operations: 128, backend_write_operations: 128,
-                source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
-                items_examined: 4096, allocation_operations: 128,
-                peak_allocation_bytes: 1024 * 1024, ..WorkBudget::default()
-            }, &CancellationToken::new(),
+            WorkBudget { items_returned: 0, ..ORIGINAL_BUDGET }, &CancellationToken::new(),
         ))));
         let mut work = crate::demand::NativeSourceWork::new(&original);
         let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
@@ -1952,13 +1923,7 @@ mod admission_tests {
         let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
-            WorkBudget {
-                backend_read_operations: 128, backend_write_operations: 128,
-                source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
-                items_examined: 4096, items_returned: 4096,
-                allocation_operations: 128, peak_allocation_bytes: 1024 * 1024,
-                ..WorkBudget::default()
-            }, &cancellation,
+            ORIGINAL_BUDGET, &cancellation,
         ))));
         let (entered, receive) = std::sync::mpsc::channel();
         let sink = Arc::new(PanicsAfterRelease {
@@ -2017,7 +1982,7 @@ mod admission_tests {
                 &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
             ) -> Result<(), DemandError> {
                 let original = self.original.upgrade().expect("live original callback");
-                assert!(Arc::ptr_eq(&original, work.original_arc()));
+                assert!(Arc::ptr_eq(&original, work.original));
                 assert!(original.0.try_lock().is_ok());
                 work.charge(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
                 self.invoked.store(true, Ordering::Release);
@@ -2029,13 +1994,7 @@ mod admission_tests {
         let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
-            WorkBudget {
-                backend_read_operations: 128, backend_write_operations: 128,
-                source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
-                items_examined: 4096, items_returned: 4096,
-                allocation_operations: 128, peak_allocation_bytes: 1024 * 1024,
-                ..WorkBudget::default()
-            }, &cancellation,
+            ORIGINAL_BUDGET, &cancellation,
         ))));
         let sink = Arc::new(Cancels {
             original: Arc::downgrade(&original), cancellation: cancellation.clone(),
@@ -2100,7 +2059,7 @@ mod admission_tests {
                 &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
             ) -> Result<(), DemandError> {
                 let original = self.original.upgrade().expect("the actual reader retains its original");
-                assert!(Arc::ptr_eq(&original, work.original_arc()));
+                assert!(Arc::ptr_eq(&original, work.original));
                 assert!(original.0.try_lock().is_ok());
                 let watch = self.watch.lock().unwrap_or_else(PoisonError::into_inner).take();
                 drop(watch);
@@ -2111,13 +2070,7 @@ mod admission_tests {
         let root = tempfile::tempdir()?;
         let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
-            WorkBudget {
-                backend_read_operations: 128, backend_write_operations: 128,
-                source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
-                items_examined: 4096, items_returned: 4096,
-                allocation_operations: 128, peak_allocation_bytes: 1024 * 1024,
-                ..WorkBudget::default()
-            }, &CancellationToken::new(),
+            ORIGINAL_BUDGET, &CancellationToken::new(),
         ))));
         let lifetime = Arc::downgrade(&original);
         let sink = Arc::new(Retires {

@@ -1,6 +1,7 @@
 //! Pi controls borrow the original task mailbox, never a service-local inbox.
 use super::{pi_owner::PiOwnerConfig, pi_root_provider::{
     stage_pi_input, guarded_pi_decode, guarded_pi_value}};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, LocalAuthorityBackend, LocalObjectBackend,
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters};
 use acyclic_harness::{Error, OperationId, Outcome, Result, TaskId,
@@ -102,7 +103,7 @@ pub(crate) async fn stage_send(
     let kind_length = MAIL_SEND_TASK_COMMAND_KIND.len() as u64;
     work.charge(WorkCounters { bytes_copied: kind_length, allocation_operations: 1, ..Default::default() })
         .map_err(native_error)?;
-    let mut kind_custody = work.retain_owned(kind_length).map_err(native_error)?;
+    let mut kind_custody = work.claim(kind_length, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     let kind = MAIL_SEND_TASK_COMMAND_KIND.to_owned();
     if let Err(cause) = command.1.absorb(&mut kind_custody) {
         drop(kind);

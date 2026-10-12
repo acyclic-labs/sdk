@@ -95,12 +95,12 @@ where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
     let request_reference = stage_root_request(owner, filesystem, request, work).await?;
     let schema = PiRootAllocation::schema(&request.binding, work)?;
     let result_schema = super::pi_root_provider::stage_pi_root_input_with_native_work(
-        owner, filesystem, "allocation-schema", &schema.0, "application/schema+json", work,
+        owner, filesystem, "allocation-schema", &schema.0, work,
     ).await?;
     drop(schema.0);
     drop(schema.1);
-    let plan_custody = work.retain_owned(
-        (ROOT_ALLOCATION_PROVIDER.len() + ROOT_ALLOCATION_EFFECT.len()) as u64,
+    let plan_custody = work.claim(
+        (ROOT_ALLOCATION_PROVIDER.len() + ROOT_ALLOCATION_EFFECT.len()) as u64, 0, acyclic_fs::WorkCounters::UNCHARGED,
     ).map_err(native_error)?;
     let plan = TaskEffectPlan {
         provider: ROOT_ALLOCATION_PROVIDER.to_owned(), guarantee: EffectGuarantee::AtMostOnce,
@@ -108,7 +108,7 @@ where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
         result_schema: result_schema.0,
     };
     let mut payload = super::pi_root_provider::stage_pi_root_input_with_native_work(
-        owner, filesystem, "preparation", &plan, "application/json", work,
+        owner, filesystem, "preparation", &plan, work,
     ).await?;
     drop(plan);
     drop(plan_custody);
@@ -142,7 +142,7 @@ pub(crate) fn preparation_operation(
 
 fn validate_request(owner: &PiOwnerConfig, request: &PiRootRequest, work: &NativeMaterializationWork) -> Result<()> {
     owner.validate_root(&request.binding, work)?;
-    request.root.validate_with_native_work(&request.binding, work)?;
+    request.root.validate(&request.binding, work)?;
     if !matches!(request.binding.scratch.allocation, PiScratchAllocation::Preparing) {
         return Err(invalid("Pi root preparation requires its original unallocated scratch intent"));
     }
@@ -161,7 +161,7 @@ where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
 {
     validate_request(owner, request, work)?;
     super::pi_root_provider::stage_pi_root_input_with_native_work(
-        owner, filesystem, "root", request, "application/json", work,
+        owner, filesystem, "root", request, work,
     ).await
 }
 

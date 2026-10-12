@@ -4,6 +4,7 @@ use crate::{PendingSpawn, PendingSpawnLifecycle, PluginTaskBinding, ServiceResou
     pi_native_host::PiNativeFilesystem,
     pi_owner::PiOwnerConfig, pi_root_provider::PiRootHandle,
     pi_task::{PiTaskInput, PiTaskExecution}};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{LazySnapshotRef, WorkBudget, WorkCounters, NativeMaterializationWork};
 use acyclic_harness::{Error, Result, TaskId, OperationId,
     durable_host::TaskJournalOwner, filesystem::{TaskCommandProgress, ForkPreparationLimits},
@@ -102,29 +103,19 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let length = retained.as_ref().map_or(0, |(entries, _)| entries.len());
         let capacity = length.checked_add(1).ok_or(Error::NativeWork {
             cause: acyclic_fs::WorkError::Overflow.into(), custody: None })?;
-        let bytes = capacity.checked_mul(std::mem::size_of::<PreparedPiFork>()).ok_or(Error::NativeWork {
-            cause: acyclic_fs::WorkError::Overflow.into(), custody: None })? as u64;
         let copied = length.checked_mul(std::mem::size_of::<PreparedPiFork>()).ok_or(Error::NativeWork {
             cause: acyclic_fs::WorkError::Overflow.into(), custody: None })? as u64;
         work.admit(WorkCounters { bytes_copied: copied, ..WorkCounters::UNCHARGED })
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut custody = work.claim(bytes).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut replacement = Vec::new();
-        if let Err(cause) = replacement.try_reserve_exact(capacity) {
-            return Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause),
-                custody: Some(custody) });
-        }
-        let actual = replacement.capacity().checked_mul(std::mem::size_of::<PreparedPiFork>()).ok_or(Error::NativeWork {
-            cause: acyclic_fs::WorkError::Overflow.into(), custody: None })? as u64;
-        custody.resize_retained(actual).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut replacement = crate::pi_native::pi_native_vec(capacity, work)?;
         if let Some((entries, old_custody)) = retained.take() {
-            replacement.extend(entries);
+            replacement.0.extend(entries);
             drop(old_custody);
         }
         work.spent(WorkCounters { bytes_copied: copied, ..WorkCounters::UNCHARGED })
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        replacement.push(value);
-        *retained = Some((replacement, custody));
+        replacement.0.push(value);
+        *retained = Some(replacement);
         Ok(())
     }
 
@@ -247,16 +238,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let project = plan.commit.child.project_volumes.values().next().ok_or_else(|| invalid("Pi project missing"))?;
         let workspace = project.storage_name_with_native_work(work)?;
         #[derive(Serialize)]
-        #[serde(tag = "kind", content = "binding", rename_all = "snake_case")]
-        enum Binding<'b> { Pi(&'b crate::PiTaskBinding) }
-        #[derive(Serialize)]
         struct Pending<'b> {
-            task_binding: Binding<'b>, agent_id: Option<&'b str>, parent_agent_id: &'b str,
+            task_binding: PluginTaskBinding<&'b crate::PiTaskBinding>, agent_id: Option<&'b str>, parent_agent_id: &'b str,
             tool_use_id: &'b str, active_root_id: Option<[u8; 16]>, expires_at_millis: u64,
             workspace_name: &'b str, fork_key: [u8; 16], roots: BTreeMap<String, crate::RouteRoot>,
             mount_path: &'b std::path::Path, lifecycle: PendingSpawnLifecycle,
         }
-        let pending = Pending { task_binding: Binding::Pi(&plan.commit.child),
+        let pending = Pending { task_binding: PluginTaskBinding::Pi(&plan.commit.child),
             agent_id: Some(&plan.commit.alias), parent_agent_id: self.parent_alias(plan.commit.caller)?,
             tool_use_id: &plan.commit.sdk_operation, active_root_id: Some(root),
             expires_at_millis: crate::now_millis().saturating_add(2 * 60 * 1_000),
@@ -278,17 +266,10 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         }
         let length = pending.as_ref().map_or(0, |(records, _)| records.len());
         let capacity = length.checked_add(1).ok_or_else(|| invalid("Pi pending capacity overflow"))?;
-        let bytes = capacity.checked_mul(std::mem::size_of::<PendingSpawn>())
-            .ok_or_else(|| invalid("Pi pending allocation overflow"))?;
         let copied = length.checked_mul(std::mem::size_of::<PendingSpawn>())
             .ok_or_else(|| invalid("Pi pending copy overflows"))? as u64;
         work.admit(WorkCounters { bytes_copied: copied, ..WorkCounters::UNCHARGED }).map_err(native_error)?;
-        let mut replacement = (Vec::new(), work.claim(bytes as u64).map_err(native_error)?);
-        replacement.0.try_reserve_exact(capacity).map_err(|cause| Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause), custody: None })?;
-        let actual = replacement.0.capacity().checked_mul(std::mem::size_of::<PendingSpawn>())
-            .ok_or_else(|| invalid("Pi pending observed capacity overflows"))? as u64;
-        replacement.1.resize_retained(actual).map_err(native_error)?;
+        let mut replacement = crate::pi_native::pi_native_vec(capacity, work)?;
         if let Some((records, custody)) = pending.as_mut() {
             custody.absorb(&mut record.1).map_err(native_error)?;
             custody.absorb(&mut replacement.1).map_err(native_error)?;
@@ -339,7 +320,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 reason: "Pi requested alias already belongs to another admitted child" });
         }
         let coordinator = self.coordinator(&work)?;
-        let existing = coordinator.load_plan(&context, original, remaining(&work)?, &cancel).await?;
+        let existing = coordinator.load_plan(&context, original).await?;
         if reconcile && existing.is_none() { return Ok(TaskCommandProgress::Pending); }
         let (source, frozen, _source_custody) = self.source(shared, owner, caller, &input, existing.as_ref(), work).await?;
         let conversation = self.protected.conversation_authority_with_native_work(owner.task_id(),
@@ -353,7 +334,8 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         drop(authority.0.2);
         parent_custody.absorb(&mut authority.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         parent_custody.absorb(&mut verifier.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let parent = parent.0.with_limits(context.scope().limits())?;
+        let mut parent = parent.0;
+        parent.set_limits(context.scope().limits())?;
         let plan = coordinator.begin(shared, owner, &fence, parent, source.clone(), frozen, input.commit, ForkPreparationLimits { resources: 128, work: 1_000_000,
             bytes: self.protected.policy().maximum_payload_bytes }, remaining(&work)?, cancel.clone()).await?;
         let saved = self.retained.pending.iter().find(|pending| pending.fork_key == operations.fork.into_bytes());

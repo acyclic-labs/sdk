@@ -124,7 +124,7 @@ impl NativeViewManifest {
                 io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
             }
             mapping.volume.validate(&mut None)?;
-            mapping.generation.validate()?;
+            mapping.generation.validate(&mut None)?;
             if mapping.generation.as_resource().provider() != mapping.volume.provider()
                 || !mapping.path.is_absolute()
                 || mapping.path == self.options.root
@@ -435,7 +435,7 @@ mod native_result_decode_tests {
         let work = acyclic_fs::NativeMaterializationWork::new(
             WorkBudget::UNBOUNDED, &cancellation,
         ).unwrap();
-        let source_custody = work.retain_owned(bytes.capacity() as u64).unwrap();
+        let source_custody = work.claim(bytes.capacity() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
         let (decoded, custody) = NativeProcessRequest::decode_with_native_work(&bytes, &work).unwrap();
         assert_eq!(decoded, request);
         assert!(custody.bytes() >= std::mem::size_of::<NativeProcessRequest>() as u64);
