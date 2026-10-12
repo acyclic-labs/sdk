@@ -6946,7 +6946,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         work.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
-        Err(MountSourceError::NativeStaticText {
+        Err(MountSourceError::NativeText {
             kind: super::NativeSourceTextKind::Unsupported,
             text: "clone-by-identity requires path-backed promotion in a lazy mount",
         })
