@@ -4,9 +4,6 @@ import { join } from "node:path";
 import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
-
-// Cursor transport is deliberately opaque to the SDK extension. Every page and
-// rejection below goes through the real registered tools and authenticated service.
 const provider = `
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 export default function directoryPages(pi) {

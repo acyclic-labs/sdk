@@ -207,13 +207,13 @@ impl ResumableTool {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input")?;
+        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input", None)?;
         let initial = MachineCheckpoint {
             machine: self.machine.identity().clone(),
             revision: 0,
             state: self.machine.initialize(&invocation.arguments)?,
         };
-        validate_value(self.machine.state_schema(), &initial.state, "tool state")?;
+        validate_value(self.machine.state_schema(), &initial.state, "tool state", None)?;
         let admission = WorkflowAdmission {
             operation_id: invocation.operation_id,
             request_digest: crate::contract::canonical_json_digest(&(
@@ -223,7 +223,7 @@ impl ResumableTool {
             ))?,
             initial,
         };
-        admission.validate()?;
+        admission.validate(None)?;
         Ok(admission)
     }
 
@@ -282,7 +282,7 @@ impl ResumableTool {
         }
         drop(grant);
         drop(grant_hold);
-        crate::contract::validate_json_schema_value_with_io(&self.definition.input_schema, &invocation.arguments, "tool input", Some(io))?;
+        crate::contract::validate_json_schema_value(&self.definition.input_schema, &invocation.arguments, "tool input", Some(io))?;
         let registry_custody;
         let mut registry = MachineRegistry::default();
         registry_custody = registry.register_with_native_work(self.machine.clone(), work)?;
@@ -312,7 +312,7 @@ impl ResumableTool {
         let admission = ToolPayload::native(WorkflowAdmission {
             operation_id: invocation.operation_id, request_digest, initial,
         }, admission_custody);
-        admission.value.validate_with_io(Some(io))?;
+        admission.value.validate(Some(io))?;
         Ok(NativeWorkflowAdmission { admission, registry, registry_custody })
     }
 
@@ -399,7 +399,7 @@ impl ResumableToolSession {
         self.host
             .step_checked(operation_id, idempotency_key, input, |transition| {
                 if let MachineStatus::Completed { value } = &transition.status {
-                    validate_value(output_schema, value, "tool output")?;
+                    validate_value(output_schema, value, "tool output", None)?;
                 }
                 Ok(())
             })
@@ -457,7 +457,7 @@ impl NativeResumableToolSession<'_> {
             let result = self.host.step_checked_with_native_work(
                 operation_id, input.value.0, input.value.1, work, |transition| {
                     if let MachineStatus::Completed { value } = &transition.status {
-                        crate::contract::validate_json_schema_value_with_io(output_schema, value, "tool output", Some(&io))?;
+                        crate::contract::validate_json_schema_value(output_schema, value, "tool output", Some(&io))?;
                     }
                     Ok(())
                 },
@@ -759,7 +759,7 @@ impl DurableToolRunner {
                     if tool_propagate(&error, io) { return Err(error); }
                     return Err(Error::Conflict("durable tool history exceeds admitted limits".into()));
                 }
-                crate::contract::validate_json_schema_value_with_io(&definition.output_schema, &result.value.value, "tool output", io)?;
+                crate::contract::validate_json_schema_value(&definition.output_schema, &result.value.value, "tool output", io)?;
                 tool_validate_projection(definition, &projection.value, projection_limits, io)?;
                 return tool_success(result, io);
             }
@@ -833,7 +833,7 @@ impl DurableToolRunner {
                     Err(error) => return Err(error),
                 }
             };
-            if let Err(error) = crate::contract::validate_json_schema_value_with_io(
+            if let Err(error) = crate::contract::validate_json_schema_value(
                 &definition.output_schema, &result.value.value, "tool output", io)
             {
                 if tool_propagate(&error, io) { return Err(error); }
@@ -902,7 +902,7 @@ impl DurableToolRunner {
             if !scope.grants().contains(&grant) {
                 return Err(tool_error(io, crate::wire::ErrorCode::Unauthorized, "scope lacks tool call grant"));
             }
-            crate::contract::validate_json_schema_value_with_io(&definition.input_schema, &invocation.arguments, "tool input", io)?;
+            crate::contract::validate_json_schema_value(&definition.input_schema, &invocation.arguments, "tool input", io)?;
             tool.executor.authorize_with_native_context(context, invocation, work)?;
             drop(grant);
             drop(grant_hold);
@@ -912,7 +912,7 @@ impl DurableToolRunner {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        validate_value(&definition.input_schema, &invocation.arguments, "tool input")?;
+        validate_value(&definition.input_schema, &invocation.arguments, "tool input", None)?;
         tool.executor.authorize_with_context(context, invocation)?;
         context.task().authorize_tool(definition, invocation).await
     }
@@ -1066,7 +1066,7 @@ fn tool_json_bound<T: serde::Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let encoded_hold;
-        let encoded = io.encode_json(value, maximum, true)?;
+        let encoded = io.encode(value, maximum, true)?;
         encoded_hold = io.guard_bytes(&encoded)?;
         drop(encoded);
         drop(encoded_hold);

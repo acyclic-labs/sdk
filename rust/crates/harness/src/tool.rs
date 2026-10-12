@@ -322,7 +322,7 @@ impl ToolDefinition {
             &self.output_schema,
             &self.projection_schema,
         ] {
-            crate::contract::compile_json_schema_with_io(schema, "tool", io)?;
+            crate::contract::compile_json_schema(schema, "tool", io)?;
         }
         Ok(())
     }
@@ -376,7 +376,7 @@ impl ToolDefinition {
         &self,
         value: &Value,
     ) -> Result<crate::model::ToolResultContent> {
-        validate_value(&self.projection_schema, value, "tool projection")?;
+        validate_value(&self.projection_schema, value, "tool projection", None)?;
         crate::model::ToolResultContent::deserialize(value).map_err(|error| {
             Error::Invalid(format!("tool projection envelope is invalid: {error}"))
         })
@@ -391,7 +391,7 @@ impl ToolDefinition {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(crate::model::ToolResultContent, acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        crate::contract::validate_json_schema_value_with_io(
+        crate::contract::validate_json_schema_value(
             &self.projection_schema, value, "tool projection", Some(&io))?;
         let content: crate::model::ToolResultContent =
             io.value_decode(value, crate::wire::ErrorCode::Invalid)?;
@@ -1436,19 +1436,19 @@ mod tests {
                 ]}))
                 .is_err()
         );
-        validate_value(&definition.output_schema, &json!({"count": 2}), "result")?;
+        validate_value(&definition.output_schema, &json!({"count": 2}), "result", None)?;
         validate_value(
             &definition.projection_schema,
             &json!({"kind":"json","value":"two"}),
             "projection",
-        )?;
-        assert!(validate_value(&definition.output_schema, &json!("two"), "result").is_err());
+         None,)?;
+        assert!(validate_value(&definition.output_schema, &json!("two"), "result", None).is_err());
         assert!(
             validate_value(
                 &definition.projection_schema,
                 &json!({"count": 2}),
                 "projection"
-            )
+            , None)
             .is_err()
         );
         let mut changed = definition.clone();

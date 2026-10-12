@@ -776,7 +776,7 @@ impl DurableContextProvider {
         let stored = io.decode_preparation::<StoredContextRevision>(&record.value)
             .map_err(native_context_decode_storage)?.into_retained();
         let canonical_guard;
-        let canonical = io.encode_json(&stored, MAX_RECORD_BYTES as u64, true)?;
+        let canonical = io.encode(&stored, MAX_RECORD_BYTES as u64, true)?;
         canonical_guard = io.guard_bytes(&canonical)?;
         if canonical.as_slice() != record.value.as_ref() || stored.format_version != 5 || stored.revision != revision
             || stored.source != self.source || stored.source_revision != self.source_revision
@@ -803,7 +803,7 @@ impl DurableContextProvider {
         let context = io.decode_preparation::<Context>(payload.as_ref())
             .map_err(native_context_decode_storage)?.into_retained();
         let context_canonical_guard;
-        let context_canonical = io.encode_json(&context, limits.render_bytes, true)?;
+        let context_canonical = io.encode(&context, limits.render_bytes, true)?;
         context_canonical_guard = io.guard_bytes(&context_canonical)?;
         if context_canonical.as_slice() != payload.as_ref() {
             return Err(native_context_boundary(crate::wire::ErrorCode::Storage,
@@ -906,7 +906,7 @@ fn context_digest<T: Serialize>(
 ) -> Result<[u8; 32]> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
+        let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
         let hold = io.guard_bytes(&bytes)?;
         let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
         io.preflight(hash)?;
@@ -1033,8 +1033,8 @@ pub(super) fn context_contract_native<T: Serialize>(
     let encoded = (|| {
         crate::contract::validate_json_byte_bound_native_trusted(value, bounds,
             crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge))?;
-        crate::contract::json_value_bounded_native_trusted(value, bounds,
-            crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge))
+        crate::contract::json_value_bounded(value, bounds,
+            Some(crate::wire::ErrorCode::Invalid), &mut |charge| io.codec_charge(charge))
     })();
     match encoded {
         Ok(value) => Ok((value, io.into_custody())),
@@ -1809,7 +1809,7 @@ fn validate_context_user_input_with_io(content: &ModelContent, io: Option<&Conte
 
 fn validate_context_selection_with_io(input: &ContextInput, io: Option<&ContextPreparationIo>) -> Result<()> {
     if let Some(selected) = &input.selected_context {
-        selected.validate_for_input_with_io(&input.input, io)?;
+        selected.validate_for_input(&input.input, io)?;
     }
     Ok(())
 }
@@ -2370,7 +2370,7 @@ mod tests {
             current_input_index: Some(3), ..Context::default()
         };
         let prefix = compaction::clone_context_prefix(&source, 2, &mut None)?.0;
-        let output = message(ModelRole::Assistant, "summary")?.content.file_refs()[0].clone();
+        let output = message(ModelRole::Assistant, "summary")?.content.file_refs().next().unwrap().clone();
         let summary = ContextSummary { operation_id: crate::OperationId::new(), step: 0,
             source_messages: 2, source_digest: crate::contract::canonical_json_digest(&prefix)?, output };
         let (retained, reference) = DurableContextProvider::compact(
@@ -3402,7 +3402,7 @@ mod tests {
                 source_messages: u32::try_from(source.messages.len())
                     .map_err(|error| crate::Error::Invalid(error.to_string()))?,
                 source_digest: crate::contract::canonical_json_digest(source)?,
-                output: output.content.file_refs()[0].clone(),
+                output: output.content.file_refs().next().unwrap().clone(),
             })
         };
         let first_summary = make_summary(&source, "first-summary")?;
@@ -3434,7 +3434,7 @@ mod tests {
             compacted
                 .messages
                 .iter()
-                .all(|message| { !message.content.file_refs().contains(&&first_summary.output) })
+                .all(|message| { !message.content.file_refs().any(|file| file == &first_summary.output) })
         );
         Ok(())
     }
@@ -3474,7 +3474,7 @@ mod tests {
             source_digest: crate::contract::canonical_json_digest(&source)?,
             output: message(ModelRole::Assistant, "summary")?
                 .content
-                .file_refs()[0]
+                .file_refs().next().unwrap()
                 .clone(),
         };
         assert!(
@@ -3676,7 +3676,7 @@ mod tests {
             source_digest: crate::contract::canonical_json_digest(&projected)?,
             output: message(ModelRole::Assistant, "summary")?
                 .content
-                .file_refs()[0]
+                .file_refs().next().unwrap()
                 .clone(),
         };
         let (compacted, reference) = DurableContextProvider::compact(

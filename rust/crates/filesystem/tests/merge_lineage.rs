@@ -464,7 +464,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
     let source = target
         .fork(
             "immutable-source",
-            ForkOptions::from_generation(target.head().await?, IdempotencyKey::from_bytes([3; 16])),
+            ForkOptions::from_generation(target.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::from_bytes([3; 16])),
         )
         .await?;
     source.write_text("/source-before-plan", "one").await?;
@@ -521,7 +521,7 @@ async fn forged_merge_candidate_is_rejected_before_publication()
     let source = target
         .fork(
             "candidate-source",
-            ForkOptions::from_generation(target.head().await?, IdempotencyKey::from_bytes([6; 16])),
+            ForkOptions::from_generation(target.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::from_bytes([6; 16])),
         )
         .await?;
     source.write_text("/shared", "source").await?;

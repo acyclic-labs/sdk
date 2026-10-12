@@ -35,7 +35,6 @@ try {
   const first = await workerCall("tick");
   assert(first.tick.work?.kind === "suspended", describe(first));
   worker.terminate(); worker = undefined;
-  // A transport response alone is insufficient: observe the durable host.
   assert(await runtime.outcome(admission.task_id) == null, "worker response fabricated completion");
   channel = new BroadcastChannel(`harness-task-${session}`);
   const pending = new Map();

@@ -344,7 +344,7 @@ pub(super) async fn stage_json_with_io<T: Serialize>(journal: &dyn ExecutionJour
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let hold;
-        let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
+        let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
         hold = io.guard_owned(bytes.capacity() as u64)?;
         let result = stage_bytes_with_io(journal, operation, key, &bytes, Some(io)).await;
         drop(bytes);
@@ -1049,7 +1049,7 @@ pub(super) fn stock_validate_invocation(invocation: &ToolInvocation, io: Option<
 
 pub(super) fn stock_validate_schema(schema: &Value, value: &Value, label: &'static str,
     io: Option<&PreparationIo>) -> Result<()> {
-    crate::contract::validate_json_schema_value_with_io(schema, value, label, io)
+    crate::contract::validate_json_schema_value(schema, value, label, io)
 }
 
 pub(super) async fn stock_tool_rejection(
@@ -1082,7 +1082,7 @@ pub(super) fn native_output_payload_bytes(output: &TurnOutput) -> Result<u64> {
     let slots = (output.attachments.capacity() as u64).checked_mul(std::mem::size_of::<Attachment>() as u64)
         .ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage, "native attachment slots overflow"))?;
     let mut bytes = native_size_add(output.text.capacity() as u64, slots)?;
-    bytes = native_size_add(bytes, crate::model::model_value_owned_bytes(&output.metadata)?)?;
+    bytes = native_size_add(bytes, crate::contract::json_value_logical_owned_bytes(&output.metadata)?)?;
     for attachment in &output.attachments {
         bytes = native_size_add(bytes, attachment.file.logical_owned_bytes()?)?;
         if let Some(label) = &attachment.label { bytes = native_size_add(bytes, label.capacity() as u64)?; }

@@ -4,11 +4,7 @@ export function copyBytes(value: Uint8Array): Uint8Array {
   return new Uint8Array(value);
 }
 
-/**
- * Takes ownership of a freshly allocated binding result without a second
- * copy. Bindings hand out a new buffer per call, so a view spanning its whole
- * backing store is already exclusively owned; anything else is copied.
- */
+/** Owns a fresh binding buffer, copying partial or shared views. */
 export function ownBytes(value: Uint8Array): Uint8Array {
   const { buffer, byteOffset, byteLength } = value;
   // Browsers without cross-origin isolation have no SharedArrayBuffer global.

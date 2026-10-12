@@ -23,7 +23,7 @@ import { nodeWasmBindings } from "../src/wasm-node.js";
 import { portableVolumeOptions } from "../src/contracts.js";
 import type { OperationEvent } from "../src/observe.js";
 import { adaptWorkspaceContextRegistry } from "../src/workspace-context.js";
-import { copyMergeConflict, decodeMergeConflict, parseJoinResult, parseMergePreparation, parseWorkspaceCommit, parseWorkspaceRebaseResult } from "../src/workspace-results.js";
+import { decodeMergeConflict, parseJoinResult, parseMergePreparation, parseWorkspaceCommit, parseWorkspaceRebaseResult } from "../src/workspace-results.js";
 
 const identity = (byte: number): number[] => Array.from({ length: 16 }, () => byte);
 beforeAll(async () => { await nodeWasmBindings(); });
@@ -145,7 +145,7 @@ describe("WASM adapter canonical boundaries", () => {
     const generationId = Buffer.alloc(32, 7);
     const prepared = parseMergePreparation(
       { status: "prepared", generationId, conflicts: [], truncated: false, work },
-      copyMergeConflict,
+      decodeMergeConflict,
     );
     expect(prepared.status).toBe("prepared");
     prepared.generationId?.fill(9);
@@ -156,7 +156,7 @@ describe("WASM adapter canonical boundaries", () => {
     const conflicted = parseMergePreparation(
       { status: "conflicted", generationId: undefined, truncated: true, work,
         conflicts: [{ kind: "binding" as const, directoryId, name: { encoding: "utf8" as const, bytes: name } }] },
-      copyMergeConflict,
+      decodeMergeConflict,
     );
     expect(conflicted.status).toBe("conflicted");
     const conflict = conflicted.conflicts[0];
@@ -166,10 +166,10 @@ describe("WASM adapter canonical boundaries", () => {
     expect(directoryId[0]).toBe(8);
     expect(name[0]).toBe(97);
     expect(() => parseMergePreparation(
-      { status: "prepared", generationId, conflicts: [], truncated: true, work }, copyMergeConflict,
+      { status: "prepared", generationId, conflicts: [], truncated: true, work }, decodeMergeConflict,
     )).toThrow("malformed merge preparation");
     expect(() => parseMergePreparation(
-      { status: "prepared", generationId: id(7), conflicts: [], truncated: false, work }, copyMergeConflict,
+      { status: "prepared", generationId: id(7), conflicts: [], truncated: false, work }, decodeMergeConflict,
     )).toThrow("invalid generation identity");
     for (const malformed of [
       { kind: "file", fileId: id(1).slice(1) },

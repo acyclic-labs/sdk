@@ -1302,7 +1302,7 @@ mod tests {
             arguments: json!("original"),
         };
         let result = tool.executor.execute(invocation.clone()).await?;
-        crate::tool::validate_value(&tool.definition.output_schema, &result.value, "echo result")?;
+        crate::tool::validate_value(&tool.definition.output_schema, &result.value, "echo result", None)?;
         assert_eq!(result.value, json!("original"));
         let projection = tool.projection.project(&invocation, &result)?;
         tool.definition.validate_projection(&projection)?;

@@ -311,7 +311,7 @@ impl McpCatalog {
         {
             return Err(Error::Invalid("MCP catalog allowance exceeded".into()));
         }
-        crate::contract::compile_json_schema(&self.projection_schema, "MCP projection")?;
+        crate::contract::compile_json_schema(&self.projection_schema, "MCP projection", None)?;
         let mut names = BTreeSet::new();
         for tool in &self.tools {
             if !names.insert(&tool.name) {
@@ -327,7 +327,7 @@ impl McpCatalog {
                         "MCP output schema must describe an object".into(),
                     ));
                 }
-                crate::contract::compile_json_schema(schema, "MCP output")?;
+                crate::contract::compile_json_schema(schema, "MCP output", None)?;
             }
         }
         if let McpSchemaExposure::Selected { names: selected } = &self.schema_exposure {
@@ -559,7 +559,7 @@ impl RemoteTool {
                 }
                 return Err(Error::Invalid("MCP structured result missing".into()));
             };
-            crate::contract::validate_json_schema_value_with_io(schema, value, "MCP output", io)?;
+            crate::contract::validate_json_schema_value(schema, value, "MCP output", io)?;
         }
         Ok(())
     }

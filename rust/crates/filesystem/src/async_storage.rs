@@ -18,10 +18,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 /// An immutable read whose SDK-owned buffers retain the original native journal.
-///
-/// Known shared backend bytes are borrowed. An owned or opaque returned payload
-/// carries its admitted logical custody inside the byte owner, so cloning a
-/// view never retires that custody before the final view is destroyed.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub struct NativeObjectRead {
@@ -55,14 +51,11 @@ impl NativeObjectReadBatch {
     /// Borrows the actual ordered results without another allocation.
     pub fn reads(&self) -> &[ObjectRead] { &self.reads }
 
-    pub(crate) fn reads_mut(&mut self) -> &mut [ObjectRead] { &mut self.reads }
-
     /// Moves the container and its original guard; destroy the vector first.
     pub fn into_parts(self) -> (Vec<ObjectRead>, crate::materializer::NativeAllocation) {
         (self.reads, self.allocation)
     }
 }
-
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeObjectRead {
@@ -74,7 +67,6 @@ impl NativeObjectRead {
     }
 
     /// Accepts a completed pre-funded owner without adopting or wrapping bytes.
-    /// The expected scope is accounting identity, never namespace authority.
     pub(crate) fn intrinsic(
         read: ObjectRead, original: &crate::materializer::NativeMaterializationWork,
     ) -> Result<Self, crate::storage::ObjectStoreError> {
@@ -94,16 +86,11 @@ impl NativeObjectRead {
     /// Borrows the actual read without taking a second allocation claim.
     pub const fn read(&self) -> &ObjectRead { &self.read }
 
-    pub(crate) fn read_mut(&mut self) -> &mut ObjectRead { &mut self.read }
-
     /// Moves the same view; its physical byte owner keeps original custody.
     pub fn into_read(self) -> ObjectRead { self.read }
 }
 
 /// Opaque SDK observation for one actual object-read receipt.
-///
-/// Only the SDK can construct an observer. Providers cannot assert that work
-/// was observed: the default read boundary records its actual returned prefix.
 #[doc(hidden)]
 #[derive(Clone, Copy)]
 pub struct ObjectReadObservation<'a> {
@@ -176,9 +163,6 @@ impl<'a> ObjectReadObservation<'a> {
 }
 
 /// Runtime-appropriate bound for storage futures.
-///
-/// Native service futures must move between executor workers. Browser futures
-/// may retain thread-affine JavaScript transaction handles.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait StorageFuture: Send {}
 #[cfg(not(target_arch = "wasm32"))]
@@ -248,11 +232,7 @@ pub enum DecodedCacheAdmission {
     Shared(DecodedCacheValue),
 }
 
-/// Polls a future exactly once for adapters whose contract guarantees that no
-/// asynchronous suspension is possible.
-///
-/// This keeps synchronous adapters free of executors while
-/// failing closed if an implementation unexpectedly blocks.
+/// Polls a future exactly once for adapters whose contract guarantees that no asynchronous suspension is possible.
 pub(crate) fn poll_ready<F: Future>(future: F) -> Option<F::Output> {
     let mut future = std::pin::pin!(future);
     let waker = Waker::noop();
@@ -264,10 +244,6 @@ pub(crate) fn poll_ready<F: Future>(future: F) -> Option<F::Output> {
 }
 
 /// Drives an [`ImmediateObjectStore`] adapter exactly once.
-///
-/// Every such adapter is supplied by this module's blanket implementation and
-/// contains no suspension point, so pending is an internal contract violation
-/// rather than a recoverable filesystem outcome.
 #[allow(
     clippy::expect_used,
     reason = "only crate-owned ImmediateObjectStore adapter futures reach this boundary; they contain no suspension point"
@@ -296,13 +272,10 @@ pub struct GenerationForkSource {
     pub lineage: GenerationFork,
 }
 
-/// A new workspace's complete authority state: its own authority, holding
-/// its creation record, and the retention authority that keeps its source
-/// generation alive while the workspace may depend on it.
+/// A new workspace's complete authority state: its own authority, holding its creation record, and the retention authority that keeps its source generation alive while the workspace may depend on it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceForkCommit {
-    /// Source lineage the destination authority starts from, on backends
-    /// that keep generation lineage; `None` starts it empty.
+    /// Source lineage the destination authority starts from, on backends that keep generation lineage; `None` starts it empty.
     pub lineage: Option<GenerationForkSource>,
     /// The new workspace's authority.
     pub destination: AuthorityId,
@@ -317,8 +290,7 @@ pub struct WorkspaceForkCommit {
 /// How one workspace fork's authority state resolved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceForkOutcome {
-    /// Both authorities hold exactly the requested first records, now or
-    /// from an earlier attempt.
+    /// Both authorities hold exactly the requested first records, now or from an earlier attempt.
     Committed,
     /// The retention authority already holds a different first record.
     RetentionConflict,
@@ -329,23 +301,7 @@ pub enum WorkspaceForkOutcome {
 /// Largest first record a fork compares when resolving a retry.
 const MAXIMUM_FIRST_RECORD_BYTES: u64 = 4 * 1024;
 
-/// Commits a workspace fork as ordered single-authority steps: the retention
-/// record first, so the source generation is retained before any workspace
-/// can depend on it, then the destination authority and its creation record.
-/// Every step is idempotent, so a retry after a crash at any step, or after
-/// a combined commit, completes exactly the missing steps.
-///
-/// This is the default [`AsyncAuthorityStore::commit_workspace_fork`], for
-/// backends that commit what they can atomically and resolve the rest here.
-///
-/// The caller must retain admitted claims for the actual backing capacities of
-/// both input payloads until this entire future completes, including while the
-/// retention step runs with the creation payload still held. `budget` is the
-/// remaining allowance after reserving those simultaneously live bytes. These
-/// opaque `Bytes` inputs are borrowed from that custody: their lengths do not
-/// reveal backing capacities, and neither this helper nor its child authority
-/// operations may adopt or charge those original allocations again. Backend
-/// copies, encodings, hashes, and replay buffers remain backend-owned work.
+/// Commits a workspace fork as ordered single-authority steps: the retention record first, so the source generation is retained before any workspace can depend on it, then the destination authority and its creation record.
 pub async fn commit_workspace_fork_in_steps<S: AsyncAuthorityStore + ?Sized>(
     store: &S,
     fork: WorkspaceForkCommit,
@@ -359,9 +315,7 @@ pub async fn commit_workspace_fork_in_steps<S: AsyncAuthorityStore + ?Sized>(
     ).await.map_err(ForkStepsFailure::measured))
 }
 
-/// Guarded ordered fork recovery, borrowing the same external input custody as
-/// [`commit_workspace_fork_in_steps`]. Destination publications use the backend's
-/// guarded hooks so native adapters can seal after their own physical planning.
+/// Guarded ordered fork recovery, borrowing the same external input custody as [`commit_workspace_fork_in_steps`].
 pub async fn commit_workspace_fork_in_steps_guarded<S, F, Fut>(
     store: &S,
     fork: WorkspaceForkCommit,
@@ -526,8 +480,6 @@ where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + StorageFutu
         )).map_error(Into::into));
     }
     let WorkspaceForkCommit { lineage, destination, creation, retention, retained } = fork;
-    // `creation` stays physically alive (including its intrinsic Bytes custody)
-    // throughout retention publication and lineage recovery.
     let value = if !work.first(store, retention, retained,
         None::<&mut F>, &mut NoNativeForkGuard).await.map_err(|failure| failure.map_error(Into::into))? {
         WorkspaceForkOutcome::RetentionConflict
@@ -636,21 +588,7 @@ where S: AsyncAuthorityStore + ?Sized, E: From<crate::FsError> + Send + 'static,
     ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
 }
 
-
-/// Makes `commit` the first record of `authority`, creating the authority
-/// if needed. Answers whether the authority's first record is exactly that
-/// commit, including one an earlier attempt or a combined commit wrote under
-/// another retry identity. The receipt's work includes `prior`.
-///
-/// This is the default
-/// [`AsyncAuthorityStore::create_authority_with_first_record`], for backends
-/// that resolve an existing authority here.
-///
-/// The caller retains the input payload's admitted backing-capacity claim for
-/// the complete future and supplies a budget reduced by all caller-held live
-/// bytes. Child authority operations borrow that input custody; they account
-/// only their own allocations, copies, encodings, hashes, and replay buffers.
-/// The original backing capacity must never be inferred from `Bytes::len()`.
+/// Makes `commit` the first record of `authority`, creating the authority if needed.
 pub async fn append_first_record<S: AsyncAuthorityStore + ?Sized>(
     store: &S,
     authority: AuthorityId,
@@ -665,8 +603,7 @@ pub async fn append_first_record<S: AsyncAuthorityStore + ?Sized>(
     ).await)
 }
 
-/// Guarded first-record recovery with the same caller-held payload custody as
-/// [`append_first_record`]. Seals each publication and a successful retry.
+/// Guarded first-record recovery with the same caller-held payload custody as [`append_first_record`].
 pub async fn append_first_record_guarded<S, F, Fut>(
     store: &S,
     authority: AuthorityId,
@@ -825,15 +762,9 @@ where
     Ok(crate::facade::FsReceipt { value: (), work: *work })
 }
 
-/// Nonblocking authority-store contract. Futures are sendable on native
-/// targets and may remain JavaScript-thread-affine in browsers.
+/// Nonblocking authority-store contract.
 pub trait AsyncAuthorityStore: StorageProvider {
     /// Seals every actual destination publication against the same original ledger.
-    /// The owner's callback error is returned intact, including during retries
-    /// and recovery; adapters must seal after actual request preparation.
-    /// The callback borrows only the identity synchronously; its future owns
-    /// original lease/request custody through accepted native work. Cloning the
-    /// work aliases that same ledger and never creates a remaining allowance.
     #[cfg(not(target_arch = "wasm32"))]
     fn commit_workspace_fork_guarded_with_native_work<'a, E, F, Fut>(
         &self, fork: WorkspaceForkCommit, permit: PublicationPermit,
@@ -847,6 +778,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Creates an authority after its original-work guard.
     fn create_authority_guarded_with_native_work<'a, E, F, Fut>(
         &self, authority: AuthorityId, epoch: Epoch,
         original: &'a crate::NativeMaterializationWork, cancellation: &CancellationToken, guard: &mut F,
@@ -859,6 +791,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Publishes the first record after its original-work guard.
     fn create_authority_with_first_record_guarded_with_native_work<'a, E, F, Fut>(
         &self, authority: AuthorityId, commit: ProposedCommit,
         original: &'a crate::NativeMaterializationWork, cancellation: &CancellationToken, guard: &mut F,
@@ -871,6 +804,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Forks an authority after its original-work guard.
     fn fork_generation_authority_guarded_with_native_work<'a, E, F, Fut>(
         &self, source: GenerationForkSource, destination: AuthorityId, operation: OperationId,
         original: &'a crate::NativeMaterializationWork, cancellation: &CancellationToken, guard: &mut F,
@@ -921,15 +855,12 @@ pub trait AsyncAuthorityStore: StorageProvider {
         std::future::ready(Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported))
     }
 
-    /// Whether this backend can retain an immutable published-generation
-    /// lineage prefix when it creates a child authority.
+    /// Whether this backend can retain an immutable published-generation lineage prefix when it creates a child authority.
     fn supports_generation_lineage_prefix(&self) -> bool {
         false
     }
 
-    /// Creates a destination authority whose canonical generation lineage is
-    /// either an immutable native prefix of the source or an explicit
-    /// independent lineage rooted at an unpublished authenticated generation.
+    /// Creates a destination authority whose canonical generation lineage is either an immutable native prefix of the source or an explicit independent lineage rooted at an unpublished authenticated generation.
     fn fork_generation_authority(
         &self,
         source: GenerationForkSource,
@@ -939,9 +870,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = AuthorityResult<CreateAuthorityOutcome>> + StorageFuture;
 
-    /// Seals destination creation. This generic fallback cannot observe planning
-    /// inside an opaque backend; allocating native providers must override it
-    /// and invoke the guard after planning, immediately before publication.
+    /// Seals destination creation.
     fn fork_generation_authority_guarded<F, Fut>(
         &self,
         source: GenerationForkSource,
@@ -979,8 +908,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = AuthorityResult<CreateAuthorityOutcome>> + StorageFuture;
 
-    /// Guarded authority creation. Opaque backend planning is not visible to
-    /// this fallback; native allocating providers override the postplanning seam.
+    /// Guarded authority creation.
     fn create_authority_guarded<F, Fut>(
         &self,
         authority_id: AuthorityId,
@@ -1009,10 +937,6 @@ pub trait AsyncAuthorityStore: StorageProvider {
     }
 
     /// Retires `authority_id` after its workspace deletion record is durable.
-    /// Backends that support metadata reclamation may release authority state
-    /// and answer [`crate::storage::AuthorityStoreError::Retired`] afterward.
-    /// Stream-backed authorities retain every committed Stream record and use
-    /// a separate filesystem marker to answer as retired. Retiring twice succeeds.
     fn retire_authority(
         &self,
         authority_id: AuthorityId,
@@ -1045,9 +969,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = AuthorityResult<AppendOutcome>> + StorageFuture;
 
-    /// Asynchronously compares and appends under an optional operation-window
-    /// permit. Backends that cannot atomically evaluate lease gates reject
-    /// managed permits rather than using a read-then-write approximation.
+    /// Asynchronously compares and appends under an optional operation-window permit.
     fn compare_and_append_guarded(
         &self,
         request: GuardedAppend,
@@ -1088,9 +1010,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
         std::future::ready(Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported))
     }
 
-    /// Seals the actual canonical publication after planning at every provider
-    /// CAS/retry. The owned callback retains original custody through terminal
-    /// work, and its original error is never reformatted.
+    /// Seals the actual canonical publication after planning at every provider CAS/retry.
     #[cfg(not(target_arch = "wasm32"))]
     fn compare_and_append_guarded_with_native_owner<F, Fut, E>(
         &self,
@@ -1108,11 +1028,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
         std::future::ready(Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported.into()))
     }
 
-    /// Durably creates an authority whose first record is `commit`, or
-    /// confirms that it already exists with exactly that first record.
-    /// Answers whether its first record is `commit`. Backends that can
-    /// create an authority and append to it atomically do so in one durable
-    /// commit; the default creates the authority, then appends.
+    /// Durably creates an authority whose first record is `commit`, or confirms that it already exists with exactly that first record.
     fn create_authority_with_first_record(
         &self,
         authority: AuthorityId,
@@ -1130,8 +1046,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
         )
     }
 
-    /// Creates the same initial authority record without a separate operation,
-    /// work root, journal, or unchecked output allocation.
+    /// Creates the same initial authority record without a separate operation, work root, journal, or unchecked output allocation.
     #[cfg(not(target_arch = "wasm32"))]
     fn create_authority_with_first_record_with_native_work(
         &self,
@@ -1144,8 +1059,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
         std::future::ready(Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported))
     }
 
-    /// Guarded first-record publication. Native providers override this method
-    /// to seal after canonical request preparation and before physical append.
+    /// Guarded first-record publication.
     fn create_authority_with_first_record_guarded<F, Fut>(
         &self,
         authority: AuthorityId,
@@ -1163,11 +1077,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
         )
     }
 
-    /// Durably creates a forked workspace's authority state: the retention
-    /// authority with its record and the destination authority with its
-    /// creation record. Backends that can commit several authorities
-    /// atomically do so in one durable commit; the default applies ordered,
-    /// idempotent single-authority steps.
+    /// Durably creates a forked workspace's authority state: the retention authority with its record and the destination authority with its creation record.
     fn commit_workspace_fork(
         &self,
         fork: WorkspaceForkCommit,
@@ -1194,8 +1104,6 @@ pub trait AsyncAuthorityStore: StorageProvider {
     }
 
     /// Reads only an existing reservation for the original operation identity.
-    /// Never reserves again, generates a gate tail, or substitutes the current head.
-    /// Backends without original reservation evidence reject before provider I/O.
     fn publication_reservation(
         &self,
         _authority_id: AuthorityId,
@@ -1231,7 +1139,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
         }
     }
 
-    /// Releases an exact publication reservation. Exact retries are idempotent.
+    /// Releases an exact publication reservation.
     fn release_publication(
         &self,
         _reservation: PublicationReservation,
@@ -1319,8 +1227,6 @@ pub trait AsyncAuthorityStore: StorageProvider {
     ) -> impl Future<Output = AuthorityResult<Option<crate::foundation::DurableCommit>>> + StorageFuture;
 
     /// Reads the canonical head against the caller's original native ledger.
-    /// Opaque custom providers reject before any I/O, rather than allocating
-    /// first and fabricating an after-the-fact receipt.
     #[cfg(not(target_arch = "wasm32"))]
     fn head_with_native_work(
         &self,
@@ -1332,8 +1238,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
         std::future::ready(Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported))
     }
 
-    /// Produces a canonical replay page funded in the original ledger. The
-    /// returned guard owns only actual newly produced output buffers.
+    /// Produces a canonical replay page funded in the original ledger.
     #[cfg(not(target_arch = "wasm32"))]
     fn replay_with_native_work(
         &self,
@@ -1364,7 +1269,6 @@ pub trait AsyncAuthorityStore: StorageProvider {
     }
 
     /// Resolves the original operation without allocating outside its ledger.
-    /// Existing immutable payload owners are not charged as fresh allocations.
     #[cfg(not(target_arch = "wasm32"))]
     fn find_operation_with_native_work(
         &self,
@@ -1382,12 +1286,8 @@ pub trait AsyncAuthorityStore: StorageProvider {
 }
 
 /// Explicit opt-in for synchronous stores that are safe to complete inline.
-///
-/// Implementing this trait makes the synchronous authority methods satisfy
-/// [`AsyncAuthorityStore`] without yielding. Blocking native backends must use
-/// a provider-owned bounded blocking executor instead. Original native work
-/// requires an explicit implementation; opaque stores reject before I/O.
 pub trait ImmediateAuthorityStore: AuthorityStore {
+    /// Reads an existing publication reservation.
     fn publication_reservation(
         &self, authority: AuthorityId, operation: OperationId, budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -1398,6 +1298,7 @@ pub trait ImmediateAuthorityStore: AuthorityStore {
             "authority backend cannot query original publication reservation evidence")))
     }
 
+    /// Reserves publication against the expected head.
     fn reserve_publication(
         &self, authority: AuthorityId, expected: Head, operation: OperationId,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -1408,6 +1309,7 @@ pub trait ImmediateAuthorityStore: AuthorityStore {
             "authority backend does not support durable publication reservations")))
     }
 
+    /// Releases the exact publication reservation.
     fn release_publication(
         &self, reservation: PublicationReservation, budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -1419,6 +1321,7 @@ pub trait ImmediateAuthorityStore: AuthorityStore {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Reads a reservation using original work.
     fn publication_reservation_with_native_work(
         &self, authority: AuthorityId, operation: OperationId,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
@@ -1430,6 +1333,7 @@ pub trait ImmediateAuthorityStore: AuthorityStore {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Reserves publication using original work.
     fn reserve_publication_with_native_work(
         &self, authority: AuthorityId, expected: Head, operation: OperationId,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
@@ -1441,6 +1345,7 @@ pub trait ImmediateAuthorityStore: AuthorityStore {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Releases a reservation using original work.
     fn release_publication_with_native_work(
         &self, reservation: PublicationReservation,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
@@ -1452,6 +1357,7 @@ pub trait ImmediateAuthorityStore: AuthorityStore {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Commits guarded fork steps using original work.
     fn commit_workspace_fork_guarded_with_native_work<'a, E, F, Fut>(
         &self, fork: WorkspaceForkCommit, permit: PublicationPermit,
         original: &'a crate::NativeMaterializationWork, cancellation: &CancellationToken, guard: &mut F,
@@ -1464,6 +1370,7 @@ pub trait ImmediateAuthorityStore: AuthorityStore {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Creates an authority after its original-work guard.
     fn create_authority_guarded_with_native_work<'a, E, F, Fut>(
         &self, authority: AuthorityId, epoch: Epoch,
         original: &'a crate::NativeMaterializationWork, cancellation: &CancellationToken, guard: &mut F,
@@ -1476,6 +1383,7 @@ pub trait ImmediateAuthorityStore: AuthorityStore {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Publishes the first record after its original-work guard.
     fn create_authority_with_first_record_guarded_with_native_work<'a, E, F, Fut>(
         &self, authority: AuthorityId, commit: ProposedCommit,
         original: &'a crate::NativeMaterializationWork, cancellation: &CancellationToken, guard: &mut F,
@@ -1497,8 +1405,7 @@ pub trait ImmediateAuthorityStore: AuthorityStore {
         Err(crate::storage::AuthorityStoreError::NativeOriginalUnsupported)
     }
 
-    /// Canonical first-record producer. Opaque stores retain the ordered
-    /// create/append/recovery fallback; atomic stores override this seam.
+    /// Canonical first-record producer.
     fn create_authority_with_first_record(
         &self, authority: AuthorityId, commit: ProposedCommit, budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -1752,30 +1659,23 @@ impl<T: ImmediateAuthorityStore + ?Sized> ImmediateAuthorityStore for Arc<T> {
     }
 }
 
-/// The objects one authority record makes reachable, which must be durable
-/// before the record is appended.
+/// The objects one authority record makes reachable, which must be durable before the record is appended.
 #[derive(Clone, Copy, Debug)]
 pub enum PublicationScope<'a> {
     /// The complete authenticated closure of one published generation.
     Closure {
         /// Every object the record reaches.
         objects: &'a [ObjectId],
-        /// The store's [`AsyncObjectStore::collection_sweeps`] before the
-        /// closure was proven.
+        /// The store's [`AsyncObjectStore::collection_sweeps`] before the closure was proven.
         proven_at: u64,
     },
-    /// Every object admitted so far, for a record whose closure was not
-    /// enumerated.
+    /// Every object admitted so far, for a record whose closure was not enumerated.
     Everything,
 }
 
 /// Nonblocking immutable-object contract suitable for `IndexedDB` and remote I/O.
 pub trait AsyncObjectStore: StorageProvider {
     /// Returns one exact decoded immutable representation when resident.
-    ///
-    /// # Errors
-    ///
-    /// Returns a storage error when disposable accelerator state is corrupt.
     fn decoded_cache_get(
         &self,
         _key: DecodedCacheKey,
@@ -1795,11 +1695,6 @@ pub trait AsyncObjectStore: StorageProvider {
     }
 
     /// Offers one authenticated decoded representation to a disposable cache.
-    ///
-    /// # Errors
-    ///
-    /// Returns a storage error when the accelerator cannot safely admit the
-    /// supplied immutable representation.
     fn decoded_cache_admit(
         &self,
         _key: DecodedCacheKey,
@@ -1841,10 +1736,7 @@ pub trait AsyncObjectStore: StorageProvider {
         async { Err(crate::storage::ObjectStoreError::NativeUnavailable) }
     }
 
-    /// Asynchronously admits one object whose identity its construction
-    /// already proved. A store that verifies digests on admission may skip
-    /// hashing the same bytes again; the default verifies through
-    /// [`Self::put`].
+    /// Asynchronously admits one object whose identity its construction already proved.
     fn put_hashed(
         &self,
         object: crate::storage::HashedObject,
@@ -1867,10 +1759,6 @@ pub trait AsyncObjectStore: StorageProvider {
     }
 
     /// Asynchronously admits an ordered bounded group of verified immutable objects.
-    ///
-    /// Implementations with a real batch primitive override this method. A
-    /// backend without one rejects the operation instead of hiding repeated
-    /// single-object operations behind the batch contract.
     fn put_many(
         &self,
         writes: &[ObjectWrite],
@@ -1898,12 +1786,7 @@ pub trait AsyncObjectStore: StorageProvider {
         async { Err(crate::storage::ObjectStoreError::NativeUnavailable) }
     }
 
-    /// Asynchronously admits an ordered bounded group of objects whose
-    /// identities their construction already proved. A store that verifies
-    /// digests on admission may skip hashing the same bytes again; the
-    /// default verifies through [`Self::put_many`]. `budget` is what is
-    /// left after the caller's own allocations, which include one write
-    /// per object for this conversion.
+    /// Asynchronously admits an ordered bounded group of objects whose identities their construction already proved.
     fn put_many_hashed(
         &self,
         objects: &[crate::storage::HashedObject],
@@ -1920,13 +1803,7 @@ pub trait AsyncObjectStore: StorageProvider {
         async move { self.put_many(&writes, budget, cancellation).await }
     }
 
-    /// Makes every admitted object in `scope` crash-durable before an
-    /// authority record may reference it, and keeps it from collection until
-    /// the returned hold drops, which the caller does after writing the
-    /// record. Ordinary stores already provide durability from
-    /// `put`/`put_many` and never collect; a bounded staging adapter
-    /// overrides this boundary to group physical writes and to admit the
-    /// closure against a running collection.
+    /// Makes every admitted object in `scope` crash-durable before an authority record may reference it, and keeps it from collection until the returned hold drops, which the caller does after writing the record.
     fn flush_before_publish(
         &self,
         _scope: PublicationScope<'_>,
@@ -1952,13 +1829,6 @@ pub trait AsyncObjectStore: StorageProvider {
         async { Err(crate::storage::ObjectStoreError::NativeUnavailable) }
     }
     /// Prepares the original canonical append after its closure has been flushed.
-    /// The publisher keeps its `PublicationHold` live through this call and CAS.
-    ///
-    /// A hosted provider must durably retain these original values and its exact
-    /// object-reference mapping in existing protected custody before returning.
-    /// Preparation is not acceptance; unknown append outcomes must be reconciled
-    /// against the exact authoritative record, never a later current head.
-    /// The default explicitly supplies no hosted or historical custody.
     fn prepare_generation_publication(
         &self,
         _request: &crate::kernel::PublishGenerationRequest,
@@ -1982,12 +1852,6 @@ pub trait AsyncObjectStore: StorageProvider {
     }
 
     /// Reads original protected proof evidence for exactly this settled record.
-    ///
-    /// Providers return the SHA256 from their protected original custody, not
-    /// from caller-supplied bytes. The archive must have been admitted before
-    /// publication and survive collection and ambiguous acceptance. `None`
-    /// means this backend has no such capability; it does not authorize a
-    /// current-head reconstruction or collection of unread original evidence.
     fn historical_generation_evidence(
         &self,
         _authority_id: crate::AuthorityId,
@@ -2011,8 +1875,6 @@ pub trait AsyncObjectStore: StorageProvider {
     }
 
     /// Prepares those same original values under the caller's native ledger.
-    /// The publication hold remains live through this provider callback and CAS.
-    /// Unsupported providers fail before I/O, allocation, or publication.
     #[cfg(not(target_arch = "wasm32"))]
     fn prepare_generation_publication_with_native_work(
         &self,
@@ -2031,8 +1893,7 @@ pub trait AsyncObjectStore: StorageProvider {
         None
     }
 
-    /// The count a proof records before it starts, for
-    /// [`PublicationScope::Closure`].
+    /// The count a proof records before it starts, for [`PublicationScope::Closure`].
     fn collection_sweeps(&self) -> u64 {
         self.collection()
             .map_or(0, |collection| collection.sweeps())
@@ -2048,7 +1909,6 @@ pub trait AsyncObjectStore: StorageProvider {
     ) -> impl Future<Output = ObjectResult<ObjectRead>> + StorageFuture;
 
     /// Reads using the caller's original native budget, cancellation and journal.
-    /// Unsupported custom providers fail before I/O or payload allocation.
     #[cfg(not(target_arch = "wasm32"))]
     fn read_with_native_work(
         &self,
@@ -2060,8 +1920,7 @@ pub trait AsyncObjectStore: StorageProvider {
         async { Err(crate::storage::ObjectStoreError::NativeUnavailable) }
     }
 
-    /// Reads through the same provider operation, recording its actual completed
-    /// SDK prefix before a caller can decode, fail, or unwind afterward.
+    /// Reads through the same provider operation, recording its actual completed SDK prefix before a caller can decode, fail, or unwind afterward.
     #[doc(hidden)]
     fn read_with_custody(
         &self,
@@ -2090,11 +1949,6 @@ pub trait AsyncObjectStore: StorageProvider {
     }
 
     /// Asynchronously reads an ordered batch of complete bounded objects.
-    ///
-    /// Backends with transactional multi-get or batched I/O should override
-    /// this method. The default is cancellation-aware and retains exact
-    /// per-object work rather than pretending sequential execution was one
-    /// physical operation.
     fn read_many(
         &self,
         requests: &[ObjectReadRequest],
@@ -2123,9 +1977,6 @@ pub trait AsyncObjectStore: StorageProvider {
 }
 
 /// Explicit opt-in for synchronous stores that are safe to complete inline.
-///
-/// This marker also admits the synchronous kernel convenience functions.
-/// Blocking native backends must own bounded async dispatch internally.
 pub trait ImmediateObjectStore: ObjectStore {
     /// Admits one object through the original native accounting engine.
     #[cfg(not(target_arch = "wasm32"))]
@@ -2168,7 +2019,6 @@ pub trait ImmediateObjectStore: ObjectStore {
     }
 
     /// Performs the actual provider preparation with the original native ledger.
-    /// Unlike the ordinary default, missing native support never authorizes CAS.
     #[cfg(not(target_arch = "wasm32"))]
     fn prepare_generation_publication_with_native_work(
         &self,
@@ -2233,14 +2083,7 @@ impl<T: ImmediateObjectStore + ?Sized> ImmediateObjectStore for Arc<T> {
     }
 }
 
-/// Explicit sequential implementation for adapters whose physical backend has
-/// no multi-get primitive. Backends must opt into this implementation rather
-/// than silently inheriting it.
-///
-/// # Errors
-///
-/// Returns an empty-batch rejection, cancellation, budget failure, allocation
-/// failure, or the first exact object-read failure with all spent work.
+/// Explicit sequential implementation for adapters whose physical backend has no multi-get primitive.
 pub async fn read_many_sequential_async<S: AsyncObjectStore + ?Sized>(
     store: &S,
     requests: &[ObjectReadRequest],
@@ -2260,8 +2103,7 @@ pub async fn read_many_sequential_async<S: AsyncObjectStore + ?Sized>(
     }
 }
 
-/// Explicit sequential native adapter using the caller's original work and
-/// allocation custody. Each underlying scalar read remains a scalar read.
+/// Explicit sequential native adapter using the caller's original work and allocation custody.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn read_many_sequential_with_native_work<S: AsyncObjectStore + ?Sized>(
     store: &S,
@@ -2333,8 +2175,6 @@ async fn read_many_sequential_engine<S: AsyncObjectStore + ?Sized>(
         let result = store.read(
             request.object_id, request.maximum_bytes, accounting.remaining()?, cancellation,
         ).await;
-        // A completed provider receipt must be recorded even if cancellation
-        // became visible during the read; merging itself is not a new operation.
         match result {
             Ok(receipt) => {
                 let retained = match receipt.value.retention {

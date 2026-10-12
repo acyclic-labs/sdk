@@ -1,9 +1,4 @@
 //! Session ownership behind the service's existing actor and catalog.
-//!
-//! The original transport query span is returned on success and failure. Root
-//! commands and graph reads reuse it; child SDK work retains its genuine managed
-//! invocation ledger. A guarded reply's payload always dies before its custody,
-//! and a different query/child ledger is never merged at the actor boundary.
 
 use super::*;
 use acyclic_harness::{
@@ -178,8 +173,7 @@ pub(crate) enum NativeCatalogComponent {
     Route,
 }
 
-/// Public observations contain task identities and outcomes, never execution
-/// fences, scheduler requirements or private journal credentials.
+/// Public observations contain task identities and outcomes, never execution fences, scheduler requirements or private journal credentials.
 #[derive(Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 enum PiTaskStatus<'a> {
@@ -271,8 +265,6 @@ struct PiScopedResponse<'a, T> {
 }
 
 /// Finite native replies carry their actual caller, not a fabricated graph.
-/// The input body and final Value coexist under the producer's original ledger
-/// until encoding finishes. Destroy the input before transferring its live quota.
 pub(crate) fn guarded_scoped_reply<T: Serialize>(
     session: &str, native_session: &str, caller: TaskId,
     mut reply: (T, acyclic_fs::NativeAllocation), acknowledgement: bool,
@@ -314,7 +306,7 @@ impl PiSession {
         let owner = pi_owner::PiOwnerConfig::load_with_native_work(
             &resources.private_state_root, &relative_directory.0, work,
         )?;
-        owner.validate_root(binding)?;
+        owner.validate_root(binding, work)?;
         // Recovery never bootstraps a missing task provider. Original admission
         // authentication below still rejects an empty or unrelated history.
         let stream_path = directory.join("stream");
@@ -464,7 +456,7 @@ impl PiSession {
                 let driver = pi_workflow::PiWorkflowHost::new(
                     &self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
                     self.stream.clone(), &self.resources, &self.state,
-                ).with_work(original_native_work.clone());
+                 original_native_work.clone());
                 let progress = driver.drive_root().await?;
                 let unresolved = match progress.0 {
                     Some(acyclic_harness::filesystem::TaskWorkerAttempt::Unresolved { lease, error }) => {
@@ -757,8 +749,9 @@ impl PiSession {
             Some(_) => return Err(RootError::Invalid("Pi root selector must be its retained identity".to_owned())),
         };
         let paths = pi_native::planned_native_paths(
-            &self.resources, &self.state.root_session_id, task, Some(key),
+            &self.resources, &self.state.root_session_id, task, Some(key), work,
         )?;
+        let paths = &paths.0;
         #[derive(Serialize)]
         struct Child<'a> {
             id: &'a str, task: TaskId, cwd: &'a Path,
@@ -841,7 +834,7 @@ impl PiSession {
             return pi_workflow::PiWorkflowHost::new(
                 &self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
                 self.stream.clone(), &self.resources, &self.state,
-            ).with_work(work).control_command_with_native_work(command.0).await;
+             work).control_command_with_native_work(command.0).await;
         }
         let binding = self.binding(caller)?;
         let host = self.runtime.runtime.task_host();
@@ -917,7 +910,7 @@ impl PiSession {
                 .map(|value| acyclic_harness::core::Scope::from_value_with_native_work(value, &query_work))
                 .transpose()?;
             let caller_task = if let Some((scope, _custody)) = &caller {
-                let binding = pi_caller::verify_with_work(
+                let binding = pi_caller::verify(
                     &owner, &self.state, scope, session, &query_work,
                 )?;
                 binding.task_id
@@ -928,7 +921,7 @@ impl PiSession {
                 let PluginTaskBinding::Pi(binding) = &self.state.task_binding else {
                     return Err(RootError::Invalid("Pi original root binding is missing".to_owned()));
                 };
-                issued_caller = Some(pi_caller::issue_with_work(
+                issued_caller = Some(pi_caller::issue(
                     &owner, &self.state.root_session_id, binding, &query_work,
                 )?);
                 binding.task_id
@@ -1032,7 +1025,7 @@ impl PiSession {
         }
         // Observe the real complete SDK task graph under this request's original
         // query scope. Borrow its DTOs; no second status Vec or boxed outcome.
-        let mut observations = pi_recovery::observe_pi_session_with_native_work(
+        let mut observations = pi_recovery::observe_pi_session(
             &self.runtime.runtime, &self.state, &query_work,
         ).await?;
         let PluginTaskBinding::Pi(root_binding) = &self.state.task_binding else {

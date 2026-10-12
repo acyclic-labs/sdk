@@ -39,7 +39,6 @@ pub fn decode_binary(name: &str, bytes: &[u8], maximum: usize) -> Result<Vec<u8>
     Ok(message.encode_to_vec())
 }
 /// Encodes a canonical message using its generated descriptor, without parallel JSON shapes.
-/// Message names are unqualified Objects v1 type names from the canonical route inventory.
 pub fn encode(name: &str, value: &impl Message) -> Result<Vec<u8>, Error> {
     let message = decode_input(name, &value.encode_to_vec())?;
     serde_json::to_vec(&message).map_err(|_| wire::ErrorCode::InvalidArgument.into())
@@ -67,14 +66,6 @@ pub fn decode<T: Message + Default>(name: &str, bytes: &[u8], maximum: usize) ->
     message
         .transcode_to()
         .map_err(|_| wire::ErrorCode::InvalidArgument.into())
-}
-
-#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
-pub(crate) fn encode_get_native(
-    query: &wire::GetObjectRequest,
-    controls: &super::response::NativeGetControls,
-) -> Result<(Vec<u8>, acyclic_native_runtime::ReadAllocation), Error> {
-    encode_native("GetObjectRequest", query, controls)
 }
 
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]

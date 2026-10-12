@@ -100,23 +100,14 @@ impl McpStdioRequest {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum Phase {
-    Initialize,
-    Request,
-    Complete,
-    Failed,
-}
-
 /// Transient parser state for one initialized, one-shot stdio request.
 pub struct McpStdioExchange {
     initialization: OperationId,
     operation: OperationId,
-    request: OwnedWrite,
-    phase: Phase,
+    request: Option<OwnedWrite>,
+    failed: bool,
     line: BytesMut,
     codec: JsonRpcMessageCodec<Box<RawValue>>,
-    scanned: usize,
     received: usize,
     maximum_bytes: usize,
     result: Option<OwnedValue>,
@@ -182,9 +173,9 @@ impl McpStdioExchange {
         // One allocation for all cumulative stdout: library split/advance cannot demand growth because total admitted input never exceeds this capacity.
         let line = if work.is_some() { BytesMut::with_capacity(maximum_bytes) } else { BytesMut::new() };
         Ok((Self {
-            initialization, operation, request: combined, phase: Phase::Initialize,
+            initialization, operation, request: Some(combined), failed: false,
             line, codec: JsonRpcMessageCodec::new_with_max_length(maximum_bytes),
-            scanned: 0, received: 0, maximum_bytes, result: None, custody,
+            received: 0, maximum_bytes, result: None, custody,
         }, first.bytes, first.custody))
     }
 
@@ -192,16 +183,16 @@ impl McpStdioExchange {
     pub fn push(&mut self, bytes: &[u8], work: NativeWork<'_>) -> Result<(Vec<u8>, NativeCustody)> {
         let result = (|| {
             self.check_work(work)?;
-            if self.phase == Phase::Failed {
+            if self.failed {
                 return Err(rejection(work, "MCP stdio exchange already failed"));
             }
             self.consume(bytes, work)
         })();
         if result.is_err() {
-            self.phase = Phase::Failed;
+            self.failed = true;
             // Drop actual results and pending writes before their LAST guards.
             self.result = None;
-            self.request = OwnedWrite { bytes: Vec::new(), custody: None };
+            self.request = None;
         }
         result.map(|write| (write.bytes, write.custody))
     }
@@ -226,14 +217,15 @@ impl McpStdioExchange {
             .filter(|total| *total <= self.maximum_bytes)
             .ok_or_else(|| rejection(work, "MCP stdio stdout exceeds admitted bound"))?;
         let mut writes = OwnedWrite { bytes: Vec::new(), custody: None };
+        let mut scanned = self.line.len();
         copy_work(work, bytes.len())?;
         self.line.extend_from_slice(bytes);
         self.received = received;
         loop {
             let mut end = None;
-            for (offset, byte) in self.line[self.scanned..].iter().enumerate() {
+            for (offset, byte) in self.line[scanned..].iter().enumerate() {
                 scan_work(work)?;
-                if *byte == b'\n' { end = Some(self.scanned + offset); break; }
+                if *byte == b'\n' { end = Some(scanned + offset); break; }
             }
             let Some(end) = end else { break };
             let body = &self.line[..end];
@@ -245,7 +237,7 @@ impl McpStdioExchange {
             let raw = self.codec.decode(&mut self.line)
                 .map_err(|error| codec_error(error, work, &mut frame_custody))?
                 .ok_or_else(|| rejection(work, "missing MCP stdio message"))?;
-            self.scanned = 0;
+            scanned = 0;
             let message: Value = decode_value(raw.get().as_bytes(), work, &mut frame_custody)?;
             drop(raw);
             if message.get("id").is_none() {
@@ -253,31 +245,23 @@ impl McpStdioExchange {
                 drop(message);
                 continue;
             }
-            match self.phase {
-                Phase::Initialize => {
-                    let result = rpc_result(message, self.initialization, work)?;
-                    initialization(&result, work)?;
-                    drop(result);
-                    writes = std::mem::replace(&mut self.request,
-                        OwnedWrite { bytes: Vec::new(), custody: None });
-                    self.phase = Phase::Request;
+            if let Some(request) = self.request.take() {
+                let result = rpc_result(message, self.initialization, work)?;
+                initialization(&result, work)?;
+                drop(result);
+                writes = request;
+            } else if self.result.is_none() {
+                let value = rpc_result(message, self.operation, work)?;
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if let Some(guard) = frame_custody.as_mut() {
+                    let retained = value_storage(&value, work)?;
+                    guard.substitute(retained).map_err(native_error)?;
                 }
-                Phase::Request => {
-                    let value = rpc_result(message, self.operation, work)?;
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    if let Some(guard) = frame_custody.as_mut() {
-                        let retained = value_storage(&value, work)?;
-                        guard.substitute(retained).map_err(native_error)?;
-                    }
-                    self.result = Some(OwnedValue { value, custody: frame_custody });
-                    self.phase = Phase::Complete;
-                }
-                Phase::Complete | Phase::Failed => {
-                    return Err(rejection(work, "unexpected MCP stdio response after completion"));
-                }
+                self.result = Some(OwnedValue { value, custody: frame_custody });
+            } else {
+                return Err(rejection(work, "unexpected MCP stdio response after completion"));
             }
         }
-        self.scanned = self.line.len();
         Ok(writes)
     }
 
@@ -285,7 +269,7 @@ impl McpStdioExchange {
     pub fn finish(mut self) -> Result<(Value, NativeCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(custody) = &self.custody { checkpoint(Some(custody.work()))?; }
-        if self.phase != Phase::Complete || !self.line.is_empty() {
+        if !self.line.is_empty() {
             return Err(Error::Indeterminate(self.operation));
         }
         let OwnedValue { value, custody } = self.result.take().ok_or(Error::Indeterminate(self.operation))?;
@@ -295,8 +279,8 @@ impl McpStdioExchange {
         Ok((value, custody))
     }
 
-    /// The process owner still owns termination, drain and durable publication.
-    pub fn is_complete(&self) -> bool { self.phase == Phase::Complete }
+    /// Returns whether the terminal response was received.
+    pub fn is_complete(&self) -> bool { self.result.is_some() }
 }
 
 #[derive(Serialize)]
@@ -421,8 +405,8 @@ fn encode_line<T: Serialize>(value: &T, maximum: usize, work: NativeWork<'_>) ->
             .max(crate::contract::lexical_json_diagnostic_bytes())).map_err(native_error)?;
         let mut custody = work.retain_owned(0).map_err(native_error)?;
         let mut quota = work.retain_owned(0).map_err(native_error)?;
-        let encoded = crate::json_bytes_bounded_trusted(value, bounds(maximum.saturating_sub(1)),
-            &mut |event| codec_charge(work, &mut custody, &mut quota, event));
+        let encoded = crate::json_bytes_bounded(value, bounds(maximum.saturating_sub(1)),
+            None, &mut |event| codec_charge(work, &mut custody, &mut quota, event));
         let bytes = match encoded {
             Ok(bytes) => bytes,
             Err(Error::Invalid(message)) => {
@@ -844,16 +828,11 @@ mod tests {
         let (mut exchange, first, guard) = request.exchange(Some(&work)).unwrap();
         let (empty, empty_guard) = exchange.push(b"{", Some(&work)).unwrap();
         assert!(empty.is_empty());
-        assert_eq!(&exchange.line[..], b"{");
-        assert!(exchange.custody.as_ref().unwrap().bytes() >= 4096);
         drop(empty);
         drop(empty_guard);
         let copied = work.receipt().bytes_copied;
         assert!(exchange.push(&vec![b' '; 4096], Some(&work)).is_err());
         assert_eq!(work.receipt().bytes_copied, copied);
-        assert_eq!(&exchange.line[..], b"{");
-        assert_eq!(exchange.phase, Phase::Failed);
-        assert!(exchange.request.bytes.is_empty());
         assert!(exchange.push(&initialized(initialization), Some(&work)).is_err());
         assert!(exchange.finish().is_err());
         drop(first);
@@ -875,7 +854,6 @@ mod tests {
         assert!(matches!(error, Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. }));
         assert_eq!(work.receipt().bytes_copied, copied);
-        assert_eq!(exchange.phase, Phase::Failed);
         assert!(exchange.line.is_empty());
         drop(first);
         drop(guard);
@@ -892,7 +870,6 @@ mod tests {
         drop(exchange);
         let (mut exchange, first, guard) = request.exchange(Some(&work)).unwrap();
         assert!(exchange.push(&initialized(initialization), None).is_err());
-        assert_eq!(exchange.phase, Phase::Failed);
         drop(first);
         drop(guard);
         drop(exchange);
@@ -916,7 +893,6 @@ mod tests {
         let (mut exchange, first, guard) = request.exchange(Some(&work)).unwrap();
         let error = exchange.push(&initialized(initialization), Some(&work)).err().unwrap();
         assert!(matches!(error, Error::NativeWork { .. }));
-        assert_eq!(exchange.phase, Phase::Failed);
         assert!(exchange.result.is_none());
         drop(exchange);
         drop(first);

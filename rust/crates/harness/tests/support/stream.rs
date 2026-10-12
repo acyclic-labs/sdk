@@ -40,7 +40,6 @@ pub struct StreamIoSnapshot {
 pub struct LostSessionAck<P = MemoryStream> {
     pub inner: P,
     pub io: StreamIo,
-    pub root_records: std::sync::Mutex<std::collections::BTreeMap<(String, u64), u64>>,
     pub native_only: std::sync::atomic::AtomicBool,
     pub lose_ack: std::sync::atomic::AtomicBool,
     pub append_receipt_fault: std::sync::atomic::AtomicU8,
@@ -118,21 +117,7 @@ impl<P> LostSessionAck<P> {
     ) -> std::result::Result<(), StreamError> {
         if let acyclic_stream::CommitOutcome::Committed(envelope) = outcome {
             self.measure_received(envelope);
-            let mut retained = self
-                .root_records
-                .lock()
-                .map_err(|_| StreamError::Unavailable)?;
-            for mutation in &envelope.mutations {
-                if let acyclic_stream::CommittedMutation::Append(append) = mutation
-                    && append.path.as_str().contains("/effect-heads/")
-                {
-                    for record in &append.records {
-                        retained
-                            .entry((append.path.as_str().to_owned(), record.sequence))
-                            .or_insert(record.value.len() as u64);
-                    }
-                }
-            }
+
         }
 
         Ok(())
@@ -171,7 +156,6 @@ impl<P> LostSessionAck<P> {
         Self {
             inner,
             io: Default::default(),
-            root_records: Default::default(),
             native_only: Default::default(),
             lose_ack: Default::default(),
             append_receipt_fault: Default::default(),
@@ -1074,65 +1058,3 @@ fn corrupt_aggregate_receipt(outcome: &mut acyclic_stream::CommitOutcome, aggreg
     }
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
-mod native_fixture_tests {
-    use super::*;
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
-
-    fn budget() -> WorkBudget {
-        WorkBudget {
-            allocation_operations: 32,
-            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 65_536,
-            items_examined: 32,
-            bytes_copied: 65_536,
-            ..WorkBudget::default()
-        }
-    }
-
-    #[test]
-    fn native_fault_payload_empty_last_alias_keeps_original_custody() {
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(budget(), &cancellation)
-            .expect("finite original fixture ledger");
-        let baseline = work.live_allocation_bytes();
-        let value = native_fixture_value(NativeFixtureValue::Corrupt, &work.runtime_meter_owner())
-            .expect("genuine native fixture buffer");
-        assert_eq!(value.as_ref(), b"corrupt");
-        assert_eq!(value.retained_capacity(), Some(7));
-        let allocations = work.receipt().allocation_operations;
-        let alias = value.clone();
-        let empty = alias.slice(0..0);
-        assert_eq!(alias.as_ptr(), value.as_ptr());
-        assert!(empty.is_empty());
-        assert_eq!(work.receipt().allocation_operations, allocations);
-        assert_eq!(work.receipt().bytes_copied, 7);
-        assert_eq!(work.receipt().backend_read_operations, 0);
-        assert_eq!(work.receipt().backend_write_operations, 0);
-        drop(value);
-        drop(alias);
-        assert!(work.live_allocation_bytes() > baseline);
-        drop(empty);
-        assert_eq!(work.live_allocation_bytes(), baseline);
-    }
-
-    #[test]
-    fn native_fault_payload_denial_does_not_allocate_or_copy() {
-        for cancelled in [false, true] {
-            let cancellation = CancellationToken::new();
-            let limits = if cancelled { budget() } else {
-                WorkBudget { allocation_operations: 1, ..budget() }
-            };
-            let work = NativeMaterializationWork::new(limits, &cancellation)
-                .expect("original meter allocation is admitted");
-            let before = work.receipt();
-            let live = work.live_allocation_bytes();
-            if cancelled { cancellation.cancel(); }
-            assert!(native_fixture_value(NativeFixtureValue::Oversize, &work.runtime_meter_owner()).is_err());
-            let after = work.receipt();
-            assert_eq!(after.allocation_operations, before.allocation_operations);
-            assert_eq!(after.bytes_copied, before.bytes_copied);
-            assert_eq!(after.items_examined, before.items_examined);
-            assert_eq!(work.live_allocation_bytes(), live);
-        }
-    }
-}

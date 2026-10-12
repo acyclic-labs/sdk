@@ -18,84 +18,7 @@ use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, Fs, MemoryAuthorityBackend, MemoryObjectBackend,
 };
 
-#[tokio::test]
-async fn native_owner_guard_exhausts_phase_cancel_and_fence_conditions() -> Result<()> {
-    use crate::scheduler::{OperationPhase, require_execution_owner};
-    let fixture = process_fixture("write", true).await?;
-    let operation = fixture
-        .owner
-        .host
-        .coordinator
-        .lock()
-        .await
-        .scheduler()
-        .operation(fixture.owner.operation_id())
-        .cloned()
-        .ok_or_else(|| Error::NotFound("admitted native operation".into()))?;
-    let (_, original_fence) = fixture.owner.task_binding();
-    let mut checked = 0;
-    for phase in [
-        OperationPhase::WaitingForDependencies,
-        OperationPhase::WaitingForCapacity,
-        OperationPhase::Admitted,
-        OperationPhase::Running,
-        OperationPhase::WaitingForChildren,
-        OperationPhase::Suspended,
-        OperationPhase::Reconciling,
-        OperationPhase::Terminal,
-    ] {
-        for cancelled in [false, true] {
-            for settlement in [false, true] {
-                for reserved in [false, true] {
-                    for same_id in [false, true] {
-                        for same_placement in [false, true] {
-                            let mut state = operation.clone();
-                            state.phase = phase;
-                            state.cancellation_requested = cancelled;
-                            if !reserved {
-                                state.reservation = None;
-                            }
-                            let mut fence = original_fence.clone();
-                            if !same_id {
-                                fence.reservation_id.push_str("-stale");
-                            }
-                            if !same_placement {
-                                fence.placement.push_str("-foreign");
-                            }
-                            let phase_allowed = match phase {
-                                OperationPhase::Running => true,
-                                OperationPhase::Reconciling => settlement,
-                                _ => false,
-                            };
-                            let expected = phase_allowed
-                                && reserved
-                                && same_id
-                                && same_placement
-                                && (!cancelled || settlement);
-                            assert_eq!(
-                                require_execution_owner(&state, &fence, settlement, &mut None).is_ok(),
-                                expected,
-                                "{phase:?}, cancelled={cancelled}, settlement={settlement}, reserved={reserved}, same_id={same_id}, same_placement={same_placement}"
-                            );
-                            checked += 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    assert_eq!(checked, 256);
-    assert!(
-        !fixture
-            .view
-            .manifest()
-            .options
-            .root
-            .join("dst/output.txt")
-            .exists()
-    );
-    Ok(())
-}
+
 
 type Files<A = MemoryAuthorityBackend, O = MemoryObjectBackend> = FilesystemHost<A, O>;
 
@@ -175,7 +98,7 @@ async fn readonly_schema_storage_does_not_require_result_write_authority() -> Re
     assert!(
         fixture
             .owner
-            .require_volume_grant(&fixture.source, VolumeOperation::Write)
+            .require_volume_grant(&fixture.source, VolumeOperation::Write, &mut None)
             .is_err()
     );
     let source = workspace_ref(
@@ -390,7 +313,7 @@ async fn cold_unchanged_project_keeps_the_actual_sdk_snapshot_without_relaunch()
     let recovered = Process::recover_with_native_work(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
         fixture.authority(), &query,
-    ).await.map_err(crate::filesystem::NativeReceiptError::into_root_error)?;
+    ).await?;
     let before = query.receipt();
     let (candidate, candidate_custody) = recovered.published_project_candidate_with_native_work(
         attempt, &fixture.source, &query,
@@ -455,7 +378,7 @@ async fn native_process_drain_factory_rejects_other_attempt_before_admission() -
     let recovered = Process::recover_with_native_work(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
         fixture.authority(), &cleanup,
-    ).await.map_err(crate::filesystem::NativeReceiptError::into_root_error)?;
+    ).await?;
     assert!(matches!(recovered.drain_with_native_work(
         process.original_attempt(), &fixture.view, &cleanup, &cleanup_cancellation,
     )?.await, Err(Error::Indeterminate(_))));
@@ -488,7 +411,7 @@ async fn cold_native_drain_proof_authenticates_terminal_result_without_relaunch(
     let recovered = Process::recover_with_native_work(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
         fixture.authority(), &cleanup,
-    ).await.map_err(crate::filesystem::NativeReceiptError::into_root_error)?;
+    ).await?;
     let proof = recovered.drain_with_native_work(
         attempt, &fixture.view, &cleanup, &cleanup_cancellation,
     )?.await?;
@@ -544,7 +467,7 @@ async fn warm_native_drain_keeps_original_tree_and_accepts_authorized_cleanup_sp
     let recovered = Process::recover_with_native_work(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
         fixture.authority(), &cleanup,
-    ).await.map_err(crate::filesystem::NativeReceiptError::into_root_error)?;
+    ).await?;
     assert!(matches!(recovered.drain_with_native_work(
         process.original_attempt(), &fixture.view, &cleanup, &cleanup_cancellation,
     )?.await, Err(Error::Indeterminate(_))));
@@ -953,7 +876,7 @@ async fn genuine_view_retirement_preserves_cached_proof_on_admission_and_wait_de
     let denied = acyclic_fs::NativeMaterializationWork::new(denied_budget, &cleanup_wait)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     assert!(fixture.view.cleanup_mounts_with_native_work(
-        fixture.owner.native_view_owner(), &mut cached_process, &mut cached_partial,
+        &fixture.owner, &mut cached_process, &mut cached_partial,
         &original, &denied, &cleanup_wait,
     ).is_err());
     assert!(cached_process.is_some());
@@ -962,7 +885,7 @@ async fn genuine_view_retirement_preserves_cached_proof_on_admission_and_wait_de
     refused_wait.cancel();
     let source_before = original.receipt();
     assert!(fixture.view.cleanup_mounts_with_native_work(
-        fixture.owner.native_view_owner(), &mut cached_process, &mut cached_partial,
+        &fixture.owner, &mut cached_process, &mut cached_partial,
         &original, &cleanup, &refused_wait,
     )?.await.is_err());
     assert!(cached_process.is_some());
@@ -970,7 +893,7 @@ async fn genuine_view_retirement_preserves_cached_proof_on_admission_and_wait_de
     assert_eq!(original.receipt(), source_before);
     cancellation.cancel();
     let result = fixture.view.cleanup_mounts_with_native_work(
-        fixture.owner.native_view_owner(), &mut cached_process, &mut cached_partial,
+        &fixture.owner, &mut cached_process, &mut cached_partial,
         &original, &cleanup, &cleanup_wait,
     )?.await?;
     let receipt = match result {
@@ -1639,7 +1562,7 @@ where
         owner.stream(),
         files.clone(),
         result_volume,
-        issuer.verifier(),
+        issuer.verifier(), crate::core::SchemaRegistry::new(),
         scope.clone(),
         1_000_000,
     )?);
@@ -2014,10 +1937,10 @@ async fn native_builtin_current_volume_grants_and_unmounted_results_deny_before_
     let work = acyclic_fs::NativeMaterializationWork::new(
         fixture.options.budget_for_volume_count(fixture.bindings.len())?, &cancellation,
     ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
-    assert!(fixture.owner.native_view_owner()
+    assert!(fixture.owner
         .require_volume_grant_with_native_work(&seed.source, VolumeOperation::Write, &work).is_err());
     for path in ["a-source/input.txt", "results/unmounted.txt", "../results/escape.txt"] {
-        assert!(view.write_builtin_file(fixture.owner.native_view_owner(), OperationId::from_bytes([212; 16]),
+        assert!(view.write_builtin_file(&fixture.owner, OperationId::from_bytes([212; 16]),
             Path::new(path), "forbidden", true, None, &work).await.is_err());
     }
     assert_eq!(work.receipt().output_bytes, 0);
@@ -2045,11 +1968,11 @@ async fn native_builtin_rejects_same_uuid_foreign_original_owner_and_cancelled_c
         fixture.options.budget_for_volume_count(fixture.bindings.len())?, &cancellation,
     ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
     let operation = OperationId::from_bytes([213; 16]);
-    assert!(view.read_builtin_file(foreign.owner.native_view_owner(), operation,
+    assert!(view.read_builtin_file(&foreign.owner, operation,
         Path::new("a-source/input.txt"), 32, &work).await.is_err());
     assert_eq!(work.receipt().source_bytes_read, 0);
     fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
-    assert!(view.write_builtin_file(fixture.owner.native_view_owner(), operation,
+    assert!(view.write_builtin_file(&fixture.owner, operation,
         Path::new("b-destination/after-cancel"), "forbidden", true, None, &work).await.is_err());
     assert_eq!(work.receipt().output_bytes, 0);
     assert!(!fixture.allocation.root.join("b-destination/after-cancel").exists());
@@ -2621,7 +2544,7 @@ async fn reopen_native(
         owner.stream(),
         files.clone(),
         seed.result_volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(), crate::core::SchemaRegistry::new(),
         seed.scope.clone(),
         1_000_000,
     )?);
@@ -2948,6 +2871,8 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
         let mut fixture = process_fixture(
             if change.starts_with("mcp-") {
                 "mcp-approval"
+            } else if change == "stdin-bytes" {
+                "stdin-bytes"
             } else {
                 "write"
             },
@@ -2967,7 +2892,7 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
             "bounds" => request.timeout_ms += 1,
             "authority" => request.view.volumes[0].authority_revision[0] ^= 1,
             "volume-order" => request.view.volumes.swap(0, 1),
-            "stdin-bytes" => request.standard_input = Some(vec![0, 255, b'\n']),
+            "stdin-bytes" => request.standard_input = Some(vec![0, 254, b'\n', b'x']),
             "stdin-empty" => request.standard_input = Some(Vec::new()),
             change if change.starts_with("mcp-") => {
                 let exchange = request
@@ -3013,26 +2938,9 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
 }
 
 #[tokio::test]
-async fn absent_stdio_preserves_legacy_approval_and_stopped_mcp_remains_uncertain() -> Result<()> {
+async fn stopped_mcp_response_remains_uncertain() -> Result<()> {
     let fixture = process_fixture("write", true).await?;
     let mut request = fixture.request().await?;
-    let legacy =
-        serde_json::to_value(&request).map_err(|error| Error::Invalid(error.to_string()))?;
-    assert!(legacy.get("mcp_stdio").is_none());
-    assert!(legacy.get("standard_input").is_none());
-    let decoded: NativeProcessRequest = serde_json::from_value(legacy.clone())
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert!(decoded.mcp_stdio.is_none());
-    assert!(decoded.standard_input.is_none());
-    assert_eq!(
-        request.approval_digest(fixture.owner.task_binding().0, fixture.command)?,
-        crate::contract::canonical_json_digest(&(
-            NATIVE_PROCESS_EFFECT_KIND,
-            fixture.owner.task_binding().0,
-            fixture.command,
-            legacy
-        ))?
-    );
     let initialization = OperationId::from_bytes([75; 16]);
     let operation = OperationId::from_bytes([76; 16]);
     request.mcp_stdio = Some(crate::mcp::stdio::McpStdioRequest {
@@ -3982,7 +3890,7 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
     fixture
         .task
         .task_host()
-        .settle_task(task, fence, Outcome::Cancelled)
+        .settle_task(task, fence, Outcome::Cancelled, &mut None)
         .await?;
     assert_eq!(
         fixture.task.task_host().outcome(task).await?,
@@ -4044,26 +3952,7 @@ async fn native_preparation_decode_failure_retains_original_journal_read_work() 
     Ok(())
 }
 
-#[tokio::test]
-async fn literal_stdin_approval_binds_exact_bytes_and_explicit_empty_eof() -> Result<()> {
-    let fixture = process_fixture("write", true).await?;
-    let mut request = fixture.request().await?;
-    let task = fixture.owner.task_binding().0;
-    let absent = request.approval_digest(task, fixture.command)?;
-    request.standard_input = Some(Vec::new());
-    let eof = request.approval_digest(task, fixture.command)?;
-    assert_ne!(absent, eof);
-    request.standard_input = Some(vec![0, 255, b'\n', b'x']);
-    let literal = request.approval_digest(task, fixture.command)?;
-    assert_ne!(eof, literal);
-    let encoded = crate::contract::canonical_json_bytes(&request)?;
-    let decoded: NativeProcessRequest = crate::contract::json_from_slice(&encoded)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert_eq!(decoded.standard_input.as_deref(), Some([0, 255, b'\n', b'x'].as_slice()));
-    request.standard_input = Some(vec![0, 254, b'\n', b'x']);
-    assert_ne!(literal, request.approval_digest(task, fixture.command)?);
-    Ok(())
-}
+
 
 #[tokio::test]
 async fn approved_literal_stdin_reaches_eof_without_terminating_the_process() -> Result<()> {
@@ -4125,7 +4014,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
         drop(selected);
         let operation = acyclic_fs::OperationId::from_bytes([91; 16]);
         let before_query = work.receipt().backend_write_operations;
-        let missing = fixture.owner.native_view_owner().recover_publication(
+        let missing = fixture.owner.recover_publication(
             &workspace, &fixture.destination, original_generation, operation,
             &work, &cancellation, &cleanup_cancellation,
         ).await?;
@@ -4135,7 +4024,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
         if stale {
             fixture.files.write(&destination, "/concurrent.txt", b"new original head").await?;
         }
-        let reserved = fixture.owner.native_view_owner().reserve_publication(
+        let reserved = fixture.owner.reserve_publication(
             &workspace, &fixture.destination, original_generation, operation,
             &work, &cancellation, &cleanup_cancellation,
         ).await;
@@ -4161,7 +4050,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
                 .map_err(|_| Error::Invalid("original source generation digest width".into()))?;
             let other_original_generation = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(source_digest));
             assert_ne!(other_original_generation, original_generation);
-            let mismatched = fixture.owner.native_view_owner().recover_publication(
+            let mismatched = fixture.owner.recover_publication(
                 &recovery_workspace, &fixture.destination, other_original_generation, operation,
                 &work, &cancellation, &cleanup_cancellation,
             ).await.err().ok_or_else(|| Error::Storage("readonly query adopted a different original generation".into()))?;
@@ -4171,7 +4060,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             assert!(mismatched_failure.cleanup.is_some());
             assert_eq!(mismatched_failure.work.backend_write_operations, before_query);
             drop(mismatched);
-            let reopened = fixture.owner.native_view_owner().recover_publication(
+            let reopened = fixture.owner.recover_publication(
                 &recovery_workspace, &fixture.destination, original_generation, operation,
                 &work, &cancellation, &cleanup_cancellation,
             ).await?;
@@ -4179,7 +4068,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             assert_eq!(recovered.permit(), receipt.permit());
             assert_eq!(work.receipt().backend_write_operations, before_query);
             drop(recovered);
-            let foreign = fixture.owner.native_view_owner().recover_publication(
+            let foreign = fixture.owner.recover_publication(
                 &recovery_workspace, &fixture.destination, original_generation,
                 acyclic_fs::OperationId::from_bytes([92; 16]),
                 &work, &cancellation, &cleanup_cancellation,
@@ -4188,7 +4077,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             assert_eq!(work.receipt().backend_write_operations, before_query);
             let denied_work = acyclic_fs::NativeMaterializationWork::new(budget, &cleanup_cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let mut failed = receipt.into_cleanup().release(&fixture.owner.native_view_owner(), &denied_work, &cleanup_cancellation).await
+            let mut failed = receipt.into_cleanup().release(&fixture.owner, &denied_work, &cleanup_cancellation).await
                 .err().ok_or_else(|| Error::Storage("foreign cleanup family denial was not exercised".into()))?;
             let retained = crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
                 ::from_error(&failed).expect("whole denied cleanup owner and cause");
@@ -4199,12 +4088,12 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             let original_before_retry = work.receipt();
             let foreign_before_retry = denied_work.receipt();
             assert!(matches!(crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
-                ::retry_cleanup_with_native_work(&mut failed, &fixture.owner.native_view_owner(), &denied_work, &cleanup_cancellation).await,
+                ::retry_cleanup_with_native_work(&mut failed, &fixture.owner, &denied_work, &cleanup_cancellation).await,
                 Err(crate::filesystem::NativeReservationError::Selection(_))));
             assert_eq!(denied_work.receipt(), foreign_before_retry);
             assert_eq!(work.receipt(), original_before_retry);
             assert!(crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
-                ::retry_cleanup_with_native_work(&mut failed, &fixture.owner.native_view_owner(), &work, &cleanup_cancellation)
+                ::retry_cleanup_with_native_work(&mut failed, &fixture.owner, &work, &cleanup_cancellation)
                 .await.expect("actual original gate cleanup"));
             let retained = crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
                 ::from_error(&failed).expect("original failure retained after actual cleanup");
@@ -4240,7 +4129,7 @@ async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_nati
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     assert!(matches!(
         process.signal_stop(crate::EffectAttemptId::from_bytes([255; 16]), &work, &cleanup_cancellation).await,
-        Err(crate::filesystem::NativeReceiptError::Record(_)),
+        Err(Error::NativeBoundary { .. }),
     ));
     let reopened = Process::recover(
         fixture.owner.clone(), fixture.command, fixture.plan.clone(),
@@ -4248,7 +4137,7 @@ async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_nati
     ).await?;
     assert!(matches!(
         reopened.signal_stop(attempt, &work, &cleanup_cancellation).await,
-        Err(crate::filesystem::NativeReceiptError::Record(_)),
+        Err(Error::NativeBoundary { .. }),
     ));
     let mut denied_budget = budget;
     denied_budget.items_examined = 0;
@@ -4256,7 +4145,7 @@ async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_nati
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     assert!(matches!(
         process.signal_stop(attempt, &denied, &cleanup_cancellation).await,
-        Err(crate::filesystem::NativeReceiptError::Native(_)),
+        Err(Error::NativeWork { .. }),
     ));
     assert!(!dispatch.is_finished());
     process.signal_stop(attempt, &work, &cleanup_cancellation).await

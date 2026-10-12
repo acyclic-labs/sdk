@@ -37,6 +37,9 @@ use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
+mod default_tools;
+mod headless;
+
 type BrowserRuntime =
     FilesystemTaskRuntime<BrowserStream, IndexedDbAuthorityStore, IndexedDbObjectStore>;
 type BrowserFilesystem = FilesystemHost<IndexedDbAuthorityStore, IndexedDbObjectStore>;
@@ -211,6 +214,9 @@ struct WasmBrowserTaskOptions {
     session_limits: WasmBrowserSessionLimits,
     concurrency: u32,
     maximum_payload_bytes: u64,
+    #[serde(default)]
+    #[tsify(type = "WasmRecursiveToolsConfig | null")]
+    recursive_tools: Option<default_tools::BrowserToolsConfig>,
 }
 
 #[derive(Deserialize, Tsify)]
@@ -565,6 +571,14 @@ impl WasmTaskRegistry {
 }
 
 impl WasmTaskRegistry {
+    /// Registers the ordinary bounded fork preparation worker.
+    #[wasm_bindgen(js_name = registerForkPreparation)]
+    pub fn register_fork_preparation(&mut self) -> std::result::Result<(), JsValue> {
+        let machine = Arc::new(crate::filesystem::ForkPreparationMachine::new());
+        let definition = machine.wire_definition().map_err(js_error)?;
+        self.register_definition(machine, definition)
+    }
+
     fn register_definition(
         &mut self,
         machine: Arc<dyn ResumableMachine>,
@@ -590,7 +604,8 @@ impl WasmTaskRegistry {
 /// Thin event-loop handle; scheduling, ownership, effects and recovery stay in `FilesystemTaskRuntime`.
 #[wasm_bindgen]
 pub struct WasmTaskRuntime {
-    runtime: BrowserRuntime,
+    runtime: Arc<BrowserRuntime>,
+    stream: StreamClient<BrowserStream>,
     filesystem: Arc<BrowserFilesystem>,
     volume: VolumeRef,
     scope: Scope,
@@ -633,7 +648,7 @@ impl WasmTaskRuntime {
         let filesystem = Arc::new(
             FilesystemHost::new(
                 Fs::new(authority, objects, EmbeddedCapabilities { durable: true }),
-                options.filesystem_provider,
+                options.filesystem_provider.clone(),
             )
             .map_err(js_error)?,
         );
@@ -657,9 +672,39 @@ impl WasmTaskRuntime {
             .await
             .map_err(|error| js_error(Error::Storage(error.to_string())))?,
         ));
+        let source = options.recursive_tools.map(|config| {
+            let graph_root = config.project_policy_graph_root;
+            let source = default_tools::BrowserToolSource::new(
+                config, stream.clone(), filesystem.clone(), &options.filesystem_provider, root.limits(),
+            )?;
+            if let Some(graph_root) = graph_root {
+                source.with_project_source_policy(owner.issuer.clone(), Arc::new(
+                    crate::filesystem::FsRootProjectSourceProvider::new(
+                        filesystem.clone(), owner.issuer.audience().clone(), graph_root,
+                    )?,
+                ))?;
+            }
+            Ok::<_, Error>(source)
+        }).transpose().map_err(js_error)?;
+        let defaults = crate::filesystem::recursive_default_tools(
+            source.clone().map(|source| source as Arc<dyn crate::filesystem::RecursiveDefaultToolSource<
+                BrowserStream, IndexedDbAuthorityStore, IndexedDbObjectStore,
+            >>), options.maximum_payload_bytes,
+        ).map_err(js_error)?;
+        let mut tools = registry.tools.clone();
+        let mut resumable_tools = crate::durable_tool::ResumableToolRegistry::default();
+        for definition in defaults.tools.definitions().map_err(js_error)? {
+            if tools.get(&definition.name).is_none() {
+                tools.register(defaults.tools.get(&definition.name).expect("registered default").clone())
+                    .map_err(js_error)?;
+                if let Some(tool) = defaults.resumable_tools.get(&definition.name, &definition.revision) {
+                    resumable_tools.register(tool.clone()).map_err(js_error)?;
+                }
+            }
+        }
         let limits = options.session_limits;
         let runtime = FilesystemTaskRuntime::open_with_creation_providers(
-            stream,
+            stream.clone(),
             filesystem.clone(),
             options.volume.clone(),
             verifier.clone(),
@@ -667,7 +712,7 @@ impl WasmTaskRuntime {
             root,
             registry.tasks.clone(),
             registry.machines.clone(),
-            registry.tools.clone(),
+            tools,
             SessionLimits {
                 active_tasks: limits.active_tasks,
                 total_tasks: limits.total_tasks,
@@ -683,11 +728,18 @@ impl WasmTaskRuntime {
                     filesystem.clone(), owner.issuer.clone(),
                 ).map_err(js_error)?,
             )],
+            resumable_tools,
         )
         .await
         .map_err(js_error)?;
+        let runtime = Arc::new(match &source {
+            Some(source) => runtime.with_recursive_source(source.clone()),
+            None => runtime,
+        });
+        if let Some(source) = source { source.bind_runtime(&runtime).map_err(js_error)?; }
         Ok(Self {
             runtime,
+            stream,
             filesystem,
             volume: options.volume,
             scope,
