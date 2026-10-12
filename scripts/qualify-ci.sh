@@ -353,7 +353,7 @@ case "$lane" in
     node scripts/publish-cargo-crates.mjs check
     node --test scripts/test-publish-cargo-crates.mjs
     node --test scripts/test-publish-npm-packages.mjs
-    node --test scripts/static-policy.test.mjs
+    node --test scripts/static-policy.test.mjs scripts/static-ci.test.mjs
     node --test scripts/tiny-ci.test.mjs scripts/cargo-lock-policy.test.mjs scripts/publish-release-assets.test.mjs scripts/release-qualification-artifacts.test.mjs scripts/release-source.test.mjs
     node --test scripts/test-typescript-qualification.mjs
     node --test scripts/test-plan-qualification.mjs

@@ -1,11 +1,16 @@
 # CI and SDK releases
 
-Every PR and main push runs `SDK Static`, one five-minute job on standard
-GitHub-hosted Ubuntu. It checks Rust formatting, whitespace, JSON and JavaScript
-syntax, pinned Actions, runner policy, and compatibility digests. Documentation
-changes receive the same required check. Superseded static runs are cancelled.
-Builds, tests, generator checks, and native integrations run during manual
-qualification or a release. Tags and GitHub Release events start no workflows.
+Every PR and main push runs `SDK Static`, one required job on standard
+GitHub-hosted Ubuntu. It runs `cargo update --workspace --locked` to check
+manifest/lockfile consistency without compiling. The job has a one-minute timeout;
+the initial GitHub run completed in seven seconds. Documentation changes receive
+the same required check. Superseded static runs are cancelled.
+
+Formatting, whitespace, JSON and JavaScript syntax, pinned Actions, runner policy,
+compatibility digests, builds, tests, generator checks, and native integrations
+run only through **SDK Release**. Whitespace checks cover changes since the previous
+`acyclic-v*` release tag, or the tracked tree for the first release. Tags and GitHub
+Release events start no workflows.
 
 ## Coordinated release
 
@@ -55,6 +60,7 @@ retain successful platform lanes from earlier attempts of the same run. The
 assembler freezes their exact artifact names and publishers still validate their
 source and contents.
 
-Manual diagnostic qualification remains available in `qualification.yml`,
-`native-mount-qualification.yml`, `agent-host-qualification.yml`, and
-`sdk-generator.yml`. These diagnostics do not publish a release.
+For diagnostics, dispatch **SDK Release** from main with `publish=false` using
+the command above. This runs qualification, native mounts, agent hosts, and
+generator checks through the release graph without publishing. Those reusable
+workflows have no independent manual triggers.
