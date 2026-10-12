@@ -704,11 +704,11 @@ mod tests {
         owner_store.verify_artifact(&artifact).await?;
         let missing_version = ArtifactRef::new(
             provider.clone(),
-            artifact.as_resource().key(),
+            artifact.as_resource().key().into(),
             Some("missing-version".into()),
         )?;
         assert!(owner_store.verify_artifact(&missing_version).await.is_err());
-        let unpinned = ArtifactRef::new(provider.clone(), artifact.as_resource().key(), None)?;
+        let unpinned = ArtifactRef::new(provider.clone(), artifact.as_resource().key().into(), None)?;
         owner_store.verify_artifact(&unpinned).await?;
         let traversal = ArtifactRef::new(
             provider.clone(),
@@ -767,7 +767,7 @@ mod tests {
                             VolumeClass::AgentPrivate,
                             VolumeOwner::Agent(AgentId::from_bytes([1; 16])), &mut None
                         )?,
-                        generation: GenerationRef::new(filesystem.clone(), [99; 32], None)?,
+                        generation: GenerationRef::new(filesystem.clone(), [99; 32].into(), None)?,
                         paths: Vec::new(),
                     },
                 },
@@ -788,7 +788,7 @@ mod tests {
                             VolumeClass::Project,
                             project_owner, &mut None
                         )?,
-                        generation: GenerationRef::new(filesystem, [16; 32], Some("1".into()))?,
+                        generation: GenerationRef::new(filesystem, [16; 32].into(), Some("1".into()))?,
                     },
                 },
                 ForkSelection {
@@ -834,7 +834,7 @@ mod tests {
                     volume: request.preparation.child_private_volume.clone(),
                     generation: GenerationRef::new(
                         request.preparation.child_private_volume.provider().clone(),
-                        [18; 32],
+                        [18; 32].into(),
                         Some("1".into()),
                     )?,
                     paths: Vec::new(),
@@ -850,7 +850,7 @@ mod tests {
                     volume: request.preparation.child_project_volume.clone(),
                     generation: GenerationRef::new(
                         request.preparation.child_project_volume.provider().clone(),
-                        [17; 32],
+                        [17; 32].into(),
                         Some("1".into()),
                     )?,
                 },
@@ -864,7 +864,7 @@ mod tests {
         child_private_volume: request.preparation.child_private_volume.clone(),
         child_private_generation: GenerationRef::new(
             request.preparation.child_private_volume.provider().clone(),
-            [18; 32],
+            [18; 32].into(),
             Some("1".into()),
         )?,
         inherited_context: Vec::new(),

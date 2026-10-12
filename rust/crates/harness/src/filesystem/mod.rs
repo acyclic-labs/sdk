@@ -4225,7 +4225,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let raw = hex::decode(reference.version())
             .map_err(|_| Error::Invalid("file version is not a Filesystem generation".into()))?;
-        GenerationRef::new(self.provider.clone(), raw, None)
+        GenerationRef::new(self.provider.clone(), raw.into(), None)
     }
 
     /// Resolves the current immutable head of a named workspace.
@@ -4477,13 +4477,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     fn generation_ref(&self, generation: &Generation<A, O>) -> Result<GenerationRef> {
         GenerationRef::new(
             self.provider.clone(),
-            generation.id().digest().into_bytes(),
+            generation.id().digest().into_bytes().into(),
             None,
         )
     }
 
     fn generation_ref_id(&self, id: GenerationId) -> Result<GenerationRef> {
-        GenerationRef::new(self.provider.clone(), id.digest().into_bytes(), None)
+        GenerationRef::new(self.provider.clone(), id.digest().into_bytes().into(), None)
     }
 
     fn validate_provider(&self, provider: &ProviderRef) -> Result<()> {
@@ -4500,7 +4500,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 /// Creates the canonical provider-owned reference for a named workspace.
 pub fn workspace_ref(provider: ProviderRef, name: &str) -> Result<WorkspaceRef> {
     acyclic_fs::WorkspaceName::new(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| Error::Invalid(error.to_string()))?;
-    WorkspaceRef::new(provider, name.as_bytes(), None)
+    WorkspaceRef::new(provider, name.as_bytes().into(), None)
 }
 
 fn filesystem_key(key: &IdempotencyKey) -> FilesystemKey {

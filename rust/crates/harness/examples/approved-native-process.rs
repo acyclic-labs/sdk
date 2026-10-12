@@ -458,7 +458,7 @@ where
         .open_interaction(
             approval,
             Interaction::approval(
-                "Run this exact example process",
+                "Run this exact example process".into(),
                 command,
                 request.approval_digest(task_id, command)?,
             )?,

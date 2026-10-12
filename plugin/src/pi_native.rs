@@ -834,7 +834,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     let approval = task_interaction_id(owner.task_id(), command);
     let title = native_fixed_text(format_args!("Run pinned Pi child {}", binding.native_session_id))?;
     let title = pi_native_string(std::str::from_utf8(&title.0[..title.1]).expect("formatter copies UTF-8"), work)?;
-    let interaction = (Interaction::approval(title.0, command, digest)?, title.1);
+    let interaction = (Interaction::approval(title.0.into(), command, digest)?, title.1);
     journal.open_interaction_with_native_work(approval, &interaction.0, work)?.await?;
     owner.verify_with_native_work(false, work).await?;
     let respond = native_fixed_text(format_args!("interaction:respond:{approval}"))?;

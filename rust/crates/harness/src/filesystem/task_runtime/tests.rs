@@ -507,7 +507,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
         runtime.task_host().start_task(&lease, None).await?;
         let fence = LeaseFence::from(&lease.reservation);
         let turn = OperationId::from_bytes([106; 16]);
-        let model = Model::new("synthetic", "deadline", "1", Value::Null)?;
+        let model = Model::new("synthetic".into(), "deadline".into(), "1".into(), Value::Null)?;
         let provider = Arc::new(PendingModel {
             clock: fixture.clock.clone(),
             generated: AtomicUsize::new(0),
@@ -845,7 +845,7 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     let provider = Arc::new(PendingModel {
         clock: Arc::clone(&fixture.clock), generated: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
     });
-    let model = Model::new("synthetic", "deadline", "1", Value::Null)?;
+    let model = Model::new("synthetic".into(), "deadline".into(), "1".into(), Value::Null)?;
     let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -915,7 +915,7 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
     let provider = Arc::new(PendingModel {
         clock: Arc::clone(&fixture.clock), generated: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
     });
-    let model = Model::new("synthetic", "deadline", "1", Value::Null)?;
+    let model = Model::new("synthetic".into(), "deadline".into(), "1".into(), Value::Null)?;
     let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -941,7 +941,7 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
 async fn native_stock_model_configuration_denies_before_copy_or_provider_on_original_work() -> Result<()> {
     let fixture = Fixture::new().await?;
     let runtime = fixture.runtime().await?;
-    let model = Model::new("synthetic", "original-config", "1", serde_json::json!({"configured": true}))?;
+    let model = Model::new("synthetic".into(), "original-config".into(), "1".into(), serde_json::json!({"configured": true}))?;
     let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let provider = Arc::new(PendingModel {
@@ -971,7 +971,7 @@ async fn native_stock_model_configuration_denies_before_copy_or_provider_on_orig
 async fn native_stock_model_configuration_retains_original_custody_and_rejects_foreign_rebinding() -> Result<()> {
     let fixture = Fixture::new().await?;
     let runtime = fixture.runtime().await?;
-    let model = Model::new("synthetic", "original-config", "1", json!({"configured": "retained"}))?;
+    let model = Model::new("synthetic".into(), "original-config".into(), "1".into(), json!({"configured": "retained"}))?;
     let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let provider = Arc::new(PendingModel {
