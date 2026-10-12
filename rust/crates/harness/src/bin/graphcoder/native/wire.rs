@@ -41,43 +41,13 @@ impl HarnessWireApi for NativeSession {
             let identity = envelope.operation.clone();
             let (authority, command) = decode_command_envelope(envelope)?;
             let binding = self.binding(&encode_authority(&authority))?;
-            let verifier = binding.verifier()?;
-            let reader = FilesystemContentVerifier::new(
-                self.files.clone(),
-                &verifier,
-                &binding.scope,
-                MAX_FRAME_BYTES as u64,
-                None,
-            )?;
-            let mut aggregate = StreamAggregate::open(
+            let mut aggregate = open_aggregate(
                 &self.stream,
-                authority,
-                verifier,
-                SchemaRegistry::new(),
-                None,
-                acyclic_harness::store::default_projection_read_limits(),
-                acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
-                None,
-                &mut None,
+                &self.files,
+                &self.config.stream_provider,
+                binding,
             )
-            .await?
-            .with_content_verifier(reader)
-            .with_fork_verifier(CompositeForkVerifier::new(
-                &[
-                    FilesystemForkVerifier::new(
-                        self.files.clone(),
-                        MAX_FRAME_BYTES as u64,
-                        None,
-                        None,
-                    )?,
-                    StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?,
-                ],
-                &mut None,
-            )?)
-            .with_merge_verifier(FilesystemProjectMergeVerifier::new(
-                self.files.clone(),
-                None,
-            )?);
+            .await?;
             let (state, error) = match aggregate
                 .execute(
                     command,
@@ -110,16 +80,9 @@ impl HarnessWireApi for NativeSession {
     ) -> BoxProviderFuture<'a, Result<BoxProviderStream<'static, Result<wire::Delivery>>>> {
         Box::pin(async move {
             validate_resume_protocol(&request)?;
-            if request.cursors.len() != 1 {
-                return Err(Error::Invalid(
-                    "terminal inspection requires one explicit aggregate cursor".into(),
-                ));
-            }
-            let cursor = request
-                .cursors
-                .into_iter()
-                .next()
-                .ok_or_else(|| Error::Invalid("cursor missing".into()))?;
+            let [cursor] = <[_; 1]>::try_from(request.cursors).map_err(|_| {
+                Error::Invalid("terminal inspection requires one explicit aggregate cursor".into())
+            })?;
             if cursor.generation != self.config.generation {
                 return Err(Error::Conflict("native replay generation changed".into()));
             }
