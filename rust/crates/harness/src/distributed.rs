@@ -791,7 +791,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     return Err(coordinator_boundary(event_custody.work(), wire::ErrorCode::Storage,
                         "coordinator commit time is not increasing"));
                 }
-                self.scheduler.apply_with_work(&event, event_custody.work())?;
+                self.scheduler.apply(&event, event_custody.work())?;
                 self.revision = revision;
                 next = revision;
                 self.last_committed_at_ms = committed_at_ms;
