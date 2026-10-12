@@ -3,6 +3,7 @@
 use super::{PiScratchCreation, PiTaskBinding, RootCreation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_json::value::RawValue;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -73,94 +74,42 @@ fn object_schema<R, P>(required: R, properties: P) -> ObjectSchema<R, P> {
 }
 
 #[derive(Serialize)]
-struct TypeSchema {
-    #[serde(rename = "type")]
-    kind: &'static str,
-}
-
-#[derive(Clone, Copy, Serialize)]
-struct ConstantSchema<T = &'static str> {
+struct ConstantSchema<'a> {
     #[serde(rename = "const")]
-    value: T,
+    value: &'a acyclic_harness::resources::ProviderRef,
 }
 
 /// Borrowed first-party result schema, shared by ordinary and native encoders.
 struct RootAllocationSchema<'a>(&'a PiTaskBinding);
 
-#[derive(Clone, Copy, Serialize)]
-struct IntegerSchema {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    minimum: u64,
-    maximum: u64,
-}
-
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ByteArraySchema {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    min_items: usize,
-    max_items: usize,
-    items: IntegerSchema,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    not: Option<ConstantSchema<[u8; 16]>>,
-}
-
-fn bytes_schema(length: usize, nonzero: bool) -> ByteArraySchema {
-    ByteArraySchema {
-        kind: "array",
-        min_items: length,
-        max_items: length,
-        items: IntegerSchema {
-            kind: "integer",
-            minimum: 0,
-            maximum: 255,
-        },
-        not: nonzero.then_some(ConstantSchema { value: [0; 16] }),
+const ID_SCHEMA: &str = r#"{"type":"array","minItems":16,"maxItems":16,"items":{"type":"integer","minimum":0,"maximum":255},"not":{"const":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}}"#;
+const KEY_SCHEMA: &str = r#"{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}"#;
+const ROOT_SCHEMA: &str = r#"{
+    "type":"object","additionalProperties":false,
+    "required":["repository_workspace_id","source_identity","source_epoch","native_root_identity"],
+    "properties":{
+        "repository_workspace_id":{"type":"array","minItems":16,"maxItems":16,"items":{"type":"integer","minimum":0,"maximum":255},"not":{"const":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}},
+        "source_identity":{"type":"array","minItems":16,"maxItems":16,"items":{"type":"integer","minimum":0,"maximum":255},"not":{"const":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}},
+        "source_epoch":{"type":"integer","minimum":0,"maximum":18446744073709551615},
+        "native_root_identity":{"type":"array","minItems":16,"maxItems":16,"items":{"type":"integer","minimum":0,"maximum":255},"not":{"const":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}}
     }
-}
+}"#;
 
-#[derive(Serialize)]
-struct RootProperties {
-    repository_workspace_id: ByteArraySchema,
-    source_identity: ByteArraySchema,
-    source_epoch: IntegerSchema,
-    native_root_identity: ByteArraySchema,
-}
-
-fn root_schema() -> ObjectSchema<[&'static str; 4], RootProperties> {
-    object_schema(
-        [
-            "repository_workspace_id",
-            "source_identity",
-            "source_epoch",
-            "native_root_identity",
-        ],
-        RootProperties {
-            repository_workspace_id: bytes_schema(16, true),
-            source_identity: bytes_schema(16, true),
-            source_epoch: IntegerSchema {
-                kind: "integer",
-                minimum: 0,
-                maximum: u64::MAX,
-            },
-            native_root_identity: bytes_schema(16, true),
-        },
-    )
+fn raw_schema(source: &'static str) -> &'static RawValue {
+    serde_json::from_str(source).expect("static Pi allocation schema")
 }
 
 #[derive(Serialize)]
 struct GenerationProperties<'a> {
-    kind: ConstantSchema<&'static str>,
-    provider: ConstantSchema<&'a acyclic_harness::resources::ProviderRef>,
-    key: ByteArraySchema,
-    version: TypeSchema,
+    kind: &'static RawValue,
+    provider: ConstantSchema<'a>,
+    key: &'static RawValue,
+    version: &'static RawValue,
 }
 
 #[derive(Serialize)]
 struct ScratchProperties<'a> {
-    workspace_id: ByteArraySchema,
+    workspace_id: &'static RawValue,
     generation: ObjectSchema<[&'static str; 4], GenerationProperties<'a>>,
 }
 
@@ -183,8 +132,9 @@ impl Serialize for SelectedRootSchemas<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap as _;
         let mut properties = serializer.serialize_map(Some(self.0.project_volumes.len()))?;
+        let root = raw_schema(ROOT_SCHEMA);
         for key in self.0.project_volumes.keys() {
-            properties.serialize_entry(key, &root_schema())?;
+            properties.serialize_entry(key, root)?;
         }
         properties.end()
     }
@@ -205,18 +155,16 @@ impl Serialize for RootAllocationSchema<'_> {
                 scratch: object_schema(
                     ["workspace_id", "generation"],
                     ScratchProperties {
-                        workspace_id: bytes_schema(16, true),
+                        workspace_id: raw_schema(ID_SCHEMA),
                         generation: object_schema(
                             ["kind", "provider", "key", "version"],
                             GenerationProperties {
-                                kind: ConstantSchema {
-                                    value: "generation",
-                                },
+                                kind: raw_schema(r#"{"const":"generation"}"#),
                                 provider: ConstantSchema {
                                     value: self.0.scratch.volume.provider(),
                                 },
-                                key: bytes_schema(32, false),
-                                version: TypeSchema { kind: "null" },
+                                key: raw_schema(KEY_SCHEMA),
+                                version: raw_schema(r#"{"type":"null"}"#),
                             },
                         ),
                     },

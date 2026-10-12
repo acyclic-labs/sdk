@@ -1,4 +1,4 @@
-use super::tests::{head, native_lazy_source};
+use super::tests::{head, native_lazy_source, test_work};
 use super::*;
 use crate::kernel::NamespacePath;
 use crate::model::VolumeLimits;
@@ -12,8 +12,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     acyclic_native_runtime::initialize_native_io_services()?;
     crate::initialize_native_mount_services()?;
     let cancellation = CancellationToken::new();
-    let new_work =
-        |budget| NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause);
+    let new_work = |budget| test_work(budget, &cancellation);
     let setup = new_work(WorkBudget::UNBOUNDED)?;
     let physical = tempfile::tempdir()?;
     std::fs::write(physical.path().join("source.txt"), b"source")?;
@@ -259,30 +258,23 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
             .await?,
         Some(imported)
     );
-    assert_eq!(
-        lazy.read_range(
-            "/selected-import.txt",
-            0,
-            32,
-            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation)
-        )
-        .await?
-        .bytes()
-        .as_ref(),
-        b"selected SDK import"
-    );
-    assert_eq!(
-        lazy.read_range(
-            "/source.txt",
-            0,
-            32,
-            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation)
-        )
-        .await?
-        .bytes()
-        .as_ref(),
-        b"source"
-    );
+    for (path, expected) in [
+        ("/selected-import.txt", b"selected SDK import".as_slice()),
+        ("/source.txt", b"source".as_slice()),
+    ] {
+        assert_eq!(
+            lazy.read_range(
+                path,
+                0,
+                32,
+                &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
+            )
+            .await?
+            .bytes()
+            .as_ref(),
+            expected,
+        );
+    }
 
     assert!(mount.native_root_identity().is_some());
     assert!(mount.retire(&cancelled).is_err());

@@ -113,11 +113,7 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
     let mut coordinator = open(&client).await?;
     declare(&mut coordinator, spec(operation, 0)?, "measured-seed-0").await?;
     let lease = coordinator
-        .pull(&Worker {
-            id: "measured-release-worker".into(),
-            available: ResourceSnapshot::default(),
-            labels: BTreeMap::new(),
-        })
+        .pull(&worker("measured-release-worker"))
         .await?
         .ok_or_else(|| Error::NotFound("original admitted lease".into()))?;
     let cancellation = CancellationToken::new();

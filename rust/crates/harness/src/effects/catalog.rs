@@ -74,11 +74,9 @@ impl EffectRegistry {
         use crate::store::history::HistoryIo as _;
         let mut cloned = Self::new(Some(work))?;
         for (source, provider) in &self.providers {
-            let mut io =
-                crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                    cause,
-                    custody: None,
-                })?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let slot = std::mem::size_of::<(String, Arc<dyn EffectProvider>)>() as u64;
             io.admit_owned(slot)?;
             io.retain_owned(slot)?;
@@ -87,7 +85,7 @@ impl EffectRegistry {
             io.admit_copy(source.len() as u64)?;
             id.push_str(source);
             io.copy_bytes(source.len() as u64)?;
-            let mut custody = io.into_custody();
+            let mut custody = io.into_custody()?;
             cloned
                 .native_metadata
                 .as_mut()
@@ -220,7 +218,9 @@ impl EffectRegistry {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut owned_io = if let Some(work) = work {
             self.require_native_metadata(work)?;
-            let io = crate::store::native_work_io(work)?;
+            let io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             use crate::store::history::HistoryIo as _;
             io.check_cancellation()?;
             Some(io)
@@ -259,7 +259,7 @@ impl EffectRegistry {
             io.admit_copy(source.len() as u64)?;
             id.push_str(source);
             io.copy_bytes(source.len() as u64)?;
-            let mut custody = io.into_custody();
+            let mut custody = io.into_custody()?;
             self.native_metadata
                 .as_mut()
                 .expect("validated native catalog")

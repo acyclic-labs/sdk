@@ -142,12 +142,7 @@ pub(super) async fn writes_only_promised_content(
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = lazy
-        .mount(
-            &destination,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = lazy.mount(&destination, manual_mount_options()).await?;
     if listed_first {
         assert_eq!(std::fs::read_dir(&destination)?.count(), 2);
     }
@@ -216,4 +211,24 @@ pub(super) async fn windows_demand_source(
     .await
     .map(|receipt| receipt.value)
     .map_err(|failure| failure.error)
+}
+
+pub(super) async fn local_workspace(
+    root: &std::path::Path,
+    name: &str,
+    work: &crate::NativeMaterializationWork,
+) -> Result<
+    crate::Workspace<crate::facade::LocalAuthorityBackend, crate::facade::LocalObjectBackend>,
+    Box<dyn std::error::Error>,
+> {
+    Ok(Fs::local(LocalOptions::new(root.join("state")))
+        .await?
+        .create_workspace(name, WorkBudget::UNBOUNDED, work.cancellation())
+        .await
+        .map_err(|failure| failure.error)?
+        .value)
+}
+
+pub(super) fn manual_mount_options() -> MountOptions {
+    MountOptions::read_write().publication(MountPublication::Manual)
 }

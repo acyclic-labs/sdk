@@ -35,17 +35,24 @@ fn root_selected_identity(paths: &BTreeMap<String, String>, identity: &[u8; 16])
 
 fn root_validation_error(reason: &'static str) -> acyclic_harness::Error {
     acyclic_harness::Error::NativeBoundary {
-        code: acyclic_harness::wire::ErrorCode::Invalid, reason,
+        code: acyclic_harness::wire::ErrorCode::Invalid,
+        reason,
     }
 }
 
 impl PiRootIntent {
     pub(crate) fn validate(
-        &self, binding: &PiTaskBinding, work: &acyclic_fs::NativeMaterializationWork,
+        &self,
+        binding: &PiTaskBinding,
+        work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<()> {
-        let inspect = |items| work.admit(acyclic_fs::WorkCounters { items_examined: items,
-            ..acyclic_fs::WorkCounters::UNCHARGED })
-            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None });
+        let inspect = |items| {
+            work.admit(acyclic_fs::WorkCounters {
+                items_examined: items,
+                ..acyclic_fs::WorkCounters::UNCHARGED
+            })
+            .map_err(acyclic_harness::Error::from)
+        };
         inspect(1)?;
         match self {
             Self::ScratchOnly {} if binding.project_volumes.is_empty() => Ok(()),
@@ -75,18 +82,17 @@ impl PiRootIntent {
                             .any(|part| matches!(part, Component::ParentDir))
                     {
                         return Err(root_validation_error(
-                            "Pi root intent has an invalid identity or native path"
+                            "Pi root intent has an invalid identity or native path",
                         ));
                     }
                 }
                 Ok(())
             }
-            _ => Err(root_validation_error("Pi root intent differs from its selected project roots")),
+            _ => Err(root_validation_error(
+                "Pi root intent differs from its selected project roots",
+            )),
         }
     }
-
-
-
 }
 
 #[cfg(test)]
@@ -107,7 +113,10 @@ mod identity_key_tests {
                 substituted[offset] ^= 1;
                 assert!(!root_selected_identity(&paths, &substituted));
                 if canonical.bytes().any(|byte| byte.is_ascii_lowercase()) {
-                    assert!(!root_identity_key_matches(&canonical.to_uppercase(), &identity));
+                    assert!(!root_identity_key_matches(
+                        &canonical.to_uppercase(),
+                        &identity
+                    ));
                 }
                 assert!(!root_identity_key_matches(&canonical[..31], &identity));
             }
