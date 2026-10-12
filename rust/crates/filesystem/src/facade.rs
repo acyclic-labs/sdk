@@ -50,7 +50,7 @@ use crate::kernel::{
     authenticate_generation_export_manifest_async, build_blob_async,
     build_generation_export_manifest_async, contextual_publication_fingerprint, decode_file_metadata,
     decode_volume_created, decode_workspace_deleted, export_generation_batch_async,
-    import_generation_batch_async, list_attributes_async, list_tree_entries_async, lookup_file_record_async,
+    import_generation_batch_async, list_attributes, list_tree_entries_async, lookup_file_record_async,
     lookup_file_records_async, merge_generation_async, plan_extent_range_async,
     prove_generation_closure_async, publish_generation_async, publish_generation_async_with_permit,
     read_blob_range_async, read_file_range_async, retention_authority_id, volume_authority_id,
@@ -7568,7 +7568,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         let mut total = 0_u64;
         let mut after: Option<AttributeName> = None;
         loop {
-            let listing = list_attributes_async(
+            let listing = list_attributes(
                 &self.volume.fs.inner.objects,
                 root,
                 after.as_ref(),
