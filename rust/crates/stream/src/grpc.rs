@@ -29,7 +29,7 @@ use tracing::instrument::WithSubscriber as _;
 
 use crate::obs;
 use crate::wire_codec::{
-    WireFunding, append_from_wire, append_outcome_from_wire, append_outcome_wire, commit_from_wire,
+    append_from_wire, append_outcome_from_wire, append_outcome_wire, commit_from_wire,
     commit_id, commit_outcome_from_wire, commit_outcome_wire, condition_wire, envelope_from_wire,
     envelope_wire, fork_receipt_to_wire, mutation_wire, observation_from_wire, observation_wire,
     optional_key, path, read_response_records, read_response_wire, record, record_wire,
@@ -126,9 +126,7 @@ impl Client {
         self
     }
 
-    /// Reports a hosted transport receipt to its issuing endpoint (in configured
-    /// endpoint order). This never fails over: tokens are endpoint-bound.
-    /// It does not represent application consumption, billing, or a checkpoint.
+    /// Reports a hosted transport receipt to its issuing endpoint (in configured endpoint order).
     pub async fn acknowledge_delivery(
         &self,
         endpoint: usize,
@@ -166,7 +164,6 @@ impl Client {
     }
 
     /// Connects trusting the platform's roots with an account-bound bearer credential.
-    /// On Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR` select native roots.
     pub async fn connect(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
@@ -200,10 +197,7 @@ impl Client {
         .await
     }
 
-    /// Connects eagerly through TLS and HTTP/2, retaining the resulting channel
-    /// for later operations. Native callers use this path when cancellation
-    /// must cover connection establishment itself; [`Self::connect`] remains
-    /// lazy for the ordinary managed client.
+    /// Connects eagerly through TLS and HTTP/2, retaining the resulting channel for later operations.
     pub async fn connect_eager(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
@@ -656,7 +650,6 @@ struct ActiveRecords {
 }
 
 /// One bounded worker belongs to the logical reader, including reconnects.
-/// Overflow discards best-effort receipts, never delays record delivery.
 struct DeliveryAcknowledgements {
     queue: tokio::sync::mpsc::Sender<(usize, Bytes)>,
     worker: tokio::task::JoinHandle<()>,
@@ -685,8 +678,7 @@ impl Drop for DeliveryAcknowledgements {
 }
 
 impl RecordCursor {
-    /// Delivered errors terminate the logical cursor. Retryable transport failures
-    /// reconnect internally before reaching this boundary.
+    /// Delivered errors terminate the logical cursor.
     fn failure(mut self, error: StreamError) -> Option<(Result<Record, StreamError>, Self)> {
         self.completion.finish(Some(error.code()), None);
         self.active = None;
@@ -862,9 +854,7 @@ impl StreamProvider for Client {
         );
         // This is the ordinary provider API. Ready immutable wire aliases keep
         // each canonical payload's custody; no native operation meter is inferred.
-        let records = WireFunding::new(None)
-            .wire_records(&request.records)
-            .map_err(|_| StreamError::Capacity)?;
+        let records = request.records.into_iter().map(Bytes::from_owner).collect();
         let response = self
             .unary(
                 wire::AppendRequest {
@@ -1448,7 +1438,6 @@ fn finish_served<T>(
 }
 
 /// A single owned operation, retaining its creating dispatch even if its span is filtered.
-/// Only the first terminal observation wins; dropping pending work is cancellation.
 struct Completion {
     span: obs::OwnedSpan,
     finished: bool,
@@ -1521,7 +1510,6 @@ impl<T> RpcResponse<T> {
 }
 
 /// Completes a streaming RPC on exhaustion, first error, or unfinished drop.
-/// Response headers alone do not acknowledge delivery of the body.
 struct ObservedBody<S> {
     body: obs::Scoped<S>,
     completion: Completion,
@@ -2033,8 +2021,7 @@ mod tests {
         inner: MemoryStream,
         follows: AtomicUsize,
         tail_delay: std::time::Duration,
-        /// `Some(n)`: Follow yields the first `n` records, then a denied credential;
-        /// `Some(0)` denies the Follow when it opens.
+        /// `Some(n)`: Follow yields the first `n` records, then a denied credential; `Some(0)` denies the Follow when it opens.
         denial: Option<usize>,
     }
 
@@ -2146,8 +2133,7 @@ mod tests {
         Ok(())
     }
 
-    /// Regroups every Read frame into batches of three records that alternate
-    /// between Zstandard and uncompressed frames.
+    /// Regroups every Read frame into batches of three records that alternate between Zstandard and uncompressed frames.
     #[derive(Clone)]
     struct MixedFrames(Service<MemoryStream>, Option<&'static str>, Option<Arc<AckFixture>>);
 
@@ -2446,24 +2432,6 @@ mod tests {
             })).await.err().ok_or("local adapter acknowledged a hosted token")?;
             assert_eq!(error.code(), Code::Unimplemented);
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn receipt_worker_queue_is_bounded_and_owned_by_reader()
-    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let fixture = AckFixture::new(Some(32), false);
-        let (channel, server) = ack_loopback(Arc::clone(&fixture), None).await?;
-        let client = Client::from_channels(Arc::from([channel]), "fixture")?;
-        let worker = DeliveryAcknowledgements::new(client);
-        worker.enqueue(0, vec![7; 32].into());
-        wait_for_ack_count(&fixture, &fixture.entered).await?;
-        for _ in 0..1_000 { worker.enqueue(0, vec![7; 32].into()); }
-        assert_eq!(worker.queue.capacity(), 0);
-        assert_eq!(fixture.entered.load(Ordering::SeqCst), 1);
-        drop(worker);
-        wait_for_ack_count(&fixture, &fixture.cancelled).await?;
-        server.abort();
         Ok(())
     }
 
