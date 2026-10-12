@@ -261,18 +261,15 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         definition: &crate::tool::ToolDefinition,
         started: bool,
-    ) -> Result<Option<ToolCallProgress>> {
-        let Some((native, _)) = self.native else {
+    ) -> Result<Option<ExecutionProgress<()>>> {
+        let Some(work) = self.native_work() else {
             return Ok(None);
         };
-        let context = native.context();
+        let (context, _) = self.context.ok_or(crate::Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Storage,
+            reason: "stock policy has no issued task",
+        })?;
         let io = self.io.expect("native execution ledger");
-        let work = io
-            .original_native_work()
-            .ok_or_else(|| crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Storage,
-                reason: "stock policy has no original work",
-            })?;
         for (_, policy) in context
             .stock_tool_policy_binding()
             .into_iter()
@@ -318,7 +315,7 @@ impl StockExecution<'_> {
                 return if started {
                     Err(Error::Indeterminate(invocation.operation_id))
                 } else {
-                    Ok(Some(ToolCallProgress::Pending(invocation.operation_id)))
+                    Ok(Some(ExecutionProgress::Pending(invocation.operation_id)))
                 };
             };
             if matches!(outcome, InteractionOutcome::Answered { .. }) {
@@ -330,7 +327,7 @@ impl StockExecution<'_> {
             match check_tool_approval(outcome) {
                 Ok(()) => {}
                 Err(Error::InteractionRejected(reason)) if !started => {
-                    return Ok(Some(ToolCallProgress::Rejected(reason)));
+                    return Ok(Some(ExecutionProgress::Rejected(reason)));
                 }
                 Err(Error::InteractionRejected(_)) => {
                     return Err(Error::Indeterminate(invocation.operation_id));
@@ -376,7 +373,7 @@ pub(in crate::executor) async fn stock_tool_rejection(
     call: &str,
     kind: ToolFailureKind,
     error: Error,
-) -> Result<ToolCallProgress> {
+) -> Result<ExecutionProgress<()>> {
     if stock_native_failure(&error) {
         return Err(error);
     }

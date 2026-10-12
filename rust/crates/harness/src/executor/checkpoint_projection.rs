@@ -78,10 +78,11 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         Some(io) if io.original_native_work().is_some() => {
             let before = io.owned_bytes()?;
-            let mut observer = crate::store::history::native_work_io(
-                io.original_native_work()
-                    .expect("native branch retains original work"),
-            )?;
+            let mut observer =
+                crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(
+                    io.original_native_work()
+                        .expect("native branch retains original work"),
+                )?);
             let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
             let records = history
                 .conversation_range(
@@ -102,7 +103,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
                 &mut work,
             )?;
             observer.return_staged_output()?;
-            io.absorb_native_custody(observer.into_custody())?;
+            io.absorb_native_custody(observer.into_custody()?)?;
             _records_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
             _view_workspace = None;
             view

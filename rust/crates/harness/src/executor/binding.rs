@@ -3,8 +3,9 @@ use super::*;
 impl StockExecution<'_> {
     pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some((native, expected_operation)) = self.native {
-            let context = native.context();
+        if self.native_work().is_some()
+            && let Some((context, expected_operation)) = self.context
+        {
             if expected_operation != operation
                 || context.durable_task_id() != self.stock.task.as_ref().map(|(_, task, _)| *task)
                 || context.scope().run_limits() != self.stock.tool_scope.run_limits()
@@ -20,8 +21,8 @@ impl StockExecution<'_> {
             }
             return Ok(());
         }
-        if let Some((context, expected_operation)) = &self.stock.task_context
-            && (*expected_operation != operation
+        if let Some((context, expected_operation)) = self.context
+            && (expected_operation != operation
                 || context.durable_task_id() != self.stock.task.as_ref().map(|(_, task, _)| *task)
                 || context.scope().grants() != self.stock.tool_scope.grants()
                 || context.scope().limits() != self.stock.limits
@@ -40,18 +41,16 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
     ) -> Result<Option<crate::runtime::ToolContext>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some((native, _)) = self.native {
-            let work = self
-                .native_work()
-                .ok_or_else(|| crate::Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Storage,
-                    reason: "native tool context has no original work",
-                })?;
-            let mut tool_context = crate::runtime::ToolContext::new_with_native_work(
-                Arc::clone(native),
+        if let Some(work) = self.native_work() {
+            let (context, _) = self.context.ok_or(crate::Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Storage,
+                reason: "native tool context has no issued task",
+            })?;
+            let mut tool_context = crate::runtime::ToolContext::new(
+                Arc::clone(context),
                 invocation.operation_id,
                 &invocation.call_id,
-                work,
+                self.io,
             )?
             .with_native_scope(&self.stock.tool_scope, self.stock.limits, work)?;
             if let Some(interactions) = self.interactions {
@@ -60,14 +59,13 @@ impl StockExecution<'_> {
             }
             return Ok(Some(tool_context));
         }
-        self.stock
-            .task_context
-            .as_ref()
+        self.context
             .map(|(context, _)| {
                 crate::runtime::ToolContext::new(
-                    context.clone(),
+                    Arc::clone(context),
                     invocation.operation_id,
-                    invocation.call_id.clone(),
+                    &invocation.call_id,
+                    None,
                 )
             })
             .transpose()
@@ -104,26 +102,13 @@ impl StockExecution<'_> {
         let io = self.io;
         let contracts = self.context_pipeline().contracts(io)?;
         let tools = self.stock.tools.definitions(io)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let binding = self
-            .native
-            .map(|(native, operation)| (native.context(), operation));
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let binding = None;
-        let task_context = binding
-            .or_else(|| {
-                self.stock
-                    .task_context
-                    .as_ref()
-                    .map(|(context, operation)| (context, *operation))
-            })
-            .map(|(context, operation)| IssuedContext {
-                admission_operation: context.id(),
-                execution_operation: operation,
-                task_id: context.durable_task_id(),
-                run_limits: context.scope().run_limits(),
-                extensions: context.scope().extensions(),
-            });
+        let task_context = self.context.map(|(context, operation)| IssuedContext {
+            admission_operation: context.id(),
+            execution_operation: operation,
+            task_id: context.durable_task_id(),
+            run_limits: context.scope().run_limits(),
+            extensions: context.scope().extensions(),
+        });
         preparation_digest(
             &Request {
                 executor: "acyclic.stock.v6",

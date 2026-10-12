@@ -114,20 +114,22 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         Some(io) if io.original_native_work().is_some() => {
             let before = io.owned_bytes()?;
-            let (cursor, custody) = history
-                .pin_with_native_work(
-                    0,
-                    io.original_native_work()
-                        .expect("native branch retains original work"),
-                )
-                .await?;
-            io.absorb_native_custody(custody)?;
+            let mut observer = crate::store::HistoryWork::new(PreparationIo::from_native_work(
+                io.original_native_work()
+                    .expect("native branch retains original work"),
+            )?);
+            let cursor = history.pin(0, Some(&mut observer)).await?;
+            observer.return_staged_output()?;
+            io.absorb_native_custody(observer.into_custody()?)?;
             _committed_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
             cursor
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let mut read_work = crate::store::HistoryWork::new(PreparationIo::from_budget(
+                io.remaining()?,
+                io.cancellation(),
+            )?);
             let result = async {
                 read_work.preflight()?;
                 history.pin(0, Some(&mut read_work)).await
@@ -172,10 +174,11 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         Some(io) if io.original_native_work().is_some() => {
             let before = io.owned_bytes()?;
-            let mut observer = crate::store::history::native_work_io(
-                io.original_native_work()
-                    .expect("native branch retains original work"),
-            )?;
+            let mut observer =
+                crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(
+                    io.original_native_work()
+                        .expect("native branch retains original work"),
+                )?);
             let selection = history
                 .operation_event(
                     envelope.operation_id,
@@ -184,13 +187,16 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
                 )
                 .await?;
             observer.return_staged_output()?;
-            io.absorb_native_custody(observer.into_custody())?;
+            io.absorb_native_custody(observer.into_custody()?)?;
             _selection_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
             selection
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let mut read_work = crate::store::HistoryWork::new(PreparationIo::from_budget(
+                io.remaining()?,
+                io.cancellation(),
+            )?);
             let result = async {
                 read_work.preflight()?;
                 history

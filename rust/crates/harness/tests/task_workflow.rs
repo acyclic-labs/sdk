@@ -2536,7 +2536,12 @@ async fn stock_restart_with_publication_fault(
         }
         let journal = runtime.workflow_journal(task, fence.clone()).await?;
         let mut session = harness
-            .open_registered_task(task, fence.clone(), journal.clone())
+            .open_registered_task(task,
+                &fence,
+                journal.clone(),
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                None,
+            )
             .await?;
         assert_eq!(session.task_id(), task);
         if reopened {
@@ -2627,7 +2632,11 @@ async fn stock_restart_with_publication_fault(
             drop(session);
             let recovery_journal = runtime.workflow_journal(task, fence.clone()).await?;
             let mut recovered = harness
-                .open_registered_task(task, fence, recovery_journal.clone())
+                .open_registered_task(task,
+                    &fence, recovery_journal.clone(),
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    None,
+                )
                 .await?;
             assert_eq!(
                 recovered

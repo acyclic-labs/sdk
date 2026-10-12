@@ -59,8 +59,7 @@ impl StockExecution<'_> {
         })?;
         let executor = StockExecution {
             stock: self.stock,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native: self.native,
+            context: self.context,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             interactions: self.interactions,
             io: self.io,

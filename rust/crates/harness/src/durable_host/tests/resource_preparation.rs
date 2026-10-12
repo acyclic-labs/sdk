@@ -66,7 +66,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         bindings.tasks = tasks;
         bindings.scope = scope.clone();
         bindings.durable_host = Some(host.clone());
-        bindings.build()?
+        bindings.build(None)?
     };
     let admission = |operation_id, parent, input| TaskAdmissionRecord {
         resource_proofs: Vec::new(),

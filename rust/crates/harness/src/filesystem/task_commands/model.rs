@@ -174,9 +174,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
         };
         match progress {
-            StockTurnProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
-            StockTurnProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
-            StockTurnProgress::Rejected(reason) => rejected(reason, io),
+            ExecutionProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
+            ExecutionProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
+            ExecutionProgress::Rejected(reason) => rejected(reason, io),
         }
     }
     pub(super) async fn stock_mail_operation(

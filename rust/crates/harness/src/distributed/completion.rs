@@ -12,7 +12,9 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
 ) -> Result<crate::NativeFutureBundle<'static, acyclic_fs::MaterializationJournal>> {
     use acyclic_stream::{CommitCondition, CommitConflict, CommittedMutation, Record};
     use std::mem::size_of;
-    let mut io = crate::store::history::native_work_io(original)?;
+    let mut io = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(original)?,
+    );
     let mut work = Some(&mut io as &mut dyn HistoryIo);
     if !template.matches_work(original) {
         return Err(Error::NativeBoundary {

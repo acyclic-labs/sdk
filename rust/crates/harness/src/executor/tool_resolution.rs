@@ -47,11 +47,11 @@ impl StockExecution<'_> {
         step: u32,
         invocation: ToolInvocation,
         prior_messages: &mut Vec<ModelMessage>,
-    ) -> Result<ToolCallProgress> {
+    ) -> Result<ExecutionProgress<()>> {
         let span = obs_span!("acyclic.harness.executor.tool_call", step = step);
         let call = self.settle_tool_call(journal, operation_id, step, invocation, prior_messages);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.native.is_some() {
+        if self.native_work().is_some() {
             return span.scope(call).await;
         }
         traced(span, call).await

@@ -5,7 +5,7 @@ impl StockExecution<'_> {
         &self,
         input: &TurnInput,
         journal: &dyn ExecutionJournal,
-    ) -> Result<StockTurnProgress> {
+    ) -> Result<ExecutionProgress<TurnOutput>> {
         self.verify_task_context_binding(input.operation_id)?;
         self.verify_execution_owner().await?;
         self.validate_turn_input(journal, input).await?;
@@ -63,7 +63,7 @@ impl StockExecution<'_> {
                 return Err(Error::Indeterminate(input.operation_id));
             };
             if calls.is_empty() {
-                return Ok(StockTurnProgress::Ready(TurnOutput {
+                return Ok(ExecutionProgress::Ready(TurnOutput {
                     text,
                     attachments: Vec::new(),
                     metadata,
@@ -93,12 +93,12 @@ impl StockExecution<'_> {
                     )
                     .await?
                 {
-                    ToolCallProgress::Settled => {}
-                    ToolCallProgress::Pending(wait) => {
-                        return Ok(StockTurnProgress::Pending(wait));
+                    ExecutionProgress::Ready(()) => {}
+                    ExecutionProgress::Pending(wait) => {
+                        return Ok(ExecutionProgress::Pending(wait));
                     }
-                    ToolCallProgress::Rejected(reason) => {
-                        return Ok(StockTurnProgress::Rejected(reason));
+                    ExecutionProgress::Rejected(reason) => {
+                        return Ok(ExecutionProgress::Rejected(reason));
                     }
                 }
             }

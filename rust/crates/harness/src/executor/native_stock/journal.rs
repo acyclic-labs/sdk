@@ -342,14 +342,14 @@ pub(in crate::executor) fn native_output_payload_bytes(output: &TurnOutput) -> R
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(in crate::executor) fn native_progress_owned_bytes(
-    progress: &StockTurnProgress,
+    progress: &ExecutionProgress<TurnOutput>,
 ) -> Result<u64> {
-    let root = std::mem::size_of::<StockTurnProgress>() as u64;
+    let root = std::mem::size_of::<ExecutionProgress<TurnOutput>>() as u64;
     match progress {
-        StockTurnProgress::Ready(output) => {
+        ExecutionProgress::Ready(output) => {
             native_size_add(root, native_output_payload_bytes(output)?)
         }
-        StockTurnProgress::Pending(_) | StockTurnProgress::Rejected(_) => Ok(root),
+        ExecutionProgress::Pending(_) | ExecutionProgress::Rejected(_) => Ok(root),
     }
 }
 

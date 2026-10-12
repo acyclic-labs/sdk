@@ -27,7 +27,6 @@ use std::sync::Arc;
 
 mod headless;
 mod native_stock;
-pub use headless::ModelToolsProgress;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_stock::NativeStockExecutor;
 use native_stock::*;
@@ -361,13 +360,17 @@ pub struct TurnOutput {
     pub steps: u32,
 }
 
-pub(crate) enum StockTurnProgress {
-    Ready(TurnOutput),
+/// Execution progress with its settled value or original approval outcome.
+pub enum ExecutionProgress<T> {
+    /// The operation settled with its complete result.
+    Ready(T),
+    /// The original approval operation is pending.
     Pending(OperationId),
+    /// The original approval operation was rejected.
     Rejected(crate::InteractionRejection),
 }
 
-impl StockTurnProgress {
+impl ExecutionProgress<TurnOutput> {
     pub(crate) fn into_output(self) -> Result<TurnOutput> {
         match self {
             Self::Ready(output) => Ok(output),
@@ -375,12 +378,6 @@ impl StockTurnProgress {
             Self::Rejected(reason) => Err(Error::InteractionRejected(reason)),
         }
     }
-}
-
-enum ToolCallProgress {
-    Settled,
-    Pending(OperationId),
-    Rejected(crate::InteractionRejection),
 }
 
 /// Complete replaceable turn loop. Implementations may own every policy decision.
@@ -417,7 +414,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn execute_with_native_context<'a>(
         &'a self,
-        _context: &'a Arc<crate::runtime::NativeTaskContext>,
+        _context: &'a Arc<crate::runtime::TaskContext>,
         _input: &'a TurnInput,
         _journal: &'a dyn ExecutionJournal,
         _work: &'a acyclic_fs::NativeMaterializationWork,
@@ -451,7 +448,7 @@ pub struct StockExecutor {
         FileRef,
         Arc<dyn crate::conversation::ContentResidencyVerifier>,
     )>,
-    task_context: Option<(crate::runtime::TaskContext, OperationId)>,
+    task_context: Option<(Arc<crate::runtime::TaskContext>, OperationId)>,
     compaction: crate::context::CompactionPolicy,
     reconciliation_only: bool,
 }

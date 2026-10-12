@@ -113,7 +113,7 @@ impl StockExecutor {
         policy: Option<Arc<dyn ToolPolicy>>,
     ) -> Result<Self> {
         if let Some(policy) = &policy {
-            validate_policy_identity(&policy.identity())?;
+            validate_policy_identity(&policy.identity(), None)?;
         }
         self.policy_identity = policy.as_ref().map(|policy| policy.identity());
         self.tool_scope = scope;
@@ -127,8 +127,15 @@ impl StockExecutor {
         context: &crate::runtime::TaskContext,
         execution_operation: OperationId,
     ) -> Result<Self> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if context.native_work().is_ok() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "native stock context requires its original work",
+            });
+        }
         let context = context.scoped(self.tool_scope.grants().clone(), self.limits)?;
-        self.task_context = Some((context, execution_operation));
+        self.task_context = Some((Arc::new(context), execution_operation));
         StockExecution::ordinary(&self).verify_task_context_binding(execution_operation)?;
         Ok(self)
     }
@@ -168,7 +175,7 @@ impl Executor for StockExecutor {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn execute_with_native_context<'a>(
         &'a self,
-        context: &'a Arc<crate::runtime::NativeTaskContext>,
+        context: &'a Arc<crate::runtime::TaskContext>,
         input: &'a TurnInput,
         journal: &'a dyn ExecutionJournal,
         work: &'a acyclic_fs::NativeMaterializationWork,

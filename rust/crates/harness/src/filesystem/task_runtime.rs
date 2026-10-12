@@ -13,7 +13,7 @@ use crate::{
     distributed::DistributedCoordinator,
     durable_host::CoordinatorTaskHost,
     durable_tool::ResumableToolRegistry,
-    executor::{ExecutionJournal, StockExecutor, StockTurnProgress, TurnInput, TurnOutput},
+    executor::{ExecutionJournal, StockExecutor, ExecutionProgress, TurnInput, TurnOutput},
     interaction::Interaction,
     model::{Model, ModelProvider},
     runtime::{
@@ -2947,7 +2947,7 @@ where
         self.execute_progress(input).await?.into_output()
     }
 
-    pub(crate) async fn execute_progress(&self, input: TurnInput) -> Result<StockTurnProgress> {
+    pub(crate) async fn execute_progress(&self, input: TurnInput) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_input(&input)?;
         deadline::run(
             &self.host,
@@ -2980,7 +2980,7 @@ where
     pub(crate) async fn reconcile_progress(
         mut self,
         input: TurnInput,
-    ) -> Result<StockTurnProgress> {
+    ) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_input(&input)?;
         self.host
             .verify_execution_owner(self.task, self.fence.clone())

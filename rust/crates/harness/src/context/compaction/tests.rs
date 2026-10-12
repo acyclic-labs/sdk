@@ -79,7 +79,9 @@ fn observed_compaction_matches_ordinary_exchange_and_input_selection() -> Result
         &cancellation,
     )
     .expect("original ledger");
-    let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+    let mut observer = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&work).expect("original observer"),
+    );
     let (actual, claim) =
         compact_context(&context, 4, &summary, &retention, &mut Some(&mut observer))?;
     let custody = observer.into_custody();
@@ -117,7 +119,9 @@ fn partial_field_copy_releases_original_custody_and_cancelled_copy_is_empty() {
             content: ModelContent::Text("second".into()),
         },
     ];
-    let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+    let mut observer = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&work).expect("original observer"),
+    );
     assert!(clone_messages(&messages, None, &[], &mut Some(&mut observer)).is_err());
     let custody = observer.into_custody();
     assert_eq!(
@@ -126,7 +130,9 @@ fn partial_field_copy_releases_original_custody_and_cancelled_copy_is_empty() {
         "failed partial payload drops before its quota releases"
     );
     drop(custody);
-    let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+    let mut observer = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&work).expect("original observer"),
+    );
     cancellation.cancel();
     assert!(clone_messages(&messages, None, &[], &mut Some(&mut observer)).is_err());
 }

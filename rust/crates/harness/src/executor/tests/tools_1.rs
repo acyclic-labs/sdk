@@ -193,7 +193,7 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
         )?;
         for _ in 0..2 {
             assert!(
-                matches!(executor.execute_progress(input.clone(), &journal).await?, StockTurnProgress::Pending(operation) if operation == invocation.operation_id)
+                matches!(executor.execute_progress(input.clone(), &journal).await?, ExecutionProgress::Pending(operation) if operation == invocation.operation_id)
             );
         }
         assert!(
@@ -223,7 +223,7 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
         if outcome == InteractionOutcome::Approved {
             assert!(matches!(
                 executor.execute_progress(input.clone(), &journal).await?,
-                StockTurnProgress::Ready(TurnOutput { steps: 2, .. })
+                ExecutionProgress::Ready(TurnOutput { steps: 2, .. })
             ));
             assert_eq!(model.calls.load(Ordering::SeqCst), 2);
             assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
@@ -232,7 +232,7 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
         } else {
             assert!(matches!(
                 executor.execute_progress(input.clone(), &journal).await?,
-                StockTurnProgress::Rejected(crate::InteractionRejection::Denied)
+                ExecutionProgress::Rejected(crate::InteractionRejection::Denied)
             ));
             assert_eq!(model.calls.load(Ordering::SeqCst), 1);
             assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);

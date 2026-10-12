@@ -1,16 +1,6 @@
 //! Custom-loop entrypoints reuse stock admission and tool settlement.
 use super::*;
 
-/// Result of settling the ordered tools admitted by one retained model step.
-pub enum ModelToolsProgress {
-    /// Complete assistant-call/tool-result messages to supply to the next step.
-    Ready(Vec<ModelMessage>),
-    /// The existing approval ticket is pending; no fake tool result is supplied.
-    Pending(OperationId),
-    /// The admitted approval was rejected.
-    Rejected(crate::InteractionRejection),
-}
-
 impl StockExecutor {
     /// Resolves ONLY calls from an already completed retained model response.
     pub async fn resolve_model_tools(
@@ -18,7 +8,7 @@ impl StockExecutor {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-    ) -> Result<ModelToolsProgress> {
+    ) -> Result<ExecutionProgress<Vec<crate::model::ModelMessage>>> {
         StockExecution::ordinary(self)
             .resolve_model_tools(journal, input, step)
             .await
@@ -31,7 +21,7 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-    ) -> Result<ModelToolsProgress> {
+    ) -> Result<ExecutionProgress<Vec<crate::model::ModelMessage>>> {
         self.verify_task_context_binding(input.operation_id)?;
         self.validate_turn_input(journal, input).await?;
         if step >= input.max_steps {
@@ -96,16 +86,16 @@ impl StockExecution<'_> {
                     .resolve_tool_call(journal, input.operation_id, step, invocation, &mut messages)
                     .await?
                 {
-                    ToolCallProgress::Settled => {}
-                    ToolCallProgress::Pending(operation) => {
-                        return Ok(ModelToolsProgress::Pending(operation));
+                    ExecutionProgress::Ready(()) => {}
+                    ExecutionProgress::Pending(operation) => {
+                        return Ok(ExecutionProgress::Pending(operation));
                     }
-                    ToolCallProgress::Rejected(reason) => {
-                        return Ok(ModelToolsProgress::Rejected(reason));
+                    ExecutionProgress::Rejected(reason) => {
+                        return Ok(ExecutionProgress::Rejected(reason));
                     }
                 }
             }
         }
-        Ok(ModelToolsProgress::Ready(messages))
+        Ok(ExecutionProgress::Ready(messages))
     }
 }

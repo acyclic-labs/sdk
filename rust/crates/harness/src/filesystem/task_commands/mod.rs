@@ -10,7 +10,7 @@ use crate::{
     context::ContextPipeline,
     conversation::FileRef,
     durable_tool::DurableToolRunner,
-    executor::{ExecutionJournal, StockTurnProgress, TurnInput},
+    executor::{ExecutionJournal, ExecutionProgress, TurnInput},
     model::{Model, ModelContent, ModelProvider},
     projection::SelectedModelContext,
     runtime::{DurableTaskHost, TaskContext, ToolContext},

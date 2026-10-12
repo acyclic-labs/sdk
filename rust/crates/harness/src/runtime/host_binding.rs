@@ -6,141 +6,138 @@ impl AgentHarness {
         observed: &TaskAdmissionRecord,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = task_original_work(io)? {
-            let mut observer =
-                crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                    cause,
-                    custody: None,
-                })?;
-            observed.validate(&mut Some(&mut observer))?;
+        let native = task_original_work(io)?;
+        crate::executor::with_history_io(io, |work| {
+            observed.validate(work)?;
             self.tasks.validate_durable_admission(
                 &observed.task,
                 &observed.machine,
                 Some(&observed.input_schema),
                 &observed.output_schema,
                 Some(&observed.input),
-                &mut Some(&mut observer),
+                work,
             )?;
             if observed.resource_proofs.is_empty() {
-                self.scope.validate_narrowing_with_native_work(
-                    &observed.grants,
-                    &observed.limits,
-                    work,
-                )?;
-                self.scope.validate_run_limit_attenuation(
-                    &observed.run_limits,
-                    &mut Some(&mut crate::store::native_work_io(work).map_err(|cause| {
-                        crate::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?),
-                )?;
-            } else {
-                let state = self.state.as_ref().ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "resource-derived admission state is not bound",
-                })?;
-                let admitted = state
-                    .resume_scope_with_native_work(observed.task_id(), observed.operation_id, work)?
-                    .await?;
-                if !admitted.1.work().shares_allocation_context(work) {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "resumed scope differs from its original metadata ledger",
-                    });
-                }
-                let observed_digest =
-                    observed.canonical_digest_with_work(&mut Some(&mut observer))?;
-                if admitted
-                    .0
-                    .created_access
-                    .as_ref()
-                    .is_none_or(|access| access.admission_digest != observed_digest)
+                if !self
+                    .scope
+                    .allows_authority(&observed.grants, &observed.limits)
                 {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "resource scope seal differs from observed admission",
-                    });
+                    return Err(task_workflow_error(
+                        native,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "runtime scope cannot widen ancestor authority",
+                    ));
                 }
-                self.validate_native_resumed_scope(&admitted.0, observed.operation_id, work)?;
+                self.scope
+                    .validate_run_limit_attenuation(&observed.run_limits, work)?;
             }
-            if observed.policy != self.policy_identity
-                || observed.extensions.as_ref() != self.scope.extensions()
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "retained admission changed owner bindings",
-                });
-            }
-            return match (&self.execution, observed.execution.as_ref()) {
-                (Some(provider), Some(placement))
-                    if &placement.provider == provider.identity_with_native_work(work)? =>
-                {
-                    Ok(())
-                }
-                (None, None) => Ok(()),
-                _ => Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "retained execution route differs from runtime",
-                }),
-            };
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let _ = io;
-        observed.validate(&mut None)?;
-        self.tasks.validate_durable_admission(
-            &observed.task,
-            &observed.machine,
-            Some(&observed.input_schema),
-            &observed.output_schema,
-            Some(&observed.input),
-            &mut None,
-        )?;
-        if observed.resource_proofs.is_empty() {
-            self.scope
-                .narrow(observed.grants.clone(), observed.limits)?
-                .with_run_limits(observed.run_limits, &mut None)?;
-        } else {
+            Ok(())
+        })?;
+        if !observed.resource_proofs.is_empty() {
             let state = self.state.as_ref().ok_or_else(|| {
-                Error::Unsupported("resource-derived admission state is not bound".into())
+                task_workflow_error(
+                    native,
+                    crate::wire::ErrorCode::Unsupported,
+                    "resource-derived admission state is not bound",
+                )
             })?;
-            let admitted = state
-                .resume_scope(observed.task_id(), observed.operation_id)
-                .await?;
-            let observed_digest =
-                crate::contract::canonical_json_digest(&observed.canonical_value(), u64::MAX, &mut None)?;
-            if admitted
+            let resumed = {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if let Some(work) = native {
+                    let resumed = state
+                        .resume_scope_with_native_work(
+                            observed.task_id(),
+                            observed.operation_id,
+                            work,
+                        )?
+                        .await?;
+                    if !resumed.1.work().shares_allocation_context(work) {
+                        return Err(task_workflow_error(
+                            native,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "resumed scope differs from its original metadata ledger",
+                        ));
+                    }
+                    (resumed.0, Some(resumed.1))
+                } else {
+                    (
+                        state
+                            .resume_scope(observed.task_id(), observed.operation_id)
+                            .await?,
+                        None,
+                    )
+                }
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                (
+                    state
+                        .resume_scope(observed.task_id(), observed.operation_id)
+                        .await?,
+                    None::<NativeCustody>,
+                )
+            };
+            let digest = crate::executor::with_history_io(io, |work| {
+                observed.canonical_digest_with_work(work)
+            })?;
+            if resumed
+                .0
                 .created_access
                 .as_ref()
-                .is_none_or(|access| access.admission_digest != observed_digest)
+                .is_none_or(|access| access.admission_digest != digest)
             {
-                return Err(Error::Unauthorized(
-                    "resource scope seal differs from observed admission".into(),
+                return Err(task_workflow_error(
+                    native,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "resource scope seal differs from observed admission",
                 ));
             }
-            self.scope.resume_sealed(admitted, observed.operation_id)?;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(work) = native {
+                self.validate_native_resumed_scope(&resumed.0, observed.operation_id, work)?;
+            } else {
+                self.scope.resume_sealed(resumed.0, observed.operation_id)?;
+            }
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            self.scope.resume_sealed(resumed.0, observed.operation_id)?;
         }
         if observed.policy != self.policy_identity
             || observed.extensions.as_ref() != self.scope.extensions()
         {
-            return Err(Error::Conflict(
-                "retained admission changed owner bindings".into(),
+            return Err(task_workflow_error(
+                native,
+                crate::wire::ErrorCode::Conflict,
+                "retained admission changed owner bindings",
             ));
         }
         match (&self.execution, observed.execution.as_ref()) {
-            (Some(provider), Some(placement)) if placement.provider == provider.identity() => {
+            (Some(provider), Some(placement)) => {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if let Some(work) = native {
+                    if provider.identity_with_native_work(work)? == &placement.provider {
+                        return Ok(());
+                    }
+                    return Err(task_workflow_error(
+                        native,
+                        crate::wire::ErrorCode::Conflict,
+                        "retained execution route differs from runtime",
+                    ));
+                }
+                if placement.provider != provider.identity() {
+                    return Err(task_workflow_error(
+                        native,
+                        crate::wire::ErrorCode::Conflict,
+                        "retained execution route differs from runtime",
+                    ));
+                }
                 placement.validate(&mut None)?;
+                Ok(())
             }
-            (None, None) => {}
-            _ => {
-                return Err(Error::Conflict(
-                    "retained execution route differs from runtime".into(),
-                ));
-            }
+            (None, None) => Ok(()),
+            _ => Err(task_workflow_error(
+                native,
+                crate::wire::ErrorCode::Conflict,
+                "retained execution route differs from runtime",
+            )),
         }
-        Ok(())
     }
 
     pub(super) async fn reconcile_scoped_admission<I, O>(
@@ -191,50 +188,6 @@ impl AgentHarness {
             output_schema: definition.output_schema.clone(),
             extensions: Some(extension_leases),
         })))
-    }
-
-    pub(super) fn bind_execution(
-        self: &Arc<Self>,
-        execution: Arc<dyn ExecutionProvider>,
-    ) -> Result<Arc<Self>> {
-        let identity = execution.identity();
-        validate_component_label(&identity.name, "execution provider name")?;
-        validate_component_label(&identity.version, "execution provider version")?;
-        if identity.digest == [0; 32] {
-            return Err(Error::Invalid("execution provider digest is empty".into()));
-        }
-        if self
-            .state
-            .as_ref()
-            .and_then(|state| state.execution_identity())
-            .as_ref()
-            != Some(&identity)
-            || self
-                .spawner
-                .as_ref()
-                .and_then(|spawner| spawner.execution_identity())
-                .as_ref()
-                != Some(&identity)
-        {
-            return Err(Error::Conflict(
-                "execution provider, state, and spawner routes differ".into(),
-            ));
-        }
-        let mut bound = self.as_ref().clone();
-        bound.execution = Some(execution);
-        Ok(Arc::new(bound))
-    }
-
-    pub(super) fn bind_state(
-        self: &Arc<Self>,
-        state: Arc<dyn TaskStateProvider>,
-    ) -> Result<Arc<Self>> {
-        if state.policy_identity() != self.policy_identity {
-            return Err(Error::Conflict("runtime and state policies differ".into()));
-        }
-        let mut bound = self.as_ref().clone();
-        bound.state = Some(state);
-        Ok(Arc::new(bound))
     }
 
     pub(super) fn assert_durable_policy_bindings(&self, work: Option<&NativeWork>) -> Result<()> {
@@ -370,27 +323,6 @@ impl AgentHarness {
             Err(Error::NotFound(_)) => Err(Error::Indeterminate(expected.operation_id)),
             Err(error) => Err(error),
         }
-    }
-
-    /// Replaces only durable admission.
-
-    pub(super) fn bind_spawner(
-        self: &Arc<Self>,
-        spawner: Arc<dyn TaskSpawner>,
-    ) -> Result<Arc<Self>> {
-        if self.state.is_none() {
-            return Err(Error::Invalid(
-                "durable spawner requires a state/observation host".into(),
-            ));
-        }
-        if spawner.policy_identity() != self.policy_identity {
-            return Err(Error::Conflict(
-                "runtime and spawner policies differ".into(),
-            ));
-        }
-        let mut bound = self.as_ref().clone();
-        bound.spawner = Some(spawner);
-        Ok(Arc::new(bound))
     }
 }
 

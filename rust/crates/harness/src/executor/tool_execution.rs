@@ -10,7 +10,7 @@ impl StockExecution<'_> {
         step: u32,
         invocation: ToolInvocation,
         prior_messages: &mut Vec<ModelMessage>,
-    ) -> Result<ToolCallProgress> {
+    ) -> Result<ExecutionProgress<()>> {
         self.verify_task_context_binding(operation_id)?;
         stock_validate_invocation(&invocation, self.io)?;
         let tool = stock_tool_lookup(&self.stock.tools, &invocation.name, self.io)?;
@@ -168,15 +168,17 @@ impl StockExecution<'_> {
                                 TaskId::from_bytes(operation_id.into_bytes()),
                                 |(_, task, _)| *task,
                             );
-                            let (approval_operation, request) = tool_approval_request(
-                                task,
-                                self.stock.policy_identity.as_ref().ok_or_else(|| {
-                                    Error::Conflict("stock policy identity is missing".into())
-                                })?,
-                                &tool.definition,
-                                &invocation,
-                                prompt,
-                            )?;
+                            let ((approval_operation, request), _request_hold) =
+                                tool_approval_request(
+                                    task,
+                                    self.stock.policy_identity.as_ref().ok_or_else(|| {
+                                        Error::Conflict("stock policy identity is missing".into())
+                                    })?,
+                                    &tool.definition,
+                                    &invocation,
+                                    (prompt, None),
+                                    None,
+                                )?;
                             let approval =
                                 crate::durable_host::task_interaction_id(task, approval_operation);
                             journal.open_interaction(approval, request).await?;
@@ -184,12 +186,12 @@ impl StockExecution<'_> {
                                 if started.is_some() {
                                     return Err(Error::Indeterminate(invocation.operation_id));
                                 }
-                                return Ok(ToolCallProgress::Pending(invocation.operation_id));
+                                return Ok(ExecutionProgress::Pending(invocation.operation_id));
                             };
                             match check_tool_approval(outcome) {
                                 Ok(()) => {}
                                 Err(Error::InteractionRejected(reason)) if started.is_none() => {
-                                    return Ok(ToolCallProgress::Rejected(reason));
+                                    return Ok(ExecutionProgress::Rejected(reason));
                                 }
                                 Err(Error::InteractionRejected(_)) => {
                                     return Err(Error::Indeterminate(invocation.operation_id));
@@ -459,6 +461,6 @@ impl StockExecution<'_> {
             message.content.validate_limits(self.stock.limits, work)
         })?;
         stock_vec_push(prior_messages, message, self.io)?;
-        Ok(ToolCallProgress::Settled)
+        Ok(ExecutionProgress::Ready(()))
     }
 }

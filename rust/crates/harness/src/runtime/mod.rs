@@ -1,7 +1,6 @@
 //! Typed, version-pinned task admission over the live and durable primitives.
 
 mod native_startup;
-use native_startup::StartupIo;
 use crate::contract::capability;
 use crate::{
     Admission, BatchId, Capabilities, EffectId, Error, GroupId, InteractionId, OperationId,
@@ -32,6 +31,7 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use futures::{StreamExt as _, stream};
+use native_startup::StartupIo;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
@@ -51,8 +51,6 @@ pub const DEFAULT_CHILD_PAGE: usize = 256;
 pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_context;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub use native_context::NativeTaskContext;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_volume_callback;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -86,23 +84,22 @@ mod children;
 pub use children::*;
 mod context_open;
 pub use context_open::*;
-mod host_binding;
-mod fork_binding;
-mod startup;
 mod admission_execution;
+mod fork_binding;
+mod host_binding;
 mod reattachment;
+mod startup;
 pub use reattachment::*;
 mod task_context;
 pub use task_context::*;
 mod content_read;
 pub use content_read::*;
 mod content_write;
+mod groups;
+mod interactions;
 mod model_context;
 mod tool_dispatch;
-mod interactions;
-mod groups;
 pub use groups::*;
 
 #[cfg(test)]
 mod tests;
-
