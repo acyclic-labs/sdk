@@ -866,7 +866,7 @@ async fn worker_restart_with_options(
     )?)?;
     let definition = tasks.get_version::<Value, u64>("test.restart", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
+    machines.register(machine, &mut None)?;
     if with_child {
         let child = Arc::new(CompletedChildMachine(TaskMachine {
             identity: MachineIdentity {
@@ -881,7 +881,7 @@ async fn worker_restart_with_options(
             json!({"type":"integer"}),
             json!({"type":"integer"}),
         )?)?;
-        machines.register(child)?;
+        machines.register(child, &mut None)?;
     }
     let operation = OperationId::from_bytes([25; 16]);
     let task = TaskId::from_bytes(operation.into_bytes());
@@ -2153,7 +2153,7 @@ async fn stock_restart_with_publication_fault(
         .with_run_limits(TaskRunLimits {
             max_steps: Some(1),
             ..TaskRunLimits::default()
-        })?;
+        }, &mut None)?;
     let machine: Arc<dyn ResumableMachine> = Arc::new(TaskMachine {
         identity: MachineIdentity {
             name: "test.restart".into(),
@@ -2171,7 +2171,7 @@ async fn stock_restart_with_publication_fault(
     tasks.register(definition)?;
     let definition = tasks.get_version::<u64, u64>("test.restart", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
+    machines.register(machine, &mut None)?;
     let operation = OperationId::from_bytes([3; 16]);
     let task = TaskId::from_bytes(operation.into_bytes());
     let step = OperationId::from_bytes([4; 16]);
@@ -2722,7 +2722,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
     tasks.register(definition)?;
     let definition = tasks.get_version::<Value, acyclic_harness::executor::TurnOutput>("acyclic.stock_turn", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
+    machines.register(machine, &mut None)?;
     let operation = OperationId::new();
     let task = TaskId::from_bytes(operation.into_bytes());
     let receive_operation = OperationId::new();

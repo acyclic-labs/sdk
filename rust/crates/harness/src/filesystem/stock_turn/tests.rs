@@ -61,7 +61,7 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
     tasks.register(machine.definition()?)?;
     tasks.get::<Value, TurnOutput>("acyclic.stock_turn@1")?;
     let mut registry = MachineRegistry::default();
-    registry.register(machine.clone())?;
+    registry.register(machine.clone(), &mut None)?;
     let command = command()?;
     let receive = WorkflowCommand { operation_id: OperationId::from_bytes([10;16]),
         kind: MAIL_RECEIVE_TASK_COMMAND_KIND.into(), payload: command.payload.clone() };

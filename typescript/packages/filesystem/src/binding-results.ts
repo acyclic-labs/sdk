@@ -1,14 +1,12 @@
 import type {
   BatchLookupEntry, DirectoryBindingChange, DirectoryPage, DirectoryRecordPage, FileRecordSnapshot,
   GenerationDiff, NamedAttributePage, NamedAttributeResult, StatResult, TreeEntrySnapshot, WorkCounters,
-  WasmWasmRawFileRecordSnapshotSnapshot,
+  WasmRawFileRecordSnapshot,
   WorkspaceFileKind,
 } from "./contracts.js";
 import { isFileKind } from "../generated/hosted-contract.js";
 import { copyBytes } from "./binding-values.js";
 
-type WasmRawFileRecordSnapshot = WasmWasmRawFileRecordSnapshotSnapshot;
-type BoundaryFileKind = WorkspaceFileKind | WasmBinding.FileKind | NativeBinding.FileKind;
 /** Validates the generated binding file kind. */
 export function projectFileKind(value: string): WorkspaceFileKind {
   if (!isFileKind(value)) throw new TypeError("filesystem binding returned an invalid file kind");
@@ -37,7 +35,7 @@ export function copyBatchLookupEntries(entries: readonly BatchLookupEntry[]): Ba
 
 export function copyStatResult(value: {
   readonly exists: boolean;
-  readonly record: FileRecordSnapshot | WasmWasmRawFileRecordSnapshotSnapshot | undefined;
+  readonly record: FileRecordSnapshot | WasmRawFileRecordSnapshot | undefined;
   readonly metadataCanonicalBytes: Uint8Array | undefined;
 }, work: WorkCounters): StatResult {
   return {
@@ -79,7 +77,7 @@ export function copyDirectoryPage(value: {
 export function copyDirectoryRecordPage(value: {
   readonly entries: readonly {
     readonly name: Uint8Array;
-    readonly record: FileRecordSnapshot | WasmWasmRawFileRecordSnapshotSnapshot;
+    readonly record: FileRecordSnapshot | WasmRawFileRecordSnapshot;
     readonly metadataCanonicalBytes: Uint8Array;
   }[];
   readonly hasMore: boolean;

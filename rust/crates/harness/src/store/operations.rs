@@ -2108,7 +2108,7 @@ mod native_only_provider_tests {
         let ApplyResult::Applied { event } = reducer.plan(&command)? else {
             panic!("fresh lifecycle event")
         };
-        let encoded = crate::wire_codec::encode_event(&authority, &event)?;
+        let encoded = crate::wire_codec::encode_event(&authority, &event, &mut None)?;
         let event_bytes = encoded.len() as u64;
         let publication = IndexedPublication::new(&authority, &event, encoded, &mut None)?;
         let request = publication.request(&ordinary,

@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
-use crate::filesystem::native_execution::{NativeProcessNamespaceScopes, NativeViewPublicationError};
+use crate::filesystem::native_execution::NativeViewPublicationError;
 use std::process::{Command, Stdio};
 
 #[inline(never)]
@@ -29,7 +29,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
                     bytes_copied: u64::from(request.maximum_output_bytes),
                     items_examined: u64::from(request.maximum_output_bytes).saturating_add(16),
                     ..WorkCounters::default() })?;
-                view.validate_working_directory(&request.cwd, original)?.await?;
+                view.validate_working_directory(&request.cwd, original)?;
                 view.validate_for_dispatch(original)?.await?;
 
     }
@@ -157,7 +157,7 @@ async fn capture<P: StreamProvider + 'static>(
     owner: &Arc<TaskJournalOwner<P>>, request: &Arc<NativeProcessRequest>,
     supervisor: &Arc<NativeSupervisorControl>, cancellation: &acyclic_fs::CancellationToken,
     original: &NativeMaterializationWork,
-    scopes: NativeProcessNamespaceScopes,
+    scopes: (Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>, acyclic_fs::NativeAllocation),
 ) -> Result<(NativeProcessResult, NativeAllocation)> {
     owner.verify_with_native_work(false, original).await?;
     let mut custody = original.retain_owned(0)?;
@@ -216,7 +216,7 @@ async fn capture<P: StreamProvider + 'static>(
         let output = (|| -> std::io::Result<_> {
             check()?;
             let exchange = invocation.mcp_stdio.as_ref().map(|request|
-                request.exchange_with_native_work(&original))
+                request.exchange(Some(&original)))
                 .transpose().map_err(|error| root_failure(error))?;
             let _command_custody = {
                 let mut bytes = invocation.executable.as_os_str().len().checked_add(invocation.cwd.as_os_str().len()).ok_or(std::io::ErrorKind::OutOfMemory)?;
@@ -267,7 +267,7 @@ async fn capture<P: StreamProvider + 'static>(
                 let mut response_custody = None;
                 let observe = |chunk: &[u8]| {
                     response_custody.take();
-                    let bytes = {exchange.push_with_native_work(chunk, &original).map(|(bytes, guard)| { response_custody = Some(guard); bytes })
+                    let bytes = {exchange.push(chunk, Some(&original)).map(|(bytes, guard)| { response_custody = guard; bytes })
 }.map_err(|error| root_failure(error))?;
                     Ok(acyclic_native_runtime::ProcessInput { bytes, complete: exchange.is_complete() })
                 };
@@ -378,7 +378,7 @@ mod supervisor_tests {
 
     #[test]
     fn missing_owned_tree_cannot_report_quiescence() {
-        let supervisor = NativeSupervisorControl::new();
+        let supervisor = NativeSupervisorControl { active: Mutex::new(None), completion: tokio::sync::Notify::new(), process: Mutex::new(None) };
         let attempt = crate::EffectAttemptId::from_bytes([41; 16]);
         supervisor.begin(attempt).unwrap();
         supervisor.record_quiescence(false).unwrap();

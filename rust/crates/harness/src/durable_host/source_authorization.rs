@@ -94,8 +94,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             policy_scope: Scope::from_wire(String::new(), Capabilities::default(), String::new(), None, None, [0;32]),
         };
         let label = authorization.scope_label(&mut None)?;
-        authorization.policy_scope = issuer.issue(&label, &Capabilities::new([label]), None, None, &mut None).expect("scope proof");
-        ProjectSourceReadHandle::seal(authorization, &self.host.verifier)
+        authorization.policy_scope = issuer.issue(&label, &Capabilities::new([label.as_str()]), None, None, &mut None)?;
+        ProjectSourceReadHandle::seal(authorization, &self.host.verifier, &mut None)
     }
 
     /// Restores the issued authorization retained in an original source intent before staging effects or constructing an ordinary preparation request.
@@ -242,7 +242,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let label_bytes = label.capacity() as u64;
             drop(label);
             observer.as_deref_mut().expect("original source observer").release_owned(label_bytes)?;
-            let handle = ProjectSourceReadHandle::seal_with_work(authorization, &self.host.verifier, &mut observer)?;
+            let handle = ProjectSourceReadHandle::seal(authorization, &self.host.verifier, &mut observer)?;
             drop(observer);
             drop(history);
             let retained = io.owned_bytes()?;
@@ -553,9 +553,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         #[cfg(not(target_arch = "wasm32"))]
         if io.is_some() {
             let copied = record.clone_with_work_and_custody(&mut work)?.0;
-            return ProjectSourceReadHandle::seal_with_work(copied, &self.verifier, &mut work);
+            return ProjectSourceReadHandle::seal(copied, &self.verifier, &mut work);
         }
-        ProjectSourceReadHandle::seal(record.clone(), &self.verifier)
+        ProjectSourceReadHandle::seal(record.clone(), &self.verifier, &mut None)
     }
 
     async fn verify_project_source_authorization(

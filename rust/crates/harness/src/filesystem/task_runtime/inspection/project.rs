@@ -55,7 +55,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if !path.is_empty() {
                 crate::conversation::validate_content_path(path, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
             }
-            return handle.grant().require_directory_path_with_native_work(project, path, work);
+            return handle.grant().require_directory_path(project, path, Some(&crate::filesystem::PreparationIo::from_native_work(work)?));
         }
         host.require_private_directory(&handle.authorization().project, handle.grant(), path)
     }
@@ -158,7 +158,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 
     fn file(&self, file: &FileRef) -> Result<()> {
         self.limits.validate_file(file, &mut None)?;
-        self.handle.grant().require_file_read(file)?;
+        self.handle.grant().require_file_read(file, None)?;
         self.path(file.volume(), "", file.path(), &self.authorization().generation)?;
         let mut generation = [0_u8; 32];
         hex::decode_to_slice(file.version(), &mut generation)
@@ -247,14 +247,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             self.io.retain_owned(MEDIA_TYPE.len() as u64)?;
             self.io.allocation_attempt(MEDIA_TYPE.len() as u64)?;
             _descriptor_hold = Some(self.io.guard_owned(MEDIA_TYPE.len() as u64)?);
-            raw_descriptor = FileDescriptor::from_bytes(&bytes, MEDIA_TYPE)?;
+            raw_descriptor = FileDescriptor::from_bytes(&bytes, MEDIA_TYPE, &mut None)?;
             (&raw_descriptor, display_name)
         };
         self.io.retain_owned(64)?;
         self.io.allocation_attempt(64)?;
         let version = hex::encode(generation.as_resource().key());
         let _version_hold = self.io.guard_owned(version.len() as u64)?;
-        let reference = crate::conversation::FileRef::new_with_io(volume, path, &version, descriptor, display_name, Some(&self.io))?;
+        let reference = { let io = Some(&self.io); crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((volume).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(path, io)?, crate::filesystem::fork_preparer_io::clone_text(&version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text(display_name, io)?, work)) }?;
         self.file(&reference)?;
         Ok((reference, bytes))
     }

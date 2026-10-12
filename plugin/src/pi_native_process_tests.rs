@@ -76,7 +76,7 @@ async fn open_runtime(stream: std::sync::Arc<LocalStream>, files: Arc<Files>, vo
     let identity = definition.identity().clone();
     let machine_identity = machine.identity.clone();
     let mut tasks = TaskRegistry::default(); tasks.register(definition)?;
-    let mut machines = MachineRegistry::default(); machines.register(machine)?;
+    let mut machines = MachineRegistry::default(); machines.register(machine, &mut None)?;
     let runtime = FilesystemTaskRuntime::open(stream, files, volume, issuer.verifier(), scope.clone(), RuntimeScope::new(grants, Limits::default())?,
         tasks, machines, ToolRegistry::default(), SessionLimits { active_tasks: 1, total_tasks: 1, depth: 0, model_steps: 1 }, 1, 1_048_576).await?;
     Ok((runtime, identity, machine_identity))
@@ -239,7 +239,7 @@ impl Fixture {
             self.approval, self.authority(&self.work)?, &self.work)?.await?.into_arc_with_native_work(&self.work)
     }
     fn effects(&self, provider: &Arc<NativeProcessProvider<LocalStream>>, work: &NativeMaterializationWork) -> Result<ConversationEffectHost<LocalStream>> {
-        let mut registry = acyclic_harness::effects::EffectRegistry::new_with_native_work(work)?
+        let mut registry = acyclic_harness::effects::EffectRegistry::new(Some(work))?
             .with_result_resolver_with_native_work(self.content.clone(), work)?;
         registry.register_with_native_work(provider.clone(), work)?;
         let audience_id = work.display("pi-native-provider-test").map_err(native_error)?;

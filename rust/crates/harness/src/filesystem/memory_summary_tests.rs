@@ -131,7 +131,7 @@ async fn sealed_summary_preparation(
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?
         .with_run_limits(crate::runtime::TaskRunLimits {
             concurrency: Some(4), max_steps: Some(4), deadline_unix_millis: None,
-        })?;
+        }, &mut None)?;
     let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(storage.host.clone(), &(payload_volume), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?);
     let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?);
     let schema = serde_json::json!({"type":"object"});
@@ -146,7 +146,7 @@ async fn sealed_summary_preparation(
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
     let mut machines = MachineRegistry::default();
-    machines.register(implementation)?;
+    machines.register(implementation, &mut None)?;
     let host = Arc::new(CoordinatorTaskHost::new(
         DistributedCoordinator::open(&storage.stream, payloads.clone(), None, &mut None).await?,
         storage.stream.clone(), payloads.clone(), reader, authority, signed,

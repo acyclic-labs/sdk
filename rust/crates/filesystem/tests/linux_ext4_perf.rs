@@ -1066,8 +1066,8 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
         let before = counters()?;
         let started = Instant::now();
         let receipt = exact
-            .materialize_path(
-                "/hot",
+            .materialize(
+                std::iter::once("/hot"),
                 &MaterializeOptions::native(destination.path()),
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),

@@ -422,6 +422,7 @@ where
         creation_providers: &[Arc<dyn crate::resource_preparation::ResourceCreationProvider>],
         resumable_tools: &ResumableToolRegistry, io: Option<&super::PreparationIo>,
     ) -> Result<Self> {
+        let client = acyclic_stream::StreamClient::new(stream.clone());
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| io.invalid("native runtime configuration has no original work"))?;
@@ -435,10 +436,11 @@ where
             let payloads = FilesystemSchedulerPayloadStore::new(filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let reader = FilesystemContentVerifier::new(filesystem.clone(), verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let coordinator = DistributedCoordinator::open(
-                &stream, reader.clone(),Some(payloads.clone()), &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &client, reader.clone(), Some(payloads.clone()),
+                &mut Some(&mut crate::store::history::native_work_io(work)?),
             ).await?;
             let mut host = CoordinatorTaskHost::new_with_native_work(
-                coordinator, stream.clone(), payloads, reader.clone(),
+                coordinator, client.clone(), payloads, reader.clone(),
                 verifier.audience(), signed, verifier, scope, tasks, machines, clock, work,
             )?.with_session_limits(session_limits, Some(work))?
                 .with_resource_creation_providers(creation_providers, Some(work))?;
@@ -451,15 +453,13 @@ where
                 Some(ContentBindings { reader, writer: None }), None, policy.clone(), work,
             )?;
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            let volume = volume.clone_with_io(&io)?;
-            let verifier = verifier.clone_with_native_work(work)?;
-            io.absorb_native_custody(verifier.1)?;
-            let signed = signed.clone_with_native_work(work)?;
-            io.absorb_native_custody(signed.1)?;
+            let volume = volume.copy(&mut Some(&mut io.history_io()))?;
+            let verifier = verifier.copy(&mut Some(&mut io.history_io()))?;
+            let signed = signed.copy(&mut Some(&mut io.history_io()))?;
             let tools = tools.clone_with_native_work(work)?;
             io.absorb_native_custody(tools.1)?;
             return Self::from_host(
-                stream, harness, host, filesystem, volume, verifier.0, signed.0, tools.0,
+                stream, harness, host, filesystem, volume, verifier, signed, tools.0,
                 maximum_payload_bytes, policy, Some(&io),
             );
         }
@@ -477,10 +477,8 @@ where
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
         let mut host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
-                .await?
-                ,
-            stream.clone(),
+            DistributedCoordinator::open(&client, reader.clone(), Some(payloads.clone()), &mut None).await?,
+            client.clone(),
             payloads,
             reader.clone(),
             verifier.audience().clone(),
@@ -775,7 +773,7 @@ where
                 step, ModelPurpose::Response, limits, io).await?,
         };
         drop(records);
-        if !retained.admission.completed() { return Err(Error::Indeterminate(operation)); }
+        if !retained.admission.completed { return Err(Error::Indeterminate(operation)); }
         let request = retained.request.ok_or(Error::Indeterminate(operation))?;
         for message in &request.request().messages {
             match io {
@@ -789,10 +787,10 @@ where
             if let crate::model::ModelEvent::ToolCall { call_id, name, arguments } = event {
                 let invocation = match io {
                     #[cfg(not(target_arch = "wasm32"))]
-                    Some(io) => crate::tool::ToolInvocation::for_model_call_with_native_work(
-                        operation, step, call_id, name, arguments, io.original_native_work().expect("native approval IO"),
+                    Some(io) => crate::tool::ToolInvocation::for_model_call(
+                        operation, step, call_id, name, arguments, Some(io.original_native_work().expect("native approval IO")),
                     )?,
-                    _ => crate::tool::ToolInvocation::for_model_call(operation, step, call_id, name, arguments),
+                    _ => crate::tool::ToolInvocation::for_model_call(operation, step, call_id, name, arguments, None)?,
                 };
                 let select = |event: &ExecutionEvent| matches!(event,
                     ExecutionEvent::ToolStarted { step: recorded, call_id, .. }

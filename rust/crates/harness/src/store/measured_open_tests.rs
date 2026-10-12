@@ -85,7 +85,7 @@ mod measured_open_tests {
             return Err(Error::Invalid("fresh original command must apply".into()));
         };
         let publication = operations::IndexedPublication::new(
-            &authority(), &event, encode_event(&authority(), &event)?, &mut None)?;
+            &authority(), &event, encode_event(&authority(), &event, &mut None)?, &mut None)?;
         let cancellation = CancellationToken::new();
         let mut denied = budget();
         denied.allocation_operations = 0;
@@ -598,7 +598,7 @@ mod measured_open_tests {
         }
         let mut forged = snapshot.copy(&mut None)?;
         forged.attestation[0] ^= 1;
-        assert!(matches!(Reducer::restore(forged.clone_with_work(&mut None)?, issuer().verifier(&mut None).expect("verifier copy"), schemas()), Err(Error::Unauthorized(_))));
+        assert!(matches!(Reducer::restore(forged.copy(&mut None)?, issuer().verifier(&mut None).expect("verifier copy"), schemas()), Err(Error::Unauthorized(_))));
         let mut work = history::HistoryWork::new(budget(), &cancellation);
         let result = Reducer::restore_with_work(forged, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut Some(&mut work));
         let failure = work.finish(result).err().expect("original snapshot MAC must reject even after its state digest verifies");
