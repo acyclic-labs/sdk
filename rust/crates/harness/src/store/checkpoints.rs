@@ -433,7 +433,7 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
     let mut publication = operations::IndexedPublication::new_with_work(
         reducer.authority(),
         event,
-        crate::wire_codec::encode_event_with_work(reducer.authority(), event, work)?,
+        crate::wire_codec::encode_event(reducer.authority(), event, work)?,
         work,
     )?;
     let result = async {
@@ -719,7 +719,7 @@ impl ProjectionLocation {
                     "projection head is outside its canonical atomic commit"));
             }
             let ((actual_authority, event), event_retained) =
-                crate::wire_codec::decode_event_with_work_and_custody(&canonical.value, work)?;
+                crate::wire_codec::decode_event(&canonical.value, work)?;
             let authority_owned = if work.is_some() { actual_authority.id.capacity() as u64 } else { 0 };
             let result = async {
                 verifier.verify_event(&event, work)?;

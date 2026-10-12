@@ -285,7 +285,7 @@ pub(super) fn encode_conflict(conflict: &MergeConflict) -> Vec<u8> {
 }
 
 pub(super) fn decode_conflict(key: &[u8], io: Option<&super::PreparationIo>) -> Result<MergeConflict> {
-    let invalid = |message| super::fork_preparer_io::invalid(io, message);
+    let invalid = |message| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, message);
     if let Some(io) = io { io.retain_owned(std::mem::size_of::<MergeConflict>() as u64)?; }
     let (tag, rest) = key.split_first().ok_or_else(|| invalid("empty conflict key"))?;
     let id_bytes: [u8; 16] = rest.get(..16).ok_or_else(|| invalid("short conflict key"))?

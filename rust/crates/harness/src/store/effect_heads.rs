@@ -574,8 +574,8 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
         .revision
         .checked_sub(1)
         .ok_or_else(|| Error::Invalid("effect cut publication revision must be positive".into()))?;
-    let (encoded_authority, encoded_event) =
-        crate::wire_codec::decode_event_with_work(&publication.bytes, work)?;
+    let ((encoded_authority, encoded_event), _) =
+        crate::wire_codec::decode_event(&publication.bytes, work)?;
     let decoded_owned = crate::core::source_inventory(&encoded_event)?
         + encoded_authority.id.capacity() as u64;
     let admitted = (|| {

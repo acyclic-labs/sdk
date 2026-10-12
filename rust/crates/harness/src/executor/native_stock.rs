@@ -443,7 +443,7 @@ pub(crate) fn load_json_with_native_work<'a, T: PreparationRecord + crate::files
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        let value: T = load_json(journal, reference, Some(&io)).await?.into_retained();
+        let value: T = load_json::<T>(journal, reference, Some(&io)).await?.into_retained();
         let retained = native_size_add(std::mem::size_of::<T>() as u64,
             crate::filesystem::UploadRecord::logical_owned_bytes(&value)?)?;
         work.remaining()?;
@@ -761,7 +761,7 @@ pub(super) fn native_request_digest(session: &StockExecution<'_>, input: &TurnIn
         max_output_tokens: session.output_tokens(), context: &contracts, tools: &tools,
         limits: session.stock.limits, tool_scope: (session.stock.tool_scope.grants(), session.stock.tool_scope.limits()),
         policy: session.stock.policy_identity.as_ref(),
-        inherited_prefix: session.stock.inherited_prefix().map(|(reference, _)| reference),
+        inherited_prefix: session.inherited_prefix().map(|(reference, _)| reference),
         compaction: session.compaction_policy(), model_capacity: session.model_capacity()?,
         task_id: session.stock.task.as_ref().map(|(_, task, _)| *task), task_context,
     }, Some(io))

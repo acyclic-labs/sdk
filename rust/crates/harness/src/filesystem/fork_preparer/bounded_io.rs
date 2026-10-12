@@ -1404,7 +1404,7 @@ pub(in crate::filesystem) async fn apply_generation<A: AsyncAuthorityStore, O: A
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
         let workspace = open(host, reference, io).await?;
-        let mut before_publication = |_| std::future::ready(Ok(()));
+        let mut before_publication = |_: &acyclic_fs::NativeMaterializationWork| std::future::ready(Ok(()));
         return apply_generation_native(
             host, &workspace, expected, mutations, key, io, original,
             &mut before_publication,

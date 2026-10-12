@@ -939,14 +939,14 @@ impl DurableToolRunner {
                 self.journal.as_ref(), reference, work)?.await?;
             return Ok(ToolPayload::native(value, custody));
         }
-        Ok(ToolPayload::ordinary(load_json(self.journal.as_ref(), reference, None).await?.into_retained()))
+        Ok(ToolPayload::ordinary(load_json::<T>(self.journal.as_ref(), reference, None).await?.into_retained()))
     }
 
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     async fn load<T: crate::executor::PreparationRecord + Send>(
         &self, reference: &crate::conversation::FileRef, _io: Option<&crate::executor::PreparationIo>,
     ) -> Result<ToolPayload<T>> {
-        Ok(ToolPayload::ordinary(load_json(self.journal.as_ref(), reference, None).await?.into_retained()))
+        Ok(ToolPayload::ordinary(load_json::<T>(self.journal.as_ref(), reference, None).await?.into_retained()))
     }
 
     async fn stage<T: serde::Serialize + Sync>(

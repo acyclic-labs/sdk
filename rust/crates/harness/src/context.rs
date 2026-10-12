@@ -938,7 +938,7 @@ pub(super) async fn verify_context_file(
     }
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        return io.receive_content(verifier.verify_measured(file, file.descriptor().byte_length(), io.remaining()?, &io.cancellation).await);
+        return io.receive_content(verifier.verify_measured(file, file.descriptor().byte_length(), io.remaining()?, io.cancellation()).await);
     }
     let _ = io;
     verifier.verify(file).await

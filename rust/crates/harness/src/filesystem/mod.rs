@@ -256,7 +256,7 @@ impl<A, O> FilesystemSchedulerPayloadStore<A, O> {
             Some(io) => {
                 io.retain_owned(std::mem::size_of::<Self>() as u64)?;
                 Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
-                    .ok_or_else(|| fork_preparer_io::invalid(Some(io), "scheduler payload custody underflows"))?)?)
+                    .ok_or_else(|| fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "scheduler payload custody underflows"))?)?)
             }
             None => None,
         };
@@ -2784,12 +2784,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            handle.require_selection_with_native_work(operation, authorization.source_task,
-                source, generation, authorization.native_snapshot.as_ref(), work)?;
+            handle.require_selection(operation, authorization.source_task, source, generation, authorization.native_snapshot.as_ref(), Some(work))?;
             return handle.grant().require_with_io(source, VolumeOperation::Read, io);
         }
-        handle.require_selection(operation, authorization.source_task, source,
-            generation, authorization.native_snapshot.as_ref())?;
+        handle.require_selection(operation, authorization.source_task, source, generation, authorization.native_snapshot.as_ref(), None)?;
         handle.grant().require_with_io(source, VolumeOperation::Read, io)
     }
 

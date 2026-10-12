@@ -1911,7 +1911,7 @@ mod native_publication_custody_tests {
             .expect("original finite publication ledger");
         let mut io = native_work_io(&native).expect("original source custody");
         let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
-        let encoded = crate::wire_codec::encode_event_with_work(&authority, &event, &mut work)?;
+        let encoded = crate::wire_codec::encode_event(&authority, &event, &mut work)?;
         let original_capacity = encoded.capacity() as u64;
         let mut publication = IndexedPublication::new_with_work(
             &authority, &event, encoded, &mut work)?;

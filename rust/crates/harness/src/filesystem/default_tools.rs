@@ -701,7 +701,7 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
                 plan.notice.validate(work)
             })?;
             if let Some(source) = &plan.authorized_source {
-                recursive_observe(io, |work| source.validate_with_work(work))?;
+                recursive_observe(io, |work| source.validate(work))?;
                 if source.operation_id != plan.operation_id || source.caller_task != plan.caller
                     || source.source_task != plan.arguments.source
                     || source.project != plan.source_project || source.generation != plan.source_generation
@@ -2142,16 +2142,12 @@ where P: StreamProvider {
             }
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(|io| io.original_native_work()) {
-                source.require_selection_with_native_work(context.operation_id(), source_task,
-                    &binding.source_project, &binding.source_generation,
-                    authorization.native_snapshot.as_ref(), work)?;
+                source.require_selection(context.operation_id(), source_task, &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref(), Some(work))?;
             } else {
-                source.require_selection(context.operation_id(), source_task,
-                    &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref())?;
+                source.require_selection(context.operation_id(), source_task, &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref(), None)?;
             }
             #[cfg(target_arch = "wasm32")]
-            source.require_selection(context.operation_id(), source_task,
-                &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref())?;
+            source.require_selection(context.operation_id(), source_task, &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref(), None)?;
             source.grant().require_with_io(&binding.source_project, VolumeOperation::Read, io)?;
         }
         None => {

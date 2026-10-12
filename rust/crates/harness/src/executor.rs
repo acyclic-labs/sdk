@@ -842,10 +842,10 @@ fn checked_compaction_budget(
         let work = io.original_native_work().ok_or_else(|| {
             stock_boundary(io.into(), crate::wire::ErrorCode::Unsupported, "stock compaction planning requires original native work")
         })?;
-        let budget = policy.projection_budget_with_message_limit_native(
-            context, count, maximum_messages, work,
+        let budget = policy.projection_budget(
+            context, count, maximum_messages, &mut Some(&mut io.history_io()),
         )?;
-        let (through, maximum) = budget.0;
+        let (through, maximum) = budget;
         let mandatory = crate::context::mandatory_positions_native(
             context, through, &policy.retention, work,
         )?;
@@ -871,7 +871,7 @@ fn checked_compaction_budget(
         return Err(stock_boundary(io.into(), crate::wire::ErrorCode::Unsupported, "native stock compaction planning is unavailable"));
     }
     let (through, maximum) =
-        policy.projection_budget_with_message_limit(context, count, maximum_messages)?;
+        policy.projection_budget(context, count, maximum_messages, &mut None)?;
     let mandatory_tokens = crate::context::mandatory_positions(context, through, &policy.retention)
         .iter()
         .try_fold(u64::from(count.fixed_tokens), |total, position| {
@@ -1578,7 +1578,7 @@ impl StockExecution<'_> {
             "limits": self.stock.limits,
             "tool_scope": (self.stock.tool_scope.grants(), self.stock.tool_scope.limits()),
             "policy": self.stock.policy_identity.as_ref(),
-            "inherited_prefix": self.stock.inherited_prefix().map(|(reference, _)| reference),
+            "inherited_prefix": self.inherited_prefix().map(|(reference, _)| reference),
             "compaction": self.compaction_policy(),
             "model_capacity": self.model_capacity()?,
         });
@@ -1768,7 +1768,7 @@ impl StockExecution<'_> {
             .transform(input, base, self.stock.limits, self.io())
             .await?;
         let request = self.request_from_context(&context)?;
-        let prepared = if let Some((prefix, verifier)) = self.stock.inherited_prefix() {
+        let prepared = if let Some((prefix, verifier)) = self.inherited_prefix() {
             crate::model::PreparedModelRequest::inherit(
                 request,
                 prefix,

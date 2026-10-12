@@ -114,7 +114,7 @@ impl<'a> ForkWork<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     fn native_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
         let original = self.original.expect("native SDK boundary requires original funding");
-        Arc::clone(original.native_read_meter())
+        original.native_read_meter().clone()
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -14,7 +14,7 @@ use crate::{
     core::{ExtensionAdmission, OriginalExtensionBinding, Reducer, SchemaRegistry, Scope},
     durable_tool::ResumableToolRegistry,
     executor::ModelEventAdmission,
-    extension::{ExtensionLeases, ExtensionRuntime},
+    extension::ExtensionRuntime,
     interaction::{
         Interaction, InteractionOutcome, InteractionResolution, InteractionResponse,
         InteractionTicket, ResolutionReceipt,
@@ -3883,7 +3883,7 @@ impl RuntimeScope {
     pub fn with_extension_runtime(mut self, runtime: Arc<ExtensionRuntime>) -> Result<Self> {
         self.validate_extension_runtime(&runtime)?;
         if let Some(original) = &self.extension_runtime
-            && original.selected() != runtime.selected()
+            && !original.selected().eq(runtime.selected())
         {
             return Err(Error::Conflict(
                 "runtime scope cannot retarget linked extension implementations".into(),
@@ -3894,7 +3894,7 @@ impl RuntimeScope {
     }
 
     fn validate_extension_runtime(&self, runtime: &ExtensionRuntime) -> Result<()> {
-        runtime.validate_admission(self.extensions.as_ref())?;
+        runtime.validate_admission(self.extensions.as_ref(), &mut None)?;
         if let Some(schemas) = &self.extension_schemas {
             for identity in runtime.selected() {
                 if schemas.implementation_digest(&identity.name, identity.version)?
@@ -4044,7 +4044,7 @@ impl RuntimeScope {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let scope = scope.with_run_limits(admission.run_limits)?;
         if let Some(runtime) = &scope.extension_runtime {
-            runtime.validate_admission_with_work(scope.extensions.as_ref(), quota.work())?;
+            runtime.validate_admission(scope.extensions.as_ref(), quota.work())?;
             if let Some(schemas) = &scope.extension_schemas {
                 for identity in runtime.selected() {
                     if schemas.implementation_digest_with_work(
@@ -4248,7 +4248,7 @@ pub enum RuntimeTask<O> {
         /// Pinned schema for the task result.
         output_schema: Value,
         /// Native extension implementations retained by this admission.
-        extensions: Option<ExtensionLeases>,
+        extensions: Option<Vec<crate::extension::ExtensionLease>>,
     },
 }
 
@@ -8769,7 +8769,7 @@ impl AgentHarness {
         &self,
         definition: &TaskDefinition<I, O>,
         scope: &RuntimeScope,
-    ) -> Result<Option<ExtensionLeases>> {
+    ) -> Result<Option<Vec<crate::extension::ExtensionLease>>> {
         let requirements = definition
             .requirements()
             .iter()
@@ -8783,15 +8783,15 @@ impl AgentHarness {
             .extension_runtime
             .as_ref()
             .ok_or_else(|| Error::Unsupported("task requires a native extension runtime".into()))?;
-        runtime.validate_admission(scope.extensions())?;
-        Ok(Some(runtime.retain_for_task(requirements)?))
+        runtime.validate_admission(scope.extensions(), &mut None)?;
+        Ok(Some(runtime.retain(requirements, false)?))
     }
 
     fn retain_task_extensions_existing<I, O>(
         &self,
         definition: &TaskDefinition<I, O>,
         scope: &RuntimeScope,
-    ) -> Result<ExtensionLeases> {
+    ) -> Result<Vec<crate::extension::ExtensionLease>> {
         let requirements = definition
             .requirements()
             .iter()
@@ -8799,13 +8799,13 @@ impl AgentHarness {
             .cloned()
             .collect::<Vec<_>>();
         if requirements.is_empty() {
-            return Ok(ExtensionLeases::empty());
+            return Ok(Vec::new());
         }
         let runtime = self.extension_runtime.as_ref().ok_or_else(|| {
             Error::Unsupported("retained task requires a native extension runtime".into())
         })?;
-        runtime.validate_admission(scope.extensions())?;
-        runtime.retain_for_existing(requirements)
+        runtime.validate_admission(scope.extensions(), &mut None)?;
+        runtime.retain(requirements, true)
     }
 }
 
@@ -9212,7 +9212,7 @@ pub struct AdmissionBatch<O> {
     pub entries: Vec<BatchEntry<RuntimeTask<O>>>,
     policy: BatchGroupPolicy,
     spawner: Arc<dyn TaskSpawner>,
-    extensions: Option<ExtensionLeases>,
+    extensions: Option<Vec<crate::extension::ExtensionLease>>,
 }
 
 /// Ordered outcome of all observable batch slots.

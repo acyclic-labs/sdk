@@ -45,7 +45,7 @@ impl<A, O> FilesystemContentPublisher<A, O> {
             Some(io) => {
                 io.retain_owned(std::mem::size_of::<Self>() as u64)?;
                 Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
-                    .ok_or_else(|| super::fork_preparer_io::invalid(Some(io), "content publisher custody underflows"))?)?)
+                    .ok_or_else(|| super::fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "content publisher custody underflows"))?)?)
             }
             None => None,
         };

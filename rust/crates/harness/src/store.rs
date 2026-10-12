@@ -1435,7 +1435,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "aggregate refresh page is not contiguous".into(),
                 ));
             }
-            let (authority, event) = decode_event(&record.value)?;
+            let ((authority, event), _) = decode_event(&record.value, &mut None)?;
             if &authority != self.reducer.authority()
                 || event.revision
                     != record.sequence.checked_add(1).ok_or_else(|| {
@@ -2071,7 +2071,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Err(error) => { let _ = released_path; return Err(error); },
         }.ok_or_else(|| guarded_boundary(work, crate::wire::ErrorCode::NotFound, "causal event"))?;
         let raw = operations::sdk_record_retained_bytes(&record, work);
-        let decoded = crate::wire_codec::decode_event_with_work_and_custody(&record.value, work);
+        let decoded = crate::wire_codec::decode_event(&record.value, work);
         drop(record);
         let released_record = match work.as_deref_mut() {
             Some(observer) => observer.release_record(raw), None => Ok(()),

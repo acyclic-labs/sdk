@@ -599,8 +599,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let owner = Arc::new(runtime.task_host().journal_owner(caller.task, context.task().owned_task_fence()?).await?
                 .with_invocation_cancellation(cancellation));
             let handle = owner.restore_project_source_authorization(context.task(), authorization).await?;
-            handle.require_selection(context.operation_id(), arguments.source, &project, &generation,
-                source_owner.native_snapshot.as_ref())?;
+            handle.require_selection(context.operation_id(), arguments.source, &project, &generation, source_owner.native_snapshot.as_ref(), None)?;
             Some(handle)
         } else if original.is_none() && arguments.source != caller.task
             && !context.scope().grants().contains(&project.capability(VolumeOperation::Read)?) {
@@ -1257,8 +1256,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         };
         if let Some(handle) = &source_read {
             let authorization = handle.0.authorization();
-            handle.0.require_selection_with_native_work(context.operation_id(), arguments.source,
-                &selected.volume, &generation, authorization.native_snapshot.as_ref(), work)?;
+            handle.0.require_selection(context.operation_id(), arguments.source, &selected.volume, &generation, authorization.native_snapshot.as_ref(), Some(work))?;
         }
         context.read_file_with_native_work(&notice.content, work).await?;
         let destination = self.native_open_aggregate(&caller.owner, None, cancellation, work).await?;
