@@ -12,7 +12,7 @@ use crate::{
     ConflictSide, DefaultTextMergeDriver, DriverError, ForkOptions, GenerationId, IdempotencyKey,
     JoinOutcome, MemoryMergeResolutionCache, MergeDriver, MergeDriverRegistry,
     MergePlanResolutionError, MergeResolution, OperationId, PublicationPermit,
-    PublicationReservation, UnpublishedMergeCandidate, WorkBudget, Workspace,
+    PublicationReservation, ReservationOutcome, UnpublishedMergeCandidate, WorkBudget, Workspace,
     WorkspaceContextError, WorkspaceContextId, WorkspaceContextRegistry, WorkspaceContextStore,
     WorkspaceDelete, WorkspaceError, WorkspaceGraph, WorkspaceId, WorkspaceLineageError,
     WorkspaceLineageStore, WorkspaceName, WorkspaceRootId,
@@ -457,11 +457,34 @@ where
         operation_id: OperationId,
         conflict: &'static str,
     ) -> Result<PublicationReservation, WorkspaceMultiRootPublisherError<R::Error>> {
-        match target.reserve_publication(operation_id, WorkBudget::UNBOUNDED, &CancellationToken::new()).await {
-            Ok(receipt) => Ok(receipt.value),
-            Err(failure) if matches!(failure.error, WorkspaceError::StaleGeneration) =>
-                Err(WorkspaceMultiRootPublisherError::Candidate(conflict.to_owned())),
-            Err(failure) => Err(failure.error.into()),
+        let authority_head = target
+            .volume.fs.authority()
+            .head(
+                target.authority_id(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| WorkspaceError::engine(failure.error))?
+            .value;
+        match target
+            .volume.fs.authority()
+            .reserve_publication(
+                target.authority_id(),
+                authority_head,
+                operation_id,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| WorkspaceError::engine(failure.error))?
+            .value
+        {
+            ReservationOutcome::Reserved(reservation)
+            | ReservationOutcome::AlreadyReserved(reservation) => Ok(reservation),
+            ReservationOutcome::Conflict { .. } => Err(
+                WorkspaceMultiRootPublisherError::Candidate(conflict.to_owned()),
+            ),
         }
     }
 
@@ -478,13 +501,14 @@ where
             )
             .await?;
         target
+            .volume.fs.authority()
             .release_publication(
                 reservation,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| failure.error)?;
+            .map_err(|failure| WorkspaceError::engine(failure.error))?;
         Ok(())
     }
 
@@ -708,10 +732,32 @@ where
             .resolve(root.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        let reservation = match target.reserve_publication(operation_id, WorkBudget::UNBOUNDED, &CancellationToken::new()).await {
-            Ok(receipt) => receipt.value,
-            Err(failure) if matches!(failure.error, WorkspaceError::StaleGeneration) => return Ok(MultiRootPrepare::Stale),
-            Err(failure) => return Err(failure.error.into()),
+        let authority_head = target
+            .volume.fs.authority()
+            .head(
+                target.authority_id(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| WorkspaceError::engine(failure.error))?
+            .value;
+        let reservation = match target
+            .volume.fs.authority()
+            .reserve_publication(
+                target.authority_id(),
+                authority_head,
+                operation_id,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| WorkspaceError::engine(failure.error))?
+            .value
+        {
+            ReservationOutcome::Reserved(reservation)
+            | ReservationOutcome::AlreadyReserved(reservation) => reservation,
+            ReservationOutcome::Conflict { .. } => return Ok(MultiRootPrepare::Stale),
         };
         Ok(MultiRootPrepare::Ready(MultiRootFence {
             token: serde_json::to_vec(&WorkspacePublicationFence {
@@ -735,13 +781,14 @@ where
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
         target
+            .volume.fs.authority()
             .release_publication(
                 decoded.reservation,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| failure.error)?;
+            .map_err(|failure| WorkspaceError::engine(failure.error))?;
         Ok(())
     }
 
@@ -810,13 +857,14 @@ where
             )
             .await;
         let release = target
+            .volume.fs.authority()
             .release_publication(
                 reservation,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| failure.error);
+            .map_err(|failure| WorkspaceError::engine(failure.error));
         if let Err(error) = release {
             return Err(error.into());
         }
@@ -897,13 +945,14 @@ where
             )
             .await;
         let release = target
+            .volume.fs.authority()
             .release_publication(
                 reservation,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| failure.error);
+            .map_err(|failure| WorkspaceError::engine(failure.error));
         if let Err(error) = release {
             return Err(error.into());
         }
@@ -1045,13 +1094,14 @@ where
             if let Some(generation) = target.operation_generation(publisher_key(operation_id, root_id, b"publish"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             {
                 target
+                    .volume.fs.authority()
                     .release_publication(
                         decoded.reservation,
                         WorkBudget::UNBOUNDED,
                         &CancellationToken::new(),
                     )
                     .await
-                    .map_err(|failure| failure.error)?;
+                    .map_err(|failure| WorkspaceError::engine(failure.error))?;
                 return Ok(MultiRootPublishRoot::AlreadyPublished(generation.id()));
             }
             return Ok(MultiRootPublishRoot::UnexpectedTarget);
@@ -1092,13 +1142,14 @@ where
             MultiRootPublishRoot::Published(_) | MultiRootPublishRoot::AlreadyPublished(_)
         ) {
             target
+                .volume.fs.authority()
                 .release_publication(
                     decoded.reservation,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                 )
                 .await
-                .map_err(|failure| failure.error)?;
+                .map_err(|failure| WorkspaceError::engine(failure.error))?;
         }
         Ok(outcome)
     }

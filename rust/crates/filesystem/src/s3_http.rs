@@ -2661,7 +2661,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn ordinary_http_wire_retains_canonical_allocation_through_last_chunk()
-    -> Result<(), Box<dyn std::error::Error>> {
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let cancellation = CancellationToken::new();
         let work = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;

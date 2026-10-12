@@ -9710,7 +9710,7 @@ mod tests {
             original_driver: cancellation.clone(), dispatched: AtomicBool::new(false),
         });
         let weak: Weak<dyn ViewObserver> = Arc::downgrade(&observer) as Weak<dyn ViewObserver>;
-        source.observe_view(weak)?;
+        source.observe_view(weak);
         let work = crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
             .map_err(|(error, _)| error)?;
         let error = source.capture_host_paths_with_meter(
@@ -10168,7 +10168,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
             .map_err(|(cause, _)| cause)?;
-        let baseline = original.receipt().retained_allocation_bytes;
+        let baseline = original.live_allocation_bytes();
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
         let (root, allocation) = NamespacePath::parse_in_profile_with_accounting(
             "/branch", config.profile, config.limits, &mut accounting, &cancellation,
@@ -10195,12 +10195,12 @@ mod tests {
         assert!(matches!(source.native_original_work(), Err(MountSourceError::Stale)));
         assert_eq!(original.receipt(), before_revoked_binding);
         let weak = Arc::downgrade(&source);
-        assert!(original.receipt().retained_allocation_bytes > baseline + cancellation_bytes);
+        assert!(original.live_allocation_bytes() > baseline + cancellation_bytes);
         drop(source);
         assert!(weak.upgrade().is_none());
-        assert_eq!(original.receipt().retained_allocation_bytes, baseline + cancellation_bytes);
+        assert_eq!(original.live_allocation_bytes(), baseline + cancellation_bytes);
         drop(observed_cancellation);
-        assert_eq!(original.receipt().retained_allocation_bytes, baseline);
+        assert_eq!(original.live_allocation_bytes(), baseline);
         drop(weak);
         Ok(())
     }
@@ -10215,7 +10215,7 @@ mod tests {
             .map_err(|(cause, _)| cause)?;
         let original = root.native_volume_work(WorkBudget { items_examined: 2, ..crate::performance::BOUNDARY_BUDGET })?;
         let source = CheckoutMountSource::new_at_meter(
-            Arc::clone(&borrowed.checkout), config, NamespacePath::root(),
+            Arc::clone(&borrowed.checkout), config, NamespacePath::new(Vec::new(), VolumeLimits::default())?,
             original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?, &original, Some(&original),
         )?;
         assert_eq!(original.remaining()?.items_examined, 0);
@@ -10244,7 +10244,7 @@ mod tests {
         ).map_err(|(cause, _)| cause)?;
         let source = CheckoutMountSource::new_at_meter(
             Arc::clone(&borrowed.checkout), VolumeConfig::portable(Lifecycle::Ephemeral),
-            NamespacePath::root(), original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?, &original, Some(&original),
+            NamespacePath::new(Vec::new(), VolumeLimits::default())?, original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?, &original, Some(&original),
         )?;
         let wait = CancellationToken::new();
         wait.cancel();
@@ -10591,13 +10591,13 @@ mod tests {
         let (retry, retry_stop) = root.invocation_view()?;
         let retry = retry.with_source_io_lease(source.native_source_io_lease()?)?;
         let retry_native = retry.clone();
-        let published = source.runtime.block_on(|| {
+        let published = source.runtime.block_on(|| async {
             source.sync_async_with_permit_carrier_guarded_context_with_ack(
                 crate::PublicationPermit::Unrestricted, false, &mut NativeDemandCarrier::Native(&retry_native),
                 &mut super::super::view_ledger::ViewLedgerAdmission::default(), &retry_stop,
                 &mut |_original: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), GuardFailure>(())),
                 Some(context), &mut acknowledged,
-            )
+            ).await
         }).expect("healthy current invocation retries the original retained SDK operation");
         assert_eq!(published.operation(), Some(retained_operation));
         assert_eq!(published.snapshot().workspace_id(), workspace_id);
@@ -10620,15 +10620,15 @@ mod tests {
         let borrowed = source(FilesystemProfile::Portable)?;
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let cancellation = CancellationToken::new();
-        let budget = WorkBudget { allocations: 2, ..crate::performance::BOUNDARY_BUDGET };
+        let budget = WorkBudget { allocation_operations: 2, ..crate::performance::BOUNDARY_BUDGET };
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, _)| cause)?;
-        let baseline = original.receipt().retained_allocation_bytes;
+        let baseline = original.live_allocation_bytes();
         let constructor_prefix = original.receipt().allocation_operations;
         let native = original.clone();
         let namespace_guard = original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
         let source = CheckoutMountSource::new_at_meter(
-            Arc::clone(&borrowed.checkout), config, NamespacePath::root(), namespace_guard, &native, Some(&original),
+            Arc::clone(&borrowed.checkout), config, NamespacePath::new(Vec::new(), VolumeLimits::default())?, namespace_guard, &native, Some(&original),
         )?;
         assert_eq!(original.receipt().allocation_operations, constructor_prefix + 1);
         let result = source.into_arc_meter(&native);
@@ -10636,7 +10636,7 @@ mod tests {
             crate::NativeTreeMaterializationError::Work(_)
         ))));
         assert_eq!(original.receipt().allocation_operations, constructor_prefix + 1);
-        assert_eq!(original.receipt().retained_allocation_bytes, baseline);
+        assert_eq!(original.live_allocation_bytes(), baseline);
         Ok(())
     }
 
@@ -10650,7 +10650,7 @@ mod tests {
             .map_err(|(cause, _)| cause)?;
         let second = crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
             .map_err(|(cause, _)| cause)?;
-        let first_baseline = first.receipt().retained_allocation_bytes;
+        let first_baseline = first.live_allocation_bytes();
         let second_prefix = second.receipt();
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(&first, &cancellation);
         let (root, allocation) = NamespacePath::parse_in_profile_with_accounting(
@@ -10665,7 +10665,7 @@ mod tests {
             crate::NativeTreeMaterializationError::InvalidLayout
         ))));
         assert_eq!(second.receipt(), second_prefix);
-        assert_eq!(first.receipt().retained_allocation_bytes, first_baseline);
+        assert_eq!(first.live_allocation_bytes(), first_baseline);
         Ok(())
     }
 
@@ -10759,7 +10759,7 @@ mod tests {
         let pending = source.checkout.pending_create(created.node.file_id)
             .ok_or("creation was not queued")?;
         let (pointer, capacity) = match &*pending.state() {
-            PendingState::Pending { bytes, .. } => (bytes.as_ptr(), bytes.capacity()),
+            PendingState::Pending { bytes, .. } => (bytes.as_ptr(), (match bytes { PendingBytes::Mutable { bytes, .. } => bytes.capacity(), PendingBytes::Shared { capacity, .. } => *capacity })),
             _ => return Err("creation was not pending".into()),
         };
         assert!(capacity > 3, "the real queued buffer has spare capacity");
@@ -10772,7 +10772,7 @@ mod tests {
         let second_pending = source.checkout.pending_create(second_created.node.file_id)
             .ok_or("second creation was not queued")?;
         let (second_pointer, second_capacity) = match &*second_pending.state() {
-            PendingState::Pending { bytes, .. } => (bytes.as_ptr(), bytes.capacity()),
+            PendingState::Pending { bytes, .. } => (bytes.as_ptr(), (match bytes { PendingBytes::Mutable { bytes, .. } => bytes.capacity(), PendingBytes::Shared { capacity, .. } => *capacity })),
             _ => return Err("second creation was not pending".into()),
         };
         let originals = [
@@ -10806,8 +10806,8 @@ mod tests {
                 match &*pending.state() {
                     PendingState::Pending { bytes, .. } => {
                         assert_eq!(bytes.as_ptr(), *pointer);
-                        assert_eq!(bytes.capacity(), *capacity);
-                        assert_eq!(bytes.as_slice(), *expected);
+                        assert_eq!((match bytes { PendingBytes::Mutable { bytes, .. } => bytes.capacity(), PendingBytes::Shared { capacity, .. } => *capacity }), *capacity);
+                        assert_eq!(&bytes[..], *expected);
                     }
                     _ => return Err("denied creation did not restore Pending".into()),
                 }
@@ -10851,7 +10851,7 @@ mod tests {
         let pending = source.checkout.pending_create(created.node.file_id)
             .ok_or("creation was not queued")?;
         let original = match &*pending.state() {
-            PendingState::Pending { bytes, .. } => (bytes.as_ptr(), bytes.capacity()),
+            PendingState::Pending { bytes, .. } => (bytes.as_ptr(), (match bytes { PendingBytes::Mutable { bytes, .. } => bytes.capacity(), PendingBytes::Shared { capacity, .. } => *capacity })),
             _ => return Err("creation was not pending".into()),
         };
         for deny_before_begin in [true, false] {
@@ -10862,9 +10862,9 @@ mod tests {
             let meter = Arc::new(crate::demand::NativeDemandReadMeter(StdMutex::new(
                 crate::demand::DemandWork::new(budget, &cancellation),
             )));
-            let result = source.runtime.block_on(|| source.checkout.settle_pending_with_carrier(
+            let result = source.runtime.block_on(|| async { source.checkout.settle_pending_with_carrier(
                 &mut NativeDemandCarrier::Shared(&meter), &cancellation, None,
-            ));
+            ).await });
             assert!(matches!(result, Err(MountSourceError::Work(_))));
             meter.lock().work.verify(budget)?;
             assert!(Arc::ptr_eq(&pending,
@@ -10874,8 +10874,8 @@ mod tests {
             match &*pending.state() {
                 PendingState::Pending { bytes, .. } => {
                     assert_eq!(bytes.as_ptr(), original.0);
-                    assert_eq!(bytes.capacity(), original.1);
-                    assert_eq!(bytes.as_slice(), b"immutable");
+                    assert_eq!((match bytes { PendingBytes::Mutable { bytes, .. } => bytes.capacity(), PendingBytes::Shared { capacity, .. } => *capacity }), original.1);
+                    assert_eq!(&bytes[..], b"immutable");
                 }
                 _ => return Err("shared denied creation was not restored".into()),
             }
@@ -10885,9 +10885,9 @@ mod tests {
         let meter = Arc::new(crate::demand::NativeDemandReadMeter(StdMutex::new(
             crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation),
         )));
-        source.runtime.block_on(|| source.checkout.settle_pending_with_carrier(
+        source.runtime.block_on(|| async { source.checkout.settle_pending_with_carrier(
             &mut NativeDemandCarrier::Shared(&meter), &cancellation, None,
-        ))?;
+        ).await })?;
         assert!(meter.lock().work.object_bytes_written > 0);
         assert!(source.checkout.pending.lock().map_err(|_| "poisoned queue")?.is_empty());
         assert!(matches!(&*pending.state(), PendingState::Complete));
@@ -10928,8 +10928,8 @@ mod tests {
         ), &invocation)?;
         match &*pending.state() {
             PendingState::Pending { bytes, .. } => {
-                assert_eq!((bytes.as_ptr(), bytes.capacity()), (pointer, capacity));
-                assert_eq!(bytes.as_slice(), b"first");
+                assert_eq!((bytes.as_ptr(), (match bytes { PendingBytes::Mutable { bytes, .. } => bytes.capacity(), PendingBytes::Shared { capacity, .. } => *capacity })), (pointer, capacity));
+                assert_eq!(&bytes[..], b"first");
             }
             _ => return Err("bounded overwrite applied the creation".into()),
         }
@@ -10953,15 +10953,15 @@ mod tests {
         let copy = original.reserve_work(crate::WorkCounters { bytes_copied: 4, ..crate::WorkCounters::UNCHARGED })?;
         body.mutable().extend_from_slice(b"last");
         { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: 4, ..crate::WorkCounters::UNCHARGED }) }?;
-        let capacity = body.capacity() as u64;
+        let capacity = body.mutable().capacity() as u64;
         let retained = body.share(Some(&original))?;
-        let live = original.native_read_meter().lock().allocations.live_bytes();
+        let live = original.native_read_meter().lock().live_allocation_bytes();
         drop(body);
-        assert_eq!(original.native_read_meter().lock().allocations.live_bytes(), live,
+        assert_eq!(original.native_read_meter().lock().live_allocation_bytes(), live,
             "dropping the pending alias released a still-owned native body");
         assert_eq!(retained.as_ref(), b"last");
         drop(retained);
-        assert!(live - original.native_read_meter().lock().allocations.live_bytes() >= capacity);
+        assert!(live - original.native_read_meter().lock().live_allocation_bytes() >= capacity);
         Ok(())
     }
 
@@ -11032,7 +11032,7 @@ mod tests {
         assert!(file.write_range(0, Bytes::from_static(b"bypass!!")).is_err());
         assert_eq!(original.receipt(), prefix);
         match &*pending.state() {
-            PendingState::Pending { bytes, .. } => assert_eq!(bytes.as_slice(), b"changed!"),
+            PendingState::Pending { bytes, .. } => assert_eq!(&bytes[..], b"changed!"),
             _ => return Err("cancelled resize applied the creation".into()),
         }
         Ok(())
@@ -11057,7 +11057,7 @@ mod tests {
             else { resource_budget.object_bytes_written = 0; }
             let resource = root.native_volume_work(resource_budget)?;
             let invocation = resource.clone();
-            let result = source.runtime.block_on(|| source.checkout.settle_pending_with_carrier(&mut NativeDemandCarrier::Native(&invocation), &cancellation, None));
+            let result = source.runtime.block_on(|| async { source.checkout.settle_pending_with_carrier(&mut NativeDemandCarrier::Native(&invocation), &cancellation, None).await });
             assert!(result.is_err(), "real queued creation ignored the native resource quota");
             assert_eq!(file.read_up_to(0, 64)?.as_ref(), b"original");
         }
@@ -11066,7 +11066,7 @@ mod tests {
             WorkBudget::UNBOUNDED, &cancellation,
         ).map_err(|(error, _)| error)?;
         let invocation = root.clone();
-        source.runtime.block_on(|| source.checkout.settle_pending_with_carrier(&mut NativeDemandCarrier::Native(&invocation), &cancellation, None))?;
+        source.runtime.block_on(|| async { source.checkout.settle_pending_with_carrier(&mut NativeDemandCarrier::Native(&invocation), &cancellation, None).await })?;
         assert_eq!(source.read_range(&path, 0, 8)?.as_ref(), b"original");
         Ok(())
     }
@@ -11122,7 +11122,7 @@ mod tests {
         let pending = source.checkout.pending_create(created.node.file_id)
             .ok_or("creation was not queued")?;
         let original = match &*pending.state() {
-            PendingState::Pending { bytes, .. } => (bytes.as_ptr(), bytes.capacity()),
+            PendingState::Pending { bytes, .. } => (bytes.as_ptr(), (match bytes { PendingBytes::Mutable { bytes, .. } => bytes.capacity(), PendingBytes::Shared { capacity, .. } => *capacity })),
             _ => return Err("creation was not pending".into()),
         };
         let cancellation = CancellationToken::new();
@@ -11137,7 +11137,7 @@ mod tests {
         pending.restore_applying_retained();
         match &*pending.state() {
             PendingState::Pending { bytes, .. } => {
-                assert_eq!((bytes.as_ptr(), bytes.capacity()), original);
+                assert_eq!((bytes.as_ptr(), (match bytes { PendingBytes::Mutable { bytes, .. } => bytes.capacity(), PendingBytes::Shared { capacity, .. } => *capacity })), original);
                 assert!(matches!(bytes, PendingBytes::Shared { .. }));
             }
             _ => return Err("creation was not restored".into()),
@@ -11188,7 +11188,7 @@ mod tests {
             Err(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))));
         assert_eq!(work.receipt(), prefix, "foreign-root input is rejected before native work");
         let resource = work.native_volume_work(crate::performance::BOUNDARY_BUDGET)?;
-        let retained_before_foreign = work.receipt().retained_allocation_bytes;
+        let retained_before_foreign = work.live_allocation_bytes();
         let foreign_input = from.read_sparse_range_with_meter(0, 128, &resource)?;
         let prefix = work.receipt();
         assert!(matches!(to.write_sparse_range_with_meter(0, foreign_input, &invocation),
@@ -11196,7 +11196,7 @@ mod tests {
         let after = work.receipt();
         assert_eq!(after.allocation_operations, prefix.allocation_operations);
         assert_eq!(after.backend_read_operations, prefix.backend_read_operations);
-        assert_eq!(after.retained_allocation_bytes, retained_before_foreign,
+        assert_eq!(work.live_allocation_bytes(), retained_before_foreign,
             "rejected payload and span metadata retire their separate original guards");
         let sparse = from.read_sparse_range_with_meter(0, 128, &invocation)?;
         assert_eq!(sparse.0.logical_bytes, 128);
@@ -11248,7 +11248,7 @@ mod tests {
         assert_eq!(meter.lock().live_allocation_bytes(), before);
         assert_eq!(to.lookup_with_meter(&invocation)?, unchanged);
         let page = to.list_attributes_with_meter(None, 8, &invocation)?;
-        assert_eq!(page.names, vec![b"user.metered".to_vec()]);
+        assert_eq!(page.0.names, vec![b"user.metered".to_vec()]);
         drop(page);
         to.remove_attribute_with_meter(b"user.metered", &invocation)?;
         assert!(to.read_attribute_with_meter(b"user.metered", &invocation)?.is_none());
@@ -11281,7 +11281,7 @@ mod tests {
         source.runtime.block_on(|| async {
             let caller = CancellationToken::new();
             let mut work = crate::demand::DemandWork::new(WorkBudget::default(), &caller);
-            let snapshot = detached.snapshot_with_work(&mut work, &caller).await?;
+            let snapshot = detached.snapshot(&mut NativeDemandCarrier::Borrowed(&mut work), &caller).await?;
             assert_eq!(snapshot, (record, created.metadata, 0));
             assert_eq!(work.work, crate::WorkCounters::default());
             let meter = Arc::new(crate::demand::NativeDemandReadMeter(StdMutex::new(
@@ -11297,7 +11297,7 @@ mod tests {
             caller.cancel();
             let mut work = crate::demand::DemandWork::new(WorkBudget::default(), &caller);
             assert!(matches!(
-                detached.snapshot_with_work(&mut work, &caller).await,
+                detached.snapshot(&mut NativeDemandCarrier::Borrowed(&mut work), &caller).await,
                 Err(MountSourceError::Cancelled),
             ));
             assert_eq!(work.work, crate::WorkCounters::default());
@@ -11314,7 +11314,7 @@ mod tests {
             detached.cancellation.cancel();
             let mut work = crate::demand::DemandWork::new(WorkBudget::default(), &caller);
             assert!(matches!(
-                detached.snapshot_with_work(&mut work, &caller).await,
+                detached.snapshot(&mut NativeDemandCarrier::Borrowed(&mut work), &caller).await,
                 Err(MountSourceError::Stale),
             ));
             assert_eq!(work.work, crate::WorkCounters::default());
@@ -11339,7 +11339,8 @@ mod tests {
             let caller = CancellationToken::new();
             let mut work = crate::demand::DemandWork::new(budget, &caller);
             let result = {
-                let mut snapshot = std::pin::pin!(detached.snapshot_with_work(&mut work, &caller));
+                let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
+                let mut snapshot = std::pin::pin!(detached.snapshot(&mut carrier, &caller));
                 assert!(futures::poll!(snapshot.as_mut()).is_pending());
                 caller.cancel();
                 snapshot.await
@@ -11353,7 +11354,8 @@ mod tests {
             let caller = CancellationToken::new();
             let mut work = crate::demand::DemandWork::new(budget, &caller);
             let result = {
-                let mut snapshot = std::pin::pin!(detached.snapshot_with_work(&mut work, &caller));
+                let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
+                let mut snapshot = std::pin::pin!(detached.snapshot(&mut carrier, &caller));
                 assert!(futures::poll!(snapshot.as_mut()).is_pending());
                 detached.cancellation.cancel();
                 snapshot.await
@@ -11443,7 +11445,9 @@ mod tests {
 
     #[test]
     fn a_grouped_failure_reuses_its_original_admission_without_a_cycle() {
-        let admission = Arc::new(GroupedAdmission::new(GROUPED_CLAIMED));
+        let cancellation = CancellationToken::new();
+        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let admission = GroupedAdmission::new(&mut NativeDemandCarrier::Borrowed(&mut work)).expect("unbounded admission");
         let original = admission.retain_failure(MountSourceError::Filesystem(FsError::NotFound));
         let retained = admission.retain_failure(MountSourceError::Retained(Arc::clone(&original)));
         assert!(Arc::ptr_eq(&original, &retained));
@@ -11459,46 +11463,33 @@ mod tests {
         let target = native_test_path("grouped-conflict");
         let path = source.namespace_path(&target, &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))).map(|(path, _)| path)?;
         let first_id = FileId::new();
-        let (first_reply, first) = tokio::sync::oneshot::channel();
-        let (second_reply, second) = tokio::sync::oneshot::channel();
-        let requests = vec![
-            GroupedRequest {
-                change: GroupedChange::CreateFile {
-                    path: path.clone(), metadata: Box::new(metadata()), file_id: first_id,
-                    bytes: OwnedBytes::from_static(b"first"),
-                },
-                admission: Arc::new(GroupedAdmission::new(GROUPED_CLAIMED)),
-                reply: GroupedReply::Callback(first_reply), origin: ViewOrigin::new(), recorded: false,
-                native_callback_guard: source.native_callback_guard.as_ref().map(Arc::clone),
-                source_lifetime: Some(source.cancellation.clone()),
-            },
-            GroupedRequest {
-                change: GroupedChange::CreateFile {
-                    path, metadata: Box::new(metadata()), file_id: FileId::new(),
-                    bytes: OwnedBytes::from_static(b"second"),
-                },
-                admission: Arc::new(GroupedAdmission::new(GROUPED_CLAIMED)),
-                reply: GroupedReply::Callback(second_reply), origin: ViewOrigin::new(), recorded: false,
-                native_callback_guard: source.native_callback_guard.as_ref().map(Arc::clone),
-                source_lifetime: Some(source.cancellation.clone()),
-            },
-        ];
-        let (batch, first, second, work) = source.runtime.block_on(|| async {
-            let cancellation = CancellationToken::new();
-            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let batch = source.checkout.apply_grouped_requests_measured(
-                requests, &mut work, &cancellation, None,
-            ).await;
-            Ok::<_, MountSourceError>((batch,
-                first.await.map_err(|_| MountSourceError::Stale)?,
-                second.await.map_err(|_| MountSourceError::Stale)?, work.work))
-        })?;
-        assert!(matches!(first, Ok(GroupedOutcome::Created(id)) if id == first_id));
-        assert!(matches!(&second, Err(error) if matches!(error.semantic_error(), MountSourceError::AlreadyExists)));
+        let cancellation = CancellationToken::new();
+        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let first = source.new_pending_with_carrier(&path, first_id, metadata(), &mut NativeDemandCarrier::Borrowed(&mut work))?;
+        let second = source.new_pending_with_carrier(&path, FileId::new(), metadata(), &mut NativeDemandCarrier::Borrowed(&mut work))?;
+        let mut requests = Vec::new();
+        let mut claimed = 0;
+        for (pending, contents) in [(&first, b"first".as_slice()), (&second, b"second".as_slice())] {
+            if let PendingState::Pending { bytes, .. } = &mut *pending.state() {
+                bytes.mutable().extend_from_slice(contents);
+            }
+            requests.push(GroupedRequest {
+                change: pending.begin_applying_measured(source.limits, &mut work, &mut claimed)?.ok_or("creation did not prepare")?,
+                admission: GroupedAdmission::new(&mut NativeDemandCarrier::Borrowed(&mut work))?, reply: Arc::clone(pending),
+            });
+        }
+        let batch = source.runtime.block_on(|| async {
+            source.checkout.apply_grouped_requests(requests, &mut NativeDemandCarrier::Borrowed(&mut work), &cancellation, None).await
+        });
+        assert!(first.applied().is_ok());
+        assert!(matches!(&*first.state(), PendingState::Complete));
+        let second_error = second.failure.get().ok_or("conflicting creation did not retain its failure")?;
+        assert!(matches!(second_error.semantic_error(), MountSourceError::AlreadyExists));
         assert!(matches!(&batch, Err(error) if matches!(error.semantic_error(), MountSourceError::AlreadyExists)));
-        assert!(matches!((&batch, &second),
-            (Err(MountSourceError::Retained(batch)), Err(MountSourceError::Retained(second)))
+        assert!(matches!((&batch, second_error),
+            (Err(MountSourceError::Retained(batch)), MountSourceError::Retained(second))
                 if Arc::ptr_eq(batch, second)));
+        let work = work.work;
         assert!(work.items_examined > 0 && work.allocation_operations > 0);
         assert_eq!(source.lookup(&target)?.ok_or("successful retry is absent")?.node.file_id, first_id);
         assert_eq!(source.read_range(&target, 0, 5)?.as_ref(), b"first");
@@ -11527,41 +11518,39 @@ mod tests {
         let attempts = objects.metadata_attempts.load(Ordering::Acquire);
         objects.refuse_metadata.store(true, Ordering::Release);
         let encoded_bytes = crate::kernel::encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?.len() as u64;
-        let (first_reply, first) = tokio::sync::oneshot::channel();
-        let (second_reply, second) = tokio::sync::oneshot::channel();
         let first_target = native_test_path("grouped-refused-first");
         let second_target = native_test_path("grouped-refused-second");
+        let cancellation = CancellationToken::new();
+        let mut setup = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let mut requests = Vec::new();
-        for (target, reply) in [(&first_target, first_reply), (&second_target, second_reply)] {
+        let mut replies = Vec::new();
+        let mut admissions = Vec::new();
+        let mut claimed = 0;
+        for target in [&first_target, &second_target] {
+            let path = source.namespace_path(target, &mut NativeDemandCarrier::Borrowed(&mut setup))?.0;
+            let pending = source.new_pending_with_carrier(&path, FileId::new(), metadata(), &mut NativeDemandCarrier::Borrowed(&mut setup))?;
+            let admission = GroupedAdmission::new(&mut NativeDemandCarrier::Borrowed(&mut setup))?;
             requests.push(GroupedRequest {
-                change: GroupedChange::CreateFile {
-                    path: source.namespace_path(target, &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))).map(|(path, _)| path)?, metadata: Box::new(metadata()), file_id: FileId::new(),
-                    bytes: OwnedBytes::new(),
-                },
-                admission: Arc::new(GroupedAdmission::new(GROUPED_CLAIMED)),
-                reply: GroupedReply::Callback(reply), origin: ViewOrigin::new(), recorded: false,
-                native_callback_guard: source.native_callback_guard.as_ref().map(Arc::clone),
-                source_lifetime: Some(source.cancellation.clone()),
+                change: pending.begin_applying_measured(source.limits, &mut setup, &mut claimed)?.ok_or("creation did not prepare")?,
+                admission: Arc::clone(&admission), reply: Arc::clone(&pending),
             });
+            replies.push(pending);
+            admissions.push(admission);
         }
-        let (batch, first, second, work) = source.runtime.block_on(|| async {
-            let cancellation = CancellationToken::new();
-            let mut work = crate::demand::DemandWork::new(WorkBudget {
-                bytes_encoded: encoded_bytes, ..WorkBudget::UNBOUNDED
-            }, &cancellation);
-            let batch = source.checkout.apply_grouped_requests_measured(
-                requests, &mut work, &cancellation, None,
-            ).await;
-            Ok::<_, MountSourceError>((batch,
-                first.await.map_err(|_| MountSourceError::Stale)?,
-                second.await.map_err(|_| MountSourceError::Stale)?, work.work))
-        })?;
-        assert!(matches!(&first, Err(error) if matches!(error.semantic_error(), MountSourceError::Filesystem(_))));
-        assert!(matches!(&second, Err(error) if matches!(error.semantic_error(), MountSourceError::Work(_))));
+        let mut work = crate::demand::DemandWork::new(WorkBudget { bytes_encoded: encoded_bytes, ..WorkBudget::UNBOUNDED }, &cancellation);
+        let batch = source.runtime.block_on(|| async {
+            source.checkout.apply_grouped_requests(requests, &mut NativeDemandCarrier::Borrowed(&mut work), &cancellation, None).await
+        });
+        let first = admissions[0].failure.get().ok_or("first request did not retain its failure")?;
+        let second = admissions[1].failure.get().ok_or("second request did not retain its failure")?;
+        assert!(matches!(first.semantic_error(), MountSourceError::Filesystem(_)));
+        assert!(matches!(second.semantic_error(), MountSourceError::Work(_)));
         assert!(matches!(&batch, Err(error) if matches!(error.semantic_error(), MountSourceError::Filesystem(_))));
-        assert!(matches!((&batch, &first),
-            (Err(MountSourceError::Retained(batch)), Err(MountSourceError::Retained(first)))
+        assert!(matches!((&batch, replies[0].failure.get()),
+            (Err(MountSourceError::Retained(batch)), Some(MountSourceError::Retained(first)))
                 if Arc::ptr_eq(batch, first)));
+        assert!(matches!(&*replies[1].state(), PendingState::Pending { .. }));
+        let work = work.work;
         assert_eq!(work.bytes_encoded, encoded_bytes);
         assert_eq!(objects.metadata_attempts.load(Ordering::Acquire) - attempts, 1);
         assert!(source.lookup(&first_target)?.is_none());
@@ -11584,33 +11573,16 @@ mod tests {
         let source = source(FilesystemProfile::Portable)?;
         let observer = Arc::new(Origins(StdMutex::new(Vec::new())));
         let weak: Weak<dyn ViewObserver> = Arc::<Origins>::downgrade(&observer);
-        source.observe_view(weak)?;
+        source.observe_view(weak);
         let (requester, applier) = (ViewOrigin::new(), ViewOrigin::new());
         let target = native_test_path("applied");
         source.create_file(&target, metadata())?;
         // Applies the creation, which waits for its first bytes.
         assert!(source.lookup(&target)?.is_some());
-        let (reply, _outcome) = tokio::sync::oneshot::channel();
-        source
-            .checkout
-            .grouped
-            .lock()
-            .map_err(|_| "poisoned queue")?
-            .requests
-            .push_back(GroupedRequest {
-                change: GroupedChange::CreateFile {
-                    path: source.namespace_path(&native_test_path("queued"), &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))).map(|(path, _)| path)?,
-                    metadata: Box::new(metadata()),
-                    file_id: FileId::new(),
-                    bytes: OwnedBytes::new(),
-                },
-                admission: Arc::new(GroupedAdmission::new(GROUPED_QUEUED)),
-                reply: GroupedReply::Callback(reply),
-                origin: requester,
-                recorded: false,
-                native_callback_guard: source.native_callback_guard.as_ref().map(Arc::clone),
-                source_lifetime: Some(source.cancellation.clone()),
-            });
+        {
+            let _requester = requester.enter();
+            source.create_file(&native_test_path("queued"), metadata())?;
+        }
         {
             let _applier = applier.enter();
             source
@@ -11647,79 +11619,32 @@ mod tests {
         let source = source(FilesystemProfile::Portable)?;
         let abandoned = native_test_path("abandoned.bin");
         let kept = native_test_path("kept.bin");
-        let create = |path: &MountPath| -> Result<GroupedChange, MountSourceError> {
-            Ok(GroupedChange::CreateFile {
-                path: source.namespace_path(path, &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))).map(|(path, _)| path)?,
-                metadata: Box::new(metadata()),
-                file_id: FileId::new(),
-                bytes: OwnedBytes::new(),
-            })
-        };
-        let (abandoned_change, kept_change) = (create(&abandoned)?, create(&kept)?);
+        let cancellation = CancellationToken::new();
+        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let mut requests = Vec::new();
+        let mut claimed = 0;
+        for target in [&abandoned, &kept] {
+            let path = source.namespace_path(target, &mut NativeDemandCarrier::Borrowed(&mut work))?.0;
+            let pending = source.new_pending_with_carrier(&path, FileId::new(), metadata(), &mut NativeDemandCarrier::Borrowed(&mut work))?;
+            requests.push(GroupedRequest {
+                change: pending.begin_applying_measured(source.limits, &mut work, &mut claimed)?.ok_or("creation did not prepare")?,
+                admission: GroupedAdmission::new(&mut NativeDemandCarrier::Borrowed(&mut work))?, reply: pending,
+            });
+        }
+        let kept_request = requests.pop().ok_or("missing kept request")?;
         source.runtime.block_on(|| async {
             let held = source.checkout.lock().await;
+            let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
             let gave_up = tokio::time::timeout(
                 Duration::from_millis(20),
-                source
-                    .checkout
-                    .apply_grouped(abandoned_change, &source.cancellation, source.native_callback_guard.as_ref().map(Arc::clone)),
-            )
-            .await;
+                source.checkout.apply_grouped_requests(requests, &mut carrier, &cancellation, None),
+            ).await;
             assert!(gave_up.is_err(), "the checkout was held");
             drop(held);
-            source
-                .checkout
-                .apply_grouped(kept_change, &source.cancellation, source.native_callback_guard.as_ref().map(Arc::clone))
-                .await
+            source.checkout.apply_grouped_requests(vec![kept_request], &mut carrier, &cancellation, None).await
         })?;
         assert!(source.lookup(&kept)?.is_some());
-        assert!(
-            source.lookup(&abandoned)?.is_none(),
-            "a change its caller saw fail applied later"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn a_drain_outlives_the_caller_that_started_it() -> Result<(), Box<dyn std::error::Error>> {
-        let source = source(FilesystemProfile::Portable)?;
-        let abandoned = native_test_path("drainer.bin");
-        let kept = native_test_path("waiter.bin");
-        let create = |path: &MountPath| -> Result<GroupedChange, MountSourceError> {
-            Ok(GroupedChange::CreateFile {
-                path: source.namespace_path(path, &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))).map(|(path, _)| path)?,
-                metadata: Box::new(metadata()),
-                file_id: FileId::new(),
-                bytes: OwnedBytes::new(),
-            })
-        };
-        let (abandoned_change, kept_change) = (create(&abandoned)?, create(&kept)?);
-        source.runtime.block_on(|| async {
-            let held = source.checkout.lock().await;
-            let mut drainer = Box::pin(
-                source
-                    .checkout
-                    .apply_grouped(abandoned_change, &source.cancellation, source.native_callback_guard.as_ref().map(Arc::clone)),
-            );
-            assert!(futures::poll!(drainer.as_mut()).is_pending());
-            let checkout = Arc::clone(&source.checkout);
-            let cancellation = source.cancellation.clone();
-            let callback_guard = source.native_callback_guard.as_ref().map(Arc::clone);
-            let waiter =
-                tokio::spawn(
-                    async move { checkout.apply_grouped(kept_change, &cancellation, callback_guard).await },
-                );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            // The drainer's caller gives up; the drain continues without it.
-            drop(drainer);
-            drop(held);
-            tokio::time::timeout(Duration::from_secs(5), waiter)
-                .await
-                .map_err(|_| MountSourceError::Stale)?
-                .map_err(|_| MountSourceError::Stale)?
-        })?;
-        assert!(source.lookup(&kept)?.is_some());
-        assert!(source.lookup(&abandoned)?.is_none());
+        assert!(source.lookup(&abandoned)?.is_none(), "a change its caller saw fail applied later");
         Ok(())
     }
 
