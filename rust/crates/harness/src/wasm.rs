@@ -546,14 +546,6 @@ pub struct WasmWorkflowAdmissionWire {
     initial: crate::workflow::MachineCheckpoint,
 }
 
-fn hex_bytes(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push_str(&format!("{byte:02x}"));
-    }
-    output
-}
-
 fn wasm_limits(input: WasmLimitsInput) -> Result<Limits, crate::Error> {
     Ok(Limits {
         file_bytes: input.file_bytes,
@@ -1106,8 +1098,8 @@ pub fn admit_batch_request_wasm(
     #[wasm_bindgen(unchecked_param_type = "WasmBatchAdmissionInput")] value: JsValue,
 ) -> Result<JsValue, JsValue> {
     let input: WasmBatchAdmissionInput = from_js(value)?;
-    let implementation_digest = hex_bytes(&input.machine_digest);
     let request = durable_batch_request_from_input(input)?;
+    let implementation_digest = blake3::Hash::from_bytes(request.machine.digest).to_hex().to_string();
     let canonical = request.canonical_value();
     let members = (0..request.inputs.len())
         .map(|index| {
