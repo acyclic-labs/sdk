@@ -210,7 +210,7 @@ pub(crate) fn validate_effect_schema_bytes_with_work(
         let original = work.as_deref().and_then(|io| io.original_native_work())
             .ok_or_else(|| Error::Unsupported("effect schema observer has no original native ledger".into()))?;
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
-        let schema = decode.decode_preparation::<Value>(bytes)?;
+        let schema = decode.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
         drop(crate::contract::compile_json_schema(
             &schema, "effect result", Some(&decode))?);
         return Ok(());
@@ -240,7 +240,7 @@ pub(crate) fn validate_effect_result_bytes_with_work(
         let original = work.as_deref().and_then(|io| io.original_native_work())
             .ok_or_else(|| Error::Unsupported("effect result observer has no original native ledger".into()))?;
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
-        let schema = decode.decode_preparation::<Value>(schema_bytes)?;
+        let schema = decode.decode_preparation::<Value>(schema_bytes, crate::wire::ErrorCode::Storage)?;
         // Preserve schema admission before result parsing/allocation, as in the original validate_schema_bytes + validate_result_bytes sequence.
         drop(crate::contract::compile_json_schema(
             &schema, "effect result", Some(&decode))?);
@@ -251,7 +251,7 @@ pub(crate) fn validate_effect_result_bytes_with_work(
             });
         }
         result.descriptor().verify_with_native_work(bytes, original)?;
-        let value = decode.decode_preparation::<Value>(bytes)?;
+        let value = decode.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
         return crate::contract::validate_json_schema_value(
             &schema, &value, "effect result", Some(&decode));
     }
