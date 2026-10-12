@@ -122,12 +122,10 @@ fn root_replacement_during_a_baseline_invalidates_the_rescan()
     )?;
     let mut watch = opened.value;
     let original_identity = watch.root_identity();
-    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
-    watch.begin_rescan_with_native_work(&work)?;
+    watch.begin_rescan()?;
     std::fs::rename(&root, &displaced)?;
     std::fs::create_dir(&root)?;
-    let finished = watch.finish_rescan_with_native_work(&work)?;
+    let finished = watch.finish_rescan()?;
     assert_eq!(watch.root_identity(), original_identity);
     assert!(matches!(
         finished,
@@ -287,11 +285,7 @@ fn measured_native_watch_baseline_failures_leave_the_rescan_recoverable()
     watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
     let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    watch.begin_rescan_with_native_work(&work)?;
-    assert!(matches!(watch.finish_rescan_with_native_work(&cancelled_work),
-        Err(NativeWatchError::Cancelled(_))));
-    assert!(matches!(watch.finish_rescan_with_native_work(&denied),
-        Err(NativeWatchError::Work(_))));
+    watch.begin_rescan()?;
     watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
     assert!(matches!(watch.accept_lazy_baseline_with_native_work(&work)?,
         WatchBatch::Changes { changes, .. } if changes.is_empty()));

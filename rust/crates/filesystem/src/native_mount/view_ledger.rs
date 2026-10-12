@@ -2079,7 +2079,7 @@ mod tests {
         for byte in 2..=8 {
             ledger.record(&ViewChange::Node(FileId::from_bytes([byte; 16])), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut super::unbounded_view_work()), &mut ViewLedgerAdmission::default()).expect("unbounded view recording");
         }
-        assert!(ledger.nodes.1.load(Ordering::Acquire) > generation);
+        assert!(ledger.nodes.1.load(std::sync::atomic::Ordering::Acquire) > generation);
         work.record(crate::WorkCounters::UNCHARGED)?;
         assert_eq!(work.live_allocation_bytes(), live - bytes);
         assert!(proof.lock().expect("same loaned proof")[super::AdmittedMap::Nodes as usize].is_none());

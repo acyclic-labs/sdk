@@ -9523,8 +9523,8 @@ fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefi
         "selected-fork-verification-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/file".to_owned()]),
-    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))))?;
-    let initial = poll_immediate(async { child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map(|receipt| receipt.value).map_err(|failure| failure.error) })?;
+    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))))?.value;
+    let initial = poll_immediate(async { child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })?;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
         kind: ObjectKind::GenerationRoot, digest: source.id().digest(),
     });
