@@ -1,9 +1,9 @@
 //! Typed resource and prompt operations over the same admitted protocol boundary.
-use crate::{Error, OperationId, Result};
+use crate::{Error, NativeWork, OperationId, Result};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use super::http::HttpMcpTransport;
-use super::rpc::{Dto, NativeWork, check_dto, checkpoint, protocol_error};
+use super::rpc::{Dto, check_dto, checkpoint, protocol_error};
 
 /// Validates service input on the supplied work ledger.
 pub fn validate_params(

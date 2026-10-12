@@ -139,7 +139,7 @@ impl ProjectSourceAuthorization {
             reservation_id: crate::core::copy_text(&self.caller_fence.reservation_id, &mut quota)?,
             placement: crate::core::copy_text(&self.caller_fence.placement, &mut quota)?,
         };
-        let project = self.project.clone_with_work(quota.work())?;
+        let project = self.project.copy(quota.work())?;
         quota.adopt(project.logical_owned_bytes()?)?;
         let reference = self.generation.as_resource();
         let provider = crate::resources::ProviderRef::new_with_work(
@@ -162,7 +162,7 @@ impl ProjectSourceAuthorization {
             }
             None => None,
         };
-        let policy_scope = self.policy_scope.clone_with_work(quota.work())?;
+        let policy_scope = self.policy_scope.copy(quota.work())?;
         quota.adopt(policy_scope.logical_owned_bytes()?)?;
         let value = Self {
             owner, caller_task: self.caller_task, caller_admission_digest: self.caller_admission_digest,
@@ -181,7 +181,7 @@ impl ProjectSourceAuthorization {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.project.validate_with_work(work)?;
+        self.project.validate(work)?;
         self.generation.validate_with_work(work)?;
         if self.project.class() != VolumeClass::Project
             || self.project.provider() != self.generation.as_resource().provider()
@@ -241,7 +241,7 @@ impl ProjectSourceAuthorization {
             && capabilities.next() == Some(label.as_str())
             && capabilities.next().is_none();
         let result = if matches {
-            verifier.verify_with_work(&self.policy_scope, work)
+            verifier.verify(&self.policy_scope, work)
         } else {
             let denied = || {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -283,21 +283,13 @@ pub struct ProjectSourceReadHandle {
 
 impl ProjectSourceReadHandle {
     // Only the owning kernel calls this after authenticating retained graph facts.
-    pub(crate) fn seal(authorization: ProjectSourceAuthorization, verifier: &AuthorityVerifier) -> Result<Self> {
-        authorization.verify_scope_with_work(verifier, &mut None)?;
-        let proof = VerifiedProjectSourceRead { authorization: &authorization };
-        let grant = ContentGrant::from_verified_project_source(&proof);
-        Ok(Self { authorization, grant })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn seal_with_work(
+    pub(crate) fn seal(
         authorization: ProjectSourceAuthorization, verifier: &AuthorityVerifier,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         authorization.verify_scope_with_work(verifier, work)?;
         let proof = VerifiedProjectSourceRead { authorization: &authorization };
-        let grant = ContentGrant::from_verified_project_source_with_work(&proof, work)?;
+        let grant = ContentGrant::from_verified_project_source(&proof, work)?;
         Ok(Self { authorization, grant })
     }
 
@@ -313,36 +305,27 @@ impl ProjectSourceReadHandle {
     pub fn require_selection(
         &self, operation_id: OperationId, source_task: TaskId, project: &VolumeRef,
         generation: &GenerationRef, native_snapshot: Option<&Value>,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
-        if !self.selection_matches(operation_id, source_task, project, generation, native_snapshot) {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        }
+        let record = &self.authorization;
+        if record.operation_id != operation_id || record.source_task != source_task
+            || &record.project != project || &record.generation != generation
+            || record.native_snapshot.as_ref() != native_snapshot
+        {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.is_some() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source read token names another selection",
+                });
+            }
             return Err(Error::Unauthorized("project source read token names another selection".into()));
         }
-        Ok(())
-    }
-
-    fn selection_matches(
-        &self, operation_id: OperationId, source_task: TaskId, project: &VolumeRef,
-        generation: &GenerationRef, native_snapshot: Option<&Value>,
-    ) -> bool {
-        let record = &self.authorization;
-        record.operation_id == operation_id && record.source_task == source_task
-            && &record.project == project && &record.generation == generation
-            && record.native_snapshot.as_ref() == native_snapshot
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn require_selection_with_native_work(
-        &self, operation_id: OperationId, source_task: TaskId, project: &VolumeRef,
-        generation: &GenerationRef, native_snapshot: Option<&Value>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.remaining()?;
-        if !self.selection_matches(operation_id, source_task, project, generation, native_snapshot) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "project source read token names another selection",
-            });
-        }
+        let _ = work;
         Ok(())
     }
 }

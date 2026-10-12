@@ -14,7 +14,7 @@ pub(super) fn receipt_path(
         bytes_copied: PREFIX.len() as u64,
         bytes_encoded: 36,
         items_examined: bytes.len() as u64,
-        ..WorkCounters::UNCHARGED
+        ..Default::default()
     };
     work.admit(completed)?;
     bytes[..PREFIX.len()].copy_from_slice(PREFIX);
@@ -28,23 +28,7 @@ pub(super) fn receipt_path(
         .map_err(receipt_backend)
 }
 
-pub(super) struct ReadReceipt {
-    pub(super) launch: LaunchReceipt<'static>,
-    pub(super) observed: Option<NativeObservation>,
-    pub(super) custody: NativeAllocation,
-}
-
-fn check(work: &NativeMaterializationWork) -> std::result::Result<(), Error> {
-    work.remaining()?;
-    Ok(())
-}
-
-fn examine(work: &NativeMaterializationWork, operation: impl FnOnce() -> bool) -> std::result::Result<bool, Error> {
-    work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-    Ok(operation())
-}
-
-fn add(left: u64, right: u64) -> std::result::Result<u64, Error> {
+pub(super) fn add(left: u64, right: u64) -> std::result::Result<u64, Error> {
     left.checked_add(right).ok_or(receipt_error("native receipt capacity overflows"))
 }
 
@@ -56,13 +40,9 @@ fn mapping_bytes(value: &super::super::NativeVolumeMapping) -> std::result::Resu
     add(add(value.volume.logical_owned_bytes()?, value.generation.logical_owned_bytes()?)?, value.path.capacity() as u64)
 }
 
-fn file_bytes(value: &crate::conversation::FileRef) -> std::result::Result<u64, Error> {
-    value.logical_owned_bytes()
-}
-
 fn status_bytes(value: &EffectStatus) -> std::result::Result<u64, Error> {
     match value {
-        EffectStatus::Succeeded { result } => file_bytes(result),
+        EffectStatus::Succeeded { result } => result.logical_owned_bytes(),
         EffectStatus::Failed { message } => Ok(message.capacity() as u64),
         EffectStatus::Planned | EffectStatus::Dispatched | EffectStatus::Indeterminate => Ok(0),
     }
@@ -73,12 +53,7 @@ pub(super) fn effect_bytes(value: &EffectObservation) -> std::result::Result<u64
 }
 
 fn plan_bytes(value: &TaskEffectPlan) -> std::result::Result<u64, Error> {
-    add(add(value.provider.capacity() as u64, value.effect_kind.capacity() as u64)?, add(file_bytes(&value.request)?, file_bytes(&value.result_schema)?)?)
-}
-
-fn observation_bytes(value: &NativeObservation) -> std::result::Result<u64, Error> {
-    observation_parts_bytes(&value.effect, value.diagnostic.as_ref(),
-        value.publication_failure.as_ref(), value.invocation_failure.as_ref(), &value.published)
+    add(add(value.provider.capacity() as u64, value.effect_kind.capacity() as u64)?, add(value.request.logical_owned_bytes()?, value.result_schema.logical_owned_bytes()?)?)
 }
 
 fn observation_parts_bytes(
@@ -87,7 +62,7 @@ fn observation_parts_bytes(
     published: &Vec<NativeProcessPublishedVolume>,
 ) -> std::result::Result<u64, Error> {
     let mut bytes = effect_bytes(effect)?;
-    if let Some(value) = diagnostic { bytes = add(bytes, file_bytes(value)?)?; }
+    if let Some(value) = diagnostic { bytes = add(bytes, value.logical_owned_bytes()?)?; }
     if let Some(value) = invocation_failure { bytes = add(bytes, value.capacity() as u64)?; }
     if let Some(value) = publication_failure {
         bytes = add(bytes, value.message.capacity() as u64)?;
@@ -99,19 +74,19 @@ fn observation_parts_bytes(
     Ok(bytes)
 }
 
-pub(super) fn receipt_bytes(value: &Receipt<'static>) -> std::result::Result<u64, Error> {
+pub(super) fn receipt_bytes(value: &Receipt) -> std::result::Result<u64, Error> {
     match value {
         Receipt::Launch(value) => {
-            let mut bytes = size_of::<LaunchReceipt<'static>>() as u64;
+            let mut bytes = size_of::<LaunchReceipt>() as u64;
             bytes = add(bytes, value.dispatch.provider.capacity() as u64)?;
             bytes = add(bytes, value.dispatch.effect_kind.capacity() as u64)?;
-            bytes = add(bytes, file_bytes(&value.dispatch.request)?)?;
+            bytes = add(bytes, value.dispatch.request.logical_owned_bytes()?)?;
             bytes = add(bytes, plan_bytes(&value.plan)?)?;
             bytes = add(bytes, value.conversation.id.capacity() as u64)?;
             bytes = add(bytes, value.fence.reservation_id.capacity() as u64)?;
             add(bytes, value.fence.placement.capacity() as u64)
         }
-        Receipt::Observed(value) => add(size_of::<NativeObservation>() as u64, observation_bytes(value)?),
+        Receipt::Observed(value) => add(size_of::<NativeObservation>() as u64, observation_parts_bytes(&value.effect, value.diagnostic.as_ref(), value.publication_failure.as_ref(), value.invocation_failure.as_ref(), &value.published)?),
     }
 }
 
@@ -133,9 +108,9 @@ const RECEIPT_LABELS: &str = concat!(
     "native receipt capacity overflows native receipt admission overflows SHA-256 digest must contain exactly 32 bytes"
 );
 
-impl super::super::PreparationRecord for Receipt<'static> {
+impl super::super::PreparationRecord for Receipt {
     fn maximum_slot_bytes() -> u64 {
-        let typed = size_of::<LaunchReceipt<'static>>().max(size_of::<NativeObservation>())
+        let typed = size_of::<LaunchReceipt>().max(size_of::<NativeObservation>())
             .max(size_of::<super::super::NativeVolumeMapping>())
             .max(size_of::<NativeProcessPublishedVolume>()) as u64;
         let content = size_of::<(serde::__private229::de::Content<'static>, serde::__private229::de::Content<'static>)>() as u64;
@@ -146,10 +121,10 @@ impl super::super::PreparationRecord for Receipt<'static> {
 
 fn decode(bytes: &[u8], io: &super::super::PreparationIo,
     custody: &mut NativeAllocation,
-) -> Result<Receipt<'static>> {
+) -> Result<Receipt> {
     if bytes.len() > acyclic_stream::MAX_RECORD_BYTES { return Err(receipt_error("native receipt exceeds Stream limit")); }
-    let decoded = io.decode_preparation_with_code::<Receipt<'static>>(bytes, crate::wire::ErrorCode::Storage)?;
-    let (receipt, mut payload) = decoded.into_native_parts()?;
+    let decoded = io.decode_preparation::<Receipt>(bytes, crate::wire::ErrorCode::Storage)?;
+    let (receipt, mut payload) = crate::filesystem::native_decoded(decoded)?;
     payload.substitute(receipt_bytes(&receipt)?)?;
     custody.absorb(&mut payload)?;
     Ok(receipt)
@@ -158,7 +133,7 @@ fn decode(bytes: &[u8], io: &super::super::PreparationIo,
 
 pub(super) async fn read<P: StreamProvider>(
     owner: &TaskJournalOwner<P>, path: &StreamPath, work: &NativeMaterializationWork,
-) -> std::result::Result<Option<ReadReceipt>, Error> {
+) -> std::result::Result<Option<(LaunchReceipt<'static>, Option<NativeObservation>, NativeAllocation)>, Error> {
     let mut custody = work.retain_owned(0)?;
     let client = owner.stream();
     check(work)?;
@@ -167,15 +142,15 @@ pub(super) async fn read<P: StreamProvider>(
     let mut observer = Some(&mut history_io as &mut dyn crate::store::history::HistoryIo);
     let bounds = match crate::store::operations::bounds_with_work(&client, path, &mut observer).await? {
         Ok(bounds) => bounds,
-        Err(error) if matches!(error.source(), StreamError::NotFound) => return Ok(None),
-        Err(error) => return Err(error.into_error(&observer)),
+        Err(error) if matches!(crate::distributed::sdk_source(&error), StreamError::NotFound) => return Ok(None),
+        Err(error) => return Err(crate::distributed::sdk_error(error, &observer)),
     };
     check(work)?;
     if !(1..=2).contains(&bounds.tail) { return Err(receipt_error("invalid native receipt length")); }
     let stream = crate::store::operations::stream_with_work(&client, path, &mut observer)?;
     let mut records = crate::store::operations::read_records_with_work(
         &client, &stream.stream, 0, bounds.tail as u32, &mut observer,
-    ).await?.map_err(|error| error.into_error(&observer))?;
+    ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;
     check(work)?;
     let first = records.next(&mut observer).await?.ok_or(receipt_error("missing native launch receipt"))?;
     if first.sequence != 0 { return Err(receipt_error("native receipt starts after launch")); }
@@ -209,7 +184,7 @@ pub(super) async fn read<P: StreamProvider>(
         return Err(receipt_error("native receipt sequence is invalid"));
     }
     check(work)?;
-    Ok(Some(ReadReceipt { launch: *launch, observed, custody }))
+    Ok(Some((*launch, observed, custody)))
 }
 
 /// Authenticates one protected launch against the original qualified effect reader.
@@ -220,9 +195,9 @@ pub(super) async fn authenticate_core_launch<P: StreamProvider>(
     work: &NativeMaterializationWork,
 ) -> std::result::Result<(), Error> {
     let io = super::super::PreparationIo::from_native_work(work)?;
-    let cursor = reader.pin_with_work(0, Some(&mut io.history_io())).await?;
-    let state = reader.effect_with_work(&cursor, launch.dispatch.effect_id, authority.history_limits,
-        Some(&mut io.history_io())).await?
+    let cursor = reader.pin(0, Some(&mut io.history_io())).await?;
+    let state = reader.effect(&cursor, launch.dispatch.effect_id, authority.history_limits,
+        Some(&mut io.history_io())).await.map(|state| state.map(|(state, _)| state))?
         .ok_or(receipt_error("native receipt has no retained core effect"))?;
     if !examine(work, || state.request_digest == launch.dispatch.request_digest)?
         || !examine(work, || state.request == launch.plan.request)?
@@ -239,26 +214,12 @@ pub(super) async fn authenticate_core_launch<P: StreamProvider>(
     check(work)
 }
 
-pub(super) enum OriginalNativeRequest {
-    Cached(Arc<NativeProcessRequest>),
-    Pinned { request: NativeProcessRequest, _custody: NativeAllocation },
-}
-
-impl OriginalNativeRequest {
-    pub(super) fn request(&self) -> &NativeProcessRequest {
-        match self {
-            Self::Cached(request) => request,
-            Self::Pinned { request, .. } => request,
-        }
-    }
-}
-
 impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
     pub(super) async fn request(
         &self, work: &NativeMaterializationWork,
-    ) -> Result<OriginalNativeRequest> {
+    ) -> Result<(Cow<'_, NativeProcessRequest>, Option<NativeAllocation>)> {
         match &self.invocation {
-            Some(invocation) => Ok(OriginalNativeRequest::Cached(Arc::clone(&invocation.request))),
+            Some(invocation) => Ok((Cow::Borrowed(&invocation.request), None)),
             None => {
                 self.owner.require_volume_grant_with_native_work(self.plan.request.volume(),
                     crate::conversation::VolumeOperation::Read, work)?;
@@ -267,7 +228,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 )?.await?;
                 let (request, custody) = NativeProcessRequest::decode_with_native_work(bytes.as_ref(), work)?;
                 drop(bytes);
-                Ok(OriginalNativeRequest::Pinned { request, _custody: custody })
+                Ok((Cow::Owned(request), Some(custody)))
             }
         }
     }
@@ -321,7 +282,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             if outcome_custody.0.is_none() { self.owner.verify_with_native_work(true, work).await?; }
             self.owner.require_volume_grant_with_native_work(self.plan.request.volume(), crate::conversation::VolumeOperation::Read, work)?;
             let path = receipt_path(attempt, work)?;
-            let Some(ReadReceipt { launch, observed, mut custody }) = read(&self.owner, &path, work).await? else { return Ok(None); };
+            let Some((launch, observed, mut custody)) = read(&self.owner, &path, work).await? else { return Ok(None); };
             if !examine(work, || launch.task == self.owner.task_binding().0)?
                 || !examine(work, || launch.command == self.command)?
                 || !examine(work, || launch.plan.as_ref() == self.plan.as_ref())?

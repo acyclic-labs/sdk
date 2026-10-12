@@ -85,7 +85,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         }
         if let Some(invocation) = &self.invocation {
             if !std::ptr::addr_eq(Arc::as_ptr(&invocation.view), Arc::as_ptr(view))
-                || !self._native_work.shares_ledger(original)
+                || !self._custody.work().shares_ledger(original)
             {
                 return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain must retain the same originally dispatched physical view"));
             }
@@ -101,13 +101,13 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let mut custody = work.retain_owned(std::mem::size_of::<NativeProcessDrainProof>() as u64).map_err(Error::from)?;
             cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(Error::from)?;
             self.authenticate_cleanup_owner(work).await?;
-            let request = self.request(work).await?;
-            if !same_manifest(&request.request().view,
+            let (request, request_custody) = self.request(work).await?;
+            if !same_manifest(&request.as_ref().view,
                 NativeProcessView::<P>::manifest(view.as_ref()), work)?
             {
                 return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain request differs from the existing original namespace"));
             }
-            let phase = match &self.invocation {
+            let quiescent = match &self.invocation {
                 Some(_) => {
                     Some(self.wait_for_original_collection(attempt, work, cleanup_cancellation, original)
                         .await?)
@@ -115,16 +115,16 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 None => None,
             };
             let mut receipt = self.approved_receipt(
-                attempt, request.request(), work,
+                attempt, request.as_ref(), work,
             ).await?;
             if (receipt.task, &receipt.original_fence) != self.owner.task_binding()
                 || receipt.command != self.command
             {
                 return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain receipt differs from its original task fence or command"));
             }
-            match phase {
-                Some(NativeCapturePhase::Pending | NativeCapturePhase::Drained | NativeCapturePhase::Recorded) => {},
-                Some(_) => return Err(Error::Indeterminate(self.command)),
+            match quiescent {
+                Some(true) => {},
+                Some(false) => return Err(Error::Indeterminate(self.command)),
                 None => {
                     if !receipt.observed { return Err(Error::Indeterminate(self.command)); }
                     let reference = match &receipt.effect.status {
@@ -132,7 +132,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                         _ => receipt.diagnostic.as_ref(),
                     }.ok_or(Error::Indeterminate(self.command))?;
                     if reference.volume() != self.authority.results.volume()
-                        || reference.descriptor().byte_length() > u64::from(request.request().maximum_result_bytes)
+                        || reference.descriptor().byte_length() > u64::from(request.as_ref().maximum_result_bytes)
                         || reference.descriptor().media_type() != "application/json"
                     {
                         return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain result differs from its original owner, bound or content type"));
@@ -140,7 +140,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                     self.owner.require_volume_grant_with_native_work(reference.volume(),
                         crate::conversation::VolumeOperation::Read, work)?;
                     let bytes = self.authority.result_content.read_with_native_work(
-                        reference, u64::from(request.request().maximum_result_bytes), work,
+                        reference, u64::from(request.as_ref().maximum_result_bytes), work,
                     )?.await?;
                     let (result, custody) = NativeProcessResult::decode_with_native_work(bytes.as_ref(), work)?;
                     if result.stop.as_ref().is_some_and(|stop| !stop.cleanup_completed) {
@@ -153,7 +153,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             }
             cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(Error::from)?;
             self.authenticate_cleanup_owner(work).await?;
-            drop(request);
+            drop((request, request_custody));
             let held_view: Arc<dyn Any + Send + Sync> = view.clone();
             receipt._custody.as_mut().expect("authenticated receipt retains its allocation")
                 .absorb(&mut custody)?;

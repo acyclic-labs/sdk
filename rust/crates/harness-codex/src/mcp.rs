@@ -271,7 +271,8 @@ async fn call(shared: &Shared, params: &Value) -> Value {
         call_id,
         tool.definition.name.clone(),
         arguments,
-    );
+        None,
+    ).expect("unbounded model call");
     if let Err(error) = tool.executor.authorize(Some(&shared.scope), &invocation) {
         return error_result(format!("tool {name} refused this call: {error}"));
     }

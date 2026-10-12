@@ -42,52 +42,52 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
     let key = IdempotencyKey::new();
     let cancellation = CancellationToken::new();
     let exhausted = parent
-        .fork_measured(
+        .fork(
             "measured-child",
-            ForkOptions::from_generation(pinned.clone(), key),
+            ForkOptions::from_generation(pinned.clone(), key), acyclic_fs::PublicationPermit::Unrestricted,
             WorkBudget::default(),
             &cancellation,
-        )
+        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
         .await;
     assert!(exhausted.is_err());
     assert!(fs.open_workspace("measured-child", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
-    assert_eq!(parent.head().await?.id(), pinned.id());
+    assert_eq!(parent.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned.id());
     let budget = finite_budget()?;
     let created = parent
-        .fork_measured(
+        .fork(
             "measured-child",
-            ForkOptions::from_generation(pinned.clone(), key),
+            ForkOptions::from_generation(pinned.clone(), key), acyclic_fs::PublicationPermit::Unrestricted,
             budget,
             &cancellation,
-        )
+        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
         .await?;
     created.work.verify(budget)?;
     assert!(created.work.backend_write_operations > 0);
     let generation = created.value.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     let retried = parent
-        .fork_measured(
+        .fork(
             "measured-child",
-            ForkOptions::from_generation(pinned.clone(), key),
+            ForkOptions::from_generation(pinned.clone(), key), acyclic_fs::PublicationPermit::Unrestricted,
             budget,
             &cancellation,
-        )
+        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
         .await?;
     retried.work.verify(budget)?;
     assert_eq!(retried.value.id(), created.value.id());
-    assert_eq!(retried.value.head().await?.id(), generation);
+    assert_eq!(retried.value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), generation);
     assert_eq!(
-        retried.value.read("/kept.txt", 32).await?,
+        retried.value.read("/kept.txt", 32, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         OwnedBytes::from_static(b"original")
     );
-    assert_eq!(parent.head().await?.id(), pinned.id());
+    assert_eq!(parent.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned.id());
     assert!(
         parent
-            .fork_measured(
+            .fork(
                 "measured-child",
-                ForkOptions::from_generation(pinned, key).empty(),
+                ForkOptions::from_generation(pinned, key).empty(), acyclic_fs::PublicationPermit::Unrestricted,
                 budget,
-                &cancellation
-            )
+                &cancellation,
+            |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
             .await
             .is_err()
     );
@@ -104,27 +104,27 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
     cancellation.cancel();
     let key = IdempotencyKey::new();
     let cancelled = match parent
-        .fork_measured(
+        .fork(
             "cancel-child",
-            ForkOptions::from_generation(pinned.clone(), key),
+            ForkOptions::from_generation(pinned.clone(), key), acyclic_fs::PublicationPermit::Unrestricted,
             finite_budget()?,
             &cancellation,
-        ).await {
+        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))).await {
         Err(failure) => failure,
         Ok(_) => return Err("precancelled fork unexpectedly succeeded".into()),
     };
     assert!(matches!(cancelled.error, WorkspaceError::Cancelled(_)));
     assert_eq!(*cancelled.work, WorkCounters::default());
     assert!(fs.open_workspace("cancel-child", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
-    assert_eq!(parent.head().await?.id(), pinned.id());
+    assert_eq!(parent.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned.id());
     let other = fs.create_workspace("foreign-source", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let foreign = match parent
-        .fork_measured(
+        .fork(
             "foreign-child",
-            ForkOptions::from_generation(other.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()),
+            ForkOptions::from_generation(other.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()), acyclic_fs::PublicationPermit::Unrestricted,
             finite_budget()?,
             &CancellationToken::new(),
-        ).await {
+        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))).await {
         Err(failure) => failure,
         Ok(_) => return Err("foreign fork unexpectedly succeeded".into()),
     };
@@ -226,91 +226,40 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
     let cancellation = CancellationToken::new();
     assert!(
         parent
-            .fork_measured(
+            .fork(
                 "inflight-child",
-                ForkOptions::from_generation(pinned.clone(), key),
+                ForkOptions::from_generation(pinned.clone(), key), acyclic_fs::PublicationPermit::Unrestricted,
                 finite_budget()?,
-                &cancellation
-            )
+                &cancellation,
+            |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
             .await
             .is_err()
     );
     assert!(observed.load(Ordering::SeqCst));
     assert!(cancellation.is_cancelled());
     assert!(fs.open_workspace("inflight-child", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
-    assert_eq!(parent.head().await?.id(), pinned.id());
+    assert_eq!(parent.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned.id());
     let created = parent
-        .fork_measured(
+        .fork(
             "inflight-child",
-            ForkOptions::from_generation(pinned.clone(), key),
+            ForkOptions::from_generation(pinned.clone(), key), acyclic_fs::PublicationPermit::Unrestricted,
             finite_budget()?,
             &CancellationToken::new(),
-        )
+        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
         .await?;
     let initial = created.value.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     let retried = parent
-        .fork_measured(
+        .fork(
             "inflight-child",
-            ForkOptions::from_generation(pinned, key),
+            ForkOptions::from_generation(pinned, key), acyclic_fs::PublicationPermit::Unrestricted,
             finite_budget()?,
             &CancellationToken::new(),
-        )
+        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
         .await?;
-    assert_eq!(retried.value.head().await?.id(), initial);
+    assert_eq!(retried.value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), initial);
     assert_eq!(
-        retried.value.read("/kept.txt", 32).await?,
+        retried.value.read("/kept.txt", 32, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         OwnedBytes::from_static(b"pinned")
     );
     Ok(())
-}
-
-#[tokio::test]
-async fn both_public_fork_entries_emit_one_facade_span() -> Result<(), Box<dyn Error>> {
-    use std::sync::atomic::AtomicUsize;
-    use tracing::instrument::WithSubscriber;
-    use tracing_subscriber::{Layer, layer::Context, prelude::*};
-
-    struct ForkSpans(Arc<AtomicUsize>);
-    impl<S: tracing::Subscriber> Layer<S> for ForkSpans {
-        fn on_new_span(
-            &self,
-            attributes: &tracing::span::Attributes<'_>,
-            _: &tracing::span::Id,
-            _: Context<'_, S>,
-        ) {
-            if attributes.metadata().name() == "acyclic.fs.workspace.fork" {
-                self.0.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-    }
-
-    let fs = Fs::memory();
-    let parent = fs.create_workspace("span-parent", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let pinned = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let count = Arc::new(AtomicUsize::new(0));
-    // Keep callsites consulting subscribers when parallel tests first reach
-    // them without a subscriber, as in the existing facade tracing tests.
-    let _second = tracing::Dispatch::new(tracing_subscriber::Registry::default());
-    let subscriber = tracing_subscriber::registry().with(ForkSpans(count.clone()));
-    async {
-        parent
-            .fork_measured(
-                "span-measured",
-                ForkOptions::from_generation(pinned.clone(), IdempotencyKey::new()),
-                finite_budget()?,
-                &CancellationToken::new(),
-            )
-            .await?;
-        assert_eq!(count.load(Ordering::SeqCst), 1);
-        parent
-            .fork(
-                "span-convenience",
-                ForkOptions::from_generation(pinned, IdempotencyKey::new()),
-            )
-            .await?;
-        assert_eq!(count.load(Ordering::SeqCst), 2);
-        Ok::<_, Box<dyn Error>>(())
-    }
-    .with_subscriber(subscriber)
-    .await
 }

@@ -24,10 +24,9 @@ mod grpc;
 #[cfg(feature = "grpc")]
 mod obs;
 #[cfg(feature = "grpc")]
-pub use grpc::Tls;
+pub use grpc::{GrpcProvider, Tls};
 
 /// Generated revision-one public transport. Service implementations consume this module;
-/// customer applications should use the checked types and handles in this crate.
 #[doc(hidden)]
 pub mod wire {
     #![allow(missing_docs, reason = "generated from the documented public schema")]
@@ -49,7 +48,6 @@ pub const PROTOCOL_MINOR: u32 = 1;
 /// Maximum machines returned in one page.
 pub const MAX_PAGE_SIZE: u32 = 256;
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
-/// Acyclic platform's maximum bearer (12 KiB), so every platform-issued credential fits.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 /// Maximum children admitted by one fork request.
 pub const MAX_FORK_CHILDREN: u32 = 1_024;
@@ -83,7 +81,6 @@ macro_rules! uuid_identity {
             }
 
             /// Derives a deterministic, never-nil identity from a domain-separated
-            /// SHA-256 digest: its first 16 bytes stamped as a version-5 UUID.
             #[must_use]
             pub fn from_digest(digest: [u8; 32]) -> Self {
                 let mut bytes = [0_u8; 16];
@@ -222,10 +219,6 @@ pub enum Capability {
     SuspendResume,
     LiveMovement,
     /// [`MachinesProvider::fork_machine`] copies a running machine's persistent disk, but not
-    /// its memory or processes. Which paths are persistent is provider-defined: a provider whose
-    /// machines boot from an immutable image may copy only its declared data directory, the
-    /// rest being the image both boot from. [`Capability::LiveFork`] is the memory-and-disk form and takes precedence
-    /// when a contract declares both.
     DiskFork,
 }
 
@@ -235,15 +228,11 @@ pub enum ForkFidelity {
     /// Children resume from the source's memory, processes, and disk at the fork instant.
     MemoryAndDisk,
     /// Children boot fresh over a copy of the source's persistent disk (provider-defined; see
-    /// [`Capability::DiskFork`]) taken at one consistent instant. No process or memory state is
-    /// inherited; the caller restarts its workload in each child, for example from durable
-    /// history.
     DiskOnly,
 }
 
 impl ForkFidelity {
     /// The fidelity a machine with `capabilities` forks at, or `None` when it cannot be
-    /// forked live at all and the caller must fall back to checkpoint fork or a restart.
     #[must_use]
     pub fn for_capabilities(capabilities: &BTreeSet<Capability>) -> Option<Self> {
         if capabilities.contains(&Capability::LiveFork) {
@@ -353,7 +342,6 @@ pub struct MachineContract {
 
 impl MachineContract {
     /// The fidelity [`MachinesProvider::fork_machine`] offers for a machine under this
-    /// contract; `None` means live fork is unsupported for it.
     #[must_use]
     pub fn fork_fidelity(&self) -> Option<ForkFidelity> {
         ForkFidelity::for_capabilities(&self.capabilities)
@@ -464,7 +452,6 @@ pub struct UsageReceipt {
     pub private_resident_byte_seconds: u64,
     pub durable_private_bytes: u64,
     /// Commitment to the separately signed account-lineage storage receipt.
-    /// Zero is permitted only for process-local simulation.
     pub lineage_receipt_sha256: [u8; 32],
     pub egress_bytes: u64,
     /// Provider-authenticated canonical receipt bytes; empty only for the in-memory provider.
@@ -489,7 +476,6 @@ pub enum MutationOutcome {
     Checkpointed(CheckpointObservation),
     Forked(Vec<MachineObservation>),
     /// Outcome of [`MachinesProvider::fork_machine`]: the running source, the fidelity the
-    /// children were forked at, and the children in index order.
     MachineForked {
         source: MachineId,
         fidelity: ForkFidelity,
@@ -599,63 +585,6 @@ pub trait MachinesProvider: Send + Sync {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError>;
     /// Forks a running machine into `count` fresh children without an intermediate
-    /// checkpoint, idempotently under `key`. The call may happen at any point in the source's
-    /// life; nothing has to be prepared in advance.
-    ///
-    /// # Admission
-    ///
-    /// The source must be [`MachineState::Running`] (otherwise [`ProviderError::Conflict`])
-    /// and its contract must declare [`Capability::LiveFork`] or [`Capability::DiskFork`]
-    /// (otherwise [`ProviderError::Unsupported`], which is also this method's default). Check
-    /// [`MachineContract::fork_fidelity`] before calling; on `Unsupported`, fall back to
-    /// [`MachinesProvider::checkpoint`] plus [`MachinesProvider::fork`], or to a restart.
-    /// `count` above [`MAX_FORK_CHILDREN`] is [`ProviderError::Invalid`].
-    ///
-    /// # What a child inherits
-    ///
-    /// - [`ForkFidelity::MemoryAndDisk`] (declared by `LiveFork`): the source's memory,
-    ///   running processes, and disk at one instant. [`ForkFidelity::DiskOnly`] (declared by
-    ///   `DiskFork`): a copy of the source's persistent disk only (see
-    ///   [`Capability::DiskFork`]); the child boots fresh and the caller
-    ///   restarts its workload. The outcome reports which one ran; it always equals the
-    ///   source contract's [`MachineContract::fork_fidelity`].
-    /// - The source's exact [`MachineContract`] (image, capabilities, policies,
-    ///   budgets). `last_checkpoint` is `None`: no checkpoint was taken.
-    /// - Anything in memory or on disk, including credentials and environment. A child that
-    ///   needs its own identity must be re-provisioned after the fork.
-    /// - A provider may fan out by forking earlier children of the same call (for example
-    ///   when a machine can run only one fork at a time). A child forked from an earlier child
-    ///   inherits whatever that child executed after its own fork, so the children are
-    ///   memory-identical only if the workload does not advance while the fork is in progress,
-    ///   for example because it waits for a signal after the fork point. Every child is still
-    ///   reported as a child of `machine`.
-    ///
-    /// # Identity
-    ///
-    /// Children get fresh [`MachineId`]s distinct from the source and from each other, their
-    /// own endpoints, and independent lifetimes. Replaying `key` with the same source and count
-    /// returns the identical outcome; reusing it for another intent is
-    /// [`ProviderError::Conflict`].
-    ///
-    /// # Network
-    ///
-    /// Open network connections are never guaranteed to survive in a child: a child may
-    /// have a different address, and peers see at most one of the copies. Children must treat
-    /// every socket open at the fork instant as broken and reconnect. The source keeps its
-    /// connections, though it may be briefly quiesced while the fork is taken.
-    ///
-    /// # Joining
-    ///
-    /// Destroy children before their source. A provider may refuse to destroy a source while
-    /// any of its live-fork children is not yet [`MachineState::Destroyed`]; it then returns
-    /// [`ProviderError::Conflict`] without side effects, and the call may be retried once the
-    /// children are gone. Providers that allow it leave the children running.
-    ///
-    /// # Partial failure
-    ///
-    /// Forking `count > 1` children is not atomic. A failed or indeterminate attempt may
-    /// leave some children; replay `key` to finish it, or [`MachinesProvider::cancel`] its
-    /// operation to remove them.
     async fn fork_machine(
         &self,
         machine: MachineId,
@@ -718,273 +647,85 @@ pub trait MachinesProvider: Send + Sync {
     ) -> Result<OperationStream, ProviderError>;
 }
 
-/// Customer-level client over one provider.
-#[derive(Clone)]
-pub struct Machines {
-    provider: Arc<dyn MachinesProvider>,
-}
-
-impl Machines {
-    /// Binds a provider implementation.
-    #[must_use]
-    pub fn new(provider: Arc<dyn MachinesProvider>) -> Self {
-        Self { provider }
-    }
-    /// Returns the provider's actual assurance class.
-    #[must_use]
-    pub fn assurance(&self) -> ProviderAssurance {
-        self.provider.assurance()
-    }
-    pub async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
-        self.provider.qualify_image(image).await
-    }
-    pub async fn create(&self, request: CreateMachine) -> Result<Machine, ProviderError> {
-        match self.provider.create(request).await? {
-            MutationOutcome::Created(value) => Ok(Machine::new(self.clone(), value.id)),
-            _ => Err(ProviderError::Rejected(
-                "provider returned the wrong create outcome".into(),
-            )),
-        }
-    }
-    pub async fn attach(&self, id: MachineId) -> Result<Machine, ProviderError> {
-        self.provider.inspect_machine(id).await?;
-        Ok(Machine::new(self.clone(), id))
-    }
-    pub async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
-        self.provider.recover(key).await
-    }
-    /// Resolves the provider operation admitted for an exact idempotency key.
-    pub async fn operation_for(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
-        self.provider.recover_operation(key).await
-    }
-    /// Reads the latest state of one exact admitted operation.
-    pub async fn inspect_operation(
-        &self,
-        operation: OperationId,
-    ) -> Result<OperationObservation, ProviderError> {
-        self.provider.inspect_operation(operation).await
-    }
-    /// Requests cancellation of one exact admitted operation and returns its latest state.
-    pub async fn cancel_operation(
-        &self,
-        operation: OperationId,
-    ) -> Result<OperationObservation, ProviderError> {
-        self.provider.cancel(operation).await
-    }
-    /// Watches correlated state changes for one exact admitted operation.
-    pub async fn watch_operation(
-        &self,
-        operation: OperationId,
-    ) -> Result<OperationStream, ProviderError> {
-        self.provider.watch_operation(operation).await
-    }
-    pub async fn list(
-        &self,
-        after: Option<MachineId>,
-        limit: u32,
-    ) -> Result<MachinePage, ProviderError> {
-        self.provider.list_machines(after, limit).await
+/// Creates one machine and checks the provider's outcome kind.
+pub async fn create_machine(provider: &dyn MachinesProvider, request: CreateMachine) -> Result<MachineId, ProviderError> {
+    match provider.create(request).await? {
+        MutationOutcome::Created(value) => Ok(value.id),
+        _ => Err(ProviderError::Rejected("provider returned the wrong create outcome".into())),
     }
 }
 
-/// Stable machine handle.
-#[derive(Clone)]
-pub struct Machine {
-    machines: Machines,
-    id: MachineId,
-}
-
-impl Machine {
-    fn new(machines: Machines, id: MachineId) -> Self {
-        Self { machines, id }
-    }
-    #[must_use]
-    pub fn id(&self) -> MachineId {
-        self.id
-    }
-    pub async fn inspect(&self) -> Result<MachineObservation, ProviderError> {
-        self.machines.provider.inspect_machine(self.id).await
-    }
-    pub async fn events(
-        &self,
-        after_sequence: Option<u64>,
-        limit: u32,
-    ) -> Result<EventPage, ProviderError> {
-        self.machines
-            .provider
-            .events(self.id, after_sequence, limit)
-            .await
-    }
-    pub async fn usage(
-        &self,
-        start_unix_ms: u64,
-        end_unix_ms: u64,
-    ) -> Result<UsageReceipt, ProviderError> {
-        self.machines
-            .provider
-            .usage(self.id, start_unix_ms, end_unix_ms)
-            .await
-    }
-    pub async fn checkpoint(&self, key: IdempotencyKey) -> Result<Checkpoint, ProviderError> {
-        match self.machines.provider.checkpoint(self.id, key).await? {
-            MutationOutcome::Checkpointed(value) => {
-                Ok(Checkpoint::new(self.machines.clone(), value.id))
-            }
-            _ => Err(ProviderError::Rejected(
-                "provider returned the wrong checkpoint outcome".into(),
-            )),
-        }
-    }
-    /// Forks this running machine into `count` fresh children; see
-    /// [`MachinesProvider::fork_machine`] for the exact semantics.
-    pub async fn fork(
-        &self,
-        count: NonZeroU32,
-        key: IdempotencyKey,
-    ) -> Result<MachineFork, ProviderError> {
-        match self
-            .machines
-            .provider
-            .fork_machine(self.id, count, key)
-            .await?
-        {
-            MutationOutcome::MachineForked {
-                source,
-                fidelity,
-                children,
-            } if source == self.id => Ok(MachineFork {
-                fidelity,
-                children: children
-                    .into_iter()
-                    .map(|value| Machine::new(self.machines.clone(), value.id))
-                    .collect(),
-            }),
-            _ => Err(ProviderError::Rejected(
-                "provider returned the wrong fork outcome".into(),
-            )),
-        }
-    }
-    pub async fn suspend(&self, key: IdempotencyKey) -> Result<(), ProviderError> {
-        terminal_machine(
-            self.machines.provider.suspend(self.id, key).await?,
-            self.id,
-            MutationKind::Suspend,
-        )
-    }
-    pub async fn wake(&self, key: IdempotencyKey) -> Result<(), ProviderError> {
-        terminal_machine(
-            self.machines.provider.wake(self.id, key).await?,
-            self.id,
-            MutationKind::Wake,
-        )
-    }
-    pub async fn set_suspension_policy(
-        &self,
-        policy: SuspensionPolicy,
-        key: IdempotencyKey,
-    ) -> Result<(), ProviderError> {
-        match self
-            .machines
-            .provider
-            .set_suspension_policy(self.id, policy, key)
-            .await?
-        {
-            MutationOutcome::SuspensionPolicySet(id, returned)
-                if id == self.id && returned == policy =>
-            {
-                Ok(())
-            }
-            _ => Err(ProviderError::Rejected(
-                "provider returned the wrong policy outcome".into(),
-            )),
-        }
-    }
-    pub async fn destroy(&self, key: IdempotencyKey) -> Result<(), ProviderError> {
-        terminal_machine(
-            self.machines.provider.destroy_machine(self.id, key).await?,
-            self.id,
-            MutationKind::Destroy,
-        )
+/// Checkpoints one machine and checks the provider's outcome kind.
+pub async fn checkpoint_machine(provider: &dyn MachinesProvider, machine: MachineId, key: IdempotencyKey) -> Result<CheckpointId, ProviderError> {
+    match provider.checkpoint(machine, key).await? {
+        MutationOutcome::Checkpointed(value) => Ok(value.id),
+        _ => Err(ProviderError::Rejected("provider returned the wrong checkpoint outcome".into())),
     }
 }
 
-/// Children of one [`Machine::fork`] and the fidelity they were forked at.
+/// Children of one live fork and the fidelity they were forked at.
 #[derive(Clone)]
 pub struct MachineFork {
     pub fidelity: ForkFidelity,
-    pub children: Vec<Machine>,
+    pub children: Vec<MachineId>,
 }
 
-enum MutationKind {
-    Suspend,
-    Wake,
-    Destroy,
-}
-fn terminal_machine(
-    outcome: MutationOutcome,
-    expected: MachineId,
-    kind: MutationKind,
-) -> Result<(), ProviderError> {
-    let matches = match (kind, outcome) {
-        (MutationKind::Suspend, MutationOutcome::Suspended(id))
-        | (MutationKind::Wake, MutationOutcome::Woken(id))
-        | (MutationKind::Destroy, MutationOutcome::MachineDestroyed(id)) => id == expected,
-        _ => false,
-    };
-    if matches {
-        Ok(())
-    } else {
-        Err(ProviderError::Rejected(
-            "provider returned the wrong mutation outcome".into(),
-        ))
+/// Forks one running machine and checks the returned source identity.
+pub async fn fork_machine(provider: &dyn MachinesProvider, machine: MachineId, count: NonZeroU32, key: IdempotencyKey) -> Result<MachineFork, ProviderError> {
+    match provider.fork_machine(machine, count, key).await? {
+        MutationOutcome::MachineForked { source, fidelity, children } if source == machine => Ok(MachineFork {
+            fidelity,
+            children: children.into_iter().map(|value| value.id).collect(),
+        }),
+        _ => Err(ProviderError::Rejected("provider returned the wrong fork outcome".into())),
     }
 }
 
-/// Stable immutable checkpoint handle.
-#[derive(Clone)]
-pub struct Checkpoint {
-    machines: Machines,
-    id: CheckpointId,
+/// Suspends one machine and checks the returned identity.
+pub async fn suspend_machine(provider: &dyn MachinesProvider, machine: MachineId, key: IdempotencyKey) -> Result<(), ProviderError> {
+    match provider.suspend(machine, key).await? {
+        MutationOutcome::Suspended(id) if id == machine => Ok(()),
+        _ => Err(ProviderError::Rejected("provider returned the wrong mutation outcome".into())),
+    }
 }
 
-impl Checkpoint {
-    fn new(machines: Machines, id: CheckpointId) -> Self {
-        Self { machines, id }
+/// Wakes one machine and checks the returned identity.
+pub async fn wake_machine(provider: &dyn MachinesProvider, machine: MachineId, key: IdempotencyKey) -> Result<(), ProviderError> {
+    match provider.wake(machine, key).await? {
+        MutationOutcome::Woken(id) if id == machine => Ok(()),
+        _ => Err(ProviderError::Rejected("provider returned the wrong mutation outcome".into())),
     }
-    #[must_use]
-    pub fn id(&self) -> CheckpointId {
-        self.id
+}
+
+/// Sets a machine's suspension policy and checks the returned identity and policy.
+pub async fn set_suspension_policy(provider: &dyn MachinesProvider, machine: MachineId, policy: SuspensionPolicy, key: IdempotencyKey) -> Result<(), ProviderError> {
+    match provider.set_suspension_policy(machine, policy, key).await? {
+        MutationOutcome::SuspensionPolicySet(id, returned) if id == machine && returned == policy => Ok(()),
+        _ => Err(ProviderError::Rejected("provider returned the wrong policy outcome".into())),
     }
-    pub async fn inspect(&self) -> Result<CheckpointObservation, ProviderError> {
-        self.machines.provider.inspect_checkpoint(self.id).await
+}
+
+/// Destroys one machine and checks the returned identity.
+pub async fn destroy_machine(provider: &dyn MachinesProvider, machine: MachineId, key: IdempotencyKey) -> Result<(), ProviderError> {
+    match provider.destroy_machine(machine, key).await? {
+        MutationOutcome::MachineDestroyed(id) if id == machine => Ok(()),
+        _ => Err(ProviderError::Rejected("provider returned the wrong mutation outcome".into())),
     }
-    pub async fn fork(
-        &self,
-        count: NonZeroU32,
-        key: IdempotencyKey,
-    ) -> Result<Vec<Machine>, ProviderError> {
-        match self.machines.provider.fork(self.id, count, key).await? {
-            MutationOutcome::Forked(values) => Ok(values
-                .into_iter()
-                .map(|value| Machine::new(self.machines.clone(), value.id))
-                .collect()),
-            _ => Err(ProviderError::Rejected(
-                "provider returned the wrong fork outcome".into(),
-            )),
-        }
+}
+
+/// Forks an immutable checkpoint and checks the provider's outcome kind.
+pub async fn fork_checkpoint(provider: &dyn MachinesProvider, checkpoint: CheckpointId, count: NonZeroU32, key: IdempotencyKey) -> Result<Vec<MachineId>, ProviderError> {
+    match provider.fork(checkpoint, count, key).await? {
+        MutationOutcome::Forked(values) => Ok(values.into_iter().map(|value| value.id).collect()),
+        _ => Err(ProviderError::Rejected("provider returned the wrong fork outcome".into())),
     }
-    pub async fn destroy(&self, key: IdempotencyKey) -> Result<(), ProviderError> {
-        match self
-            .machines
-            .provider
-            .destroy_checkpoint(self.id, key)
-            .await?
-        {
-            MutationOutcome::CheckpointDestroyed(id) if id == self.id => Ok(()),
-            _ => Err(ProviderError::Rejected(
-                "provider returned the wrong checkpoint outcome".into(),
-            )),
-        }
+}
+
+/// Destroys one checkpoint and checks the returned identity.
+pub async fn destroy_checkpoint(provider: &dyn MachinesProvider, checkpoint: CheckpointId, key: IdempotencyKey) -> Result<(), ProviderError> {
+    match provider.destroy_checkpoint(checkpoint, key).await? {
+        MutationOutcome::CheckpointDestroyed(id) if id == checkpoint => Ok(()),
+        _ => Err(ProviderError::Rejected("provider returned the wrong checkpoint outcome".into())),
     }
 }
 
@@ -1033,10 +774,6 @@ impl Default for MemoryState {
 }
 
 /// Deterministic bounded process-local state-machine provider.
-///
-/// It refuses to destroy a live-fork source while any of its children is not destroyed, the
-/// strictest ordering [`MachinesProvider::fork_machine`] allows, so callers tested against it
-/// join correctly on every provider.
 #[derive(Clone)]
 pub struct SimulatedMachines {
     state: Arc<Mutex<MemoryState>>,
@@ -1060,8 +797,6 @@ impl Default for SimulatedMachines {
 
 impl SimulatedMachines {
     /// Simulates a provider that qualifies images with exactly `capabilities`, for example
-    /// without [`Capability::LiveFork`] to exercise a caller's fallback path. Only admission
-    /// and fork fidelity follow the set; other operations are simulated regardless.
     #[must_use]
     pub fn with_capabilities(capabilities: BTreeSet<Capability>) -> Self {
         Self {
@@ -1148,9 +883,6 @@ fn derived_digest(domain: &[u8], key: IdempotencyKey, index: u32) -> [u8; 32] {
 }
 
 /// Canonical digest of a mutation intent, binding an idempotency key to it.
-///
-/// # Errors
-/// Returns [`ProviderError::Invalid`] when the intent cannot be encoded.
 pub fn intent_digest<T: Serialize>(intent: &T) -> Result<[u8; 32], ProviderError> {
     let encoded = serde_json::to_vec(intent)
         .map_err(|error| ProviderError::Invalid(format!("intent cannot be encoded: {error}")))?;
@@ -1792,37 +1524,32 @@ mod tests {
     )]
     async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
         let provider = Arc::new(SimulatedMachines::default());
-        let machines = Machines::new(provider.clone());
         let create_key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000008")
             .unwrap_or_else(|_| unreachable!());
-        let machine = machines
-            .create(request(create_key))
+        let machine = create_machine(provider.as_ref(), request(create_key))
             .await
             .unwrap_or_else(|_| unreachable!());
         let checkpoint_key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000009")
             .unwrap_or_else(|_| unreachable!());
-        let checkpoint = machine
-            .checkpoint(checkpoint_key)
+        let checkpoint = checkpoint_machine(provider.as_ref(), machine, checkpoint_key)
             .await
             .unwrap_or_else(|_| unreachable!());
         let fork_key = IdempotencyKey::parse("00000000-0000-0000-0000-00000000000a")
             .unwrap_or_else(|_| unreachable!());
-        let children = checkpoint
-            .fork(NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN), fork_key)
+        let children = fork_checkpoint(provider.as_ref(), checkpoint, NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN), fork_key)
             .await
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(children.len(), 2);
-        assert_ne!(children[0].id(), children[1].id());
-        assert_ne!(children[0].id(), machine.id());
-        checkpoint
-            .destroy(
+        assert_ne!(children[0], children[1]);
+        assert_ne!(children[0], machine);
+        destroy_checkpoint(provider.as_ref(), checkpoint,
                 IdempotencyKey::parse("00000000-0000-0000-0000-00000000000b")
                     .unwrap_or_else(|_| unreachable!()),
             )
             .await
             .unwrap_or_else(|_| unreachable!());
-        assert!(machine.inspect().await.is_ok());
-        assert!(children[0].inspect().await.is_ok());
+        assert!(provider.inspect_machine(machine).await.is_ok());
+        assert!(provider.inspect_machine(children[0]).await.is_ok());
     }
 
     fn key(suffix: u8) -> IdempotencyKey {
@@ -1837,13 +1564,11 @@ mod tests {
     #[tokio::test]
     async fn live_fork_children_inherit_the_contract_and_replay_exactly() {
         let provider = Arc::new(SimulatedMachines::default());
-        let machines = Machines::new(provider.clone());
-        let parent = machines
-            .create(request(key(1)))
+        let parent = create_machine(provider.as_ref(), request(key(1)))
             .await
             .unwrap_or_else(|_| unreachable!());
-        let parent_view = parent.inspect().await.unwrap_or_else(|_| unreachable!());
-        let first = provider.fork_machine(parent.id(), two(), key(2)).await;
+        let parent_view = provider.inspect_machine(parent).await.unwrap_or_else(|_| unreachable!());
+        let first = provider.fork_machine(parent, two(), key(2)).await;
         let Ok(MutationOutcome::MachineForked {
             source,
             fidelity,
@@ -1852,7 +1577,7 @@ mod tests {
         else {
             unreachable!("live fork must succeed: {first:?}")
         };
-        assert_eq!(source, parent.id());
+        assert_eq!(source, parent);
         assert_eq!(fidelity, ForkFidelity::MemoryAndDisk);
         assert_eq!(children.len(), 2);
         let ids = children
@@ -1860,7 +1585,7 @@ mod tests {
             .map(|child| child.id)
             .collect::<BTreeSet<_>>();
         assert_eq!(ids.len(), 2);
-        assert!(!ids.contains(&parent.id()));
+        assert!(!ids.contains(&parent));
         for child in &children {
             assert_eq!(child.state, MachineState::Running);
             assert_eq!(child.contract, parent_view.contract);
@@ -1868,27 +1593,24 @@ mod tests {
             assert_ne!(child.endpoints, parent_view.endpoints);
         }
         assert_eq!(
-            provider.fork_machine(parent.id(), two(), key(2)).await,
+            provider.fork_machine(parent, two(), key(2)).await,
             first
         );
         assert!(matches!(
             provider
-                .fork_machine(parent.id(), NonZeroU32::MIN, key(2))
+                .fork_machine(parent, NonZeroU32::MIN, key(2))
                 .await,
             Err(ProviderError::Conflict(_))
         ));
         assert_eq!(
-            parent.inspect().await.map(|value| value.state),
+            provider.inspect_machine(parent).await.map(|value| value.state),
             Ok(MachineState::Running)
         );
 
-        // Recursive fork from a child, through the customer handle.
-        let child = machines
-            .attach(children.first().map(|value| value.id).unwrap_or_default())
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        let grandchildren = child
-            .fork(NonZeroU32::MIN, key(3))
+        // Recursive fork from one inspected child.
+        let child = children.first().map(|value| value.id).unwrap_or_default();
+        provider.inspect_machine(child).await.unwrap_or_else(|_| unreachable!());
+        let grandchildren = fork_machine(provider.as_ref(), child, NonZeroU32::MIN, key(3))
             .await
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(grandchildren.fidelity, ForkFidelity::MemoryAndDisk);
@@ -2004,15 +1726,12 @@ mod tests {
     #[tokio::test]
     async fn operation_control_is_correlated_and_deterministic() {
         let provider = Arc::new(SimulatedMachines::default());
-        let machines = Machines::new(provider);
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-00000000000c")
             .unwrap_or_else(|_| unreachable!());
-        machines
-            .create(request(key))
+        create_machine(provider.as_ref(), request(key))
             .await
             .unwrap_or_else(|_| unreachable!());
-        let operation = machines
-            .operation_for(key)
+        let operation = provider.recover_operation(key)
             .await
             .unwrap_or_else(|_| unreachable!());
         let expected = OperationObservation {
@@ -2020,10 +1739,9 @@ mod tests {
             phase: OperationPhase::Succeeded,
         };
 
-        assert_eq!(machines.inspect_operation(operation).await, Ok(expected));
-        assert_eq!(machines.cancel_operation(operation).await, Ok(expected));
-        let mut observations = machines
-            .watch_operation(operation)
+        assert_eq!(provider.inspect_operation(operation).await, Ok(expected));
+        assert_eq!(provider.cancel(operation).await, Ok(expected));
+        let mut observations = provider.watch_operation(operation)
             .await
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(observations.next().await, Some(Ok(expected)));
@@ -2032,21 +1750,21 @@ mod tests {
         let unknown = OperationId::parse("00000000-0000-0000-0000-00000000000d")
             .unwrap_or_else(|_| unreachable!());
         assert!(matches!(
-            machines.inspect_operation(unknown).await,
+            provider.inspect_operation(unknown).await,
             Err(ProviderError::NotFound(_))
         ));
         assert!(matches!(
-            machines.cancel_operation(unknown).await,
+            provider.cancel(unknown).await,
             Err(ProviderError::NotFound(_))
         ));
         assert!(matches!(
-            machines.watch_operation(unknown).await,
+            provider.watch_operation(unknown).await,
             Err(ProviderError::NotFound(_))
         ));
         let unknown_key = IdempotencyKey::parse("00000000-0000-0000-0000-00000000000e")
             .unwrap_or_else(|_| unreachable!());
         assert!(matches!(
-            machines.operation_for(unknown_key).await,
+            provider.recover_operation(unknown_key).await,
             Err(ProviderError::NotFound(_))
         ));
     }

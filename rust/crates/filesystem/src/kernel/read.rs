@@ -30,15 +30,6 @@ pub struct TreeBatchLookup {
 }
 
 /// Looks up an arbitrary name batch while reading each distinct tree frontier once.
-///
-/// Input order and duplicate requests are preserved in the returned vector.
-/// Internally, borrowed keys are deterministically ordered and queries sharing
-/// ancestors or leaves are routed together.
-///
-/// # Errors
-///
-/// Rejects empty/oversized batches, malformed routing, cycles, invalid limits,
-/// backend failures, and work outside the admitted budget.
 pub fn lookup_tree_entries<S: crate::ImmediateObjectStore>(
     store: &S,
     root: ObjectId,
@@ -53,10 +44,6 @@ pub fn lookup_tree_entries<S: crate::ImmediateObjectStore>(
 }
 
 /// Asynchronously executes the same shared-frontier batch as [`lookup_tree_entries`].
-///
-/// # Errors
-///
-/// Returns the same failures, including cancellation before every backend read.
 pub async fn lookup_tree_entries_async<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -95,12 +82,12 @@ pub(crate) async fn lookup_tree_entries_async_with_accounting<S: AsyncObjectStor
 ) -> Result<(Vec<Option<TreeEntry>>, super::allocation::KernelOwnedAllocation), crate::FsError> {
     persistent_batch::lookup_async_with_accounting::<S, TreeFormat>(
         store, root, names, maximum_queries, limits, accounting, cancellation, data_custody,
-    ).await.map(|(receipt, allocation)| (receipt.values, allocation)).map_err(map_accounting_failure)
+    ).await.map(|(receipt, allocation)| (receipt.value, allocation)).map_err(map_accounting_failure)
 }
 
-fn to_batch(receipt: persistent_batch::Receipt<TreeEntry>) -> TreeBatchLookup {
+fn to_batch(receipt: crate::OperationReceipt<Vec<Option<TreeEntry>>>) -> TreeBatchLookup {
     TreeBatchLookup {
-        entries: receipt.values,
+        entries: receipt.value,
         work: receipt.work,
     }
 }
@@ -128,12 +115,6 @@ fn map_batch_error(error: persistent_batch::Error) -> TreeReadError {
 }
 
 /// Looks up one exact name through an authenticated directory B+tree.
-///
-/// # Errors
-///
-/// Fails on wrong object classes, corrupt pages, cycles, excessive height,
-/// backend failures, or a work budget that would be exceeded. The function
-/// never enumerates unrelated leaf entries or reads file bodies.
 pub fn lookup_tree_entry<S: crate::ImmediateObjectStore>(
     store: &S,
     root: ObjectId,
@@ -151,13 +132,7 @@ pub fn lookup_tree_entry<S: crate::ImmediateObjectStore>(
     ))
 }
 
-/// Asynchronously looks up one exact name, sharing every page another
-/// reader of `store` already decoded.
-///
-/// # Errors
-///
-/// Returns the same typed semantic, storage, decode, work, and cancellation
-/// failures as [`lookup_tree_entry`].
+/// Asynchronously looks up one exact name, sharing every page another reader of `store` already decoded.
 pub async fn lookup_tree_entry_async<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -187,7 +162,6 @@ pub(crate) async fn lookup_tree_entry_async_with_custody<S: AsyncObjectStore>(
         .map_err(map_batch_failure)
 }
 
-/// Uses the same authenticated point walk on the caller's original accounting.
 pub(crate) async fn lookup_tree_entry_async_with_accounting<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,

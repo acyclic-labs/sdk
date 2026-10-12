@@ -41,8 +41,8 @@ fn reserve<T>(values: &mut Vec<T>, needed: usize, work: &Work, held: &mut Native
     let next = needed.max(old.checked_mul(2).ok_or_else(overflow)?).max(1);
     let old_bytes = old.checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
     let bytes = next.checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
-    let mut claim = work.claim_allocation(bytes, u64::from(bytes != 0))?;
-    let copying = work.reserve_copy((values.len() * std::mem::size_of::<T>()) as u64)?;
+    let mut claim = work.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
+    let copying = work.reserve_work(crate::WorkCounters { bytes_copied: (values.len() * std::mem::size_of::<T>()) as u64, ..crate::WorkCounters::UNCHARGED })?;
     values.try_reserve_exact(next - values.len()).map_err(NativeError::AllocationFailed)?;
     held.absorb(&mut claim)?;
     // The allocator has physically retired the old backing, not merely
@@ -54,15 +54,15 @@ fn reserve<T>(values: &mut Vec<T>, needed: usize, work: &Work, held: &mut Native
         held.absorb(&mut excess)?;
         result
     } else if actual < bytes { held.release(bytes - actual) } else { Ok(()) };
-    let copy_result = copying.record((values.len() * std::mem::size_of::<T>()) as u64);
+    let copy_result = { let mut copy = copying; copy.record_completed(crate::WorkCounters { bytes_copied: (values.len() * std::mem::size_of::<T>()) as u64, ..crate::WorkCounters::UNCHARGED }) };
     capacity_result?;
     copy_result?;
     Ok(())
 }
 
 fn string(value: &str, work: &Work, held: &mut NativeAllocation) -> Result<String, Error> {
-    let mut claim = work.claim_allocation(value.len() as u64, u64::from(!value.is_empty()))?;
-    let copying = work.reserve_copy(value.len() as u64)?;
+    let mut claim = work.claim_allocation(value.len() as u64, u64::from(!value.is_empty()), crate::WorkCounters::UNCHARGED)?;
+    let copying = work.reserve_work(crate::WorkCounters { bytes_copied: value.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
     let mut result = String::new();
     let outcome = (|| {
         result.try_reserve_exact(value.len()).map_err(NativeError::AllocationFailed)?;
@@ -73,7 +73,7 @@ fn string(value: &str, work: &Work, held: &mut NativeAllocation) -> Result<Strin
             completed?;
         }
         result.push_str(value);
-        copying.record(value.len() as u64)?;
+        { let mut copy = copying; copy.record_completed(crate::WorkCounters { bytes_copied: value.len() as u64, ..crate::WorkCounters::UNCHARGED }) }?;
         Ok::<_, Error>(())
     })();
     if let Err(error) = outcome { drop(result); return Err(error); }
@@ -176,9 +176,9 @@ pub(super) fn clone_native_record_value(value: &RecordValue, work: &Work, cxl: &
         RecordValue::FlatChildren(value) => {
             let mut children = Vec::new();
             reserve(&mut children, value.len(), work, &mut held)?;
-            let copying = work.reserve_copy((value.len() * std::mem::size_of::<WorkspaceContextId>()) as u64)?;
+            let copying = work.reserve_work(crate::WorkCounters { bytes_copied: (value.len() * std::mem::size_of::<WorkspaceContextId>()) as u64, ..crate::WorkCounters::UNCHARGED })?;
             children.extend_from_slice(value);
-            copying.record((value.len() * std::mem::size_of::<WorkspaceContextId>()) as u64)?;
+            { let mut copy = copying; copy.record_completed(crate::WorkCounters { bytes_copied: (value.len() * std::mem::size_of::<WorkspaceContextId>()) as u64, ..crate::WorkCounters::UNCHARGED }) }?;
             canonical_ids(&mut children, work)?;
             RecordValue::FlatChildren(children)
         }
@@ -279,7 +279,7 @@ pub(super) fn load_native_context(root: &Namespace, log: &mut CoreLog, id: Works
                 check(work, cxl)?;
                 // Only compiled logical entries are known at the public ABI;
                 // opaque std tree backing is excluded, never its deep payload.
-                let mut entry = work.claim_allocation(std::mem::size_of::<(crate::WorkspaceRootId, WorkspaceContextRoot)>() as u64, 0)?;
+                let mut entry = work.claim_allocation(std::mem::size_of::<(crate::WorkspaceRootId, WorkspaceContextRoot)>() as u64, 0, crate::WorkCounters::UNCHARGED)?;
                 held.absorb(&mut entry)?;
                 roots.insert(*id, WorkspaceContextRoot {
                     root_id: root.root_id, source_path: path(Path::new(&root.source_path), work, &mut held)?,

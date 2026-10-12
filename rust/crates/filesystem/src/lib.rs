@@ -179,7 +179,7 @@ pub use distributed::StreamAuthorityStore;
 pub use distributed_fs::DistributedFs;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    CheckoutCommitOutcome, ContentChange, ContentStager, ContentTimes, DetachedFile,
+    CheckoutCommitOutcome, ContentChange, ContentTimes, DetachedFile,
     DirectoryBindingChange, DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage,
     EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
     FsReceipt, FsResult, GenerationDiff, GroupedChange, GroupedOutcome, JoinCommitWitness,
@@ -246,7 +246,7 @@ pub use materializer::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use materializer::{
-    MaterializationActionCompletion, NativeStageUncertainty,
+    NativeStageUncertainty,
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationBackend, NativeTreeMaterializationError,
     NativeWorkReservation,
     NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX,
@@ -289,9 +289,9 @@ pub use multi_root::{
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub use native_capture::{
     CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, WatchCaptureReceipt,
-    capture_baseline, capture_baseline_with_policy, capture_paths, capture_paths_with_policy,
-    capture_root_identity, capture_subtree, capture_subtree_with_policy,
-    capture_subtrees_with_policy, capture_watch_batch, capture_watch_batch_with_policy,
+    capture_baseline, capture_baseline_with_policy, capture_paths,
+    capture_root_identity, capture_subtree,
+    capture_watch_batch, capture_watch_batch_with_policy,
     host_path_to_namespace, namespace_to_host_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -313,17 +313,17 @@ pub use native_mount::{
     MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError, MountSparseRange,
     MountSparseSpan, MountViewLease, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
     NativeMountCleanupState, NativeMountError, NativeMountKind, NativeMountRecoveryCleanupState,
-    NativeMountRecoveryOwner, NativeMountRequest, NativeMountSession, NativeMountWork,
+    NativeMountRecoveryOwner, NativeMountRequest, NativeMountSession,
     NativeMountSessionIsolation, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, NativeMountDrainProof, NativeSourceIoLease, SharedCheckout, SharedCheckoutState,
     OwnedNativeMountOriginalWorkScope,
     initialize_native_mount_services,
     detach_native_mount_destination_after_crash, materialize_checkout,
-    materialize_checkout_path, materialize_checkout_paths,
+    materialize_checkout_paths,
     mount_native, mount_native_over_existing, probe_native_mount,
     probe_native_storage_accelerations, probe_native_storage_capabilities,
-    prepare_native_mount_start_with_meter,
+    prepare_native_mount_start,
     reclaim_native_mount_destination_fence, reclaim_stale_native_mount_destination_fences,
     recover_native_mount_destination, restore_checkout_host_path, seal_checkout,
     seal_checkout_with_permit,
@@ -354,7 +354,7 @@ pub use s3_http::{
 };
 #[cfg(feature = "memory")]
 pub use simulation::{
-    ScheduledSimulationFault, SimulatedAuthorityStore, SimulatedObjectStore, Simulation,
+    ScheduledSimulationFault, SimulatedStore, Simulation,
     SimulationError, SimulationFault, SimulationOperation, SimulationOptions, SimulationTrace,
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
@@ -393,14 +393,14 @@ pub use windows_usn::{
     capture_windows_usn_checkpoint, validate_windows_usn_checkpoint,
 };
 pub use workspace::{
-    ApplyOptions, ChangeSet, ChangedPath, Checkpoint, DrivenJoinError, ForkOptions, Generation,
-    GenerationPin, IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome,
+    ApplyOptions, ChangeSet, ChangedPath, DrivenJoinError, ForkOptions, Generation,
+    IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome,
     JoinPlan, Transaction, TransactionCommit, TransactionConflict, TransactionConflictRegion,
     TransactionDependencyUse, TransactionRebase, TransactionSparseSeek, Workspace, WorkspaceDelete,
     WorkspaceDirectoryEntry, WorkspaceDirectoryPage, WorkspaceError, WorkspaceExtentKind,
     WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName,
     WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
-    WorkspaceRestore, WorkspaceStat, WorkspaceSync,
+    WorkspaceRestore, WorkspaceStat,
 };
 pub use workspace_context::{
     MemoryWorkspaceContextStore, MemoryWorkspaceContextStoreError, WorkspaceContext,

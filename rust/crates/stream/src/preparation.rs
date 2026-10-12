@@ -7,7 +7,7 @@ use crate::{
     CommitMutation, CommitRequest, CommittedAppend, CommittedEnvelope,
     CommittedFork, CommittedMutation, ForkRequest, Record, StreamError, StreamPath,
 };
-use crate::memory::{MemoryObserver, MemoryOutput, MemoryResult};
+use crate::memory::{MemoryObserver, MemoryOutput, MemoryResult, absorb};
 
 pub(crate) fn fork_cut(
     request: &ForkRequest,
@@ -25,20 +25,16 @@ pub(crate) fn fork_cut(
     Ok(cut)
 }
 
-pub(crate) fn append_fact<I>(
+pub(crate) fn append_fact(
     path: &StreamPath,
     start: u64,
-    bodies: I,
+    bodies: &[OwnedBytes],
     commit_id: CommitId,
     committed_at_micros: u64,
     observer: &MemoryObserver,
-) -> MemoryResult<MemoryOutput<CommittedAppend>>
-where
-    I: IntoIterator<Item = OwnedBytes>,
-    I::IntoIter: ExactSizeIterator,
-{
+) -> MemoryResult<MemoryOutput<CommittedAppend>> {
     let records = records(start, bodies, commit_id, committed_at_micros, observer)?;
-    let end = start.checked_add(records.value.len() as u64).ok_or(StreamError::LimitExceeded)?;
+    let end = start + records.value.len() as u64;
     Ok(MemoryOutput {
         value: CommittedAppend {
             path: observer.retain_path(path)?, start, end, tail: end, records: records.value,
@@ -156,24 +152,18 @@ pub(crate) fn mutations(
         observer.admit_item()?;
         let committed = match mutation {
             CommitMutation::Append { path, records: bodies } => {
-                let start = tail(path).unwrap_or(0);
-                let records = records(
-                    start, bodies.iter().cloned(), commit_id, committed_at_micros, observer,
-                )?;
-                let end = start + records.value.len() as u64;
-                output.allocation.absorb(records.allocation)?;
-                CommittedMutation::Append(CommittedAppend {
-                    path: observer.retain_path(path)?, start, end, tail: end, records: records.value,
-                })
+                let append = append_fact(path, tail(path).unwrap_or(0), bodies, commit_id, committed_at_micros, observer)?;
+                absorb(&mut output.allocation, append.allocation)?;
+                CommittedMutation::Append(append.value)
             }
             CommitMutation::Fork { source, destination, at_tail, records: bodies } => {
                 let source_tail = tail(source).ok_or(StreamError::NotFound)?;
                 if *at_tail > source_tail { return Err(StreamError::PrefixNotRetained.into()); }
                 let records = records(
-                    *at_tail, bodies.iter().cloned(), commit_id, committed_at_micros, observer,
+                    *at_tail, bodies, commit_id, committed_at_micros, observer,
                 )?;
                 let tail = at_tail + records.value.len() as u64;
-                output.allocation.absorb(records.allocation)?;
+                absorb(&mut output.allocation, records.allocation)?;
                 CommittedMutation::Fork(CommittedFork {
                     source: observer.retain_path(source)?, destination: observer.retain_path(destination)?,
                     forked_at: *at_tail, tail, records: records.value,
@@ -186,29 +176,23 @@ pub(crate) fn mutations(
     Ok(output)
 }
 
-pub(crate) fn records<I>(
+pub(crate) fn records(
     start: u64,
-    bodies: I,
+    bodies: &[OwnedBytes],
     commit_id: CommitId,
     committed_at_micros: u64,
     observer: &MemoryObserver,
-) -> MemoryResult<MemoryOutput<Vec<Record>>>
-where
-    I: IntoIterator<Item = OwnedBytes>,
-    I::IntoIter: ExactSizeIterator,
-{
-    let mut bodies = bodies.into_iter();
+) -> MemoryResult<MemoryOutput<Vec<Record>>> {
     let count = bodies.len();
     // Reserve the exclusive tail too: a record at u64::MAX is unrepresentable.
     start.checked_add(u64::try_from(count).map_err(|_| StreamError::LimitExceeded)?)
         .ok_or(StreamError::LimitExceeded)?;
     let mut output = observer.vec(count)?;
-    for index in 0..count {
+    for (index, value) in bodies.iter().enumerate() {
         observer.admit_item()?;
-        let value = bodies.next().ok_or(StreamError::Unavailable)?;
         output.value.push(Record {
             sequence: start + index as u64,
-            value,
+            value: value.clone(),
             commit_id,
             committed_at_micros,
         });
@@ -224,7 +208,7 @@ mod tests {
     #[test]
     fn rejects_unrepresentable_exclusive_tails() {
         assert!(matches!(records(
-            u64::MAX, [OwnedBytes::from_static(b"overflow")], CommitId::default(), 0,
+            u64::MAX, &[OwnedBytes::from_static(b"overflow")], CommitId::default(), 0,
             &MemoryObserver::default(),
         ), Err(crate::memory::MemoryFailure::Provider(StreamError::LimitExceeded))));
     }

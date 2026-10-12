@@ -34,8 +34,6 @@ export class MemoryConversation {
   readonly #core: Harness;
   readonly #scope: Scope;
   readonly #volume: VolumeRef<"agent_private", "memory">;
-  readonly #stagingLimits: Limits;
-  readonly #maxResidentBytes: number;
   readonly #maxResidentFiles: number;
   readonly #content: MemoryContentStore;
   readonly #foreign = new Map<string, ContentReader>();
@@ -45,12 +43,10 @@ export class MemoryConversation {
   #turns: Promise<void> = Promise.resolve();
 
   private constructor(core: Harness, scope: Scope, volume: VolumeRef<"agent_private", "memory">,
-    limits: Limits, maxResidentBytes: number, maxResidentFiles: number, content: MemoryContentStore) {
+    maxResidentFiles: number, content: MemoryContentStore) {
     this.#core = core;
     this.#scope = scope;
-    this.#volume = core.validateVolumeRef(volume);
-    this.#stagingLimits = limits;
-    this.#maxResidentBytes = maxResidentBytes;
+    this.#volume = core.contracts.validate("volume_ref", volume);
     this.#maxResidentFiles = maxResidentFiles;
     this.#content = content;
   }
@@ -65,7 +61,7 @@ export class MemoryConversation {
     const maxResidentBytes = options.maxResidentBytes ?? defaultResidentBytes;
     const maxResidentFiles = options.maxResidentFiles ?? defaultResidentFiles;
     try {
-      limits = core.validateLimits(options.limits ?? DEFAULT_LIMITS);
+      limits = core.contracts.validate("limits", options.limits ?? DEFAULT_LIMITS);
       if (!Number.isSafeInteger(maxResidentBytes) || maxResidentBytes < 0
         || !Number.isSafeInteger(maxResidentFiles) || maxResidentFiles < 1) {
         throw new RangeError("memory content retention limits are invalid");
@@ -83,9 +79,8 @@ export class MemoryConversation {
       ]);
       const content = new MemoryContentStore(volume, limits.file_bytes, limits.path_bytes,
         maxResidentBytes, maxResidentFiles);
-      const host = new MemoryConversation(core, scope, volume, limits, maxResidentBytes,
-        maxResidentFiles, content);
-      host.#apply(core.identity("operation", crypto.randomUUID()), "bind", { kind: "bind_conversation", agent: options.agent });
+      const host = new MemoryConversation(core, scope, volume, maxResidentFiles, content);
+      host.#apply(core.contracts.validateIdentity("operation", crypto.randomUUID()), "bind", { kind: "bind_conversation", agent: options.agent });
       return host;
     } catch (error) {
       core.free();
@@ -131,7 +126,7 @@ export class MemoryConversation {
     this.#core.verifyContentRead(scope, file);
     const bytes = this.#localBytes(file);
     if (bytes === undefined) throw new TypeError("owner has no resident file");
-    this.#core.verifyFileBytes(file, bytes);
+    this.#core.contracts.verifyFileBytes(file, bytes);
     return Uint8Array.from(bytes);
   }
   /** Owner-authenticated, generation-pinned listing; no prior FileRef is needed. */
@@ -155,7 +150,7 @@ export class MemoryConversation {
     this.#core.verifyScope(admittedScope);
     return {
       validate: (file, limits) => this.#core.validateFileUnderLimits(file, limits),
-      verify: (file, bytes) => this.#core.verifyFileBytes(file, bytes),
+      verify: (file, bytes) => this.#core.contracts.verifyFileBytes(file, bytes),
       read: file => this.readAuthorized(admittedScope, file),
       requireFileRead: file => {
         const reference = this.#validatedFile(file);
@@ -181,7 +176,7 @@ export class MemoryConversation {
       validate: (file, limits) => {
         this.#core.validateFileUnderLimits(file, limits);
       },
-      verify: (file, bytes) => this.#core.verifyFileBytes(file, bytes),
+      verify: (file, bytes) => this.#core.contracts.verifyFileBytes(file, bytes),
       read: file => this.read(file),
       fileReadCapability: file => this.#core.fileReadCapability(file),
       volumeReadCapability: volume => this.#core.volumeCapability(volume, "read"),
@@ -205,7 +200,7 @@ export class MemoryConversation {
             if (this.#uploads.get(operationId) === admitted) this.#uploads.delete(operationId);
             throw error;
           }
-          const candidate = this.#core.fileDescriptor(bytes, mediaType);
+          const candidate = this.#core.contracts.fileDescriptor(bytes, mediaType);
           if (file.path !== path || file.display_name !== displayName
             || file.descriptor.media_type !== mediaType
             || file.descriptor.byte_length !== candidate.byte_length
@@ -229,18 +224,7 @@ export class MemoryConversation {
 
   /** Store immutable bytes before any record can refer to them. */
   async stage(path: string, bytes: Uint8Array, mediaType: string, displayName: string): Promise<FileRef> {
-    return this.#stage(path, bytes, mediaType, displayName, true);
-  }
-
-  /**
-   * Stores an immutable ref without changing the provider's path head.
-   * Conversation-only artifacts use this when a narrowed path budget leaves
-   * no safe auxiliary path: a ref may be addressed directly, but it must not
-   * shadow the user file returned by path-based reads.
-   */
-  async #stage(path: string, bytes: Uint8Array, mediaType: string, displayName: string,
-    updatePath: boolean): Promise<FileRef> {
-    return this.#content.stage(path, bytes, mediaType, displayName, updatePath);
+    return this.#content.stage(path, bytes, mediaType, displayName, true);
   }
 
   /** Possession of a ref is not a foreign-owner read grant. */
@@ -248,7 +232,7 @@ export class MemoryConversation {
     const file = this.#validatedFile(reference);
     const bytes = await this.#reader(file.volume).read(file);
     if (!(bytes instanceof Uint8Array)) throw new TypeError("content resolver returned invalid bytes");
-    this.#core.verifyFileBytes(file, bytes);
+    this.#core.contracts.verifyFileBytes(file, bytes);
     return Uint8Array.from(bytes);
   }
 
@@ -278,17 +262,17 @@ export class MemoryConversation {
       throw new TypeError("private directory generation is unavailable");
     }
     const generation = BigInt(version);
-    if (generation > current || !this.#core.canonicalEqual(
-      this.#core.validateResourceRef(expected), this.#directoryGeneration(version))) {
+    if (generation > current || !this.#core.contracts.canonicalEqual(
+      this.#core.contracts.validate("resource_ref", expected), this.#directoryGeneration(version))) {
       throw new TypeError("private directory generation is unavailable");
     }
     return generation;
   }
 
   #directoryGeneration(version = this.#content.generation().toString()): ResourceRef<"generation"> {
-    return this.#core.validateResourceRef({
+    return this.#core.contracts.validate("resource_ref", {
       kind: "generation", provider: this.#volume.provider,
-      key: [...this.#core.canonicalJsonDigest([this.#volume.id, version])],
+      key: [...this.#core.contracts.digestCanonicalJson([this.#volume.id, version])],
       version,
     });
   }
@@ -305,7 +289,7 @@ export class MemoryConversation {
     }
     const page = this.#content.list(path, generation, after, maximum);
     const entries = page.entries;
-    return this.#core.validatePrivateDirectoryPage({
+    return this.#core.contracts.validate("private_directory_page", {
       generation: this.#directoryGeneration(expected?.version ?? undefined), entries, hasMore: page.hasMore,
     });
   }
@@ -343,8 +327,8 @@ export class MemoryConversation {
   }
 
   async #abandonIndeterminateTurn(operationId: OperationId): Promise<void> {
-    const userId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "user"));
-    const noticeId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "indeterminate-notice"));
+    const userId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operationId, "user"));
+    const noticeId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operationId, "indeterminate-notice"));
     const state = this.conversation();
     const existing = state.messages.find(message => message.id === noticeId);
     if (existing !== undefined) return;
@@ -357,12 +341,12 @@ export class MemoryConversation {
     const content = await this.stage(`turns/${operationId}/indeterminate.txt`, encoder.encode(
       "The preceding model attempt has an unknown outcome and was explicitly abandoned by its owner. Do not infer an assistant answer."),
     "text/plain", "indeterminate.txt");
-    const outcome = await this.stage(`turns/${operationId}/indeterminate.json`, this.#core.canonicalJsonBytes({
+    const outcome = await this.stage(`turns/${operationId}/indeterminate.json`, this.#core.contracts.encodeCanonicalJson({
       state: "indeterminate", operation_id: operationId,
     }), "application/json", "indeterminate.json");
     this.#core.validateFileUnderLimits(content, DEFAULT_LIMITS);
     this.#core.validateFileUnderLimits(outcome, DEFAULT_LIMITS);
-    this.#append(this.#core.deriveOperationId(operationId, "indeterminate-event"), "indeterminate", {
+    this.#append(this.#core.contracts.deriveOperationId(operationId, "indeterminate-event"), "indeterminate", {
       id: noticeId, sequence: BigInt(state.messages.length + 1), kind: "system", content,
       attachments: { kind: "inline", items: [] }, reply_to: userId, tool_call_id: null,
       extensions: { "acyclic.turn.outcome": outcome },
@@ -371,7 +355,7 @@ export class MemoryConversation {
 
   async #recordTerminalTurn(operationId: OperationId, userId: ConversationMessageId,
     outcome: "failed" | "cancelled", limits: Limits): Promise<void> {
-    const noticeId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "terminal-notice"));
+    const noticeId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operationId, "terminal-notice"));
     const state = this.conversation();
     if (state.messages.some(message => message.id === noticeId)) return;
     const user = state.messages.find(message => message.id === userId && message.kind === "user");
@@ -386,9 +370,10 @@ export class MemoryConversation {
     const path = encoder.encode(preferredPath).byteLength <= limits.path_bytes
       && !this.#content.pathConflicts(preferredPath)
       ? preferredPath : user.content.path;
-    const terminal = await this.#stage(path, marker, "text/plain", `${outcome}.txt`, false);
+    // Terminal refs must not replace user path heads.
+    const terminal = await this.#content.stage(path, marker, "text/plain", `${outcome}.txt`, false);
     this.#core.validateFileUnderLimits(terminal, limits);
-    this.#append(this.#core.deriveOperationId(operationId, "terminal-event"), "terminal", {
+    this.#append(this.#core.contracts.deriveOperationId(operationId, "terminal-event"), "terminal", {
       id: noticeId, sequence: BigInt(state.messages.length + 1), kind: "system", content: terminal,
       attachments: { kind: "inline", items: [] }, reply_to: userId, tool_call_id: null,
       extensions: { "acyclic.turn.outcome": terminal },
@@ -406,16 +391,16 @@ export class MemoryConversation {
     const list = await this.#attachments(operationId, "user", attachments, limits);
     let state = this.conversation();
     const completed = this.#outputs.get(operationId);
-    const assistantId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "assistant"));
+    const assistantId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operationId, "assistant"));
     const completedReady = completed !== undefined && state.messages.some(message => message.id === assistantId);
     const committedSelection = this.#core.contextSelectionForOperation(operationId);
-    const preparation = this.#core.prepareConversationTurn(
+    const preparation = this.#core.contracts.prepareConversationTurn(
       state, operationId, userContent, list, limits, committedSelection,
       completed !== undefined, runtime.canReconcileSelectedTurn(),
     );
-    const userId = this.#core.conversationMessageId(preparation.user_id);
+    const userId = this.#core.contracts.validateConversationMessageId(preparation.user_id);
     if (preparation.append_user) {
-      this.#append(this.#core.deriveOperationId(operationId, "user-event"), "user", {
+      this.#append(this.#core.contracts.deriveOperationId(operationId, "user-event"), "user", {
         id: userId, sequence: BigInt(state.messages.length + 1), kind: "user", content: userContent,
         attachments: list, reply_to: null, tool_call_id: null, extensions: {},
       }, limits);
@@ -429,7 +414,7 @@ export class MemoryConversation {
     state = this.conversation();
     const selection = {
       conversation_revision: preparation.selection.conversation_revision,
-      message_ids: preparation.selection.message_ids.map(id => this.#core.conversationMessageId(id)),
+      message_ids: preparation.selection.message_ids.map(id => this.#core.contracts.validateConversationMessageId(id)),
     };
     const newSelection = preparation.selection_is_new;
     let stableOutput = completed;
@@ -446,7 +431,7 @@ export class MemoryConversation {
       }, { resolveFile: file => this.read(file), maxMessages: limits.context_messages,
         maxAttachments: limits.attachments, maxManifestBytes: limits.file_bytes,
         maxRenderBytes: limits.render_bytes,
-        validateMessage: message => this.#core.validateConversationMessage(message, limits) });
+        validateMessage: message => this.#core.contracts.validate("conversation_message", message, limits) });
       if (newSelection) this.#apply(operationId, "context", { kind: "select_model_context", selection });
       let output: RunOutput;
       try { output = await runtime.runSelectedContext(selected, operationId); }
@@ -467,7 +452,7 @@ export class MemoryConversation {
     const assistantAttachments = await this.#attachments(operationId, "assistant", stableOutput.attachments ?? [], limits);
     const finalMetadata = [...stableOutput.receipts].reverse().find(receipt => receipt.kind === "model-completed");
     const metadata = await this.stage(`turns/${operationId}/metadata.json`,
-      this.#core.canonicalJsonBytes(finalMetadata?.metadata ?? {}), "application/json", "metadata.json");
+      this.#core.contracts.encodeCanonicalJson(finalMetadata?.metadata ?? {}), "application/json", "metadata.json");
     this.#core.validateFileUnderLimits(metadata, limits);
     await this.#publishToolHistory(operationId, userId, stableOutput, limits);
     state = this.conversation();
@@ -475,7 +460,7 @@ export class MemoryConversation {
     const message: ConversationMessage = { id: assistantId, sequence: BigInt(state.messages.length + 1),
       kind: "assistant", content: assistant, attachments: assistantAttachments,
       reply_to: userId, tool_call_id: null, extensions: { "acyclic.model.metadata": metadata } };
-    if (priorAssistant === undefined) this.#append(this.#core.deriveOperationId(operationId, "assistant-event"), "assistant", message, limits);
+    if (priorAssistant === undefined) this.#append(this.#core.contracts.deriveOperationId(operationId, "assistant-event"), "assistant", message, limits);
     else if (priorAssistant.kind !== "assistant" || priorAssistant.reply_to !== userId
       || this.#fileKey(priorAssistant.content) !== this.#fileKey(message.content)
       || !this.#sameAttachments(priorAssistant.attachments, message.attachments)) {
@@ -485,7 +470,7 @@ export class MemoryConversation {
   }
 
   async runPrompt(runtime: AgentHarness, prompt: string): Promise<RunOutput> {
-    const operation = this.#core.identity("operation", crypto.randomUUID());
+    const operation = this.#core.contracts.validateIdentity("operation", crypto.randomUUID());
     const content = await this.stage(`turns/${operation}/user.txt`, encoder.encode(prompt), "text/plain", "prompt.txt");
     return this.runConversation(runtime, operation, content);
   }
@@ -496,10 +481,10 @@ export class MemoryConversation {
     for (const item of checked) { this.#core.validateFileUnderLimits(item.file, limits); await this.read(item.file); }
     if (checked.length <= 128) return { kind: "inline", items: checked };
     const manifest = await this.stage(`turns/${operation}/${role}-attachments.json`,
-      this.#core.encodeAttachmentManifest(checked),
+      this.#core.contracts.encodeAttachmentManifest(checked),
       manifestType, "attachments.json");
     this.#core.validateFileUnderLimits(manifest, limits);
-    this.#core.decodeAttachmentManifest(manifest, await this.read(manifest), checked.length);
+    this.#core.contracts.decodeAttachmentManifest(manifest, await this.read(manifest), checked.length);
     return { kind: "manifest", manifest, item_count: checked.length };
   }
 
@@ -510,24 +495,24 @@ export class MemoryConversation {
       const identity = `${receipt.step}:${receipt.callId}`;
       if (seen.has(identity)) throw new TypeError("tool call identity is duplicated within a model step");
       seen.add(identity);
-      const callId = this.#core.conversationMessageId(this.#core.deriveOperationId(operation, `tool-call:${index}`));
-      const resultId = this.#core.conversationMessageId(this.#core.deriveOperationId(operation, `tool-result:${index}`));
+      const callId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operation, `tool-call:${index}`));
+      const resultId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operation, `tool-result:${index}`));
       const call = await this.stage(`turns/${operation}/tools/${index}-call.json`,
-        this.#core.canonicalJsonBytes({ call_id: receipt.callId, name: receipt.name, arguments: receipt.arguments }),
+        this.#core.contracts.encodeCanonicalJson({ call_id: receipt.callId, name: receipt.name, arguments: receipt.arguments }),
         "application/json", "call.json");
       const result = await this.stage(`turns/${operation}/tools/${index}-result.json`,
-        this.#core.canonicalJsonBytes({ value: receipt.value }), "application/json", "result.json");
+        this.#core.contracts.encodeCanonicalJson({ value: receipt.value }), "application/json", "result.json");
       const projection = await this.stage(`turns/${operation}/tools/${index}-projection.json`,
-        this.#core.canonicalJsonBytes(receipt.projection), "application/json", "projection.json");
+        this.#core.contracts.encodeCanonicalJson(receipt.projection), "application/json", "projection.json");
       for (const file of [call, result, projection]) this.#core.validateFileUnderLimits(file, limits);
       let state = this.conversation();
-      this.#appendIfAbsent(this.#core.deriveOperationId(operation, `tool-call-event:${index}`), "tool-call", {
+      this.#appendIfAbsent(this.#core.contracts.deriveOperationId(operation, `tool-call-event:${index}`), "tool-call", {
         id: callId, sequence: BigInt(state.messages.length + 1), kind: "tool_call", content: call,
         attachments: { kind: "inline", items: [] }, reply_to: userId,
         tool_call_id: receipt.callId, extensions: {},
       }, limits);
       state = this.conversation();
-      this.#appendIfAbsent(this.#core.deriveOperationId(operation, `tool-result-event:${index}`), "tool-result", {
+      this.#appendIfAbsent(this.#core.contracts.deriveOperationId(operation, `tool-result-event:${index}`), "tool-result", {
         id: resultId, sequence: BigInt(state.messages.length + 1), kind: "tool_result", content: result,
         attachments: { kind: "inline", items: [{ file: projection, label: "model_projection" }] },
         reply_to: callId, tool_call_id: receipt.callId, extensions: {},
@@ -536,7 +521,7 @@ export class MemoryConversation {
   }
 
   #append(operation: OperationId, label: string, message: ConversationMessage, limits: Limits): void {
-    const admitted = this.#core.validateConversationMessage(message, limits);
+    const admitted = this.#core.contracts.validate("conversation_message", message, limits);
     this.#apply(operation, label, { kind: "append_conversation_message", message: admitted });
   }
 
@@ -546,7 +531,7 @@ export class MemoryConversation {
     if (existing !== undefined) {
       const { sequence: _existingSequence, ...existingWithoutSequence } = existing;
       const { sequence: _messageSequence, ...messageWithoutSequence } = message;
-      if (!this.#core.canonicalEqual(existingWithoutSequence, messageWithoutSequence)) {
+      if (!this.#core.contracts.canonicalEqual(existingWithoutSequence, messageWithoutSequence)) {
         throw new TypeError("conversation message identity is bound to another record");
       }
       return;
@@ -555,7 +540,7 @@ export class MemoryConversation {
   }
 
   #validatedFile(reference: FileRef): FileRef {
-    return this.#core.validateFileRef(reference);
+    return this.#core.contracts.validate("file_ref", reference);
   }
 
   #apply<Action extends { readonly kind: string }>(operation: OperationId, label: string, action: Action): void {
@@ -575,8 +560,8 @@ export class MemoryConversation {
   }
 
   #sameAttachments(left: ReferencedAttachments, right: ReferencedAttachments): boolean {
-    const encodedLeft = this.#core.canonicalJsonBytes(left);
-    const encodedRight = this.#core.canonicalJsonBytes(right);
+    const encodedLeft = this.#core.contracts.encodeCanonicalJson(left);
+    const encodedRight = this.#core.contracts.encodeCanonicalJson(right);
     return encodedLeft.byteLength === encodedRight.byteLength
       && encodedLeft.every((byte, index) => byte === encodedRight[index]);
   }

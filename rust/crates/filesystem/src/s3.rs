@@ -243,11 +243,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     ) -> Result<S3ObjectHead, S3Error> {
         let mut checkout = self
             .workspace
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Exact(generation.id()),
-                CheckoutMode::read_only_pinned(),
-            )
-            .await?;
+                CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let path = key_path(key, checkout.volume_config())?;
         let record = checkout
             .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -311,11 +309,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     ) -> Result<OwnedBytes, S3Error> {
         let mut checkout = self
             .workspace
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Exact(generation.id()),
-                CheckoutMode::read_only_pinned(),
-            )
-            .await?;
+                CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let path = key_path(key, checkout.volume_config())?;
         checkout
             .read_file_range(
@@ -342,7 +338,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     ) -> Result<TransactionCommit<A, O>, S3Error> {
         let mut transaction = self.workspace.begin_transaction(idempotency_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         create_parent_directories(&mut transaction, key).await?;
-        transaction.write(&absolute_key(key), bytes).await?;
+        transaction.write(&absolute_key(key), bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(Into::into)
     }
 
@@ -381,7 +377,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     ) -> Result<(), S3Error> {
         validate_key(key)?;
         let mut transaction = self.workspace.begin_transaction(idempotency_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mutated = match transaction.remove(&absolute_key(key)).await {
+        let mutated = match transaction.remove(&absolute_key(key), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
             Ok(()) => true,
             Err(WorkspaceError::NotFound) => false,
             Err(error) => return Err(error.into()),
@@ -411,7 +407,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         let mut mutated = false;
         for key in keys {
             validate_key(key)?;
-            match transaction.remove(&absolute_key(key)).await {
+            match transaction.remove(&absolute_key(key), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
                 Ok(()) => mutated = true,
                 Err(WorkspaceError::NotFound) => {}
                 Err(error) => return Err(error.into()),
@@ -492,11 +488,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         };
         let mut checkout = self
             .workspace
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Exact(generation.id()),
-                CheckoutMode::read_only_pinned(),
-            )
-            .await?;
+                CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let limits = checkout.volume_config().limits;
         let (frontier, frontier_key, frontier_name_prefix) =
             listing_frontier(&options.prefix, checkout.volume_config())?;
@@ -846,7 +840,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3MultipartUpload<A, O> {
             .unwrap_or(u64::MAX)
             .saturating_add(1);
         let mut source = Cursor::new(bytes);
-        let staged = self.transaction.stage_content(&mut source, maximum).await?;
+        let staged = self.transaction.stage_content(&mut source, maximum, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         self.parts.insert(part_number, staged);
         Ok(())
     }
@@ -969,7 +963,7 @@ pub(crate) async fn create_parent_directories<A: AsyncAuthorityStore, O: AsyncOb
     if let Some((parent, _)) = key.rsplit_once('/')
         && !parent.is_empty()
     {
-        transaction.create_dir_all(&format!("/{parent}")).await?;
+        transaction.create_dir_all(&format!("/{parent}"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     }
     Ok(())
 }
@@ -1162,7 +1156,7 @@ mod tests {
         s3.copy_object("src/a.bin", "copy/a.bin", IdempotencyKey::new())
             .await?;
         assert_eq!(
-            workspace.read("/copy/a.bin", 16).await?.as_slice(),
+            workspace.read("/copy/a.bin", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_slice(),
             b"abcdef".as_slice()
         );
 
@@ -1660,7 +1654,7 @@ mod tests {
             .await?;
         upload.upload_part(2, Bytes::from_static(b"second")).await?;
         upload.upload_part(1, Bytes::from_static(b"first-")).await?;
-        assert_eq!(workspace.head().await?.id(), before);
+        assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), before);
         assert!(matches!(
             upload.complete(&[1, 2]).await?,
             TransactionCommit::Committed(_)
@@ -1670,7 +1664,7 @@ mod tests {
             TransactionCommit::AlreadyCommitted(_)
         ));
         assert_eq!(
-            workspace.read("/large/value.bin", 64).await?.as_slice(),
+            workspace.read("/large/value.bin", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_slice(),
             b"first-second".as_slice()
         );
 

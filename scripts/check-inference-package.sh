@@ -65,12 +65,16 @@ bun x tsc -b typescript/packages/inference/tsconfig.json
 bun test typescript/packages/inference/test
 npm_stage="$work/npm-package"
 bash scripts/stage-npm-package.sh typescript/packages/inference "$npm_stage"
+observer_stage="$work/observer-package"
+bash "$root/scripts/stage-npm-package.sh" "$root/typescript/packages/actors" "$observer_stage"
+(cd "$observer_stage" && bun pm pack --ignore-scripts --filename acyclic-observe.tgz --quiet)
+mv "$observer_stage/acyclic-observe.tgz" "$work/acyclic-observe.tgz"
 cd "$npm_stage"
 bun pm pack --ignore-scripts --filename "$bun_archive" --quiet
 mkdir "$work/consumer"
 protobuf_version="$(bun -e 'console.log(require(process.argv[1]).dependencies["@bufbuild/protobuf"])' "$root/typescript/packages/inference/package.json")"
 cat >"$work/consumer/package.json" <<EOF
-{"private":true,"type":"module","dependencies":{"@acyclic-labs/inference":"file:$bun_archive_url","@bufbuild/protobuf":"$protobuf_version"}}
+{"private":true,"type":"module","overrides":{"@acyclic-labs/actors":"file:../acyclic-observe.tgz"},"dependencies":{"@acyclic-labs/inference":"file:$bun_archive_url","@bufbuild/protobuf":"$protobuf_version"}}
 EOF
 cat >"$work/consumer/smoke.mjs" <<'EOF'
 import { InferenceClient, ListModelsResponseSchema } from "@acyclic-labs/inference";

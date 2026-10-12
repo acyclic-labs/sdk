@@ -173,10 +173,10 @@ impl PiSession {
         let mut plans = BTreeMap::new();
         for route in self.state.routes.values() {
             let parent = self.alias_task(&route.parent_agent_id)?;
-            let original = pi_fork::original_operation(root_task, parent, &route.turn_id);
+            let original = pi_fork::original_operation(root_task, parent, &route.turn_id, query_work)?;
             let plan = coordinator.load_original_plan(original, budget, &cancellation)
                 .await?.ok_or_else(|| Error::Invalid("Pi Created route has no original immutable fork plan".to_owned()))?;
-            validate_created_native_route(route, parent, &plan)?;
+            validate_created_native_route(route, parent, &plan, query_work)?;
             plans.insert(plan.commit.child.task_id, (route, parent, plan));
         }
 
@@ -299,7 +299,7 @@ impl PiSession {
             if let Some(native) = &native {
                 for task in &tasks {
                     retain_first_failure(&mut failure,
-                        native.request_scratch_disposal(*task).await);
+                        native.request_scratch_disposal(*task, &work).await);
                 }
             }
             if let Some(root) = root {
@@ -436,7 +436,7 @@ fn finish_native_drain(failure: Option<Error>) -> RootResult<()> {
 }
 
 fn validate_created_native_route(
-    route: &Route, parent: TaskId, plan: &pi_fork::PiForkPlan,
+    route: &Route, parent: TaskId, plan: &pi_fork::PiForkPlan, work: &acyclic_fs::NativeMaterializationWork,
 ) -> RootResult<()> {
     let PluginTaskBinding::Pi(binding) = &route.task_binding else {
         return Err(Error::Invalid("Pi Created route substituted another host".to_owned()));
@@ -454,7 +454,7 @@ fn validate_created_native_route(
             != original.results.as_ref().map(|result| &result.volume)
         || binding.project_volumes.len() != 1 || !binding.project_volumes.contains_key(&key)
         || route.roots.len() != 1 || !route.roots.contains_key(&key)
-        || route.context_id != pi_fork::derived(plan.original, "fork").into_bytes()
+        || route.context_id != pi_fork::derived(plan.original, "fork", &work)?.into_bytes()
         || !matches!(binding.scratch.allocation, PiScratchAllocation::Created(_))
         || binding.results.as_ref().is_none_or(|result|
             !matches!(result.allocation, PiScratchAllocation::Created(_)))
@@ -482,7 +482,7 @@ fn validate_created_native_report(
 }
 
 async fn original_native_first_dispatch_pending(
-    runtime: &PiRuntime, stream: &StreamClient<LocalStream>,
+    runtime: &PiRuntime, stream: &std::sync::Arc<LocalStream>,
     protected: &pi_owner::PiOwnerConfig, plan: &pi_fork::PiForkPlan,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> RootResult<bool> {
@@ -498,7 +498,7 @@ async fn original_native_first_dispatch_pending(
         return Ok(false);
     }
     let outcome = host.outcome_with_native_work(task, work).await?;
-    if host.cancellation_requested_with_native_work(task, work).await?
+    if host.cancellation_requested(task, Some(work)).await?
         || outcome.0.is_some()
     {
         return Ok(false);
@@ -518,7 +518,7 @@ async fn original_native_first_dispatch_pending(
         stream, &conversation.0.0, &verifier.0, work)?;
     let pin = history.0.pin_with_native_work(0, work).await?;
     let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
-        task, pi_fork::derived(plan.original, "native-effect"), work,
+        task, pi_fork::derived(plan.original, "native-effect", &work)?, work,
     )?;
     let observed = history.0.effect_with_native_work(&pin.0, effect, limits, work).await?;
     Ok(observed.0.is_none())

@@ -85,7 +85,7 @@ impl<'a> ForkWork<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     fn native_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
         let original = self.original.expect("native SDK boundary requires original funding");
-        Arc::clone(original.native_read_meter())
+        original.native_read_meter().clone()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -716,8 +716,8 @@ impl<E> From<AuthorityStoreError> for AppendFailure<E> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl<E> From<acyclic_stream::NativeStreamFailure> for AppendFailure<E> {
-    fn from(error: acyclic_stream::NativeStreamFailure) -> Self {
+impl<E> From<acyclic_stream::StreamError> for AppendFailure<E> {
+    fn from(error: acyclic_stream::StreamError) -> Self {
         Self::Authority(error.into())
     }
 }
@@ -832,8 +832,6 @@ fn authority_corrupt(message: &'static str, meter: &ForkWork<'_>) -> AuthoritySt
 fn authority_stream_error(error: &AuthorityStoreError) -> Option<&acyclic_stream::StreamError> {
     match error {
         AuthorityStoreError::NativeStream(error) => Some(error),
-        #[cfg(not(target_arch = "wasm32"))]
-        AuthorityStoreError::NativeStreamFailure(error) => Some(error.source()),
         _ => None,
     }
 }
@@ -2586,7 +2584,7 @@ fn reservation_request_digest(
     }
     let hashing = WorkCounters { bytes_hashed: bytes, ..WorkCounters::default() };
     meter.admit(hashing)?;
-    let digest = acyclic_stream::request::normalized_commit_digest(request);
+    let digest = acyclic_stream::request::commit_digest(request);
     meter.charge(hashing)?;
     Ok(digest)
 }
@@ -3090,10 +3088,10 @@ fn generation_from_payload(
     let mut observe = |step| meter.observe_record(step, "fixed authority facts emitted an allocating decoder step")
         .map_err(fork_error::<crate::FsError>);
     let fact = if created {
-        crate::kernel::decode_volume_created_with_steps(payload, STREAM_RECORD_LIMIT, &mut observe)
+        crate::kernel::decode_volume_created(payload, STREAM_RECORD_LIMIT, &mut observe)
             .map(|created| (created.volume_id, created.initial_generation_root.digest))
     } else {
-        crate::kernel::decode_published_generation_with_steps(payload, STREAM_RECORD_LIMIT, &mut observe)
+        crate::kernel::decode_published_generation(payload, STREAM_RECORD_LIMIT, &mut observe)
             .map(|published| (published.volume_id, published.generation_root.digest))
     };
     let (volume, digest) = match fact {
@@ -3292,20 +3290,7 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_authority_budget() -> WorkBudget {
-        const N: u64 = 1 << 28;
-        WorkBudget {
-            authority_records_read: N, authority_records_appended: N,
-            authority_bytes_read: N, authority_bytes_written: N,
-            object_probes: N, backend_read_operations: N, backend_write_operations: N,
-            durability_operations: N, page_reads: N, page_writes: N,
-            object_bytes_read: N, object_bytes_written: N, bytes_hashed: N,
-            bytes_copied: N, bytes_encoded: N, source_bytes_read: N,
-            source_path_components: N, source_entries_visited: N, output_bytes: N,
-            items_examined: N, items_returned: N, allocation_operations: N,
-            peak_allocation_bytes: N, materializations: N,
-        }
-    }
+    const NATIVE_AUTHORITY_BUDGET: WorkBudget = crate::performance::work_budget(1 << 28, 1 << 28);
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
@@ -3319,8 +3304,8 @@ mod tests {
         let cancellation = CancellationToken::new();
         let store = StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default()));
         let authority = AuthorityId::from_bytes([0x86; 16]);
-        store.create_authority(authority, Epoch::GENESIS, native_authority_budget(), &cancellation).await?;
-        let original = crate::NativeMaterializationWork::new(native_authority_budget(), &cancellation)
+        store.create_authority(authority, Epoch::GENESIS, NATIVE_AUTHORITY_BUDGET, &cancellation).await?;
+        let original = crate::NativeMaterializationWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation)
             .map_err(|(error, _)| error)?;
         let expected = Head::genesis(Epoch::GENESIS);
         let request = crate::GuardedAppend { authority_id: authority, epoch: expected.epoch, expected,
@@ -3338,7 +3323,7 @@ mod tests {
             request.clone(), &original, &cancellation, &mut reject).await;
         assert!(matches!(failure, Err(OwnerError::Rejected)));
         assert_eq!(original.receipt().backend_write_operations, 0);
-        assert_eq!(store.head(authority, native_authority_budget(), &cancellation).await?.value, expected);
+        assert_eq!(store.head(authority, NATIVE_AUTHORITY_BUDGET, &cancellation).await?.value, expected);
         let (outcome, allocation) = store.compare_and_append_guarded_with_native_work(
             request.clone(), &original, &cancellation).await?;
         assert!(matches!(outcome, FsAppendOutcome::Committed(_)));
@@ -3359,7 +3344,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let store = StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default()));
         let authority = AuthorityId::from_bytes([0x89; 16]);
-        let mut budget = native_authority_budget();
+        let mut budget = NATIVE_AUTHORITY_BUDGET;
         budget.allocation_operations = 1;
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
@@ -3381,7 +3366,7 @@ mod tests {
             | Err(AuthorityStoreError::NativeOriginal(crate::NativeTreeMaterializationError::Cancelled))));
         assert_eq!(original.receipt(), spent);
         let fresh = CancellationToken::new();
-        assert!(matches!(store.head(authority, native_authority_budget(), &fresh).await,
+        assert!(matches!(store.head(authority, NATIVE_AUTHORITY_BUDGET, &fresh).await,
             Err(failure) if matches!(failure.error, AuthorityStoreError::Missing)));
         Ok(())
     }
@@ -3394,28 +3379,28 @@ mod tests {
         let cancellation = CancellationToken::new();
         let provider = Arc::new(ReleaseSpy::new(Arc::new(acyclic_stream::MemoryStream::default())));
         let store = StreamAuthorityStore::new(Arc::clone(&provider));
-        let original = crate::NativeMaterializationWork::new(native_authority_budget(), &cancellation)
+        let original = crate::NativeMaterializationWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation)
             .map_err(|(error, _)| error)?;
         let authority = AuthorityId::from_bytes([0x7a; 16]);
         assert!(matches!(&store.head_with_native_work(authority, &original, &cancellation).await,
-            Err(AuthorityStoreError::NativeStreamFailure(error))
-                if matches!(error.source(), acyclic_stream::StreamError::Unsupported)));
+            Err(AuthorityStoreError::NativeStream(error))
+                if matches!(error, acyclic_stream::StreamError::Unsupported)));
         assert!(matches!(&store.replay_with_native_work(authority, Sequence::GENESIS,
             ReplayLimit { records: 1, payload_bytes: 8 }, &original, &cancellation).await,
-            Err(AuthorityStoreError::NativeStreamFailure(error))
-                if matches!(error.source(), acyclic_stream::StreamError::Unsupported)));
+            Err(AuthorityStoreError::NativeStream(error))
+                if matches!(error, acyclic_stream::StreamError::Unsupported)));
         assert!(matches!(&store.fence_with_native_work(authority, Head::genesis(Epoch::GENESIS),
-            &original, &cancellation).await, Err(AuthorityStoreError::NativeStreamFailure(error))
-                if matches!(error.source(), acyclic_stream::StreamError::Unsupported)));
+            &original, &cancellation).await, Err(AuthorityStoreError::NativeStream(error))
+                if matches!(error, acyclic_stream::StreamError::Unsupported)));
         assert!(matches!(&store.find_operation_with_native_work(authority, OperationId::from_bytes([0x7b; 16]),
-            &original, &cancellation).await, Err(AuthorityStoreError::NativeStreamFailure(error))
-                if matches!(error.source(), acyclic_stream::StreamError::Unsupported)));
+            &original, &cancellation).await, Err(AuthorityStoreError::NativeStream(error))
+                if matches!(error, acyclic_stream::StreamError::Unsupported)));
         assert!(!provider.writes.load(Ordering::SeqCst));
         assert!(!provider.reads.load(Ordering::SeqCst));
         assert_eq!(original.receipt().backend_read_operations, 0);
         assert_eq!(original.receipt().backend_write_operations, 0);
         assert_eq!(original.receipt().authority_records_read, 0);
-        original.receipt().verify(native_authority_budget())?;
+        original.receipt().verify(NATIVE_AUTHORITY_BUDGET)?;
         Ok(())
     }
 
@@ -3784,7 +3769,7 @@ mod tests {
             volume_id,
             config: VolumeConfig::portable(Lifecycle::Ephemeral),
             initial_generation_root: root,
-        })?;
+        }, |_| Ok::<_, crate::kernel::VolumeCreatedError>(()), |_| crate::kernel::VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed))?;
         let publication = encode_publication_payload(volume_id, root);
         let generation = GenerationId::new(root.digest);
         let cancellation = CancellationToken::new();
@@ -3818,7 +3803,7 @@ mod tests {
         let root = ObjectId { kind: ObjectKind::GenerationRoot, digest: Digest::from_bytes([0x92; 32]) };
         let source_payload = encode_volume_created(VolumeCreated {
             volume_id: volume, config: VolumeConfig::portable(Lifecycle::Ephemeral), initial_generation_root: root,
-        })?;
+        }, |_| Ok::<_, crate::kernel::VolumeCreatedError>(()), |_| crate::kernel::VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed))?;
         authority.create_authority_with_first_record(source_authority, ProposedCommit {
             operation_id: OperationId::from_bytes([0x93; 16]),
             fingerprint: Digest::from_bytes([0x94; 32]), payload: Bytes::from(source_payload),

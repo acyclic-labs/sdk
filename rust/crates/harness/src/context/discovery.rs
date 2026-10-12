@@ -28,17 +28,14 @@ pub struct ContextRoot {
 
 impl ContextRoot {
     fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
-        self.volume.validate_with_work(work)?;
+        self.volume.validate(work)?;
         if !self.directory.is_empty() {
-            crate::conversation::validate_content_path_with_work(&self.directory, work)?;
+            crate::conversation::validate_content_path(&self.directory, work)?;
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-            let capability = self.volume.directory_read_capability_with_native_work(&self.directory, native)?;
-            drop(capability);
-            return Ok(());
-        }
-        self.volume.directory_read_capability(&self.directory)?;
+        let capability = self.volume.directory_read_capability(&self.directory, work)?;
+        let retained = capability.capacity() as u64;
+        drop(capability);
+        if let Some(io) = work.as_deref_mut() { io.release_owned(retained)?; }
         Ok(())
     }
 }
@@ -117,7 +114,7 @@ impl ContextDiscovery {
     ) -> Result<DiscoveredContext> {
         match reload {
             ContextReloadPolicy::Explicit => {
-                current.validate()?;
+                current.validate(&mut None)?;
                 Ok(current.clone())
             }
             ContextReloadPolicy::NextRequest => self.capture(reader).await,
@@ -185,7 +182,7 @@ impl PinnedContextPath {
     fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         self.root.validate(work)?;
         self.generation.validate_with_work(work)?;
-        crate::conversation::validate_content_path_with_work(&self.path, work)?;
+        validate_content_path(&self.path, work)?;
         if self.generation.as_resource().provider() != self.root.volume.provider()
             || (!self.root.directory.is_empty()
                 && !self
@@ -203,20 +200,21 @@ impl PinnedContextPath {
     /// Loads a body through the ordinary authorized pinned read, checking provider output.
     pub async fn read(&self, reader: &dyn ContentResidencyVerifier) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.validate(&mut None)?;
-        let (file, bytes) = reader
+        let (file, bytes, _hold) = reader
             .read_private_path(
                 &self.root.volume,
                 &self.root.directory,
                 &self.path,
                 Some(&self.generation),
-            )
+                crate::conversation::MAX_EXACT_JS_INTEGER, None,
+            )?
             .await?;
         if file.volume() != &self.root.volume || file.path() != self.path {
             return Err(Error::Storage(
                 "pinned path reader returned another file".into(),
             ));
         }
-        file.descriptor().verify(&bytes)?;
+        file.descriptor().verify(&bytes, &mut None)?;
         Ok((file, bytes))
     }
 }
@@ -239,11 +237,7 @@ pub struct SkillMetadata {
 
 impl SkillMetadata {
     /// Validates restored metadata without performing reads.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    fn validate_with_work(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
+    pub fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         self.source.validate(work)?;
         if self.name.is_empty()
             || self.name.starts_with('-')
@@ -517,7 +511,7 @@ pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<
         fields: metadata.fields,
         source,
     };
-    metadata.validate()?;
+    metadata.validate(&mut None)?;
     Ok(metadata)
 }
 
@@ -575,7 +569,8 @@ impl DiscoveryWork {
                     pinned.as_ref(),
                     cursor.as_deref(),
                     remaining.min(128),
-                )
+                    None,
+                )?
                 .await?;
             page.validate()?;
             if page.generation.as_resource().provider() != root.volume.provider()
@@ -620,13 +615,9 @@ fn child(directory: &str, name: &str) -> String {
 
 impl DiscoveredContext {
     /// Checks a serialized snapshot without reading providers or granting authority.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    fn validate_with_work(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
+    pub fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         for file in &self.instructions {
-            file.validate_with_work(work)?;
+            file.validate(work)?;
         }
         let name_slots = if work.is_some() {
             self.skills.len().checked_mul(std::mem::size_of::<&String>())
@@ -639,7 +630,7 @@ impl DiscoveredContext {
         }
         let mut names = std::collections::BTreeSet::new();
         for skill in &self.skills {
-            skill.validate_with_work(work)?;
+            skill.validate(work)?;
             if !names.insert(&skill.name) {
                 return Err(discovery_error(work, crate::wire::ErrorCode::Conflict,
                     "discovered skill names are repeated"));
@@ -650,48 +641,59 @@ impl DiscoveredContext {
         Ok(())
     }
 
-    /// Projects this immutable snapshot into ordinary typed model messages.
-    pub fn messages(&self) -> Result<Vec<ModelMessage>> {
-        self.messages_with_io(None, None)
-    }
-
-    fn messages_with_io(
-        &self, io: Option<&crate::executor::PreparationIo>, skill_bytes: Option<u64>,
+    /// Projects this immutable snapshot into bounded model messages.
+    pub(crate) fn messages(
+        &self,
+        limits: crate::conversation::Limits,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ModelMessage>> {
+        crate::executor::with_history_io(io, |work| limits.validate(work))?;
+        let count = self.instructions.len().checked_add(usize::from(!self.skills.is_empty()))
+            .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                "discovered context count overflows"))?;
+        if count > limits.context_messages {
+            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                "discovered context exceeds message bound"));
+        }
+        let skill_bytes = crate::executor::with_history_io(io, |work| {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(observer) = work.as_deref_mut()
+                && observer.original_native_work().is_some()
+            {
+                bound_skill_values(&self.skills, limits.render_bytes, observer)?;
+            }
+            crate::contract::count_trusted_json_bytes_with_work(&self.skills, limits.render_bytes, work)
+        })?;
+        crate::executor::with_history_io(io, |work| {
+            for file in &self.instructions { limits.validate_file(file, work)?; }
+            self.validate(work)
+        })?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io
             && let Some(work) = io.original_native_work()
         {
-            let mut observer = crate::store::history::native_work_io(work).map_err(discovery_work_error)?;
-            self.validate_with_work(&mut Some(&mut observer))?;
-            let count = self.instructions.len().checked_add(usize::from(!self.skills.is_empty()))
-                .ok_or_else(|| crate::executor::native_boundary(crate::wire::ErrorCode::Invalid,
-                    "discovered context count overflows"))?;
             let mut messages = (Vec::new(), work.retain_owned(0).map_err(discovery_work_error)?);
             let mut backing = super::reserve_context_vec_native(&mut messages.0, count, work)?;
             messages.1.absorb(&mut backing).map_err(discovery_work_error)?;
             for file in &self.instructions {
-                let mut file = file.clone_with_native_work(work)?;
-                messages.1.absorb(&mut file.1).map_err(discovery_work_error)?;
                 messages.0.push(ModelMessage {
                     role: ModelRole::System,
                     content: ModelContent::Part(ModelContentPart::File {
-                        file: file.0, policy: FileProjectionPolicy::BoundedFull,
+                        file: crate::model::clone_file(file, Some(io))?,
+                        policy: FileProjectionPolicy::BoundedFull,
                     }),
                 });
             }
             if !self.skills.is_empty() {
-                let size = skill_bytes.ok_or_else(|| crate::executor::native_boundary(
-                    crate::wire::ErrorCode::Invalid, "discovered skill serialization was not bounded"))?;
-                let mut text = skill_text_native(&self.skills, size, work)?;
+                let mut text = skill_text_native(&self.skills, skill_bytes, work)?;
                 messages.1.absorb(&mut text.1).map_err(discovery_work_error)?;
                 messages.0.push(ModelMessage { role: ModelRole::System, content: ModelContent::Text(text.0) });
             }
             io.absorb_native_custody(messages.1)?;
+            super::validate_source_messages(&messages.0, limits, Some(io))?;
             return Ok(messages.0);
         }
         let _ = (io, skill_bytes);
-        self.validate()?;
         let mut messages: Vec<_> = self
             .instructions
             .iter()
@@ -712,56 +714,7 @@ impl DiscoveredContext {
                 ),
             });
         }
-        Ok(messages)
-    }
-
-    fn load_messages_bounded_with_io(
-        &self,
-        limits: crate::conversation::Limits,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Vec<ModelMessage>> {
-        super::validate_context_limits_with_io(limits, io)?;
-        let count = self.instructions.len().checked_add(usize::from(!self.skills.is_empty()))
-            .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                "discovered context count overflows"))?;
-        if count > limits.context_messages {
-            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                "discovered context exceeds message bound"));
-        }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let skill_bytes = if let Some(native) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-            let mut observer = crate::store::history::native_work_io(native).map_err(discovery_work_error)?;
-            bound_skill_values(&self.skills, limits.render_bytes, &mut observer)?;
-            Some(crate::contract::count_trusted_json_bytes_with_work(
-                &self.skills, limits.render_bytes, &mut Some(&mut observer))?)
-        } else {
-            crate::contract::validate_json_byte_bound(&self.skills, limits.render_bytes)?;
-            None
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let skill_bytes = {
-            crate::contract::validate_json_byte_bound(&self.skills, limits.render_bytes)?;
-            None
-        };
-        for file in &self.instructions {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(native) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-                limits.validate_file_with_native_work(file, native)?;
-            } else {
-                limits.validate_file(file)?;
-            }
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            limits.validate_file(file)?;
-        }
-        let messages = self.messages_with_io(io, skill_bytes)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-            super::validate_source_messages_native(&messages, limits, native)?;
-        } else {
-            super::validate_source_messages(&messages, limits)?;
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        super::validate_source_messages(&messages, limits)?;
+        super::validate_source_messages(&messages, limits, io)?;
         Ok(messages)
     }
 
@@ -786,7 +739,7 @@ impl DiscoveredContext {
             .iter()
             .chain(policy.skill_name.iter())
         {
-            validate_content_path(name)?;
+            validate_content_path(name, &mut None)?;
             if name.contains('/') {
                 return Err(Error::Invalid(
                     "discovery entry must be one filename".into(),
@@ -802,7 +755,7 @@ impl DiscoveredContext {
         for scope in instructions {
             scope.root.validate(&mut None)?;
             if !scope.active_directory.is_empty() {
-                validate_content_path(&scope.active_directory)?;
+                validate_content_path(&scope.active_directory, &mut None)?;
             }
             if policy.instruction_names.is_empty() {
                 continue;
@@ -843,7 +796,8 @@ impl DiscoveredContext {
                                 limits.instruction_bytes.checked_add(1).ok_or_else(|| {
                                     Error::Invalid("instruction bound overflow".into())
                                 })?,
-                            )
+                                None,
+                            )?
                             .await?;
                         if prefix.len() as u64 > limits.instruction_bytes {
                             return Err(Error::Invalid("instruction exceeds byte bound".into()));
@@ -865,13 +819,13 @@ impl DiscoveredContext {
         if let Some(name) = &policy.skill_name {
             result.skills = discover_skills(reader, skills, name, &mut work).await?;
         }
-        result.validate()?;
+        result.validate(&mut None)?;
         Ok(result)
     }
 
     /// Composes this immutable revision through the existing source/stage path.
     pub fn stage(self, placement: ContextPlacement) -> Result<SourceStage> {
-        self.validate()?;
+        self.validate(&mut None)?;
         let revision = crate::contract::canonical_json_digest(&self)?;
         let revision = blake3::Hash::from_bytes(revision).to_hex().to_string();
         Ok(SourceStage::new(
@@ -889,7 +843,7 @@ impl ContextSource for DiscoveredContext {
         _: &'a ContextInput,
         limits: crate::conversation::Limits,
     ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
-        Box::pin(async move { self.load_messages_bounded_with_io(limits, None) })
+        Box::pin(async move { self.messages(limits, None) })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -904,7 +858,7 @@ impl ContextSource for DiscoveredContext {
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<ModelMessage>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = crate::executor::PreparationIo::from_native_work(work)?;
-            let messages = self.load_messages_bounded_with_io(limits, Some(&io))?;
+            let messages = self.messages(limits, Some(&io))?;
             let retained = io.owned_bytes()?;
             Ok((messages, io.into_native_custody(retained)?))
         })
@@ -947,7 +901,8 @@ async fn discover_skills(
                     &source.path,
                     &generation,
                     u64::from(work.limits.header_bytes),
-                )
+                    None,
+                )?
                 .await?;
             if prefix.len() > work.limits.header_bytes as usize {
                 return Err(Error::Storage("prefix reader exceeded bound".into()));

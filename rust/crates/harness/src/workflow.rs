@@ -81,23 +81,17 @@ macro_rules! workflow_physical_copy {
         pub(crate) fn $name(
             source: &$kind, io: Option<&crate::executor::PreparationIo>,
         ) -> Result<$kind> {
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                let mut observer = io.history_io();
-                let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
-                let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+            if io.is_none() { return Ok(source.clone()); }
+            crate::executor::with_history_io(io, |work| {
+                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
                 let copied = $factory(source, &mut quota)?;
                 quota.transfer();
-                return Ok(copied);
-            }
-            let _ = io;
-            Ok(source.clone())
+                Ok(copied)
+            })
         }
     };
 }
 
-workflow_physical_copy!(workflow_copy_text, String, crate::core::copy_text);
-workflow_physical_copy!(workflow_copy_value, Value, crate::core::copy_value);
 workflow_physical_copy!(workflow_copy_identity, MachineIdentity, copy_machine_identity);
 workflow_physical_copy!(workflow_copy_checkpoint, MachineCheckpoint, copy_machine_checkpoint);
 workflow_physical_copy!(workflow_copy_transition, MachineTransition, copy_machine_transition);
@@ -118,11 +112,7 @@ pub struct WorkflowCommand {
 
 impl WorkflowCommand {
     /// Rejects malformed public command contracts before checkpoint commit.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() {
@@ -135,25 +125,18 @@ impl WorkflowCommand {
         });
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let native = false;
-        if native {
-            if !crate::contract::is_valid_component_label(&self.kind) {
-                return Err(workflow_command_invalid());
-            }
-        } else {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if native && !crate::contract::is_valid_component_label(&self.kind) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "workflow command kind is invalid",
+            });
+        }
+        if !native {
             crate::contract::validate_component_label(&self.kind, "workflow command kind")?;
         }
-        self.payload.validate_with_work(work)
+        self.payload.validate(work)
     }
-}
-
-fn workflow_command_invalid() -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    { Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Invalid,
-        reason: "workflow command kind is invalid",
-    } }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    { Error::Invalid("workflow command kind is invalid".into()) }
 }
 
 /// Stable identity of a resumable state-machine implementation.
@@ -170,11 +153,11 @@ pub struct MachineIdentity {
 
 impl MachineIdentity {
     /// Rejects an unpinned or malformed state-machine implementation.
-    pub fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
-        workflow_label(&self.name, "machine name", io)?;
-        workflow_label(&self.version, "machine version", io)?;
+    pub fn validate(&self, work: &mut Option<&mut dyn crate::store::HistoryIo>) -> Result<()> {
+        workflow_label(&self.name, "machine name", work)?;
+        workflow_label(&self.version, "machine version", work)?;
         if self.digest == [0; 32] {
-            return Err(workflow_invalid_error(io,
+            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid,
                 "machine implementation digest must be a nonzero 32-byte value"));
         }
         Ok(())
@@ -309,40 +292,34 @@ impl MachineRegistry {
         Ok((Self(copied), observer.into_custody()))
     }
 
-    /// Registers one exact implementation.
-    pub fn register(&mut self, machine: Arc<dyn ResumableMachine>) -> Result<()> {
-        self.register_with_io(machine, None)
-    }
-
-    pub(crate) fn register_with_io(
-        &mut self, machine: Arc<dyn ResumableMachine>, io: Option<&crate::executor::PreparationIo>,
+    /// Registers one exact implementation on the optional work observer.
+    pub fn register(
+        &mut self, machine: Arc<dyn ResumableMachine>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if io.is_some() && !machine.supports_native_work() {
+        if work.is_some() && !machine.supports_native_work() {
             return Err(native_workflow_unsupported("machine has no native state callbacks"));
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let identity = if let Some(io) = io {
-            let work = io.original_native_work().ok_or_else(|| {
-                native_workflow_unsupported("native machine metadata requires original work")
-            })?;
-            machine.identity_with_native_work(work)?
-        } else {
-            machine.identity()
-        };
+        let identity = if let Some(observer) = work.as_deref() {
+            let native = observer.original_native_work().ok_or_else(||
+                native_workflow_unsupported("native machine metadata requires original work"))?;
+            machine.identity_with_native_work(native)?
+        } else { machine.identity() };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let identity = machine.identity();
-        identity.validate(io)?;
-        crate::contract::compile_json_schema(machine.state_schema(), "machine state", io)?;
-        let key = (
-            workflow_copy_text(&identity.name, io)?,
-            workflow_copy_text(&identity.version, io)?,
-            identity.digest,
-        );
+        identity.validate(work)?;
+        crate::contract::compile_json_schema_with_work(machine.state_schema(), "machine state", work)?;
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let key = (crate::core::copy_text(&identity.name, &mut quota)?,
+            crate::core::copy_text(&identity.version, &mut quota)?, identity.digest);
         if self.0.contains_key(&key) {
-            return Err(workflow_recovery_error(io, "machine identity is already registered", false));
+            return Err(crate::scheduler::diagnostic(quota.work(), crate::wire::ErrorCode::Conflict,
+                "machine identity is already registered"));
         }
         self.0.insert(key, machine);
+        quota.transfer();
         Ok(())
     }
 
@@ -355,7 +332,7 @@ impl MachineRegistry {
             return Err(native_workflow_unsupported("machine has no native state callbacks"));
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let result = self.register_with_io(machine, Some(&io));
+        let result = crate::executor::with_history_io(Some(&io), |work| self.register(machine, work));
         let retained = io.owned_bytes()?;
         let (_, custody) = finish_native_io(result, io, retained)?;
         Ok(custody)
@@ -426,7 +403,7 @@ impl MachineRegistry {
         let next = MachineCheckpoint {
             machine: workflow_copy_identity(&checkpoint.machine, io)?,
             revision: workflow_next_revision(checkpoint.revision, io)?,
-            state: workflow_copy_value(&transition.state, io)?,
+            state: crate::model::clone_value(&transition.state, io)?,
         };
         let checkpoint_retained = workflow_owned_bytes(io)? - before;
         Ok((next, transition, checkpoint_retained, transition_retained))
@@ -527,13 +504,12 @@ impl MachineRegistry {
         let io = proof_io.as_ref().or(io);
         let result = (|| {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let native_input = io.map(|io| workflow_copy_value(&record.input, Some(io))).transpose()?;
+            let native_input = io.map(|io| crate::model::clone_value(&record.input, Some(io))).transpose()?;
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             let native_input = None;
             let (next, transition, retained, _) = self.step_with_io(checkpoint, &record.input, native_input, io)?;
             if next != record.next || transition != record.transition {
-                return Err(workflow_recovery_error(io,
-                    "workflow history disagrees with its pinned machine", false));
+                return Err(workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow history disagrees with its pinned machine"));
             }
             drop(transition);
             Ok((next, retained))
@@ -588,8 +564,7 @@ impl WorkflowRecord {
             || self.next.revision != workflow_next_revision(self.prior.revision, io)?
             || self.next.state != self.transition.state
         {
-            return Err(workflow_recovery_error(io,
-                "workflow transition envelope is inconsistent", false));
+            return Err(workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow transition envelope is inconsistent"));
         }
         validate_commands(&self.transition.commands, io)?;
         if self
@@ -598,8 +573,7 @@ impl WorkflowRecord {
             .iter()
             .any(|command| command.operation_id == self.operation_id)
         {
-            return Err(workflow_recovery_error(io,
-                "workflow command reuses its transition identity", false));
+            return Err(workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow command reuses its transition identity"));
         }
         Ok(())
     }
@@ -630,9 +604,9 @@ impl WorkflowAdmission {
     /// Validates the immutable admission envelope before an owner retains it.
     pub fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         if self.request_digest == [0; 32] || self.initial.revision != 0 {
-            return Err(workflow_invalid_error(io, "workflow admission identity is invalid"));
+            return Err(workflow_error(io, crate::wire::ErrorCode::Invalid, "workflow admission identity is invalid"));
         }
-        self.initial.machine.validate(io)
+        crate::executor::with_history_io(io, |work| self.initial.machine.validate(work))
     }
 }
 
@@ -655,7 +629,7 @@ pub(crate) fn validate_workflow_commit(
     validate_workflow_key(key, io)?;
     record.validate(io)?;
     if record.idempotency_key != *key || record.prior.revision != expected_revision {
-        return Err(workflow_invalid_error(io, "workflow commit identity or revision is invalid"));
+        return Err(workflow_error(io, crate::wire::ErrorCode::Invalid, "workflow commit identity or revision is invalid"));
     }
     Ok(())
 }
@@ -670,14 +644,12 @@ pub(crate) fn validate_workflow_next(
 ) -> Result<()> {
     record.validate(io)?;
     if record.prior != *checkpoint || terminal {
-        return Err(workflow_recovery_error(io,
-            "workflow transition differs from its current checkpoint", false));
+        return Err(workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow transition differs from its current checkpoint"));
     }
     if keys.contains(&record.idempotency_key)
         || record.operation_ids().any(|id| reserved.contains(&id))
     {
-        return Err(workflow_recovery_error(io,
-            "workflow command, transition or retry identity is already bound", false));
+        return Err(workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow command, transition or retry identity is already bound"));
     }
     Ok(())
 }
@@ -959,13 +931,11 @@ impl DurableWorkflowHost {
     ) -> Result<Self> {
         let mut observed = workflow_admission_with_io(journal.as_ref(), io).await?;
         let admission = observed.0.take().ok_or_else(|| {
-            workflow_recovery_error(io, "workflow has no retained admission", false)
+            workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow has no retained admission")
         })?;
         admission.validate(io)?;
         if admission.initial != initial {
-            return Err(workflow_recovery_error(
-                io, "workflow initial checkpoint differs from admission", false,
-            ));
+            return Err(workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow initial checkpoint differs from admission"));
         }
         registry.validate_checkpoint(&initial, io)?;
         let checkpoint = if io.is_some() { admission.initial } else { initial };
@@ -987,7 +957,7 @@ impl DurableWorkflowHost {
                 host.journal.as_ref(), host.checkpoint.revision, WORKFLOW_REPLAY_PAGE_RECORDS, io,
             ).await?;
             if page.0.len() > WORKFLOW_REPLAY_PAGE_RECORDS as usize {
-                return Err(workflow_recovery_error(io, "workflow provider exceeded page bound", true));
+                return Err(workflow_error(io, crate::wire::ErrorCode::Storage, "workflow provider exceeded page bound"));
             }
             if page.0.is_empty() {
                 break;
@@ -1058,30 +1028,19 @@ impl DurableWorkflowHost {
             self.journal.as_ref(), self.checkpoint.revision - 1, 1, io,
         ).await?;
         let [record] = page.0.as_slice() else {
-            return Err(workflow_recovery_error(io, "latest workflow record is unavailable", true));
+            return Err(workflow_error(io, crate::wire::ErrorCode::Storage, "latest workflow record is unavailable"));
         };
         if record.next != self.checkpoint
             || self.intents.get(&record.operation_id) != Some(&(
                 record.prior.revision, crate::executor::preparation_digest(record, io)?,
             ))
         {
-            return Err(workflow_recovery_error(io, "latest workflow record changed", true));
+            return Err(workflow_error(io, crate::wire::ErrorCode::Storage, "latest workflow record changed"));
         }
         let record = page.0.pop().ok_or_else(|| {
-            workflow_recovery_error(io, "latest workflow record is unavailable", true)
+            workflow_error(io, crate::wire::ErrorCode::Storage, "latest workflow record is unavailable")
         })?;
         Ok((Some(record.transition), page.1.take()))
-    }
-
-    /// Calculates then atomically commits a checkpoint and all emitted commands.
-    pub async fn step(
-        &mut self,
-        operation_id: OperationId,
-        idempotency_key: IdempotencyKey,
-        input: Value,
-    ) -> Result<MachineTransition> {
-        self.step_checked(operation_id, idempotency_key, input, |_| Ok(()))
-            .await
     }
 
     /// Validates a transition before its checkpoint and outbox are committed.
@@ -1094,7 +1053,7 @@ impl DurableWorkflowHost {
             fields(rev = self.checkpoint.revision, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
         )
     )]
-    pub async fn step_checked<F>(
+    pub async fn step<F>(
         &mut self,
         operation_id: OperationId,
         idempotency_key: IdempotencyKey,
@@ -1187,10 +1146,10 @@ impl DurableWorkflowHost {
         if let Some((revision, digest)) = self.intents.get(&operation_id) {
             let page = workflow_page_with_io(self.journal.as_ref(), *revision, 1, io).await?;
             let [record] = page.0.as_slice() else {
-                return Err(workflow_recovery_error(io, "workflow retry record is unavailable", true));
+                return Err(workflow_error(io, crate::wire::ErrorCode::Storage, "workflow retry record is unavailable"));
             };
             if crate::executor::preparation_digest(record, io)? != *digest {
-                return Err(workflow_recovery_error(io, "workflow retry record changed", true));
+                return Err(workflow_error(io, crate::wire::ErrorCode::Storage, "workflow retry record changed"));
             }
             return if record.idempotency_key == idempotency_key && record.input == input {
                 check(&record.transition)?;
@@ -1198,19 +1157,19 @@ impl DurableWorkflowHost {
                 let transition = workflow_copy_transition(&record.transition, io)?;
                 Ok((transition, 0, workflow_owned_bytes(io)? - before))
             } else {
-                Err(workflow_recovery_error(io, "workflow operation identity is bound to another input", false))
+                Err(workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow operation identity is bound to another input"))
             };
         }
         if self.terminal {
-            return Err(workflow_recovery_error(io, "workflow cannot advance after a terminal transition", false));
+            return Err(workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow cannot advance after a terminal transition"));
         }
         if self.reserved_operations.contains(&operation_id) {
-            return Err(workflow_recovery_error(io, "workflow step reuses a command identity", false));
+            return Err(workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow step reuses a command identity"));
         }
         // The durable v2 envelope retains both input and machine state.
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let (input, native_input) = if io.is_some() {
-            (workflow_copy_value(&input, io)?, Some(input))
+            (crate::model::clone_value(&input, io)?, Some(input))
         } else {
             (input, None)
         };
@@ -1232,7 +1191,7 @@ impl DurableWorkflowHost {
         if record.transition.commands.iter().any(|command| {
             self.reserved_operations.contains(&command.operation_id)
         }) {
-            return Err(workflow_recovery_error(io, "workflow command identity was already committed", false));
+            return Err(workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow command identity was already committed"));
         }
         // Ordinary None retains its original digest timing.
         let digest = if io.is_some() {
@@ -1267,7 +1226,7 @@ impl DurableWorkflowHost {
             WorkflowCommitOutcome::Applied(value) | WorkflowCommitOutcome::Replayed(value) => value,
         };
         if committed != record {
-            return Err(workflow_recovery_error(io, "workflow retry identity is bound to another transition", false));
+            return Err(workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow retry identity is bound to another transition"));
         }
         self.checkpoint = next;
         self.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
@@ -1354,87 +1313,55 @@ fn validate_commands(
 ) -> Result<()> {
     #[cfg(feature = "filesystem")]
     let _workspace = io.map(|io| crate::executor::reserve_preparation_workspace(&commands, io)).transpose()?;
-    #[cfg(feature = "filesystem")]
-    let mut observer = io.map(crate::executor::PreparationIo::history_io);
-    #[cfg(feature = "filesystem")]
-    let mut original = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-    #[cfg(not(feature = "filesystem"))]
-    let mut original = { let _ = io; None };
-    let work: &mut Option<&mut dyn crate::store::history::HistoryIo> = &mut original;
-
-    let bytes = commands.len().checked_mul(std::mem::size_of::<OperationId>())
-        .ok_or_else(|| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_ref().is_some_and(|observer| observer.original_native_work().is_some()) {
-                return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "workflow command set ownership overflow" };
+    crate::executor::with_history_io(io, |work| {
+        let bytes = commands.len().checked_mul(std::mem::size_of::<OperationId>())
+            .ok_or_else(|| crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid,
+                "workflow command set ownership overflow"))? as u64;
+        let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
+        let mut identities = BTreeSet::new();
+        for command in commands {
+            command.validate(quota.work())?;
+            if let Some(observer) = quota.work().as_deref_mut() {
+                observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
             }
-            Error::Invalid("workflow command set ownership overflow".into())
-        })? as u64;
-    let mut custody = crate::wire_codec::CodecQuota::new(work, bytes)?;
-    let mut identities = BTreeSet::new();
-    for command in commands {
-        command.validate_with_work(custody.work())?;
-        if let Some(observer) = custody.work().as_deref_mut() {
-            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
-        }
-        if !identities.insert(command.operation_id) {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if custody.work().as_ref().is_some_and(|observer| observer.original_native_work().is_some()) {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "workflow command identity is duplicated",
-                });
+            if !identities.insert(command.operation_id) {
+                return Err(crate::scheduler::diagnostic(quota.work(), crate::wire::ErrorCode::Conflict,
+                    "workflow command identity is duplicated"));
             }
-            return Err(Error::Conflict(
-                "workflow command identity is duplicated".into(),
-            ));
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn validate_workflow_key(
     key: &IdempotencyKey, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     if key.0.is_empty() || key.0.chars().any(char::is_control) {
-        return Err(workflow_invalid_error(io, "idempotency key is invalid"));
+        return Err(workflow_error(io, crate::wire::ErrorCode::Invalid, "idempotency key is invalid"));
     }
     Ok(())
 }
 
-fn workflow_label(value: &str, field: &str, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+fn workflow_label(value: &str, field: &str, work: &mut Option<&mut dyn crate::store::HistoryIo>) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io {
-        io.check_cancellation()?;
-        io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 }, false)?;
-        return if crate::contract::is_valid_component_label(value) {
-            Ok(())
-        } else {
-            Err(workflow_invalid_error(Some(io), "workflow component label is invalid"))
-        };
+    if let Some(observer) = work.as_deref_mut() {
+        observer.check_cancellation()?;
+        observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+        return if crate::contract::is_valid_component_label(value) { Ok(()) }
+            else { Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "workflow component label is invalid" }) };
     }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let _ = io;
+    let _ = work;
     crate::contract::validate_component_label(value, field)
 }
 
 fn workflow_next_revision(revision: u64, io: Option<&crate::executor::PreparationIo>) -> Result<u64> {
     if io.is_some() && revision == u64::MAX {
-        return Err(workflow_invalid_error(io, "revision exhausted"));
+        return Err(workflow_error(io, crate::wire::ErrorCode::Invalid, "revision exhausted"));
     }
     next_revision(revision)
 }
 
-fn workflow_invalid_error(io: Option<&crate::executor::PreparationIo>, reason: &'static str) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if io.is_some() {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let _ = io;
-    Error::Invalid(reason.into())
-}
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn native_workflow_unsupported(reason: &'static str) -> Error {
@@ -1488,19 +1415,18 @@ async fn workflow_page_with_io(
     Ok((journal.replay(after, maximum).await?, None))
 }
 
-fn workflow_recovery_error(
-    io: Option<&crate::executor::PreparationIo>, reason: &'static str, storage: bool,
+fn workflow_error(
+    io: Option<&crate::executor::PreparationIo>, code: crate::wire::ErrorCode,
+    reason: &'static str,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if io.is_some() {
-        return Error::NativeBoundary {
-            code: if storage { crate::wire::ErrorCode::Storage } else { crate::wire::ErrorCode::Conflict },
-            reason,
-        };
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    if io.is_some() { return Error::NativeBoundary { code, reason }; }
     let _ = io;
-    if storage { Error::Storage(reason.into()) } else { Error::Conflict(reason.into()) }
+    match code {
+        crate::wire::ErrorCode::Storage => Error::Storage(reason.into()),
+        crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
+        _ => Error::Invalid(reason.into()),
+    }
 }
 
 #[cfg(test)]
@@ -1508,7 +1434,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    struct PagingCounter {
+    struct Counter {
         identity: MachineIdentity,
         schema: Value,
     }
@@ -1523,14 +1449,14 @@ mod tests {
         let payload = FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("workflow-test", "filesystem", "2")?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
+                VolumeOwner::Agent(AgentId::from_bytes([4; 16])), &mut None
             )?,
-            "commands/first.json",
-            "immutable-version",
-            FileDescriptor::from_bytes(b"{}", "application/json")?,
-            "first.json",
+            "commands/first.json".into(),
+            "immutable-version".into(),
+            FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
+            "first.json".into(), &mut None
         )?;
         let prior = MachineCheckpoint {
             machine: MachineIdentity {
@@ -1570,7 +1496,13 @@ mod tests {
         validate_workflow_commit(prior.revision, &record.idempotency_key, &record, None)?;
         validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record, None)?;
         validate_workflow_page(prior.revision, u32::MAX)?;
-        crate::executor::validate_execution_page(prior.revision, u32::MAX)?;
+        crate::executor::validate_execution_page(u32::MAX)?;
+        let mut unsafe_command = serde_json::to_value(&record.transition.commands[0])
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        unsafe_command["body"] = json!("inline attachment bytes");
+        assert!(serde_json::from_value::<WorkflowCommand>(unsafe_command).is_err());
+        assert!(validate_commands(&[record.transition.commands[0].clone(),
+            record.transition.commands[0].clone()], None).is_err());
         record.transition.commands[0].operation_id = OperationId::from_bytes(1_u128.to_be_bytes());
         assert!(matches!(
             validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record, None),
@@ -1579,7 +1511,7 @@ mod tests {
         Ok(())
     }
 
-    impl ResumableMachine for PagingCounter {
+    impl ResumableMachine for Counter {
         fn identity(&self) -> &MachineIdentity {
             &self.identity
         }
@@ -1593,7 +1525,9 @@ mod tests {
             Ok(MachineTransition {
                 state: json!(state.as_u64().unwrap_or(0) + input.as_u64().unwrap_or(0)),
                 commands: vec![],
-                status: MachineStatus::Suspended,
+                status: if input.is_null() {
+                    MachineStatus::Completed { value: state.clone() }
+                } else { MachineStatus::Suspended },
             })
         }
     }
@@ -1606,49 +1540,46 @@ mod tests {
             digest: [1; 32],
         };
         let mut registry = MachineRegistry::default();
-        registry.register(Arc::new(PagingCounter {
+        registry.register(Arc::new(Counter {
             identity: identity.clone(),
             schema: json!({"type":"integer","minimum":0}),
-        }))?;
+        }), &mut None)?;
         let initial = MachineCheckpoint {
             machine: identity,
             revision: 0,
             state: json!(0),
         };
         let journal = Arc::new(MemoryWorkflowJournal::default());
-        journal
-            .admit(WorkflowAdmission {
-                operation_id: OperationId::new(),
-                request_digest: [2; 32],
-                initial: initial.clone(),
-            })
-            .await?;
+        assert!(matches!(DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await,
+            Err(Error::Conflict(_))));
+        let admission = WorkflowAdmission {
+            operation_id: OperationId::new(), request_digest: [2; 32], initial: initial.clone(),
+        };
+        assert_eq!(journal.admit(admission.clone()).await?, admission);
+        assert_eq!(journal.admit(admission.clone()).await?, admission);
+        let mut changed_admission = admission.clone();
+        changed_admission.request_digest = [8; 32];
+        assert!(matches!(journal.admit(changed_admission).await, Err(Error::Conflict(_))));
         let mut host =
             DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
+        assert!(matches!(host.step(OperationId::new(), IdempotencyKey::new("rejected")?, json!(2),
+            |_| Err(Error::Invalid("output schema rejected transition".into()))).await, Err(Error::Invalid(_))));
+        assert_eq!(host.checkpoint().revision, 0);
+        assert!(journal.replay(0, WORKFLOW_REPLAY_PAGE_RECORDS).await?.is_empty());
         let first = OperationId::new();
         let first_key = IdempotencyKey::new("paged-first")?;
-        let transition = host.step(first, first_key.clone(), json!(1)).await?;
+        let transition = host.step(first, first_key.clone(), json!(1), |_| Ok(())).await?;
         for index in 1..=WORKFLOW_REPLAY_PAGE_RECORDS {
             host.step(
                 OperationId::new(),
                 IdempotencyKey::new(format!("paged-{index}"))?,
-                json!(1),
+                json!(1), |_| Ok(())
             )
             .await?;
         }
         assert_eq!(
             journal.replay(0, WORKFLOW_REPLAY_PAGE_RECORDS).await?.len(),
             WORKFLOW_REPLAY_PAGE_RECORDS as usize
-        );
-        assert_eq!(
-            journal
-                .replay(
-                    u64::from(WORKFLOW_REPLAY_PAGE_RECORDS),
-                    WORKFLOW_REPLAY_PAGE_RECORDS
-                )
-                .await?
-                .len(),
-            1
         );
         assert_eq!(
             journal
@@ -1665,25 +1596,19 @@ mod tests {
             u64::from(WORKFLOW_REPLAY_PAGE_RECORDS) + 1
         );
         assert_eq!(
-            reopened.step(first, first_key.clone(), json!(1)).await?,
+            reopened.step(first, first_key.clone(), json!(1), |_| Ok(())).await?,
             transition
         );
         assert!(
             reopened
-                .step(first, first_key.clone(), json!(2))
+                .step(first, first_key.clone(), json!(2), |_| Ok(()))
                 .await
                 .is_err()
         );
         // A duplicate retry key appears beyond the first page and remains a hard error.
         let original_key = {
-            let mut state = journal
-                .state
-                .lock()
-                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
-            let last = state
-                .records
-                .last_mut()
-                .ok_or_else(|| Error::Storage("missing workflow record".into()))?;
+            let mut state = journal.state.lock().unwrap();
+            let last = state.records.last_mut().unwrap();
             let original = last.idempotency_key.clone();
             last.idempotency_key = first_key.clone();
             original
@@ -1694,221 +1619,39 @@ mod tests {
                 .is_err()
         );
         {
-            let mut state = journal
-                .state
-                .lock()
-                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
-            let last = state
-                .records
-                .last_mut()
-                .ok_or_else(|| Error::Storage("missing workflow record".into()))?;
+            let mut state = journal.state.lock().unwrap();
+            let last = state.records.last_mut().unwrap();
             last.idempotency_key = original_key;
             last.operation_id = first;
         }
         assert!(
-            DurableWorkflowHost::open(registry, initial, journal.clone())
+            DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone())
                 .await
                 .is_err()
         );
         // Retry records are loaded by revision and compared with the verified digest.
         {
-            let mut state = journal
-                .state
-                .lock()
-                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
+            let mut state = journal.state.lock().unwrap();
             state.records[0].idempotency_key = IdempotencyKey::new("changed-first")?;
         }
         assert!(matches!(
-            reopened.step(first, first_key, json!(1)).await,
+            reopened.step(first, first_key, json!(1), |_| Ok(())).await,
             Err(Error::Storage(_))
         ));
-        Ok(())
-    }
-
-    struct Counter {
-        identity: MachineIdentity,
-        schema: Value,
-        command_payload: FileRef,
-    }
-
-    impl ResumableMachine for Counter {
-        fn identity(&self) -> &MachineIdentity {
-            &self.identity
-        }
-        fn state_schema(&self) -> &Value {
-            &self.schema
-        }
-        fn initialize(&self, input: &Value) -> Result<Value> {
-            Ok(input.clone())
-        }
-        fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
-            let next = state.as_u64().unwrap_or(0) + input.as_u64().unwrap_or(0);
-            Ok(MachineTransition {
-                state: json!(next),
-                commands: vec![WorkflowCommand {
-                    operation_id: OperationId::from_bytes([9; 16]),
-                    kind: "counter.publish".into(),
-                    payload: self.command_payload.clone(),
-                }],
-                status: if next >= 2 {
-                    MachineStatus::Completed { value: json!(next) }
-                } else {
-                    MachineStatus::Suspended
-                },
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn checkpoint_and_commands_commit_as_one_replayable_record() -> Result<()> {
-        use crate::{
-            AgentId,
-            conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
-            resources::ProviderRef,
-        };
-        let volume = VolumeRef::new(
-            ProviderRef::new("workflow-test", "filesystem", "2")?,
-            "private",
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
-        )?;
-        let command_payload = FileRef::new(
-            volume,
-            "commands/count.json",
-            "immutable-version",
-            FileDescriptor::from_bytes(b"2", "application/json")?,
-            "count.json",
-        )?;
-        let identity = MachineIdentity {
-            name: "example.counter".into(),
-            version: "1".into(),
-            digest: [1; 32],
-        };
-        let mut registry = MachineRegistry::default();
-        registry.register(Arc::new(Counter {
-            identity: identity.clone(),
-            schema: json!({"type": "integer", "minimum": 0}),
-            command_payload: command_payload.clone(),
-        }))?;
         let journal = Arc::new(MemoryWorkflowJournal::default());
-        let initial = MachineCheckpoint {
-            machine: identity,
-            revision: 0,
-            state: json!(0),
-        };
-        let unadmitted = Arc::new(MemoryWorkflowJournal::default());
-        assert!(matches!(
-            DurableWorkflowHost::open(registry.clone(), initial.clone(), unadmitted).await,
-            Err(Error::Conflict(_))
-        ));
-        let admission = WorkflowAdmission {
-            operation_id: OperationId::from_bytes([3; 16]),
-            request_digest: [7; 32],
-            initial: initial.clone(),
-        };
-        assert_eq!(journal.admit(admission.clone()).await?, admission);
-        assert_eq!(journal.admit(admission.clone()).await?, admission);
-        let mut changed_admission = admission;
-        changed_admission.request_digest = [8; 32];
-        assert!(matches!(
-            journal.admit(changed_admission).await,
-            Err(Error::Conflict(_))
-        ));
-        let mut host =
-            DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
-        assert!(matches!(
-            host.step_checked(
-                OperationId::from_bytes([1; 16]),
-                IdempotencyKey::new("step-1")?,
-                json!(2),
-                |_| Err(Error::Invalid("output schema rejected transition".into())),
-            )
-            .await,
-            Err(Error::Invalid(_))
-        ));
-        assert_eq!(host.checkpoint().revision, 0);
-        assert!(
-            journal
-                .replay(0, WORKFLOW_REPLAY_PAGE_RECORDS)
-                .await?
-                .is_empty()
-        );
-        let transition = host
-            .step(
-                OperationId::from_bytes([1; 16]),
-                IdempotencyKey::new("step-1")?,
-                json!(2),
-            )
-            .await?;
-        assert_eq!(
-            transition.commands,
-            vec![WorkflowCommand {
-                operation_id: OperationId::from_bytes([9; 16]),
-                kind: "counter.publish".into(),
-                payload: command_payload,
-            }]
-        );
-        let mut unsafe_command = serde_json::to_value(&transition.commands[0])
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        unsafe_command["body"] = json!("inline attachment bytes");
-        assert!(serde_json::from_value::<WorkflowCommand>(unsafe_command).is_err());
-        assert!(
-            validate_commands(&[
-                transition.commands[0].clone(),
-                transition.commands[0].clone(),
-            ], None)
-            .is_err()
-        );
-        assert_eq!(host.checkpoint().revision, 1);
-        let replayed = host
-            .step(
-                OperationId::from_bytes([1; 16]),
-                IdempotencyKey::new("step-1")?,
-                json!(2),
-            )
-            .await?;
-        assert_eq!(replayed, transition);
-        assert_eq!(host.checkpoint().revision, 1);
-        assert!(matches!(
-            host.step(
-                OperationId::from_bytes([1; 16]),
-                IdempotencyKey::new("different-key")?,
-                json!(2),
-            )
-            .await,
-            Err(Error::Conflict(_))
-        ));
-        assert!(matches!(
-            host.step(
-                OperationId::from_bytes([2; 16]),
-                IdempotencyKey::new("after-terminal")?,
-                json!(1),
-            )
-            .await,
-            Err(Error::Conflict(_))
-        ));
-        let mut reopened = DurableWorkflowHost::open(registry, initial, journal).await?;
-        assert_eq!(reopened.checkpoint(), host.checkpoint());
-        assert_eq!(
-            reopened
-                .step(
-                    OperationId::from_bytes([1; 16]),
-                    IdempotencyKey::new("step-1")?,
-                    json!(2),
-                )
-                .await?,
-            transition
-        );
-        assert!(matches!(
-            reopened
-                .step(
-                    OperationId::from_bytes([2; 16]),
-                    IdempotencyKey::new("after-terminal")?,
-                    json!(1),
-                )
-                .await,
-            Err(Error::Conflict(_))
-        ));
+        journal.admit(admission).await?;
+        let mut terminal = DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
+        let operation = OperationId::new();
+        let key = IdempotencyKey::new("complete")?;
+        let completed = terminal.step(operation, key.clone(), Value::Null, |_| Ok(())).await?;
+        assert!(matches!(completed.status, MachineStatus::Completed { .. }));
+        assert!(matches!(terminal.step(OperationId::new(), IdempotencyKey::new("after-terminal")?,
+            json!(1), |_| Ok(())).await, Err(Error::Conflict(_))));
+        let mut recovered = DurableWorkflowHost::open(registry, initial, journal).await?;
+        assert_eq!(recovered.checkpoint(), terminal.checkpoint());
+        assert_eq!(recovered.step(operation, key, Value::Null, |_| Ok(())).await?, completed);
+
         Ok(())
     }
+
 }

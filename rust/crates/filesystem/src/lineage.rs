@@ -366,7 +366,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 .map_err(|error| (WorkspaceLineageError::Workspace(error), None))?,
             #[cfg(not(target_arch = "wasm32"))]
             LineageRegistrationWork::Native { original, cancellation } =>
-                workspace.head_with_native_work(original, cancellation).await
+                workspace.head(*original, cancellation).await.map_err(|error| (error, None))
                     .map_err(|(error, allocation)| (WorkspaceLineageError::Workspace(error), allocation))?,
         };
         let (workspace_name, allocation) = control.copy_name(workspace.name().as_str())?;
@@ -424,8 +424,8 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                     .fork(
                         destination.as_str(),
                         ForkOptions::from_generation(generation.clone(), idempotency_key),
-                    )
-                    .await?;
+                    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let initial_generation = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 if child.id() != child_id {
                     return Err(WorkspaceLineageError::ConflictingRegistration);
@@ -487,7 +487,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         if child.id() != expected_child {
             return Err(WorkspaceLineageError::UnauthorizedJoin);
         }
-        if initial.parents().await?.as_slice() != [fork_generation] {
+        if initial.parents(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_slice() != [fork_generation] {
             return Err(WorkspaceLineageError::UnauthorizedJoin);
         }
         self.register(WorkspaceLineageRecord {
@@ -802,7 +802,7 @@ mod tests {
     use crate::{Digest, Fs, WorkspaceName};
 
     fn workspace(name: &str) -> WorkspaceId {
-        WorkspaceId::derive([9; 16], &WorkspaceName::new(name).expect("valid name"))
+        WorkspaceId::derive([9; 16], &WorkspaceName::new(name).expect("valid name"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded workspace identity").value
     }
 
     fn generation(byte: u8) -> GenerationId {
@@ -934,7 +934,7 @@ mod tests {
         assert_eq!(recovered.parent_workspace_id, Some(parent.id()));
         assert_eq!(
             recovered.initial_generation,
-            child.head().await.expect("head").id()
+            child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("head").id()
         );
     }
 }

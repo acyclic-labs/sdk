@@ -931,7 +931,7 @@ async fn shared_service_case() {
     service.sessions["a"].physical_roots[&root_a_key]
         .source
         .inner()
-        .invalidate();
+        .invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).expect("invalidate source");
     for session_id in ["a", "same-root"] {
         let root_agent = service.sessions[session_id].state.root_agent_id.clone();
         let mut observed = false;
@@ -966,7 +966,7 @@ async fn shared_service_case() {
     service.sessions["a"].physical_roots[&root_a_key]
         .source
         .inner()
-        .invalidate();
+        .invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).expect("invalidate source");
     service
         .sessions
         .get_mut("a")
@@ -2972,8 +2972,8 @@ async fn publication_history_recovery_case() {
         .await
         .expect("ignored child file");
     transaction
-        .create_dir_all("/sub")
-        .await
+        .create_dir_all("/sub", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .expect("nested ignore directory");
     transaction
         .write_text("/sub/.gitignore", "*.tmp\n")

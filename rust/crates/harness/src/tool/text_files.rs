@@ -255,7 +255,7 @@ fn assemble(
         output_schema,
         projection_schema,
     };
-    definition.validate()?;
+    definition.validate(&mut None)?;
     Ok(Tool {
         definition,
         executor: adapter,
@@ -286,7 +286,7 @@ struct TextTool {
 impl TextTool {
     // This preflight is also used when the executor authorizes durable replay.
     fn preflight(&self, scope: &RuntimeScope, invocation: &ToolInvocation) -> Result<FileRef> {
-        invocation.validate()?;
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
         crate::contract::validate_json_byte_bound(
             &invocation.arguments,
             scope.limits().file_bytes,
@@ -327,7 +327,7 @@ impl TextTool {
                 input.file
             }
         };
-        crate::conversation::validate_content_path(file.path())?;
+        crate::conversation::validate_content_path(file.path(), &mut None)?;
         if crate::conversation::is_internal_path(file.path())
             || !crate::runtime::read_granted(scope.grants(), &file)?
         {
@@ -372,14 +372,14 @@ impl TextTool {
                 let input: ReadInput = decode(&invocation.arguments)?;
                 let value = ReadResult {
                     file,
-                    selection: super::text::read_range(source, input.range, options)?,
+                    selection: super::text::read_range(source, input.range, options, &mut super::edit::AlgorithmWork::ordinary())?,
                 };
                 crate::contract::validate_json_byte_bound(&value, maximum)?;
                 encode(value)?
             }
             TextKind::Search(options) => {
                 let input: SearchInput = decode(&invocation.arguments)?;
-                let matches = super::text::literal_search(source, &input.query, options)?;
+                let matches = super::text::literal_search(source, &input.query, options, &mut super::edit::AlgorithmWork::ordinary())?;
                 let value = SearchResult {
                     file,
                     query: input.query,
@@ -532,11 +532,11 @@ impl TextTool {
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<TextSelection>())?;
                 let value = ReadResult {
-                    selection: super::text::read_range_engine(source, input.0.range, options, &mut allocation)?,
+                    selection: super::text::read_range(source, input.0.range, options, &mut allocation)?,
                     file: input.0.file,
                 };
                 native::bound(&value, maximum, work)?;
-                let encoded = super::value_with_native_work(&value, work)?;
+                let encoded = super::value(&value, work.remaining()?.bytes_encoded, work)?;
                 Ok((ToolResult { value: encoded.0 }, encoded.1))
             }
             TextKind::Search(options) => {
@@ -546,11 +546,11 @@ impl TextTool {
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<SearchMatches>())?;
                 let value = SearchResult {
-                    matches: super::text::literal_search_engine(source, &input.0.query, options, &mut allocation)?,
+                    matches: super::text::literal_search(source, &input.0.query, options, &mut allocation)?,
                     file: input.0.file, query: input.0.query,
                 };
                 native::bound(&value, maximum, work)?;
-                let encoded = super::value_with_native_work(&value, work)?;
+                let encoded = super::value(&value, work.remaining()?.bytes_encoded, work)?;
                 Ok((ToolResult { value: encoded.0 }, encoded.1))
             }
         }
@@ -658,6 +658,7 @@ mod tests {
                 "ababa",
                 TextRange { start: 1, end: 4 },
                 READ,
+                &mut super::super::edit::AlgorithmWork::ordinary(),
             )?,
         };
         let result = ToolResult {
@@ -678,7 +679,7 @@ mod tests {
         let search = SearchResult {
             file: file.clone(),
             query: "a".into(),
-            matches: super::super::text::literal_search("ababa", "a", SEARCH)?,
+            matches: super::super::text::literal_search("ababa", "a", SEARCH, &mut super::super::edit::AlgorithmWork::ordinary())?,
         };
         assert_eq!(search.matches.total_matches, 3);
         assert_eq!(search.matches.omitted_matches, 1);
