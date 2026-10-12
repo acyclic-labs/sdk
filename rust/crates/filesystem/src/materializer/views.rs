@@ -28,7 +28,7 @@ impl NativeInvocationView {
     ) -> T {
         self.metadata
             .work()
-            .state(|state| state.with_invocation_scope(Some(self.self_ref.clone()), operation))
+            .state(|state| state.scope(|work| &mut work.native_invocation, Some(self.self_ref.clone()), operation))
     }
 }
 #[cfg(feature = "native-mount")]

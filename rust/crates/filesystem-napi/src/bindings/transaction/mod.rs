@@ -54,12 +54,10 @@ impl NativeWorkspaceTransaction {
     /// Clones one complete regular file without copying its body.
     #[napi]
     pub async fn copy(&self, source: String, destination: String) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .copy(&source, &destination)
-            .await
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            copy(&source, &destination)
+        ))
     }
 
     /// Atomically renames one namespace binding inside this transaction.
@@ -96,12 +94,10 @@ impl NativeWorkspaceTransaction {
     /// Changes one regular file's logical length.
     #[napi]
     pub async fn resize(&self, path: String, logical_bytes: BigInt) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .resize(&path, bigint_u64(&logical_bytes, "logicalBytes")?)
-            .await
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            resize(&path, bigint_u64(&logical_bytes, "logicalBytes")?)
+        ))
     }
 
     /// Punches a hole or installs allocated zeros over one exact range.
@@ -114,20 +110,18 @@ impl NativeWorkspaceTransaction {
         allocated: bool,
         extend: bool,
     ) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .zero_range(
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            zero_range(
                 &path,
                 ByteRange {
                     offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
+                    length: bigint_u64(&length, "length")?
                 },
                 allocated,
                 extend,
             )
-            .await
-            .map_err(napi_error)
+        ))
     }
 
     /// Preallocates one sparse range without replacing content.
@@ -139,19 +133,17 @@ impl NativeWorkspaceTransaction {
         length: BigInt,
         keep_size: bool,
     ) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .preallocate(
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            preallocate(
                 &path,
                 ByteRange {
                     offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
+                    length: bigint_u64(&length, "length")?
                 },
                 keep_size,
             )
-            .await
-            .map_err(napi_error)
+        ))
     }
 
     /// Clones one immutable range without reading file bytes.
@@ -164,18 +156,16 @@ impl NativeWorkspaceTransaction {
         destination_offset: BigInt,
         length: BigInt,
     ) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .clone_range(
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            clone_range(
                 &source,
                 bigint_u64(&source_offset, "sourceOffset")?,
                 &destination,
                 bigint_u64(&destination_offset, "destinationOffset")?,
                 bigint_u64(&length, "length")?,
             )
-            .await
-            .map_err(napi_error)
+        ))
     }
 
     /// Publishes the complete candidate through one idempotent head CAS.
@@ -207,14 +197,11 @@ impl NativeWorkspaceTransaction {
         maximum_conflicts: NapiU32,
     ) -> Result<NativeTransactionRebaseResult> {
         let maximum_conflicts = maximum_conflicts.into_inner();
-
-        self.inner
-            .lock()
-            .await
-            .rebase(maximum_conflicts)
-            .await
-            .map(native_transaction_rebase)
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            rebase(maximum_conflicts)
+        ))
+        .map(native_transaction_rebase)
     }
 }
 

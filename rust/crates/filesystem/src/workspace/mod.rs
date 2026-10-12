@@ -75,9 +75,8 @@ pub use identity::{IdempotencyKey, WorkspaceId, WorkspaceName};
 pub use join::{JoinBuilder, JoinHistory, JoinPlan};
 pub use join_apply::DrivenJoinError;
 use join_helpers::{
-    binding_conflict_view, canonical_name_key, conflict_file_id, kernel_conflict,
-    logical_name_text, namespace_path_text, record_conflict_view, resolution_matches_conflict,
-    side_resolution,
+    binding_conflict_view, conflict_file_id, kernel_conflict, logical_name_text,
+    namespace_path_text, record_conflict_view, resolution_matches_conflict, side_resolution,
 };
 pub use metadata::{WorkspaceMetadata, WorkspaceStat};
 pub use outcomes::{
@@ -92,7 +91,7 @@ pub(crate) use paths::{
     customer_path, customer_path_with_accounting, workspace_owned_strings_bytes,
     workspace_vec_bytes,
 };
-use read_core::{list, lookup_stat, plan, read_link, read_range, read_selected, stat};
+use read_core::{list, plan, read_link, read_range, read_selected, stat};
 pub use transaction::Transaction;
 
 #[cfg(test)]

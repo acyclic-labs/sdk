@@ -4,7 +4,7 @@ use super::super::{from_js, js_error, to_js};
 use crate::{
     Error, OperationId, Result,
     mcp::{
-        McpInitializeResult, McpToolTransport,
+        McpToolTransport,
         http::{HttpMcpTransport, McpHttpProvider, McpHttpRequest, McpHttpResponse},
     },
 };
@@ -142,7 +142,7 @@ pub struct WasmMcpHttpTransport(HttpMcpTransport);
 #[wasm_bindgen]
 pub struct WasmMcpHttpInitialization {
     transport: HttpMcpTransport,
-    result: McpInitializeResult,
+    result: serde_json::Value,
     notification: McpHttpRequest,
 }
 
@@ -184,6 +184,7 @@ impl WasmMcpHttpTransport {
             session,
             from_js(maximum_bytes)?,
             from_js(timeout_ms)?,
+            None,
         )
         .map(Self)
         .map_err(js_error)
