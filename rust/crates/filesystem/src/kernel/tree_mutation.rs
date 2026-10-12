@@ -8,7 +8,7 @@ use super::{
     CanonicalDecodeError, DecodeLimits, LogicalName, TreeEntry,
 };
 use crate::foundation::{FileId, usize_to_u64};
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
 use thiserror::Error;
 
@@ -196,15 +196,6 @@ impl persistent_btree::Mutation<TreeFormat> for TreeMutation {
     fn map_error(error: persistent_btree::Error<Self::Error>) -> crate::FsError { map_error(error).into() }
 }
 
-/// New immutable directory root and exact path-copy work.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TreeMutationReceipt {
-    /// Candidate root. It is not authoritative until its generation is published.
-    pub root: ObjectId,
-    /// Exact authenticated reads, canonical writes, and backend work.
-    pub work: WorkCounters,
-}
-
 /// Sparse tree mutation failure preserving all work and orphan writes.
 pub type TreeMutationFailure = OperationFailure<TreeMutationError>;
 
@@ -217,7 +208,7 @@ pub async fn apply_tree_mutations<S: crate::AsyncObjectStore>(
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &crate::CancellationToken,
-) -> Result<TreeMutationReceipt, TreeMutationFailure> {
+) -> Result<OperationReceipt<ObjectId>, TreeMutationFailure> {
     let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
     apply_tree_mutations_with_accounting(store, root, &mutations, maximum_mutations, limits, &mut accounting, cancellation)
         .await.map_err(|error| OperationFailure::new(project_tree_error(error), accounting.spent()))
@@ -227,11 +218,10 @@ pub(crate) async fn apply_tree_mutations_with_accounting<S: crate::AsyncObjectSt
     store: &S, root: ObjectId, mutations: &[TreeMutation], maximum_mutations: u32,
     limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
-) -> Result<TreeMutationReceipt, crate::FsError> {
-    let receipt = persistent_btree::apply_with_accounting::<S, TreeFormat, TreeMutation>(
+) -> Result<OperationReceipt<ObjectId>, crate::FsError> {
+    persistent_btree::apply_with_accounting::<S, TreeFormat, TreeMutation>(
         store, root, mutations, maximum_mutations, limits, accounting, cancellation,
-    ).await?;
-    Ok(TreeMutationReceipt { root: receipt.root, work: receipt.work })
+    ).await
 }
 
 pub(super) fn project_tree_error(error: crate::FsError) -> TreeMutationError {

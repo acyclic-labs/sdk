@@ -21,7 +21,7 @@ impl From<String> for PluginGitError {
 
 pub(crate) struct PluginGitExecutor<'a> {
     pub(crate) fs: &'a LocalFs,
-    pub(crate) distributed: &'a LocalDistributedFs,
+    pub(crate) store: &'a LocalCoreStateStore,
     pub(crate) current: LocalWorkspace,
     pub(crate) lazy_current: LocalLazyWorkspace,
     pub(crate) repository_id: acyclic_fs::WorkspaceId,
@@ -49,8 +49,7 @@ impl PluginGitExecutor<'_> {
         &self,
         workspace_id: acyclic_fs::WorkspaceId,
     ) -> Result<LocalWorkspace, PluginGitError> {
-        self.distributed
-            .workspace(workspace_id)
+        WorkspaceGraph::new(self.store.clone()).workspace(self.fs, workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map_err(display)
             .map_err(PluginGitError)
@@ -84,8 +83,7 @@ impl PluginGitExecutor<'_> {
                     )
                     .await
                     .map_err(display)?;
-                self.distributed
-                    .lineage()
+                WorkspaceGraph::new(self.store.clone())
                     .register_existing_child(
                         lazy.workspace(),
                         &self
@@ -120,9 +118,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
         let Some(lease) = &self.lease else {
             return Ok(());
         };
-        let snapshot = self
-            .distributed
-            .operations()
+        let snapshot = OperationWindowCoordinator::new(self.fs.operation_window_store())
             .snapshot(lease.workspace_id)
             .await
             .map_err(display)?;
@@ -206,7 +202,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 }
                 .map_err(display)?;
                 let proof = captured
-                    .authenticated_proof(operation_id, &self.distributed.lineage())
+                    .authenticated_proof(operation_id, &WorkspaceGraph::new(self.store.clone()))
                     .await
                     .map_err(display)?;
                 Ok(GitFilesystemResult::Captured {
@@ -256,8 +252,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     )
                     .await
                     .map_err(display)?;
-                self.distributed
-                    .lineage()
+                WorkspaceGraph::new(self.store.clone())
                     .register_existing_child(
                         self.lazy_current.workspace(),
                         workspace.workspace(),
@@ -382,7 +377,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     }
                     match self
                         .current
-                        .restore_generation_with_permit(
+                        .restore_generation(
                             &source,
                             current.id(),
                             IdempotencyKey::from_bytes(operation_id.into_bytes()),
@@ -468,7 +463,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     idempotency_key: IdempotencyKey::from_bytes(operation_id.into_bytes()),
                 };
                 let initial = plan
-                    .apply_with_permit(options, self.permit)
+                    .apply(options, self.permit)
                     .await
                     .map_err(display)?;
                 let mut projected_conflicts = None;
@@ -497,7 +492,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                             if acyclic_fs::text_merge::has_conflict_markers(text))
                     });
                     let outcome = plan
-                        .apply_candidate_with_permit(options, &candidate, self.permit)
+                        .apply_candidate(options, &candidate, self.permit)
                         .await
                         .map_err(display)?;
                     if has_markers {
@@ -509,7 +504,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 };
                 let generation = match outcome {
                     JoinOutcome::Applied(application)
-                    | JoinOutcome::AlreadyApplied(application) => application.into_generation(),
+                    | JoinOutcome::AlreadyApplied(application) => application.generation,
                     JoinOutcome::NoChanges(generation) => generation,
                     JoinOutcome::StaleTarget(_) => {
                         return Err(Self::error("Git join raced with another workspace writer"));
@@ -583,7 +578,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 let current = self.current.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?;
                 let outcome = self
                     .current
-                    .apply_paths_from_with_permit(
+                    .apply_paths_from(
                         base.as_ref(),
                         source.as_ref(),
                         &paths.iter().cloned().collect::<Vec<_>>(),

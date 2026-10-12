@@ -255,7 +255,7 @@ fn assemble(
         output_schema,
         projection_schema,
     };
-    definition.validate()?;
+    definition.validate(&mut None)?;
     Ok(Tool {
         definition,
         executor: adapter,
@@ -286,7 +286,7 @@ struct TextTool {
 impl TextTool {
     // This preflight is also used when the executor authorizes durable replay.
     fn preflight(&self, scope: &RuntimeScope, invocation: &ToolInvocation) -> Result<FileRef> {
-        invocation.validate()?;
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
         crate::contract::validate_json_byte_bound(
             &invocation.arguments,
             scope.limits().file_bytes,
@@ -603,7 +603,7 @@ mod tests {
     fn file() -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("text", "filesystem", "1")?,
+                ProviderRef::new("text".into(), "filesystem".into(), "1".into(), &mut None)?,
                 "private",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([12; 16])),

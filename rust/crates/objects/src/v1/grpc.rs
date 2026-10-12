@@ -769,7 +769,7 @@ impl ObjectsProvider for GrpcObjects {
         let request_input = response::RequestInput::native(request, &meter)?;
         super::native_future(meter.clone(), async move {
             let errors = super::NativeTransportErrors::new(&meter)?;
-            errors.prepare_codec_failure(&meter)?;
+            errors.prepare_codec_failure()?;
             let controls = errors.clone();
             let (header, carrier) = request_input.value();
             let wire_bytes = native_put_wire_bytes(header, carrier.len())?;
@@ -816,7 +816,7 @@ impl ObjectsProvider for GrpcObjects {
         super::native_future(meter.clone(), async move {
             let mut prepared = Download::prepare_native(maximum_bytes, meter.clone())?;
             let errors = prepared.errors.clone();
-            errors.prepare_codec_failure(&meter)?;
+            errors.prepare_codec_failure()?;
             let controls = errors.clone();
             let mut header_allocation = Some(acyclic_native_runtime::ReadAllocation::adopt(&meter, MESSAGE_BYTES * 2)?);
             let wire_bytes = request_input.value().encoded_len().checked_add(5).ok_or_else(response::invalid)?;
@@ -1025,7 +1025,7 @@ mod native_wire_tests {
         let observed = Arc::new(super::super::tests::NativeTransportMeter::new());
         let meter: Arc<dyn NativeReadMeter> = observed.clone();
         let errors = super::super::NativeTransportErrors::new(&meter)?;
-        errors.prepare_codec_failure(&meter)?;
+        errors.prepare_codec_failure()?;
         let controls = errors;
         let packet = super::super::ObjectsNativeRequest::new(wire::GetObjectRequest::default(), (), &meter)?;
         let input = response::RequestInput::native(packet, &meter)?.with_controls(Some(controls.clone()))?;

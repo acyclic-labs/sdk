@@ -19,8 +19,7 @@ use crate::async_storage::{
 use crate::cancellation::CancellationToken;
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
-    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt,
-    ObjectResult, ObjectStoreError, ObjectWrite,
+    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError, ObjectWrite,
 };
 use acyclic_stream::OwnedBytes;
 #[cfg(not(target_arch = "wasm32"))]
@@ -258,7 +257,7 @@ impl Flight {
                         let requested = capacity.checked_mul(size_of::<Waker>())
                             .ok_or(ObjectStoreError::Work(crate::WorkError::Overflow))? as u64;
                         replacement.allocation = Some(accounting.claim_owned(requested, 1)
-                            .map_err(crate::async_storage::sequential_read_error)?);
+                            .map_err(crate::async_storage::object_error)?);
                         replacement.values.try_reserve_exact(capacity).map_err(|error| ObjectStoreError::Native(
                             crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)))?;
                         let actual = replacement.values.capacity().checked_mul(size_of::<Waker>())
@@ -266,22 +265,22 @@ impl Flight {
                         accounting.reconcile_owned(
                             replacement.allocation.as_mut().expect("native waiter buffer owns its backing"),
                             requested, actual,
-                        ).map_err(crate::async_storage::sequential_read_error)?;
+                        ).map_err(crate::async_storage::object_error)?;
                     } else {
                         replacement.values.try_reserve_exact(capacity).map_err(|error| ObjectStoreError::Native(
                             crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)))?;
                     }
-                    let copy = work.map(|work| work.reserve_copy((waiters.values.len() * size_of::<Waker>()) as u64)).transpose()?;
+                    let copy = work.map(|work| work.reserve_work(crate::WorkCounters { bytes_copied: (waiters.values.len() * size_of::<Waker>()) as u64, ..crate::WorkCounters::UNCHARGED })).transpose()?;
                     replacement.values.append(&mut waiters.values);
                     let copied = (replacement.values.len() * size_of::<Waker>()) as u64;
                     // Commit moved waiters before a late refusal, preserving all
                     // prior registrations. Free old storage before its guard.
                     drop(std::mem::replace(waiters, replacement));
-                    if let Some(copy) = copy { copy.record(copied)?; }
+                    if let Some(copy) = copy { { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }) }?; }
                     if let Some(work) = work {
                         KernelAccounting::native(work, work.cancellation())
                             .record_completed(WorkCounters::UNCHARGED)
-                            .map_err(crate::async_storage::sequential_read_error)?;
+                            .map_err(crate::async_storage::object_error)?;
                     }
                 }
                 waiters.values.push(context.waker().clone());
@@ -361,7 +360,7 @@ impl<T> BatchBuffer<T> {
                 .ok_or(ObjectStoreError::Work(crate::WorkError::Overflow))? as u64;
             let mut accounting = KernelAccounting::native(native, native.cancellation());
             let allocation = accounting.claim_owned(requested, u64::from(count != 0))
-                .map_err(crate::async_storage::sequential_read_error)?;
+                .map_err(crate::async_storage::object_error)?;
             let mut owner = Self { values: Vec::new(), allocation: Some(allocation) };
             owner.values.try_reserve_exact(count).map_err(|error| ObjectStoreError::Native(
                 crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)))?;
@@ -370,7 +369,7 @@ impl<T> BatchBuffer<T> {
             accounting.reconcile_owned(
                 owner.allocation.as_mut().expect("native batch buffer owns its backing"),
                 requested, actual,
-            ).map_err(crate::async_storage::sequential_read_error)?;
+            ).map_err(crate::async_storage::object_error)?;
             return Ok(owner);
         }
         let mut values = Vec::new();
@@ -424,10 +423,6 @@ impl<S: Clone> Clone for CachedObjectStore<S> {
 
 impl<S> CachedObjectStore<S> {
     /// Wraps one backend with an independently bounded disposable cache.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a zero bound.
     pub fn new(inner: S, options: ObjectCacheOptions) -> Result<Self, ObjectCacheConfigError> {
         Ok(Self {
             inner,
@@ -445,10 +440,6 @@ impl<S> CachedObjectStore<S> {
     }
 
     /// Returns exact current and cumulative accelerator observations.
-    ///
-    /// # Errors
-    ///
-    /// Fails closed if accelerator state was poisoned.
     pub fn stats(&self) -> Result<ObjectCacheStats, ObjectStoreError> {
         let state = self.lock_state()?;
         Ok(ObjectCacheStats {
@@ -470,12 +461,7 @@ impl<S> CachedObjectStore<S> {
         })
     }
 
-    /// Discards every resident byte. In-flight reads remain valid and may
-    /// repopulate after this call.
-    ///
-    /// # Errors
-    ///
-    /// Fails closed if accelerator state was poisoned.
+    /// Discards every resident byte.
     pub fn clear(&self) -> Result<(), ObjectStoreError> {
         let mut state = self.lock_state()?;
         state.entries.clear();
@@ -744,8 +730,8 @@ fn combine_failure(prior: WorkCounters, failure: ObjectFailure) -> ObjectFailure
     }
 }
 
-fn shared_read(bytes: OwnedBytes, work: WorkCounters) -> ObjectReceipt<ObjectRead> {
-    ObjectReceipt {
+fn shared_read(bytes: OwnedBytes, work: WorkCounters) -> crate::OperationReceipt<ObjectRead> {
+    crate::OperationReceipt {
         value: ObjectRead {
             bytes,
             retention: ObjectReadRetention::Shared,
@@ -787,13 +773,13 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         prior: WorkCounters,
         flight: Arc<Flight>,
         #[cfg(not(target_arch = "wasm32"))] native: Option<&NativeMaterializationWork>,
-    ) -> Result<ObjectReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
+    ) -> Result<crate::OperationReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
         let guard = ActiveFlightGuard::new(self, object_id, Arc::clone(&flight));
         let load = async {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(native) = native {
                 return self.inner.read_with_native_work(object_id, maximum_bytes, native, cancellation)
-                    .await.map(|read| ObjectReceipt { value: read, work: WorkCounters::default() })
+                    .await.map(|read| crate::OperationReceipt { value: read, work: WorkCounters::default() })
                     .map_err(|error| (error, prior));
             }
             let remaining = prior.remaining(budget).map_err(|error| (error.into(), prior))?;
@@ -820,7 +806,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             return Ok(shared_read(bytes, work));
         }
         guard.finish(None).map_err(|error| (error, work))?;
-        Ok(ObjectReceipt { value: receipt.value, work })
+        Ok(crate::OperationReceipt { value: receipt.value, work })
     }
 
     async fn read_engine(
@@ -830,7 +816,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
         #[cfg(not(target_arch = "wasm32"))] native: Option<&NativeMaterializationWork>,
-    ) -> Result<ObjectReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
+    ) -> Result<crate::OperationReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
         cancellation.check().map_err(|_| (ObjectStoreError::Cancelled, WorkCounters::default()))?;
         let mut prior = cache_probe_work();
         #[cfg(not(target_arch = "wasm32"))]
@@ -970,9 +956,9 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
     async fn load_batch_leaders(
         &self, prepared: &PreparedBatch, budget: WorkBudget, cancellation: &CancellationToken,
         #[cfg(not(target_arch = "wasm32"))] native: Option<&NativeMaterializationWork>,
-    ) -> Result<ObjectReceipt<BatchBuffer<ObjectRead>>, (ObjectStoreError, WorkCounters)> {
+    ) -> Result<crate::OperationReceipt<BatchBuffer<ObjectRead>>, (ObjectStoreError, WorkCounters)> {
         if prepared.leaders.values.is_empty() {
-            return Ok(ObjectReceipt {
+            return Ok(crate::OperationReceipt {
                 value: BatchBuffer::new(0, "object cache backend batch allocation failed",
                     #[cfg(not(target_arch = "wasm32"))] native,
                 ).map_err(|error| (error, prepared.work))?,
@@ -983,15 +969,13 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             #[cfg(not(target_arch = "wasm32"))] native,
         ).map_err(|error| (error, prepared.work))?;
         #[cfg(not(target_arch = "wasm32"))]
-        let copy = native.map(|native| native.reserve_copy(
-            (prepared.leaders.values.len() * size_of::<ObjectReadRequest>()) as u64,
-        )).transpose().map_err(|error| (error.into(), prepared.work))?;
+        let copy = native.map(|native| native.reserve_work(crate::WorkCounters { bytes_copied: (prepared.leaders.values.len() * size_of::<ObjectReadRequest>()) as u64, ..crate::WorkCounters::UNCHARGED })).transpose().map_err(|error| (error.into(), prepared.work))?;
         requests.values.extend(prepared.leaders.values.iter().map(|leader| ObjectReadRequest {
             object_id: leader.object_id, maximum_bytes: leader.maximum_bytes,
         }));
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(copy) = copy {
-            copy.record((requests.values.len() * size_of::<ObjectReadRequest>()) as u64)
+            { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: (requests.values.len() * size_of::<ObjectReadRequest>()) as u64, ..crate::WorkCounters::UNCHARGED }) }
                 .map_err(|error| (error.into(), prepared.work))?;
         }
         let mut guards = BatchBuffer::new(prepared.leaders.values.len(), "object cache flight guard allocation failed",
@@ -1006,14 +990,14 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                 let batch = self.inner.read_many_with_native_work(&requests.values, native, cancellation).await
                     .map_err(|error| (error, prepared.work))?;
                 let (values, allocation) = batch;
-                return Ok(ObjectReceipt {
+                return Ok(crate::OperationReceipt {
                     value: BatchBuffer { values, allocation: Some(KernelOwnedAllocation::NativeOriginal(allocation)) },
                     work: WorkCounters::default(),
                 });
             }
             let remaining = prepared.work.remaining(budget).map_err(|error| (error.into(), prepared.work))?;
             self.inner.read_many(&requests.values, remaining, cancellation).await
-                .map(|receipt| ObjectReceipt {
+                .map(|receipt| crate::OperationReceipt {
                     value: BatchBuffer {
                         values: receipt.value,
                         #[cfg(not(target_arch = "wasm32"))]
@@ -1044,14 +1028,14 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         work.peak_allocation_bytes = work.peak_allocation_bytes.max(
             prepared.planning_bytes.saturating_add(prepared.result_bytes),
         );
-        Ok(ObjectReceipt { value: values, work })
+        Ok(crate::OperationReceipt { value: values, work })
     }
 
     async fn resolve_prepared_batch(
         &self, requests: &[ObjectReadRequest], mut prepared: PreparedBatch,
-        leaders: ObjectReceipt<BatchBuffer<ObjectRead>>, budget: WorkBudget, cancellation: &CancellationToken,
+        leaders: crate::OperationReceipt<BatchBuffer<ObjectRead>>, budget: WorkBudget, cancellation: &CancellationToken,
         #[cfg(not(target_arch = "wasm32"))] native: Option<&NativeMaterializationWork>,
-    ) -> Result<ObjectReceipt<BatchBuffer<ObjectRead>>, (ObjectStoreError, WorkCounters)> {
+    ) -> Result<crate::OperationReceipt<BatchBuffer<ObjectRead>>, (ObjectStoreError, WorkCounters)> {
         let mut work = leaders.work;
         let mut values = BatchBuffer::new(requests.len(), "object cache result allocation failed",
             #[cfg(not(target_arch = "wasm32"))] native,
@@ -1073,7 +1057,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         if native.is_none() { work.verify(budget).map_err(|error| (error.into(), work))?; }
         #[cfg(target_arch = "wasm32")]
         work.verify(budget).map_err(|error| (error.into(), work))?;
-        Ok(ObjectReceipt { value: values, work })
+        Ok(crate::OperationReceipt { value: values, work })
     }
 
     async fn resolve_batch_slot(
@@ -1122,7 +1106,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
     async fn read_many_engine(
         &self, requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &CancellationToken,
         #[cfg(not(target_arch = "wasm32"))] native: Option<&NativeMaterializationWork>,
-    ) -> Result<ObjectReceipt<BatchBuffer<ObjectRead>>, (ObjectStoreError, WorkCounters)> {
+    ) -> Result<crate::OperationReceipt<BatchBuffer<ObjectRead>>, (ObjectStoreError, WorkCounters)> {
         let prepared = self.prepare_batch(requests, budget, cancellation,
             #[cfg(not(target_arch = "wasm32"))] native,
         )?;
@@ -1356,7 +1340,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
     ) -> ObjectResult<Vec<ObjectRead>> {
         self.read_many_engine(requests, budget, cancellation,
             #[cfg(not(target_arch = "wasm32"))] None,
-        ).await.map(|receipt| ObjectReceipt { value: receipt.value.values, work: receipt.work })
+        ).await.map(|receipt| crate::OperationReceipt { value: receipt.value.values, work: receipt.work })
             .map_err(|(error, work)| ObjectFailure::new(error, work))
     }
 
@@ -1393,7 +1377,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
             .cached_contains(object_id)
             .map_err(|error| ObjectFailure::new(error, prior))?
         {
-            return Ok(ObjectReceipt {
+            return Ok(crate::OperationReceipt {
                 value: true,
                 work: prior,
             });
@@ -1409,7 +1393,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
             )
             .await
             .map_err(|failure| combine_failure(prior, failure))?;
-        Ok(ObjectReceipt {
+        Ok(crate::OperationReceipt {
             value: receipt.value,
             work: prior
                 .checked_add(receipt.work)

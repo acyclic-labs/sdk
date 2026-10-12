@@ -1059,7 +1059,7 @@ Billing logical usage units/provenance remain separate exact contract dependenci
 
 ### Objects v2 native batch migration prerequisite
 
-Objects v2 now has an explicit native composition capability, `NativeBatchObjects`,
+`ObjectsProvider` now owns the explicit native batch composition capability,
 with no default endpoint loop and no added public RPC. The memory provider executes
 ordered put/get batches under one authority lock, using the same canonical request,
 response, precondition, quota and retry logic as individual operations. Failed

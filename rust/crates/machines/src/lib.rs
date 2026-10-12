@@ -47,7 +47,7 @@ pub const PROTOCOL_MAJOR: u32 = 1;
 pub const PROTOCOL_MINOR: u32 = 1;
 /// Maximum machines returned in one page.
 pub const MAX_PAGE_SIZE: u32 = 256;
-/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
+/// Largest bearer credential accepted by the Machines browser transport.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 /// Maximum children admitted by one fork request.
 pub const MAX_FORK_CHILDREN: u32 = 1_024;

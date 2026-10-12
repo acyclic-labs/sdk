@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::conversation::VolumeRef;
 #[cfg(feature = "filesystem")]
 use crate::conversation::{VolumeClass, VolumeOperation, VolumeOwner};
@@ -42,8 +43,7 @@ impl RootBootstrapContentRequest {
             self.evidence.logical_owned_bytes()?)?;
         bytes = created_access_add(bytes, self.generation.logical_owned_bytes()?)?;
         if let Some(snapshot) = &self.native_snapshot {
-            let owned = crate::core::value_owned_bytes(snapshot)?;
-            bytes = created_access_add(bytes, owned - std::mem::size_of::<Value>() as u64)?;
+            bytes = created_access_add(bytes, crate::contract::json_value_logical_owned_bytes(snapshot)?)?;
         }
         Ok(bytes)
     }
@@ -79,11 +79,11 @@ impl RootBootstrapContentRequest {
 fn copy_reference(
     source: &ResourceRef, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<ResourceRef> {
-    source.validate_with_work(quota.work())?;
+    source.validate(quota.work())?;
     let provider = crate::core::copy_provider(source.provider(), quota)?;
     let key = crate::core::copy_copy_vector(source.key(), quota)?;
     let version = source.version().map(|value| crate::core::copy_text(value, quota)).transpose()?;
-    ResourceRef::new_with_work(source.kind(), provider, key, version, quota.work())
+    ResourceRef::new(source.kind(), provider, key, version, quota.work())
 }
 
 /// Provider-authenticated ROOT content; only the private consumer grants access.
@@ -216,8 +216,8 @@ pub(crate) fn preflight_root_bootstrap_with_native_work(
     let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
     created_access_step(&mut io)?;
     request.volume.validate(&mut io)?;
-    request.evidence.validate_with_work(&mut io)?;
-    request.generation.validate_with_work(&mut io)?;
+    request.evidence.validate(&mut io)?;
+    request.generation.validate(&mut io)?;
     if request.root_operation != context.original_root.operation_id
         || request.graph_root != context.original_root.task_id()
         || request.generation.as_resource().provider() != request.volume.provider()
@@ -232,9 +232,9 @@ pub(crate) fn preflight_root_bootstrap_with_native_work(
     }
     let read = request.volume.capability(VolumeOperation::Read, &mut io)?;
     let allowed = context.original_root.grants.contains(&read);
-    let retained = read.capacity() as u64;
+    let bytes = read.capacity() as u64;
     drop(read);
-    io.as_deref_mut().expect("native observer").release_owned(retained)?;
+    created_access_release(&mut io, bytes)?;
     if !allowed {
         return Err(root_denial("ROOT bootstrap original admission lacks volume READ"));
     }
@@ -261,10 +261,9 @@ fn verify_receipt_identity(
         return Err(root_denial("ROOT bootstrap receipt changed request, audience or agent"));
     }
     if writer.is_some() {
-        let label = request.volume.capability(VolumeOperation::Write, &mut Some(&mut io.history_io()))?;
-        let hold = io.guard_owned(label.capacity() as u64)?;
-        let label = (label, hold);
-        if !context.original_root.grants.contains(&label.0) {
+        let label = crate::executor::with_history_io(Some(&io), |work|
+            request.volume.capability(VolumeOperation::Write, work))?;
+        if !context.original_root.grants.contains(&label) {
             return Err(root_denial("ROOT bootstrap writer exceeds original admission WRITE"));
         }
     }
@@ -305,18 +304,17 @@ impl CreatedResourceAccess {
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
         let read = request.volume.capability(VolumeOperation::Read, &mut io)?;
-        let read_retained = read.capacity() as u64;
         let write = if received.0.binding.writer.is_some() {
             Some(request.volume.capability(VolumeOperation::Write, &mut io)?)
         } else { None };
-        let write_retained = write.as_ref().map_or(0, |label| label.capacity() as u64);
         let labels = [Some(read.as_str()), write.as_deref()];
         let (data, custody) = crate::Capabilities::new_with_native_work(
             labels.into_iter().flatten(), work,
         )?;
         let funded_grants = (data, custody);
+        let label_bytes = read.capacity() as u64 + write.as_ref().map_or(0, |label| label.capacity() as u64);
         drop((read, write));
-        io.as_deref_mut().expect("native observer").release_owned(read_retained + write_retained)?;
+        created_access_release(&mut io, label_bytes)?;
         let mut content = Vec::new();
         created_access_reserve(&mut content, 1, &mut io)?;
         let volume = request.volume.copy(&mut io)?;
@@ -335,7 +333,6 @@ impl CreatedResourceAccess {
             admission_digest: context.admission_digest,
             grants: funded_grants.0, content, references: Vec::new(), proofs: Vec::new(),
             publication_lease: None,
-            current_default_origin: default_writer.then_some(request.root_operation),
             native_custody: None,
         };
         drop(received);
@@ -359,7 +356,6 @@ impl CreatedResourceAccess {
             || !self.references.is_empty() || !next.references.is_empty()
             || self.publication_lease.is_some() || next.publication_lease.is_some()
             || self.content.len() != 1 || next.content.len() != 1
-            || self.current_default_origin.is_some() && next.current_default_origin.is_some()
             || self.content[0].volume == next.content[0].volume
             || self.content[0].volume.class() == next.content[0].volume.class()
             || self.native_custody.as_ref().is_none_or(|guard| !guard.work().shares_allocation_context(work))
@@ -393,7 +389,6 @@ impl CreatedResourceAccess {
             operation: self.operation, admission_digest: self.admission_digest,
             grants: funded_grants.0, content, references: Vec::new(), proofs: Vec::new(),
             publication_lease: None,
-            current_default_origin: self.current_default_origin.or(next.current_default_origin),
             native_custody: None,
         };
         drop((self, next));
@@ -422,8 +417,8 @@ mod tests {
     }
 
     fn request(role: RootBootstrapContentRole, agent: AgentId) -> Result<RootBootstrapContentRequest> {
-        let provider = ProviderRef::new("root-control", "filesystem", "1")?;
-        let volume = VolumeRef::new(provider.clone(), "original-volume",
+        let provider = ProviderRef::new("root-control".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let volume = VolumeRef::new(provider.clone(), "original-volume".into(),
             match role {
                 RootBootstrapContentRole::Project => VolumeClass::Project,
                 RootBootstrapContentRole::Scratch => VolumeClass::AgentPrivate,
@@ -431,13 +426,13 @@ mod tests {
             match role {
                 RootBootstrapContentRole::Project => VolumeOwner::Project("original-project".into()),
                 RootBootstrapContentRole::Scratch => VolumeOwner::Agent(agent),
-            })?;
+            }, &mut None)?;
         let root_operation = OperationId::from_bytes([121; 16]);
         Ok(RootBootstrapContentRequest {
             root_operation, graph_root: crate::runtime::task_id_for_admission(root_operation),
             role, volume,
             evidence: ResourceRef::new(crate::resources::ResourceKind::Workspace, provider.clone(),
-                b"protected-original-allocation".to_vec(), None)?,
+                b"protected-original-allocation".to_vec().into(), None, &mut None)?,
             generation: GenerationRef::new(provider, b"actual-selected-generation".to_vec(), None)?,
             native_snapshot: Some(serde_json::json!({"actual":"descriptor","selected":121})),
         })
@@ -445,8 +440,8 @@ mod tests {
 
     fn admission(request: &RootBootstrapContentRequest, read: bool, write: bool) -> Result<TaskAdmissionRecord> {
         let mut labels = Vec::new();
-        if read { labels.push(request.volume.capability(VolumeOperation::Read)?); }
-        if write { labels.push(request.volume.capability(VolumeOperation::Write)?); }
+        if read { labels.push(request.volume.capability(VolumeOperation::Read, &mut None)?); }
+        if write { labels.push(request.volume.capability(VolumeOperation::Write, &mut None)?); }
         Ok(TaskAdmissionRecord {
             operation_id: request.root_operation,
             task: crate::registry::ComponentIdentity {
@@ -546,7 +541,7 @@ mod tests {
                 0 => changed.native_snapshot = Some(serde_json::json!({"actual":"different"})),
                 1 => changed.generation = GenerationRef::new(original.volume.provider().clone(), b"other".to_vec(), None)?,
                 _ => changed.evidence = ResourceRef::new(crate::resources::ResourceKind::Workspace,
-                    original.volume.provider().clone(), b"other-evidence".to_vec(), None)?,
+                    original.volume.provider().clone(), b"other-evidence".to_vec().into(), None, &mut None)?,
             }
             unauthorized(verify_receipt_identity(context, &original, &changed, &audience, agent, None, &work));
         }

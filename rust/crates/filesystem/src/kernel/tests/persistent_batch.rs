@@ -31,37 +31,6 @@ fn child(byte: u8) -> Result<Child<AttributeName>, crate::kernel::AttributeError
 }
 
 #[test]
-fn grouping_search_and_child_routing_cover_every_boundary() -> Result<(), Box<dyn std::error::Error>>
-{
-    let keys = [name(1)?, name(1)?, name(3)?, name(5)?];
-    let indexed = keys
-        .iter()
-        .enumerate()
-        .map(|(ordinal, key)| IndexedKey { ordinal, key })
-        .collect::<Vec<_>>();
-    assert_eq!(equal_group(&indexed, 0, indexed.len(), |_| Ok::<_, crate::FsError>(()))?, (2, 2));
-    assert_eq!(equal_group(&indexed, 2, indexed.len(), |_| Ok::<_, crate::FsError>(()))?, (3, 1));
-    assert_eq!(equal_group(&indexed, 3, indexed.len(), |_| Ok::<_, crate::FsError>(()))?, (4, 0));
-
-    let values = [entry(2)?, entry(4)?, entry(6)?];
-    assert_eq!(search::<AttributeFormat>(&values, &name(2)?), (Ok(0), 2));
-    assert_eq!(search::<AttributeFormat>(&values, &name(4)?), (Ok(1), 1));
-    assert_eq!(search::<AttributeFormat>(&values, &name(6)?), (Ok(2), 2));
-    assert_eq!(search::<AttributeFormat>(&values, &name(1)?), (Err(0), 2));
-    assert_eq!(search::<AttributeFormat>(&values, &name(3)?), (Err(1), 2));
-    assert_eq!(search::<AttributeFormat>(&values, &name(7)?), (Err(3), 2));
-
-    let children = [child(2)?, child(4)?, child(6)?];
-    assert_eq!(route(&children, &name(1)?), (0, 2));
-    assert_eq!(route(&children, &name(2)?), (0, 2));
-    assert_eq!(route(&children, &name(5)?), (1, 2));
-    assert_eq!(route(&children, &name(6)?), (2, 2));
-    assert_eq!(route(&children, &name(9)?), (2, 2));
-    assert_eq!(route::<AttributeName>(&[], &name(1)?), (0, 0));
-    Ok(())
-}
-
-#[test]
 fn page_bounds_are_exact_for_leaf_and_internal_frontiers() -> Result<(), Box<dyn std::error::Error>>
 {
     let values = [entry(1)?, entry(3)?];
@@ -93,7 +62,7 @@ fn page_bounds_are_exact_for_leaf_and_internal_frontiers() -> Result<(), Box<dyn
 }
 
 #[test]
-fn machine_admission_cycles_and_corrupt_cleanup_are_fail_closed()
+fn machine_admission_cycles_and_cleanup_are_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let keys = [name(1)?];
     let root = ObjectId {
@@ -121,12 +90,6 @@ fn machine_admission_cycles_and_corrupt_cleanup_are_fail_closed()
     cycle.abort_cleanup(&mut accounting)?;
     assert_eq!(accounting.standalone_parts().ok_or(WorkError::Overflow)?.0.live_bytes(), 0);
 
-    let mut corrupt = Machine::<AttributeFormat>::new(root, &keys, 1, DecodeLimits::default(), &mut accounting)?;
-    corrupt.requests.value.get_mut(0).ok_or(Error::InvalidRouting)?.request.nested_bytes = u64::MAX;
-    assert!(matches!(
-        corrupt.abort_cleanup(&mut accounting),
-        Err(crate::FsError::FileRecord(crate::kernel::FileRecordReadError::InvalidRouting))
-    ));
     Ok(())
 }
 

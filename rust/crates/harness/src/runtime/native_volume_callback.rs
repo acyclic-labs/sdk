@@ -16,26 +16,14 @@ fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
 
 /// Original dispatched task authority for canonical native volume preparation.
 pub struct NativeVolumeCallbackGuard<P: StreamProvider> {
-    original: Arc<OriginalVolumeAuthority<P>>,
-}
-
-struct OriginalVolumeAuthority<P: StreamProvider> {
-    owner: Arc<TaskJournalOwner<P>>,
-    scope: RuntimeScope,
-    custody: NativeAllocation,
+    original: Arc<(Arc<TaskJournalOwner<P>>, RuntimeScope, NativeAllocation)>,
 }
 
 struct VolumeCallback<P: StreamProvider> {
-    original: Arc<OriginalVolumeAuthority<P>>,
+    original: Arc<(Arc<TaskJournalOwner<P>>, RuntimeScope, NativeAllocation)>,
     volume: VolumeRef,
     writable: bool,
-    work: NativeMaterializationWork,
     custody: NativeAllocation,
-}
-
-pub(crate) struct NativeVolumeCallbackPorts {
-    pub(crate) sdk: Arc<dyn NativeMountCallbackGuard>,
-    pub(crate) publication: Arc<dyn NativeVolumePublicationGuard>,
 }
 
 pub(crate) trait NativeVolumePublicationGuard: Send + Sync {
@@ -63,7 +51,7 @@ impl NativeTaskContext {
         owner.verify_with_native_work(false, work).await?;
 
         let bytes = (std::mem::size_of::<NativeVolumeCallbackGuard<P>>()
-            + std::mem::size_of::<OriginalVolumeAuthority<P>>()
+            + std::mem::size_of::<(Arc<TaskJournalOwner<P>>, RuntimeScope, NativeAllocation)>()
             - std::mem::size_of::<RuntimeScope>()) as u64;
         let mut custody = work.retain_owned(bytes).map_err(native_error)?;
         let (scope, mut scope_custody) = context.scope().clone_with_native_work(work)?;
@@ -73,9 +61,7 @@ impl NativeTaskContext {
         }
         work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
             .map_err(native_error)?;
-        Ok(NativeVolumeCallbackGuard { original: Arc::new(OriginalVolumeAuthority {
-            owner: Arc::clone(owner), scope, custody,
-        }) })
+        Ok(NativeVolumeCallbackGuard { original: Arc::new((Arc::clone(owner), scope, custody)) })
     }
 }
 
@@ -84,7 +70,7 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
     pub(crate) fn for_volume(
         &self, owner: &TaskJournalOwner<P>, volume: &VolumeRef, writable: bool,
         work: &NativeMaterializationWork,
-    ) -> Result<NativeVolumeCallbackPorts> {
+    ) -> Result<(Arc<dyn NativeMountCallbackGuard>, Arc<dyn NativeVolumePublicationGuard>)> {
         self.require_volume_with_native_work(owner, volume, writable, work)?;
         let mut custody = work.retain_owned(std::mem::size_of::<VolumeCallback<P>>() as u64)
             .map_err(native_error)?;
@@ -96,9 +82,9 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
         work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
             .map_err(native_error)?;
         let callback = Arc::new(VolumeCallback {
-            original: Arc::clone(&self.original), volume, writable, work: work.clone(), custody,
+            original: Arc::clone(&self.original), volume, writable, custody,
         });
-        Ok(NativeVolumeCallbackPorts { sdk: callback.clone(), publication: callback })
+        Ok((callback.clone(), callback))
     }
 
     /// Borrows the same declaration checks without allocating a callback that preparation would immediately discard.
@@ -107,9 +93,9 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         work.charge(WorkCounters::default()).map_err(native_error)?;
-        if !std::ptr::eq(owner, self.original.owner.as_ref())
-            || owner.task_binding() != self.original.owner.task_binding()
-            || !self.original.custody.work().shares_ledger(work)
+        if !std::ptr::eq(owner, self.original.0.as_ref())
+            || owner.task_binding() != self.original.0.task_binding()
+            || !self.original.2.work().shares_ledger(work)
         {
             return Err(denied("native preparation differs from its original callback owner or work family"));
         }
@@ -118,18 +104,18 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
 }
 
 fn require_volume<P: StreamProvider>(
-    original: &OriginalVolumeAuthority<P>, volume: &VolumeRef, writable: bool,
+    original: &(Arc<TaskJournalOwner<P>>, RuntimeScope, NativeAllocation), volume: &VolumeRef, writable: bool,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-    if !io.contains_capability(original.scope.grants(), volume, "volume:read:")?
-        || (writable && !io.contains_capability(original.scope.grants(), volume, "volume:write:")?)
+    if !io.contains_capability(original.1.grants(), volume, "volume:read:")?
+        || (writable && !io.contains_capability(original.1.grants(), volume, "volume:write:")?)
     {
         return Err(denied("native callback volume policy differs from its original declared scope"));
     }
-    original.owner.require_volume_grant_with_native_work(volume, VolumeOperation::Read, work)?;
+    original.0.require_volume_grant_with_native_work(volume, VolumeOperation::Read, work)?;
     if writable {
-        original.owner.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)?;
+        original.0.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)?;
     }
     Ok(())
 }
@@ -142,11 +128,11 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
             return Err(denied("read-only native callback cannot authorize authored writes"));
         }
         work.charge(WorkCounters::default()).map_err(native_error)?;
-        if !self.work.shares_allocation_context(work) || !self.custody.matches_work(work) {
+        if !self.custody.matches_work(work) {
             return Err(denied("native callback differs from its original per-volume work view"));
         }
         require_volume(&self.original, &self.volume, self.writable, work)?;
-        self.original.owner.verify_with_native_work(false, work).await?;
+        self.original.0.verify_with_native_work(false, work).await?;
         require_volume(&self.original, &self.volume, self.writable, work)
     }
 

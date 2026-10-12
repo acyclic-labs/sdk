@@ -75,24 +75,24 @@ export class ActorsClient {
     this.#endpoint = options.endpoint;
     this.#token = options.token;
     this.#caCertificate = options.caCertificate;
-    this.#binding = options.binding ?? defaultBinding();
+    this.#binding = options.binding ?? (isNodeRuntime() ? nativeBinding() : wasmBinding());
     installActorsMethods(this, (method, request, callOptions) => this.#call(method, request, callOptions));
   }
 
   get transport(): Promise<string | undefined> { return this.#connection().then(client => client.transport); }
 
-  async #call<Request, Response>(method: ActorsMethod, request: Request, options?: ActorsCallOptions): Promise<Response> {
+  async #call(method: ActorsMethod, request: unknown, options?: ActorsCallOptions): Promise<unknown> {
     const operation = method.localName as Operation;
     requireBigIntCodec();
-      const encoded = toBinary(method.input, create(method.input, toWireSemantic(request) as MessageShape<typeof method.input>));
+    const encoded = toBinary(method.input, create(method.input, structuredClone(request) as MessageShape<typeof method.input>));
     return observed(this.#observer, "actors", operation, async sizes => {
       if (sizes) sizes.requestBytes = encoded.byteLength;
       throwIfAborted(options?.signal);
       const client = await this.#connection(options?.signal);
       const response = await abortable(client[operation](encoded, options?.signal), options?.signal);
       if (sizes) sizes.responseBytes = response.byteLength;
-      return canonicalSemantic(fromBinary(method.output, response)) as Response;
-    }) as Promise<Response>;
+      return canonicalSemantic(fromBinary(method.output, response));
+    });
   }
 
   #connection(signal?: AbortSignal): Promise<ActorsRustClient> {
@@ -117,39 +117,20 @@ export class ActorsClient {
     }
     const pending = this.#client;
     this.#connectWaiters += 1;
-    let released = false;
-    const release = () => {
-      if (released) return;
-      released = true;
+    return abortable(pending, signal).finally(() => {
       this.#connectWaiters -= 1;
       if (this.#connectWaiters === 0 && this.#client === pending && this.#connectAbort !== undefined) {
-        // Evict before aborting. A bridge may reject asynchronously after the
-        // abort; a new caller must be able to start a fresh connection during
-        // that interval, and the old rejection must not clear the replacement.
+        // Evict before abort so late rejection cannot clear a new connection.
         const controller = this.#connectAbort;
         this.#client = undefined;
         this.#connectAbort = undefined;
         controller.abort();
       }
-    };
-    return abortable(pending, signal).finally(release);
+    });
   }
 }
 
 export interface ActorsClient extends ActorsClientMethods {}
-
-/** Compatibility name retained while callers migrate to `ActorsClient`. */
-export class HttpActorsClient extends ActorsClient {}
-
-/** Snapshot the readonly semantic view before Buf's mutable wire encoder sees it. */
-function toWireSemantic(value: unknown): unknown {
-  return structuredClone(value);
-}
-
-function defaultBinding(): ActorsRustBinding {
-  const scope = globalThis as { process?: { versions?: { node?: string } } };
-  return scope.process?.versions?.node === undefined ? wasmBinding() : nativeBinding();
-}
 
 function nativeBinding(): ActorsRustBinding {
   return {
@@ -224,10 +205,7 @@ async function loadNativeModule(): Promise<NativeActorsModule | undefined> {
     .then(module => module as unknown as NativeActorsModule)
     .catch(async error => {
       nativeModulePromise = undefined;
-      // The generated loader is the maintained target selector. Its aggregate
-      // error is fallback-safe only when every candidate failed because the
-      // candidate itself was absent; ABI, export, and dependency failures must
-      // remain visible instead of silently selecting WASM.
+      // Fall back only when the companion itself is absent.
       if (await isExpectedNativeAbsence(error)) return undefined;
       throw error;
     });
@@ -261,7 +239,7 @@ function wasmBinding(): ActorsRustBinding {
       const inner = await module.ActorsClient.connect(endpoint, token, signal);
       const wasm = inner as unknown as WasmActorsClient;
       const client = Object.fromEntries(ACTORS_OPERATION_NAMES.map(operation => {
-        const method = snakeCase(operation);
+        const method = operation.replace(/[A-Z]/g, character => `_${character.toLowerCase()}`);
         return [operation, async (request: Uint8Array, signal?: AbortSignal) => {
           const invoke = (wasm as unknown as Record<string, unknown>)[method];
           if (typeof invoke !== "function") throw new ActorsTransportError(`WASM bridge is missing ${method}`, "configuration");
@@ -330,10 +308,6 @@ function isNodeRuntime(): boolean {
 
 interface WasmActorsClient {
   readonly transport: string;
-}
-
-function snakeCase(value: string): string {
-  return value.replace(/[A-Z]/g, character => `_${character.toLowerCase()}`);
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

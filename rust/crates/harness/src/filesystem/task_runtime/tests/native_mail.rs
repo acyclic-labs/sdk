@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::conversation::FileRef;
 use crate::test_stream::LostSessionAck;
 use crate::filesystem::PreparationIo;
@@ -33,13 +34,13 @@ impl MailFixture {
             8, 65_536, fixture.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
         ).await?;
         let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), &(fixture.volume), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, 65_536, None)?;
-        let definition = fixture.tasks.get_version::<Value, Value>("test.deadline", "1")?;
+        let definition = fixture.tasks.get_version::<Value, Value>("test.deadline", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         let mut tasks = Vec::new();
         for byte in 190..193 {
             let operation = OperationId::from_bytes([byte; 16]);
             let payload = payloads.stage(operation, "command", &crate::contract::canonical_json_bytes(
                 &super::super::super::ToolTaskCommand { name: "test.deadline".into(), revision: "1".into(), arguments: Value::Null },
-            )?).await?;
+            )?, None)?.await?;
             assert!(matches!(runtime.harness().admit(operation, &definition,
                 json!({"command": WorkflowCommand { operation_id: operation,
                     kind: super::super::super::TOOL_TASK_COMMAND_KIND.into(), payload }}), None).await?,
@@ -50,10 +51,10 @@ impl MailFixture {
                 WorkPull::Claimed(lease) => lease,
                 _ => return Err(Error::NotFound("native mail original lease".into())),
             };
-            runtime.task_host().start_task(&lease).await?;
+            runtime.task_host().start_task(&lease, None).await?;
             tasks.push((TaskId::from_bytes(lease.operation.operation_id.into_bytes()), LeaseFence::from(&lease.reservation)));
         }
-        let payload = payloads.stage(OperationId::from_bytes([193; 16]), "mail-source", b"actual native mailbox source").await?;
+        let payload = payloads.stage(OperationId::from_bytes([193; 16]), "mail-source", b"actual native mailbox source", None)?.await?;
         Ok(Self { fixture, sdk, runtime, tasks, payload })
     }
 

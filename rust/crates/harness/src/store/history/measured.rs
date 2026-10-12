@@ -1,130 +1,12 @@
 //! Receipts at the existing SDK Stream boundary, not provider-internal OS IO.
 
-use super::{HistoryCursor, HistoryIo, HistoryPage, HistoryReadLimits, HistoryReader};
+use super::HistoryIo;
 use crate::{Error, Result, core::{Authority, Event}};
 use acyclic_fs::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
-use acyclic_stream::StreamProvider;
 use std::mem::size_of;
 
-impl<P: StreamProvider> HistoryReader<P> {
-    /// Pins the original committed cut using the caller's native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn pin_with_native_work(
-        &self,
-        after_revision: u64,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(HistoryCursor, acyclic_fs::NativeAllocation)> {
-        let mut native_io = super::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let cursor = self.pin_with_work(after_revision, Some(&mut native_io)).await?;
-        Ok((cursor, native_io.into_custody()))
-    }
-
-    /// Reads the original authenticated bounded page on the same native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn read_page_with_native_work(
-        &self,
-        cursor: &HistoryCursor,
-        limits: HistoryReadLimits,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(HistoryPage, acyclic_fs::NativeAllocation)> {
-        let mut native_io = super::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let (page, _, _, _) = self.read_page_with_work(cursor, limits, false, Some(&mut native_io)).await?;
-        native_io.return_staged_output()?;
-        Ok((page, native_io.into_custody()))
-    }
-
-    /// Reads the original authenticated immutable operation locator and event.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn operation_event_bounded_with_native_work(
-        &self,
-        operation: crate::OperationId,
-        maximum_bytes: u64,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Option<Event>, acyclic_fs::NativeAllocation)> {
-        let mut native_io = super::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let (event, _) = super::super::operations::find_operation_bounded_with_work(
-            &self.client, self.verifier.audience(), &self.verifier, operation,
-            maximum_bytes, true, &mut Some(&mut native_io),
-        ).await?;
-        native_io.return_staged_output()?;
-        Ok((event, native_io.into_custody()))
-    }
-
-    /// Projects the archived effect through the original bounded state engine.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn effect_with_native_work(
-        &self,
-        cursor: &HistoryCursor,
-        effect: crate::EffectId,
-        limits: HistoryReadLimits,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Option<crate::core::EffectState>, acyclic_fs::NativeAllocation)> {
-        let mut native_io = super::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let state = self.effect_with_retained_quota(
-            cursor, effect, limits, Some(&mut native_io),
-        ).await?.map(|(state, _)| state);
-        native_io.return_staged_output()?;
-        Ok((state, native_io.into_custody()))
-    }
-
-    /// Pins the same committed Stream cut with a finite SDK-boundary receipt.
-    pub async fn pin_measured(
-        &self,
-        after_revision: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<HistoryCursor>, Error> {
-        let mut work = HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.pin_with_work(after_revision, Some(&mut work)).await
-        }.await;
-        work.finish(result)
-    }
-
-    /// Reads through the original authenticated page engine with exact visible SDK tail/read counts and original encoded record bytes, including failures.
-    pub async fn read_page_measured(
-        &self,
-        cursor: &HistoryCursor,
-        limits: HistoryReadLimits,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<HistoryPage>, Error> {
-        let mut work = HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.read_page_with_work(cursor, limits, false, Some(&mut work))
-                .await.map(|(page, _, _, _)| page)
-        }.await;
-        work.finish(result)
-    }
-
-    /// Original immutable operation locator and canonical event, without replay.
-    pub async fn operation_event_bounded_measured(
-        &self,
-        operation: crate::OperationId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<(Option<Event>, u64)>, Error> {
-        let mut work = HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            super::super::operations::find_operation_bounded_with_work(
-                &self.client, self.verifier.audience(), &self.verifier, operation,
-                maximum_bytes, true, &mut Some(&mut work),
-            ).await
-        }.await;
-        work.finish(result)
-    }
-
-}
-
-pub(crate) struct HistoryWork<'a> {
+/// Bounded work and output accounting for history operations.
+pub struct HistoryWork<'a> {
     budget: WorkBudget,
     cancellation: &'a CancellationToken,
     work: WorkCounters,
@@ -134,11 +16,13 @@ pub(crate) struct HistoryWork<'a> {
 }
 
 impl<'a> HistoryWork<'a> {
-    pub(crate) fn new(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
+    /// Starts accounting against the supplied budget and cancellation.
+    pub fn new(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
         Self { budget, cancellation, work: WorkCounters::default(), live_bytes: 0, staged_bytes: 0, staged_items: 0 }
     }
 
-    pub(crate) fn preflight(&self) -> Result<()> {
+    /// Rejects unbounded allowances and cancellation before provider work.
+    pub fn preflight(&self) -> Result<()> {
         if !self.budget.has_finite_allowances() {
             return Err(Error::Invalid("history work allowances must be finite".into()));
         }
@@ -202,7 +86,8 @@ impl<'a> HistoryWork<'a> {
         self.retain(actual)
     }
 
-    pub(crate) fn finish<T>(mut self, result: Result<T>) -> MeasuredResult<OperationReceipt<T>, Error> {
+    /// Returns the output or failure with its accumulated work.
+    pub fn finish<T>(mut self, result: Result<T>) -> MeasuredResult<OperationReceipt<T>, Error> {
         let result = result.and_then(|value| self.return_staged_output().map(|()| value));
         result.map(|value| OperationReceipt { value, work: self.work })
             .map_err(|error| OperationFailure::new(error, self.work))
@@ -234,7 +119,7 @@ impl HistoryIo for HistoryWork<'_> {
         self.live_bytes = live;
         Ok(())
     }
-    fn release_record(&mut self, bytes: u64) -> Result<()> {
+    fn release_owned(&mut self, bytes: u64) -> Result<()> {
         self.live_bytes = self.live_bytes.checked_sub(bytes)
             .ok_or_else(|| Error::Invalid("history live byte count underflows".into()))?;
         Ok(())
@@ -247,7 +132,6 @@ impl HistoryIo for HistoryWork<'_> {
             .ok_or_else(|| Error::Invalid("history allocation admission overflows".into()))?);
         self.verify(planned)
     }
-    fn release_owned(&mut self, bytes: u64) -> Result<()> { self.release_record(bytes) }
     fn clone_authority(&mut self, authority: &Authority) -> Result<Authority> {
         let bytes = authority.id.len() as u64;
         let mut next = self.combined(WorkCounters {
@@ -322,7 +206,7 @@ impl HistoryIo for HistoryWork<'_> {
     fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()> {
         use crate::contract::JsonCodecCharge;
         if let JsonCodecCharge::Release { bytes } = charge {
-            return self.release_record(bytes);
+            return self.release_owned(bytes);
         }
         self.check_cancellation()?;
         match charge {
@@ -333,7 +217,7 @@ impl HistoryIo for HistoryWork<'_> {
                 items_examined: items, ..WorkCounters::default()
             }),
             JsonCodecCharge::Retain { bytes } => { self.admit_owned(bytes)?; self.retain(bytes) }
-            JsonCodecCharge::Release { bytes } => self.release_record(bytes),
+            JsonCodecCharge::Release { bytes } => self.release_owned(bytes),
             JsonCodecCharge::Copy { bytes } => self.copy_bytes(bytes),
             JsonCodecCharge::CopyAdmission { bytes } => self.admit_copy(bytes),
             JsonCodecCharge::AllocationOperation { .. } => self.planned(WorkCounters {

@@ -2,12 +2,13 @@
 
 use super::attribute_mutation::AttributeFormat;
 use super::persistent_pagination;
-use super::{AttributeEntry, AttributeName, CanonicalDecodeError, DecodeLimits};
+use super::{AttributeEntry, AttributeName, CanonicalDecodeError, DecodeLimits, DirectoryReadError, DirectoryReadFailure};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{ObjectId, ObjectStoreError};
+use std::ops::Bound;
 use thiserror::Error;
 
 /// One bounded ordered named-attribute page.
@@ -24,28 +25,7 @@ pub struct AttributeListing {
 }
 
 /// Lists one bounded attribute page through the shared persistent-tree cursor.
-pub fn list_attributes<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    after: Option<&AttributeName>,
-    maximum_entries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<AttributeListing, AttributeListFailure> {
-    persistent_pagination::paginate::<S, AttributeFormat>(
-        store,
-        root,
-        after,
-        maximum_entries,
-        limits,
-        budget,
-    )
-    .map(to_listing)
-    .map_err(map_failure)
-}
-
-/// Asynchronously executes the same cursor machine as [`list_attributes`].
-pub async fn list_attributes_async<S: AsyncObjectStore>(
+pub async fn list_attributes<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     after: Option<&AttributeName>,
@@ -54,10 +34,10 @@ pub async fn list_attributes_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<AttributeListing, AttributeListFailure> {
-    persistent_pagination::paginate_async::<S, AttributeFormat>(
+    persistent_pagination::paginate::<S, AttributeFormat>(
         store,
         root,
-        after,
+        after.map_or(Bound::Unbounded, Bound::Excluded),
         maximum_entries,
         limits,
         budget,
@@ -74,13 +54,11 @@ pub(crate) async fn list_attributes_async_with_accounting<S: AsyncObjectStore>(
     limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(AttributeListing, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    persistent_pagination::paginate_async_with_accounting::<S, AttributeFormat>(
-        store, root, after, maximum_entries, limits, accounting, cancellation, data_custody,
+    persistent_pagination::paginate_with_accounting::<S, AttributeFormat>(
+        store, root, after.map_or(Bound::Unbounded, Bound::Excluded), maximum_entries, limits, accounting, cancellation, data_custody,
     ).await.map(|(receipt, allocation)| (to_listing(receipt), allocation))
         .map_err(|error| match error {
-            crate::FsError::Directory(error) => crate::FsError::AttributeList(map_error(
-                persistent_pagination::project_failure(crate::FsError::Directory(error)),
-            )),
+            crate::FsError::Directory(error) => crate::FsError::AttributeList(map_error(error)),
             error => error,
         })
 }
@@ -100,27 +78,27 @@ fn to_listing(receipt: persistent_pagination::Receipt<AttributeEntry>) -> Attrib
 /// Named-attribute pagination failure retaining exact spent work.
 pub type AttributeListFailure = OperationFailure<AttributeListError>;
 
-fn map_failure(failure: persistent_pagination::Failure) -> AttributeListFailure {
+fn map_failure(failure: DirectoryReadFailure) -> AttributeListFailure {
     OperationFailure::new(map_error(failure.error), *failure.work)
 }
 
-fn map_error(error: persistent_pagination::Error) -> AttributeListError {
+fn map_error(error: DirectoryReadError) -> AttributeListError {
     match error {
-        persistent_pagination::Error::Cancelled => AttributeListError::Cancelled,
-        persistent_pagination::Error::ZeroLimit => AttributeListError::ZeroLimit,
-        persistent_pagination::Error::LimitOverflow => AttributeListError::LimitOverflow,
-        persistent_pagination::Error::WrongRootKind => AttributeListError::WrongRootKind,
-        persistent_pagination::Error::InvalidLimits => AttributeListError::InvalidLimits,
-        persistent_pagination::Error::HeightExceeded => AttributeListError::HeightExceeded,
-        persistent_pagination::Error::CycleOrAlias => AttributeListError::CycleOrAlias,
-        persistent_pagination::Error::ChildBoundsMismatch => {
+        DirectoryReadError::Cancelled => AttributeListError::Cancelled,
+        DirectoryReadError::ZeroLimit => AttributeListError::ZeroLimit,
+        DirectoryReadError::LimitOverflow => AttributeListError::LimitOverflow,
+        DirectoryReadError::WrongRootKind => AttributeListError::WrongRootKind,
+        DirectoryReadError::InvalidLimits => AttributeListError::InvalidLimits,
+        DirectoryReadError::HeightExceeded => AttributeListError::HeightExceeded,
+        DirectoryReadError::Cycle => AttributeListError::CycleOrAlias,
+        DirectoryReadError::ChildBoundsMismatch => {
             AttributeListError::ChildBoundsMismatch
         }
-        persistent_pagination::Error::TraversalState => AttributeListError::TraversalState,
-        persistent_pagination::Error::AllocationFailed => AttributeListError::AllocationFailed,
-        persistent_pagination::Error::Storage(error) => error.into(),
-        persistent_pagination::Error::Decode(error) => error.into(),
-        persistent_pagination::Error::Work(error) => error.into(),
+        DirectoryReadError::TraversalState => AttributeListError::TraversalState,
+        DirectoryReadError::AllocationFailed => AttributeListError::AllocationFailed,
+        DirectoryReadError::Storage(error) => error.into(),
+        DirectoryReadError::Decode(error) => error.into(),
+        DirectoryReadError::Work(error) => error.into(),
     }
 }
 

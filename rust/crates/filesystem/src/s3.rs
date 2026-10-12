@@ -30,7 +30,6 @@ pub struct S3ListOptions {
     /// Initial exclusive key marker. Ignored after a continuation is supplied.
     pub start_after: Option<String>,
     /// Opaque immutable-generation continuation returned by a prior page.
-    /// Callers should reuse the token returned by a prior page.
     pub continuation: Option<S3ListCursor>,
     /// Maximum combined objects and common prefixes returned.
     pub maximum_keys: u32,
@@ -100,12 +99,7 @@ impl S3ListCursor {
         )
     }
 
-    /// Decodes one bounded canonical continuation token. This checks syntax,
-    /// not the token's origin; the listing operation checks generation/query.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed versions, identities, UTF-8, and oversized markers.
+    /// Decodes one bounded canonical continuation token.
     pub fn decode(token: &str, maximum_key_bytes: u32) -> Result<Self, S3Error> {
         let mut fields = token.split('.');
         let version = fields.next().ok_or(S3Error::InvalidContinuation)?;
@@ -160,8 +154,7 @@ impl Default for S3MultipartOptions {
     }
 }
 
-/// One unpublished multipart candidate. Dropping it aborts without authority
-/// mutation; staged immutable objects remain safe collectible orphans.
+/// One unpublished multipart candidate.
 pub struct S3MultipartUpload<A, O> {
     transaction: crate::Transaction<A, O>,
     key: String,
@@ -189,10 +182,6 @@ impl<A, O> Workspace<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     /// Starts one unpublished multipart object transaction.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid keys or zero staging bounds.
     pub async fn create_multipart_upload(
         &self,
         key: &str,
@@ -211,20 +200,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         })
     }
     /// Reads object metadata from one pinned generation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid keys, absent/non-regular paths, and backend failures.
     pub async fn head_object(&self, key: &str) -> Result<S3ObjectHead, S3Error> {
         let generation = self.workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         self.head_object_in(generation, key).await
     }
 
     /// Reads object metadata from one exact immutable generation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a foreign generation, invalid key, absent/non-regular path, or backend failure.
     pub async fn head_object_at(
         &self,
         generation: &crate::Generation<A, O>,
@@ -263,10 +244,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     }
 
     /// Reads one complete object under a caller byte bound.
-    ///
-    /// # Errors
-    ///
-    /// Returns key, kind, size, authentication, or storage failures.
     pub async fn get_object(&self, key: &str, maximum_bytes: u64) -> Result<OwnedBytes, S3Error> {
         validate_key(key)?;
         self.workspace.read(&absolute_key(key), maximum_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
@@ -274,20 +251,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     }
 
     /// Reads one exact object byte range without materializing the rest.
-    ///
-    /// # Errors
-    ///
-    /// Returns key, range, kind, authentication, or storage failures.
     pub async fn get_object_range(&self, key: &str, range: ByteRange) -> Result<OwnedBytes, S3Error> {
         let generation = self.workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         self.get_object_range_in(generation, key, range).await
     }
 
     /// Reads one exact byte range from one immutable generation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a foreign generation, invalid key/range, or authenticated storage failure.
     pub async fn get_object_range_at(
         &self,
         generation: &crate::Generation<A, O>,
@@ -326,10 +295,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     }
 
     /// Atomically creates or replaces one object.
-    ///
-    /// # Errors
-    ///
-    /// Returns key, parent, transaction, or publication failures.
     pub async fn put_object(
         &self,
         key: &str,
@@ -338,25 +303,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     ) -> Result<TransactionCommit<A, O>, S3Error> {
         let mut transaction = self.workspace.begin_transaction(idempotency_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         create_parent_directories(&mut transaction, key).await?;
-        transaction.write(&absolute_key(key), bytes).await?;
+        transaction.write(&absolute_key(key), bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(Into::into)
     }
 
-    /// Prepares one S3 object from already staged immutable content in the
-    /// caller's transaction. The caller can validate its streaming checksums
-    /// before invoking this method and commits the transaction afterward.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a foreign transaction, malformed key or staged content, or a
-    /// Filesystem mutation failure. No content is published on error.
+    /// Prepares one S3 object from already staged immutable content in the caller's transaction.
     pub async fn write_staged(
         &self,
         transaction: &mut crate::Transaction<A, O>,
         key: &str,
         parts: &[crate::StagedContent],
     ) -> Result<(), S3Error> {
-        if transaction.workspace_id() != self.workspace.id() {
+        if transaction.checkout.volume_id() != self.workspace.id().volume_id() {
             return Err(S3Error::ForeignTransaction);
         }
         create_parent_directories(transaction, key).await?;
@@ -365,11 +323,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     }
 
     /// Atomically removes one object.
-    ///
-    /// # Errors
-    ///
-    /// Returns key, transaction, or publication failures. An absent key is a
-    /// successful no-op, matching S3 delete semantics.
     pub async fn delete_object(
         &self,
         key: &str,
@@ -377,7 +330,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     ) -> Result<(), S3Error> {
         validate_key(key)?;
         let mut transaction = self.workspace.begin_transaction(idempotency_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mutated = match transaction.remove(&absolute_key(key)).await {
+        let mutated = match transaction.remove(&absolute_key(key), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
             Ok(()) => true,
             Err(WorkspaceError::NotFound) => false,
             Err(error) => return Err(error.into()),
@@ -390,11 +343,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     }
 
     /// Atomically removes several objects through one workspace transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns request, key, transaction, or publication failures. Absent keys
-    /// are successful no-ops, including repeated bulk deletion.
     pub async fn delete_objects(
         &self,
         keys: &[String],
@@ -407,7 +355,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         let mut mutated = false;
         for key in keys {
             validate_key(key)?;
-            match transaction.remove(&absolute_key(key)).await {
+            match transaction.remove(&absolute_key(key), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
                 Ok(()) => mutated = true,
                 Err(WorkspaceError::NotFound) => {}
                 Err(error) => return Err(error.into()),
@@ -421,10 +369,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     }
 
     /// Copies one object through immutable extent references.
-    ///
-    /// # Errors
-    ///
-    /// Returns key, kind, transaction, or publication failures.
     pub async fn copy_object(
         &self,
         source: &str,
@@ -441,20 +385,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     }
 
     /// Lists regular files and delimiter prefixes from one pinned generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns malformed options, unsupported names, work exhaustion, or
-    /// authenticated storage failures.
     pub async fn list_objects(&self, options: S3ListOptions) -> Result<S3List, S3Error> {
         self.list_objects_in(None, options).await
     }
 
     /// Lists from one exact immutable generation with stable continuation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a foreign generation, malformed options/cursors, exhausted work, or storage failure.
     pub async fn list_objects_at(
         &self,
         generation: &crate::Generation<A, O>,
@@ -545,9 +480,7 @@ fn queue_listing_task(
     Ok(())
 }
 
-/// Seek only when every earlier child directory has a flattened `name/`
-/// bound below the marker. A marker such as `a.` is ambiguous because `a/x`
-/// sorts after it, so that case keeps the ordered walk.
+/// Seek only when every earlier child directory has a flattened `name/` bound below the marker.
 fn direct_child_seek(
     options: &S3ListOptions,
     limits: crate::model::VolumeLimits,
@@ -584,9 +517,7 @@ fn direct_child_seek(
     .map(|name| (name, !cursor.after_prefix))
 }
 
-/// Merges directory-page lower bounds and object keys in flattened UTF-8
-/// order. A directory's `name/` bound is distinct from its component name:
-/// sibling `a.` must precede a descendant `a/x`.
+/// Merges directory-page lower bounds and object keys in flattened UTF-8 order.
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -639,9 +570,9 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     .min(options.maximum_keys.saturating_add(1));
                 let page = if inclusive {
                     checkout
-                        .list_directory_records_at_or_after(
+                        .list_directory_records(
                             &path,
-                            after.as_ref().ok_or(S3Error::InvalidContinuation)?,
+                            std::ops::Bound::Included(after.as_ref().ok_or(S3Error::InvalidContinuation)?),
                             page_limit,
                             WorkBudget::UNBOUNDED,
                             &CancellationToken::new(),
@@ -651,7 +582,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     checkout
                         .list_directory_records(
                             &path,
-                            after.as_ref(),
+                            after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                             page_limit,
                             WorkBudget::UNBOUNDED,
                             &CancellationToken::new(),
@@ -820,10 +751,6 @@ fn listing_frontier(
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3MultipartUpload<A, O> {
     /// Stages or replaces one positive part number without publishing it.
-    ///
-    /// # Errors
-    ///
-    /// Rejects zero numbers, part/count bounds, or storage failures.
     pub async fn upload_part(&mut self, part_number: u32, bytes: Bytes) -> Result<(), S3Error> {
         if part_number == 0 {
             return Err(S3Error::InvalidRequest("part number must be positive"));
@@ -840,17 +767,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3MultipartUpload<A, O> {
             .unwrap_or(u64::MAX)
             .saturating_add(1);
         let mut source = Cursor::new(bytes);
-        let staged = self.transaction.stage_content(&mut source, maximum).await?;
+        let staged = self.transaction.stage_content(&mut source, maximum, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         self.parts.insert(part_number, staged);
         Ok(())
     }
 
     /// Publishes exactly the caller-selected ordered part set as one object.
-    ///
-    /// # Errors
-    ///
-    /// Rejects empty, duplicate, or missing part identities and returns the
-    /// ordinary workspace publication outcome.
     pub async fn complete(
         &mut self,
         ordered_parts: &[u32],
@@ -963,7 +885,7 @@ pub(crate) async fn create_parent_directories<A: AsyncAuthorityStore, O: AsyncOb
     if let Some((parent, _)) = key.rsplit_once('/')
         && !parent.is_empty()
     {
-        transaction.create_dir_all(&format!("/{parent}")).await?;
+        transaction.create_dir_all(&format!("/{parent}"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     }
     Ok(())
 }

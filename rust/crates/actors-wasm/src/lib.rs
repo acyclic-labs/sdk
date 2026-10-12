@@ -137,8 +137,7 @@ impl Drop for AbortRegistration {
     }
 }
 
-/// Connected browser Actors client. Transport and validation are implemented
-/// by the shared Rust client; this object only provides the JS ABI.
+/// Browser binding for the shared Actors client.
 #[wasm_bindgen]
 pub struct ActorsClient {
     inner: client::Client,

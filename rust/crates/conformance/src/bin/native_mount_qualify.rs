@@ -319,11 +319,11 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
     let observed_kind = native.kind.map(kind_name);
     let capability = Capability {
         kind: observed_kind,
-        available: native.available,
-        writable: native.writable,
-        provider_process_io_observable: native.provider_process_io_observable,
-        session_isolation: format!("{:?}", native.session_isolation),
-        unavailable_reason: native.unavailable_reason.clone(),
+        available: native.available(),
+        writable: native.available(),
+        provider_process_io_observable: native.provider_process_io_observable(),
+        session_isolation: if native.kind.is_some() { "SharedProcess" } else { "ProcessIsolated" }.to_owned(),
+        unavailable_reason: native.unavailable_reason.map(str::to_owned),
     };
     let mut report = Report {
         schema: "acyclic-native-mount-qualification-v2",
@@ -338,14 +338,12 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         cases: Vec::new(),
     };
 
-    let unsupported = if !native.available {
+    let unsupported = if !native.available() {
         Some(
             native
                 .unavailable_reason
-                .unwrap_or_else(|| "native mount unavailable".into()),
+                .unwrap_or("native mount unavailable").to_owned(),
         )
-    } else if !native.writable {
-        Some("native mount capability is read-only".into())
     } else if let Some(required) = &required_kind {
         (observed_kind != Some(required.as_str())).then(|| {
             format!(
@@ -484,9 +482,8 @@ async fn rename_hydration_case() -> Result<(), Failure> {
             .create_file(
                 &format!("/before-{index}.txt"),
                 Bytes::from(format!("renamed-before-hydration-{index}")),
-                FileMetadata::default(),
-            )
-            .await?;
+                FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     }
     match fixture.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
         TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_) => {}
@@ -820,58 +817,51 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         .create_workspace_with_config("native-matrix", VolumeConfig::native(Lifecycle::Durable), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(acyclic_fs::IdempotencyKey::new(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    transaction.create_dir_all("/seed/nested").await?;
+    transaction.create_dir_all("/seed/nested", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .create_file(
             "/seed/nested/original.txt",
             Bytes::from_static(b"seed"),
-            FileMetadata::default(),
-        )
-        .await?;
+            FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .create_file(
             "/seed/nested/default-metadata.txt",
             Bytes::new(),
-            FileMetadata::default(),
-        )
-        .await?;
+            FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .create_file(
             "/seed/nested/default-read.txt",
             Bytes::from_static(b"read-only-observation"),
-            FileMetadata::default(),
-        )
-        .await?;
+            FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .create_file(
             "/seed/nested/rename-before-read.txt",
             Bytes::from_static(b"renamed-before-hydration"),
-            FileMetadata::default(),
-        )
-        .await?;
+            FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .hard_link(
             "/seed/nested/original.txt",
-            "/seed/nested/original-hard.txt",
-        )
-        .await?;
+            "/seed/nested/original-hard.txt", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .create_symbolic_link(
             "/seed/nested/original-link.txt",
-            native_link_bytes("original.txt"),
-        )
-        .await?;
+            native_link_bytes("original.txt"), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     add_large_windows_fixture(kind, &mut transaction).await?;
     if kind == "macos-nfs" {
-        transaction.create_dir_all("/large-tree").await?;
+        transaction.create_dir_all("/large-tree", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         for index in 0..MACOS_NFS_LARGE_TREE_ENTRIES {
             transaction
                 .create_file(
                     &format!("/large-tree/entry-{index:04}.txt"),
                     Bytes::from_static(b"large-tree"),
-                    FileMetadata::default(),
-                )
-                .await?;
+                    FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         }
     }
     match transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
@@ -1030,16 +1020,15 @@ async fn add_large_windows_fixture(
     if kind != "windows-projfs" {
         return Ok(());
     }
-    transaction.create_dir_all("/large").await?;
+    transaction.create_dir_all("/large", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     for ordinal in 0..300_u16 {
         let extension = if ordinal % 10 == 0 { "rs" } else { "txt" };
         transaction
             .create_file(
                 &format!("/large/entry-{ordinal:04}.{extension}"),
                 Bytes::from(format!("entry-{ordinal}")),
-                FileMetadata::default(),
-            )
-            .await?;
+                FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     }
     Ok(())
 }

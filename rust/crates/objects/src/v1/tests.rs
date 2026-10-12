@@ -1,4 +1,4 @@
-use super::{Error, MemoryObjects, MemoryOptions, NativeBatchObjects, ObjectsProvider, wire};
+use super::{Error, MemoryObjects, MemoryOptions, ObjectsProvider, wire};
 use acyclic_stream::OwnedBytes;
 
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
