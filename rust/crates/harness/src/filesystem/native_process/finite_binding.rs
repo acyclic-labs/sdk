@@ -3,12 +3,8 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use crate::filesystem::PreparationIo;
 
 pub(super) fn require_family(
-    bound: Option<&NativeMaterializationWork>, work: &NativeMaterializationWork,
+    bound: &NativeMaterializationWork, work: &NativeMaterializationWork,
 ) -> Result<()> {
-    let bound = bound.ok_or(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Unsupported,
-        reason: "native provider was not bound to an original finite work family",
-    })?;
     if !bound.shares_ledger(work) {
         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
             reason: "native provider work differs from its original binding" });
@@ -149,7 +145,7 @@ pub(super) fn assemble<P: StreamProvider + 'static>(
     let plan = arc(plan, &io)?;
     let authority = arc(authority, &io)?;
     let history = arc(history, &io)?;
-    let supervisor = arc(NativeSupervisorControl::new(), &io)?;
+    let supervisor = arc(NativeSupervisorControl { active: Mutex::new(None), completion: tokio::sync::Notify::new(), process: Mutex::new(None) }, &io)?;
     let retained = io.owned_bytes()?;
     Ok(NativeProcessProvider { owner, command, plan, invocation, approval, authority,
         supervisor, effect_id, history, _arc_custody: None,
