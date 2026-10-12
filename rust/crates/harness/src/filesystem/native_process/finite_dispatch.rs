@@ -4,18 +4,8 @@ use super::*;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 
 #[derive(Serialize)]
-struct EffectWrite<'a> {
-    provider: &'a str,
-    effect_id: crate::EffectId,
-    attempt_id: crate::EffectAttemptId,
-    request_digest: [u8; 32],
-    guarantee: EffectGuarantee,
-    status: &'a EffectStatus,
-}
-
-#[derive(Serialize)]
 struct ObservedWrite<'a> {
-    effect: EffectWrite<'a>,
+    effect: &'a EffectObservation,
     diagnostic: &'a Option<crate::conversation::FileRef>,
     publication_failure: &'a Option<NativePublicationFailure>,
     invocation_failure: &'a Option<String>,
@@ -31,18 +21,12 @@ pub(super) fn require_finite(work: &NativeMaterializationWork) -> Result<()> {
     Ok(())
 }
 
-
 fn observed_matches(
     observed: Option<&NativeObservation>, receipt: &ObservedWrite<'_>,
     work: &NativeMaterializationWork,
 ) -> Result<bool> {
     let Some(observed) = observed else { return Ok(false); };
-    if !(examine(work, || observed.effect.provider == receipt.effect.provider
-            && observed.effect.effect_id == receipt.effect.effect_id
-            && observed.effect.attempt_id == receipt.effect.attempt_id
-            && observed.effect.request_digest == receipt.effect.request_digest
-            && observed.effect.guarantee == receipt.effect.guarantee
-            && &observed.effect.status == receipt.effect.status)?
+    if !(examine(work, || &observed.effect == receipt.effect)?
         && examine(work, || &observed.diagnostic == receipt.diagnostic)?
         && examine(work, || &observed.publication_failure == receipt.publication_failure)?
         && examine(work, || &observed.invocation_failure == receipt.invocation_failure)?
@@ -54,28 +38,12 @@ fn observed_matches(
     Ok(true)
 }
 
-fn require_same_launch(
-    retained: &LaunchReceipt<'_>, requested: &LaunchReceipt<'_>,
-    work: &NativeMaterializationWork,
-) -> Result<()> {
-    if !examine(work, || retained.dispatch == requested.dispatch)?
-        || !examine(work, || retained.plan == requested.plan)?
-        || !examine(work, || retained.conversation == requested.conversation)?
-        || !examine(work, || retained.task == requested.task)?
-        || !examine(work, || retained.command == requested.command)?
-        || !examine(work, || retained.approval == requested.approval)?
-        || !examine(work, || retained.approval_digest == requested.approval_digest)? {
-        return Err(boundary(crate::wire::ErrorCode::Storage, "native launch identity was reused"));
-    }
-    Ok(())
-}
-
 impl<P: StreamProvider> NativeProcessProvider<P> {
     pub(super) async fn validate_dispatch(
         &self, dispatch: &EffectDispatch, work: &NativeMaterializationWork,
     ) -> Result<()> {
-        check(work)?;
-        self.owner.verify_with_native_work(false, work).await?;
+        work.remaining()?;
+        self.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         let mut io = crate::store::history::native_work_io(work)?;
         let cursor = self.history.pin(0,
             Some(&mut io)).await?;
@@ -102,7 +70,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         drop(state);
         drop(cursor);
         drop(io);
-        let Invocation { view, request, approval_digest, .. } = self.invocation()?;
+        let Invocation { view, request, approval_digest, .. } = self.invocation()?.as_ref();
         if !examine(work, || view.manifest() == &request.view)? {
             return Err(boundary(crate::wire::ErrorCode::Storage, "native dispatch view changed"));
         }
@@ -112,16 +80,15 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
                 self.authority.approvals.verify_with_native_work(
                     self.approval, self.command, *approval_digest, work)?.await?;
                 for mapping in &request.view.volumes {
-                    self.owner.require_volume_grant_with_native_work(&mapping.volume,
-                        crate::conversation::VolumeOperation::Read, work)?;
+                    self.owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
                     if mapping.writable {
-                        self.owner.require_volume_grant_with_native_work(&mapping.volume,
-                            crate::conversation::VolumeOperation::Write, work)?;
+                        self.owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
                     }
                 }
-                self.owner.verify_with_native_work(false, work).await?;
+                self.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             }
-        check(work)
+        work.remaining()?;
+        Ok(())
     }
 
     pub(super) async fn launch(
@@ -152,10 +119,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         let owner = Arc::clone(&self.owner);
 
         let authority = Arc::clone(&self.authority);
-        let invocation = self.invocation()?;
-        let view = Arc::clone(&invocation.view);
-        let request = Arc::clone(&invocation.request);
-        let schema = Arc::clone(&invocation.result_schema);
+        let invocation = Arc::clone(self.invocation()?);
         let approval_digest = invocation.approval_digest;
         let supervisor = Arc::clone(&self.supervisor);
         let command = self.command;
@@ -169,15 +133,18 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             let _provider_custody = provider_custody;
             let _completion = NativeSupervisorCompletion(Arc::clone(&supervisor));
             let work = &original_work;
-            let ((status, diagnostic, published), mut execution_custody) = execute(&owner, view.as_ref(), &authority,
-                &request, &dispatch, &schema, &supervisor, work).await?;
+            let ((status, diagnostic, published), mut execution_custody) = execute(&owner, &invocation, &authority,
+                dispatch.attempt_id, &supervisor, work).await?;
             let mut custody = custody;
             custody.absorb(&mut execution_custody)?;
             let completed_work = work.receipt();
+            let EffectDispatch { provider, effect_id, attempt_id, request_digest, guarantee,
+                effect_kind, request } = dispatch;
+            drop((effect_kind, request));
+            let effect = EffectObservation { provider, effect_id, attempt_id, request_digest,
+                guarantee, status };
             let observed = ObservedWrite {
-                effect: EffectWrite { provider: &dispatch.provider, effect_id: dispatch.effect_id,
-                    attempt_id: dispatch.attempt_id, request_digest: dispatch.request_digest,
-                    guarantee: dispatch.guarantee, status: &status },
+                effect: &effect,
                 diagnostic: &diagnostic, publication_failure: &None,
                 invocation_failure: &None, work: &completed_work,
                 published: &published,
@@ -186,13 +153,22 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
                 &Receipt::<&LaunchReceipt<'_>, _>::Observed(&observed), JournalWrite::Settlement, work).await? {
                 let (launch, observation, _custody) = receipt_observation::read(&owner, &path, work).await?
                     .ok_or(boundary(crate::wire::ErrorCode::Storage, "native observed receipt is missing"))?;
-                let (task, fence) = owner.task_binding();
-                let expected = LaunchReceipt {
-                    dispatch: Cow::Borrowed(&dispatch), plan: Cow::Borrowed(plan.as_ref()),
-                    conversation: Cow::Borrowed(authority.verifier.audience()),
-                    task, command, fence: Cow::Borrowed(fence), approval, approval_digest,
-                };
-                require_same_launch(&launch, &expected, work)?;
+                // Dispatch kind and request were authenticated against this immutable plan.
+                if !examine(work, || launch.dispatch.provider == effect.provider
+                    && launch.dispatch.effect_id == effect.effect_id
+                    && launch.dispatch.attempt_id == effect.attempt_id
+                    && launch.dispatch.request_digest == effect.request_digest
+                    && launch.dispatch.guarantee == effect.guarantee
+                    && launch.dispatch.effect_kind == plan.effect_kind
+                    && launch.dispatch.request == plan.request)?
+                    || !examine(work, || launch.plan.as_ref() == plan.as_ref())?
+                    || !examine(work, || launch.conversation.as_ref() == authority.verifier.audience())?
+                    || !examine(work, || launch.task == owner.task_binding().0)?
+                    || !examine(work, || launch.command == command)?
+                    || !examine(work, || launch.approval == approval)?
+                    || !examine(work, || launch.approval_digest == approval_digest)? {
+                    return Err(boundary(crate::wire::ErrorCode::Storage, "native launch identity was reused"));
+                }
                 receipt_observation::authenticate_core_launch(history.as_ref(), &launch,
                     &authority, work).await?;
                 if !observed_matches(observation.as_ref(), &observed, work)? {
@@ -201,12 +177,6 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             }
             supervisor.snapshot(attempt)?;
             drop(path);
-            let EffectDispatch { provider, effect_id, attempt_id, request_digest, guarantee,
-                effect_kind, request } = dispatch;
-            drop(effect_kind);
-            drop(request);
-            let effect = EffectObservation { provider, effect_id, attempt_id, request_digest,
-                guarantee, status };
             drop((diagnostic, published));
             custody.substitute(receipt_observation::effect_bytes(&effect)?)?;
 
@@ -229,7 +199,7 @@ async fn append_receipt<P: StreamProvider, L: Serialize, O: Serialize>(
     work.charge(WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() })?;
     let (key_bytes, key_custody) = work.copy_bytes(blake3::hash(&bytes).as_bytes())?;
     let key_bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
-        key_bytes, key_custody, work.runtime_meter_owner(),
+        key_bytes, key_custody, work.runtime_meter(),
     ).map_err(|failure| super::super::native_execution::native_owned_bytes_failure(failure, work))?;
     let key = acyclic_stream::IdempotencyKey::new(key_bytes)?;
     owner.append(path.clone(), tail, &key, bytes, write,

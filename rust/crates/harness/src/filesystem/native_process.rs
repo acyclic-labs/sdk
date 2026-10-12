@@ -109,7 +109,7 @@ pub struct NativeProcessProvider<P: StreamProvider> {
     owner: Arc<TaskJournalOwner<P>>,
     command: OperationId,
     plan: Arc<TaskEffectPlan>,
-    invocation: Option<Invocation<P>>,
+    invocation: Option<Arc<Invocation<P>>>,
     approval: InteractionId,
     authority: Arc<NativeProcessAuthority>,
     supervisor: Arc<NativeSupervisorControl>,
@@ -121,8 +121,8 @@ pub struct NativeProcessProvider<P: StreamProvider> {
 
 struct Invocation<P: StreamProvider> {
     view: Arc<dyn NativeProcessView<P>>,
-    request: Arc<NativeProcessRequest>,
-    result_schema: Arc<serde_json::Value>,
+    request: NativeProcessRequest,
+    result_schema: serde_json::Value,
     approval_digest: [u8; 32],
 }
 
@@ -151,7 +151,7 @@ impl NativeSupervisorControl {
             if !retained.2.work().shares_ledger(original) {
                 return Err(boundary(crate::wire::ErrorCode::Conflict, "original supervisor tree belongs to another work family"));
             }
-            retained.0.terminate(Some(work.runtime_meter()))
+            retained.0.terminate(Some(work.runtime_meter().as_ref()))
                 .map_err(|error| Error::NativeWork {
                     cause: work.runtime_error(error), custody: None })?;
         } else {
@@ -249,11 +249,6 @@ struct NativeObservation {
     #[serde(default)]
     published: Vec<NativeProcessPublishedVolume>,
     work: acyclic_fs::WorkCounters,
-}
-
-fn check(work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-    work.remaining()?;
-    Ok(())
 }
 
 fn examine(work: &acyclic_fs::NativeMaterializationWork, compare: impl FnOnce() -> bool) -> Result<bool> {
@@ -428,7 +423,7 @@ where
     pub async fn output(
         &self, attempt: crate::EffectAttemptId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<(crate::conversation::FileRef, acyclic_fs::NativeAllocation)>> {
-        let Invocation { request, result_schema, .. } = self.invocation()?;
+        let Invocation { request, result_schema, .. } = self.invocation()?.as_ref();
         let Some(receipt) = self.receipt(attempt, work, None).await? else { return Ok(None); };
         if !receipt.observed { return Ok(None); }
         let NativeProcessReceipt { effect, diagnostic, original_fence, publication_failure,
@@ -463,8 +458,8 @@ where
         mut self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         finite_binding::require_family(self._custody.work(), work)?;
-        let mut custody = work.claim(std::mem::size_of::<Self>() as u64)?;
-        let mut original = self._custody.work().retain_owned(0)?;
+        let mut custody = work.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
+        let mut original = self._custody.work().claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         if let Err(cause) = original.absorb(&mut custody) {
             return Err(Error::NativeWork { cause, custody: Some(custody) });
         }
@@ -472,7 +467,7 @@ where
         Ok(Arc::new(self))
     }
 
-    fn invocation(&self) -> Result<&Invocation<P>> {
+    fn invocation(&self) -> Result<&Arc<Invocation<P>>> {
         self.invocation.as_ref().ok_or(boundary(crate::wire::ErrorCode::Unsupported, "receipt-only recovery owns no executable invocation"))
     }
 
@@ -521,7 +516,7 @@ where
         let bytes = receipt_observation::add(
             receipt_observation::add(request.provider.capacity() as u64, request.effect_kind.capacity() as u64)?,
             request.request.logical_owned_bytes()?)?;
-        let custody = work.retain_owned(bytes)?;
+        let custody = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         crate::NativeFutureBundle::new(work, || self.launch((request, custody), work))
     }
 
