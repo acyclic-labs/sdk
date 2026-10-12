@@ -24,7 +24,7 @@ use crate::{
     },
 };
 use acyclic_fs::{
-    Fs, MemoryAuthorityBackend, MemoryObjectBackend, WorkspaceDirectoryPage,
+    Fs, MemoryAuthorityBackend, MemoryObjectBackend, DirectoryPage,
     kernel::{FileKind, LogicalName, NameEncoding},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
@@ -106,7 +106,7 @@ struct ListFilesPageWire<'a> {
     next_after: Option<&'a str>,
 }
 
-struct ListFilesEntries<'a>(&'a [acyclic_fs::WorkspaceDirectoryEntry]);
+struct ListFilesEntries<'a>(&'a [acyclic_fs::TreeEntry]);
 
 impl serde::Serialize for ListFilesEntries<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
@@ -139,7 +139,7 @@ impl serde::Serialize for ListFilesEntries<'_> {
 
 fn list_files_page_wire<'a>(
     generation: &'a GenerationRef,
-    page: &'a WorkspaceDirectoryPage,
+    page: &'a DirectoryPage,
 ) -> Result<ListFilesPageWire<'a>> {
     for entry in &page.entries {
         if entry.name.encoding() != NameEncoding::Utf8
@@ -193,7 +193,7 @@ struct NativeListFilesInput {
 #[cfg(not(target_arch = "wasm32"))]
 struct NativeListFilesPage {
     generation: GenerationRef,
-    page: WorkspaceDirectoryPage,
+    page: DirectoryPage,
     _custody: acyclic_fs::NativeAllocation,
 }
 
@@ -328,7 +328,7 @@ fn require_volume_grant(
 ) -> Result<()> {
     let scope =
         scope.ok_or_else(|| Error::Unauthorized("file tool requires a scoped caller".into()))?;
-    let capability = volume.capability(operation)?;
+    let capability = volume.capability(operation, &mut None)?;
     if !scope.grants().contains(&capability) {
         return Err(Error::Unauthorized(format!("scope lacks {capability}")));
     }
@@ -666,13 +666,14 @@ impl MemoryHarnessStorage {
                 "memory Harness file limit must be positive".into(),
             ));
         }
-        let provider = ProviderRef::new("local", "filesystem", "2")?;
+        let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host: Arc<MemoryHost> = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let volume = VolumeRef::new(
             provider,
             Uuid::new_v4().to_string(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
+            &mut None,
         )?;
         let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
         host.create_volume(&volume).await?;
@@ -682,27 +683,22 @@ impl MemoryHarnessStorage {
         };
         let key = *blake3::hash(&OperationId::new().into_bytes()).as_bytes();
         let issuer = AuthorityIssuer::new("local-harness", key, conversation.clone());
-        let read_capability = volume.capability(VolumeOperation::Read)?;
-        let write_capability = volume.capability(VolumeOperation::Write)?;
-        let scope = issuer.root_for_agent(
-            agent,
-            "owner",
-            Capabilities::new([
+        let read_capability = volume.capability(VolumeOperation::Read, &mut None)?;
+        let write_capability = volume.capability(VolumeOperation::Write, &mut None)?;
+        let scope = issuer.issue("owner", &Capabilities::new([
                 capability::CONVERSATION_BIND.to_owned(),
                 capability::CONVERSATION_APPEND.to_owned(),
                 capability::CONVERSATION_SELECT_CONTEXT.to_owned(),
                 capability::INTERACTION_OPEN.to_owned(),
                 read_capability.clone(),
                 write_capability.clone(),
-            ]),
-        );
+            ]), Some(agent), None, &mut None).expect("scope proof");
         let stream = Arc::new(MemoryStream::default());
         let mut aggregate = StreamAggregate::open(
             &stream,
             conversation.clone(),
             issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-        )
+            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?;
         aggregate
             .execute(Command {
@@ -712,7 +708,7 @@ impl MemoryHarnessStorage {
                 scope: scope.clone(),
                 causal_parent: None,
                 action: Action::BindConversation { agent },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let input = Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &scope, maximum_file_bytes, None)?);
         let journal = Arc::new(
@@ -786,18 +782,8 @@ impl MemoryHarnessStorage {
         self.journal.run_conversation(bundle, operation_id, content, attachments, max_steps).await
     }
 
-    /// Convenience over the canonical ref-only turn API for local text input.
+    /// Stages text and ordered attachments for the canonical turn loop.
     pub async fn run_prompt(
-        &self,
-        bundle: &crate::bundle::HarnessBundle,
-        prompt: &str,
-    ) -> Result<TurnOutput> {
-        self.run_prompt_with_attachments(bundle, prompt, Vec::new())
-            .await
-    }
-
-    /// Text convenience with ordered staged file refs; canonical history still contains only refs and the complete list is manifest-backed if needed.
-    pub async fn run_prompt_with_attachments(
         &self,
         bundle: &crate::bundle::HarnessBundle,
         prompt: &str,
@@ -860,7 +846,7 @@ impl MemoryHarnessStorage {
         expected_generation: Option<&GenerationRef>,
         after: Option<&LogicalName>,
         maximum_entries: u32,
-    ) -> Result<(GenerationRef, WorkspaceDirectoryPage)> {
+    ) -> Result<(GenerationRef, DirectoryPage)> {
         let page = self
             .content_verifier
             .list_private_directory(
@@ -901,7 +887,7 @@ impl MemoryHarnessStorage {
 
     /// Resolves a pinned reference under an owner-issued signed read scope.
     pub async fn read_delegated(&self, scope: &Scope, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
-        self.delegated_reader(scope)?.read(file).await
+        self.delegated_reader(scope)?.read(file, self.maximum_file_bytes, None)?.await
     }
 
     /// Shares a private subtree with a named agent.
@@ -924,7 +910,7 @@ impl MemoryHarnessStorage {
         expected_generation: Option<&GenerationRef>,
         after: Option<&LogicalName>,
         maximum_entries: u32,
-    ) -> Result<(GenerationRef, WorkspaceDirectoryPage)> {
+    ) -> Result<(GenerationRef, DirectoryPage)> {
         self.delegated_reader(scope)?
             .list_private_directory(
                 &self.volume,
@@ -976,13 +962,10 @@ impl MemoryHarnessStorage {
         id: InteractionId,
         response: InteractionResponse,
     ) -> Result<InteractionOutcome> {
-        let responder = self.issuer.root(
-            format!("local-responder:{id}"),
-            Capabilities::new([
+        let responder = self.issuer.issue(&format!("local-responder:{id}"), &Capabilities::new([
                 capability::INTERACTION_RESOLVE.to_owned(),
                 capability::interaction_respond(id),
-            ]),
-        );
+            ]), None, None, &mut None).expect("scope proof");
         self.journal
             .resolve_interaction(id, response, &responder)
             .await?;
@@ -1137,15 +1120,18 @@ mod tests {
         let work = acyclic_fs::NativeMaterializationWork::new(
             FINITE_CONTENT_BUDGET, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let operation = OperationId::new();
-        let (file, hold) = scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":1}"#, &work)?.await?;
+        let io = super::super::PreparationIo::from_native_work(&work)?;
+        let file = scheduler.stage(
+            operation, "canonical-original-key", br#"{"input":1}"#, Some(&io))?.await?;
+        let hold = io.take_native_custody(file.logical_owned_bytes()?)?;
         assert_eq!(hold.bytes(), file.logical_owned_bytes()?);
-        let (retry, retry_hold) = scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":1}"#, &work)?.await?;
+        let retry = scheduler.stage(
+            operation, "canonical-original-key", br#"{"input":1}"#, Some(&io))?.await?;
+        let retry_hold = io.take_native_custody(retry.logical_owned_bytes()?)?;
         assert_eq!(retry, file);
-        assert_eq!(scheduler.stage(operation, "canonical-original-key", br#"{"input":1}"#).await?, file);
-        assert!(scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":2}"#, &work)?.await.is_err());
+        assert_eq!(scheduler.stage(operation, "canonical-original-key", br#"{"input":1}"#, None)?.await?, file);
+        assert!(scheduler.stage(
+            operation, "canonical-original-key", br#"{"input":2}"#, Some(&io))?.await.is_err());
         drop(retry);
         drop(retry_hold);
         drop(file);
@@ -1154,8 +1140,9 @@ mod tests {
         denied.bytes_hashed = "canonical-original-key".len() as u64 - 1;
         let denied_work = acyclic_fs::NativeMaterializationWork::new(
             denied, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        assert!(matches!(scheduler.stage_with_native_work(
-            OperationId::new(), "canonical-original-key", b"never", &denied_work)?.await,
+        let denied_io = super::super::PreparationIo::from_native_work(&denied_work)?;
+        assert!(matches!(scheduler.stage(
+            OperationId::new(), "canonical-original-key", b"never", Some(&denied_io))?.await,
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None })));
         assert_eq!(denied_work.receipt().bytes_hashed, 0);
@@ -1428,18 +1415,18 @@ mod tests {
             });
         let storage = MemoryHarnessStorage::new(AgentId::new(), Limits::default().file_bytes).await?;
         let replacement = storage.builder()
-            .model(Model::new("test", "text", "1", Value::Null)?, Arc::new(TextModel(requests.clone())))
-            .tools(storage.default_tools(Limits::default())?)
+            .model(Model::new("test".into(), "text".into(), "1".into(), Value::Null)?, Arc::new(TextModel(requests.clone())))
+            .tools(storage.default_tools(Limits::default(), None)?)
             .grant("tool:call:acyclic.read_file").grant("tool:call:acyclic.write_file")
             .grant("tool:call:acyclic.edit_file").grant("tool:call:acyclic.list_files")
             .grant(capability::MODEL_GENERATE).compaction(policy).build()?;
-        assert_eq!(storage.run_prompt(&replacement, "replacement").await?.text, "local response");
+        assert_eq!(storage.run_prompt(&replacement, "replacement", Vec::new()).await?.text, "local response");
         let disabled_storage = MemoryHarnessStorage::new(AgentId::new(), Limits::default().file_bytes).await?;
         let disabled = disabled_storage.builder()
-            .model(Model::new("test", "text", "1", Value::Null)?,
+            .model(Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
                 Arc::new(ModelWithoutAccounting(TextModel(requests.clone()))))
             .grant(capability::MODEL_GENERATE).compaction(crate::context::CompactionPolicy::Disabled).build()?;
-        assert_eq!(disabled_storage.run_prompt(&disabled, "disabled").await?.text, "local response");
+        assert_eq!(disabled_storage.run_prompt(&disabled, "disabled", Vec::new()).await?.text, "local response");
         let requests = requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1523,7 +1510,7 @@ mod tests {
                 assert_eq!(result.value, json!("pinned text"));
                 let projection = tool.projection.project(&invocation, &result)?;
                 assert_eq!(projection, expected_projection);
-                let content = tool.definition.validate_projection(&projection)?;
+                let content = tool.definition.validate_projection(&projection, limits, None)?;
                 content.validate_limits(limits, &mut None)?;
                 assert!(matches!(
                     content.validate_limits(Limits {
@@ -1846,8 +1833,8 @@ mod tests {
         });
         let limits = Limits::default();
         let storage = MemoryHarnessStorage::new(AgentId::new(), limits.file_bytes).await?;
-        let bundle = storage.builder().model(Model::new("test", "file", "1", Value::Null)?, model.clone())
-            .grant(capability::MODEL_GENERATE).tools(storage.default_tools(limits)?)
+        let bundle = storage.builder().model(Model::new("test".into(), "file".into(), "1".into(), Value::Null)?, model.clone())
+            .grant(capability::MODEL_GENERATE).tools(storage.default_tools(limits, None)?)
             .grant("tool:call:acyclic.read_file").grant("tool:call:acyclic.write_file")
             .grant("tool:call:acyclic.edit_file").grant("tool:call:acyclic.list_files")
             .compaction(crate::context::CompactionPolicy::default()).limits(limits).build()?;
@@ -1863,7 +1850,7 @@ mod tests {
         *file
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(staged);
-        assert_eq!(storage.run_prompt(&bundle, "read the file").await?.text, "read complete");
+        assert_eq!(storage.run_prompt(&bundle, "read the file", Vec::new()).await?.text, "read complete");
         assert_eq!(model.calls.load(Ordering::SeqCst), 2);
         Ok(())
     }
@@ -1873,12 +1860,12 @@ mod tests {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let storage = MemoryHarnessStorage::new(AgentId::new(), Limits::default().file_bytes).await?;
         let bundle = storage.builder()
-            .model(Model::new("test", "text", "1", Value::Null)?, Arc::new(TextModel(requests.clone())))
-            .tools(storage.default_tools(Limits::default())?)
+            .model(Model::new("test".into(), "text".into(), "1".into(), Value::Null)?, Arc::new(TextModel(requests.clone())))
+            .tools(storage.default_tools(Limits::default(), None)?)
             .grant("tool:call:acyclic.read_file").grant("tool:call:acyclic.write_file")
             .grant("tool:call:acyclic.edit_file").grant("tool:call:acyclic.list_files")
             .grant(capability::MODEL_GENERATE).compaction(crate::context::CompactionPolicy::default()).build()?;
-        let output = storage.run_prompt(&bundle, "hello").await?;
+        let output = storage.run_prompt(&bundle, "hello", Vec::new()).await?;
         assert_eq!(output.text, "local response");
         let file = storage.stage(
                 OperationId::new(),
@@ -1888,7 +1875,7 @@ mod tests {
                 "note.txt",
             )
             .await?;
-        let output = storage.run_prompt_with_attachments(
+        let output = storage.run_prompt(
                 &bundle, "read this",
                 vec![Attachment {
                     file,
@@ -1919,7 +1906,7 @@ mod tests {
             .builder()
             .compaction(crate::context::CompactionPolicy::Disabled)
             .model(
-                Model::new("test", "text", "1", Value::Null)?,
+                Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
                 Arc::new(TextModel(requests.clone())),
             )
             .grant("model:generate")
@@ -1968,12 +1955,7 @@ mod tests {
             b"private attachment body"
         );
         assert!(
-            ContentGrant::verify(
-                &storage.verifier(),
-                &delegated,
-                storage.volume(),
-                VolumeOperation::Write
-            )
+            ContentGrant::verify(&storage.verifier(), &delegated, storage.volume(), VolumeOperation::Write, u64::MAX, &mut None)
             .is_err()
         );
         let directory = storage.delegate_directory_read(reader, "attached-directory", "input")?;
@@ -2013,12 +1995,7 @@ mod tests {
                 .is_ok()
         );
         assert!(
-            ContentGrant::verify(
-                &storage.verifier(),
-                &directory,
-                storage.volume(),
-                VolumeOperation::Write
-            )
+            ContentGrant::verify(&storage.verifier(), &directory, storage.volume(), VolumeOperation::Write, u64::MAX, &mut None)
             .is_err()
         );
         let output = storage
@@ -2088,7 +2065,7 @@ mod tests {
             Some(expected_selection)
         );
         drop(aggregate);
-        storage.run_prompt(&bundle, "follow-up").await?;
+        storage.run_prompt(&bundle, "follow-up", Vec::new()).await?;
         assert_eq!(
             storage
                 .run_conversation(
@@ -2153,7 +2130,7 @@ mod tests {
             .compaction(crate::context::CompactionPolicy::Disabled)
             .tasks(tasks)
             .model(
-                Model::new("test", "text", "1", Value::Null)?,
+                Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
                 Arc::new(TextModel(Arc::new(Mutex::new(Vec::new())))),
             )
             .grant("model:generate")

@@ -63,10 +63,10 @@ impl ModelProvider for MockModel {
 fn main() -> Result<()> {
     let _executor: Box<dyn Executor> = Box::new(CustomExecutor(
         StockExecutor::new(
-            Model::new("example", "mock", "1", Value::Null)?,
+            Model::new("example".into(), "mock".into(), "1".into(), Value::Null)?,
             Arc::new(MockModel),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled),
     ));

@@ -23,8 +23,7 @@ the packaged Rust/WASM bridge in browsers (or as the Node fallback). It accepts
 `ActorsService` descriptor. The semantic TypeScript declarations, canonical
 Protobuf input, Buf wire bindings, and typed facade are regenerated from Rust
 with `bun run generate:client`; there is no separately authored contract or
-hand-maintained operation list in the client. `HttpActorsClient`
-remains a compatibility alias while callers move to the platform-neutral name.
+hand-maintained operation list in the client.
 Actor invocation includes request and response headers.
 
 The installed native Rust companion trusts the operating system's roots

@@ -1,44 +1,31 @@
 //! Native lifetime ownership in the existing session actor and task journals.
 
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::filesystem::TaskWorkerAttempt;
 use acyclic_harness::distributed::WorkPull;
 use acyclic_harness::{Error, Result as RootResult};
 use std::future::Future;
 
-pub(super) struct PiNativeJob<T> {
-    handle: tokio::task::JoinHandle<RootResult<T>>,
-    custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-impl<T> Future for PiNativeJob<T> {
-    type Output = RootResult<T>;
-
-    fn poll(self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>)
-        -> std::task::Poll<Self::Output>
-    {
-        let job = self.get_mut();
-        match Future::poll(std::pin::Pin::new(&mut job.handle), context) {
-            std::task::Poll::Pending => std::task::Poll::Pending,
-            std::task::Poll::Ready(Ok(result)) => std::task::Poll::Ready(result),
-            std::task::Poll::Ready(Err(source)) => std::task::Poll::Ready(
-                Err(Error::NativeSupervisor { source, custody: job.custody.take() })),
-        }
+async fn join_native_job<T>(mut job: (tokio::task::JoinHandle<RootResult<T>>, acyclic_fs::NativeAllocation)) -> RootResult<T> {
+    match (&mut job.0).await {
+        Ok(result) => result,
+        Err(source) => Err(Error::NativeSupervisor { source, custody: Some(job.1) }),
     }
 }
 
 pub(super) fn spawn_native_job<T, F, B>(
     work: &acyclic_fs::NativeMaterializationWork, build: B,
-) -> RootResult<PiNativeJob<T>>
+) -> RootResult<(tokio::task::JoinHandle<RootResult<T>>, acyclic_fs::NativeAllocation)>
 where
     T: Send + 'static,
     F: Future<Output = RootResult<T>> + Send + 'static,
     B: FnOnce() -> F,
 {
-    let custody = work.retain_owned(std::mem::size_of::<(TaskId, PiNativeJob<T>)>() as u64)
+    let custody = work.retain_owned(std::mem::size_of::<(TaskId, tokio::task::JoinHandle<RootResult<T>>, acyclic_fs::NativeAllocation)>() as u64)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let future = acyclic_harness::NativeFutureBundle::new(work, build)?;
-    Ok(PiNativeJob { handle: tokio::spawn(future), custody: Some(custody) })
+    Ok((tokio::spawn(future), custody))
 }
 
 impl PiSession {
@@ -94,7 +81,7 @@ impl PiSession {
         } else { None };
         let mut failure = None;
         retain_first_failure(&mut failure,
-            self.runtime.runtime.task_host().cancel_with_native_work(target, &work).await.map(|_| ()));
+            self.runtime.runtime.task_host().cancel(target, Some(&work)).await.map(|_| ()));
         for route in self.state.routes.values_mut() {
             if let PluginTaskBinding::Pi(binding) = &route.task_binding
                 && tasks.contains(&binding.task_id) && !route.lifecycle.is_frozen()
@@ -157,8 +144,6 @@ impl PiSession {
         &mut self, query_work: &acyclic_fs::NativeMaterializationWork,
     ) -> RootResult<()> {
         let cancellation = query_work.cancellation().clone();
-        let budget = query_work.remaining()
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let _graph_receipt = pi_recovery::observe_pi_session(
             &self.runtime.runtime, &self.state, query_work).await?;
         if self.state.routes.is_empty() { return Ok(()); }
@@ -174,7 +159,7 @@ impl PiSession {
         for route in self.state.routes.values() {
             let parent = self.alias_task(&route.parent_agent_id)?;
             let original = pi_fork::original_operation(root_task, parent, &route.turn_id, query_work)?;
-            let plan = coordinator.load_original_plan(original, budget, &cancellation)
+            let plan = coordinator.load_original_plan(original)
                 .await?.ok_or_else(|| Error::Invalid("Pi Created route has no original immutable fork plan".to_owned()))?;
             validate_created_native_route(route, parent, &plan, query_work)?;
             plans.insert(plan.commit.child.task_id, (route, parent, plan));
@@ -183,7 +168,6 @@ impl PiSession {
         let _remaining_custody = pi_recovery::vector_slots::<TaskId>(plans.len(), query_work)?;
         let mut remaining = Vec::with_capacity(plans.len());
         remaining.extend(plans.keys().copied());
-        let mut root_sources = BTreeMap::new();
         let mut child_sources = BTreeMap::new();
         while !remaining.is_empty() {
             let before = remaining.len();
@@ -196,21 +180,14 @@ impl PiSession {
                     .ok_or_else(|| Error::Invalid("Pi original selected Root was not restored before child recovery".to_owned()))?
                     .as_str();
                 let source = if plan.commit.source_task == root_task {
-                    if let Some(source) = root_sources.get(root_key) {
-                        Arc::clone(source)
-                    } else {
-                        let root = self.roots.get(root_key).ok_or_else(|| Error::Invalid("Pi original selected Root was not restored before child recovery".to_owned()))?;
-                        let source = Arc::clone(&root.workspace);
-                        root_sources.insert(root_key, source.clone());
-                        source
-                    }
+                    Arc::clone(&self.roots[root_key].workspace)
                 } else if let Some(source) = child_sources.get(&plan.commit.source_task) {
                     Arc::clone(source)
                 } else {
                     index += 1;
                     continue;
                 };
-                let observed = coordinator.observe_prepared(plan, source.clone(), budget,
+                let observed = coordinator.observe_prepared(plan, source.clone(),
                     cancellation.clone()).await?.ok_or_else(|| Error::Invalid("Pi Created route has no authenticated successful original creator".to_owned()))?;
                 validate_created_native_report(route, &observed)?;
                 native.register_observed_source(observed).await?;
@@ -304,7 +281,7 @@ impl PiSession {
             }
             if let Some(root) = root {
                 retain_first_failure(&mut failure,
-                    self.runtime.runtime.task_host().cancel_with_native_work(root, &work).await.map(|_| ()));
+                    self.runtime.runtime.task_host().cancel(root, Some(&work)).await.map(|_| ()));
             }
             for route in self.state.routes.values_mut() {
                 if !route.lifecycle.is_frozen() {
@@ -347,7 +324,7 @@ impl PiSession {
         mode: NativeDrainMode, work: &acyclic_fs::NativeMaterializationWork,
         failure: &mut Option<Error>,
     ) {
-        let _drain_custody = match pi_recovery::vector_slots::<(TaskId, PiNativeJob<()>)>(
+        let _drain_custody = match pi_recovery::vector_slots::<(TaskId, tokio::task::JoinHandle<RootResult<()>>, acyclic_fs::NativeAllocation)>(
             tasks.len(), work,
         ) {
             Ok(custody) => custody,
@@ -370,7 +347,7 @@ impl PiSession {
             }
         }
         for (task, drain) in drains {
-            match drain.await {
+            match join_native_job(drain).await {
                 Ok(()) if mode != NativeDrainMode::Preserve => {
                     for route in self.state.routes.values_mut() {
                         if matches!(&route.task_binding, PluginTaskBinding::Pi(binding)
@@ -405,7 +382,7 @@ impl PiSession {
     async fn join_native_jobs(&mut self, tasks: &[TaskId], failure: &mut Option<Error>) {
         for task in tasks {
             let Some(job) = self.native_jobs.remove(task) else { continue; };
-            let result = match job.await {
+            let result = match join_native_job(job).await {
                 Ok((attempt, allocation)) => {
                     let result = match attempt {
                         Some(TaskWorkerAttempt::Unresolved { error, .. }) => Err(error),
@@ -498,7 +475,7 @@ async fn original_native_first_dispatch_pending(
         return Ok(false);
     }
     let outcome = host.outcome_with_native_work(task, work).await?;
-    if host.cancellation_requested_with_native_work(task, work).await?
+    if host.cancellation_requested(task, Some(work)).await?
         || outcome.0.is_some()
     {
         return Ok(false);

@@ -25,7 +25,10 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         verifier: &AuthorityVerifier, scope: &Scope, maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
-        Self::validate_limit(maximum_bytes, io)?;
+        if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
+                "content publication limit must be positive and finite"));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let mut history = io.map(PreparationIo::history_io);
@@ -43,19 +46,6 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         };
         Ok(Self { host, volume, grant, maximum_bytes,
             #[cfg(not(target_arch = "wasm32"))] _native_metadata })
-    }
-
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        self.volume.logical_owned_bytes()?.checked_add(self.grant.logical_owned_bytes()?)
-            .ok_or_else(|| Error::Invalid("content publisher ownership overflow".into()))
-    }
-
-    fn validate_limit(maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
-        if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
-                "content publication limit must be positive and finite"));
-        }
-        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -149,12 +139,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         Ok(file)
     }
 
-    pub(super) async fn replace(
-        &self, operation_id: OperationId, source: &FileRef, bytes: &[u8],
-        io: Option<&PreparationIo>,
-        publication_lease: Option<&dyn crate::resource_preparation::CreatedTaskLease>,
-        root_allocation: Option<&FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> Result<FileRef> {
+    pub(super) fn replace<'a>(
+        &'a self, operation_id: OperationId, source: &'a FileRef, bytes: &'a [u8],
+        io: Option<&'a PreparationIo>,
+        publication_lease: Option<&'a Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
+        root_allocation: Option<&'a FilesystemRootBootstrapAllocation<A, O>>,
+    ) -> impl std::future::Future<Output = Result<FileRef>> + Send + 'a {
+        async move {
         validate_publication(source.path(), bytes, source.descriptor().media_type(), source.display_name(), self.maximum_bytes, io)?;
         let mut history = io.map(PreparationIo::history_io);
         source.validate(&mut history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?;
@@ -174,9 +165,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         }
         if version.len() != 64 || !version.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "file version is not a Filesystem generation"));
-        }
-        if source.descriptor().byte_length() > 9_007_199_254_740_991 {
-            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "file byte length exceeds cross-language precision"));
         }
         #[cfg(not(target_arch = "wasm32"))]
         let root_generation = root_allocation
@@ -203,15 +191,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         drop(owned_generation);
         drop(generation_hold);
         Ok(file)
+            }
     }
 
     #[allow(clippy::too_many_arguments, reason = "one canonical complete publication identity")]
-    pub(super) async fn publish_once(
-        &self, operation_id: OperationId, path: &str, bytes: &[u8],
-        media_type: &str, display_name: &str, io: Option<&PreparationIo>,
-        publication_lease: Option<&dyn crate::resource_preparation::CreatedTaskLease>,
-        root_allocation: Option<&FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> Result<FileRef> {
+    pub(super) fn publish_once<'a>(
+        &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
+        media_type: &'a str, display_name: &'a str, io: Option<&'a PreparationIo>,
+        publication_lease: Option<&'a Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
+        root_allocation: Option<&'a FilesystemRootBootstrapAllocation<A, O>>,
+    ) -> impl std::future::Future<Output = Result<FileRef>> + Send + 'a {
+        async move {
         validate_publication(path, bytes, media_type, display_name, self.maximum_bytes, io)?;
         #[cfg(not(target_arch = "wasm32"))]
         let expected_generation = root_allocation
@@ -227,6 +217,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         drop(retry);
         drop(retry_hold);
         Ok(file)
+            }
     }
 
 
@@ -235,7 +226,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
 pub(super) fn once_key(operation: OperationId, io: Option<&PreparationIo>) -> Result<IdempotencyKey> {
     let length = "filesystem-single-file:".len() + 36;
     if let Some(io) = io {
-        io.claim(length as u64)?;
+        io.retain_owned(length as u64)?;
         io.preflight(acyclic_fs::WorkCounters { bytes_encoded: length as u64, bytes_copied: length as u64, items_examined: 1, ..Default::default() })?;
         io.allocation_attempt(length as u64)?;
     }
@@ -252,7 +243,7 @@ pub(super) fn once_key(operation: OperationId, io: Option<&PreparationIo>) -> Re
 fn replacement_key(operation: OperationId, path: &str, io: Option<&PreparationIo>) -> Result<IdempotencyKey> {
     let length = "filesystem-replacement:".len() + 36 + 1 + 64;
     if let Some(io) = io {
-        io.claim(length as u64)?;
+        io.retain_owned(length as u64)?;
         io.preflight(acyclic_fs::WorkCounters {
             bytes_hashed: path.len() as u64, bytes_encoded: length as u64,
             bytes_copied: length as u64, items_examined: 1, ..Default::default()
@@ -276,7 +267,7 @@ fn validate_publication(
     path: &str, bytes: &[u8], media_type: &str, display_name: &str,
     maximum_bytes: u64, io: Option<&PreparationIo>,
 ) -> Result<()> {
-    super::fork_preparer_io::validate_content_path(path, io)?;
+    crate::executor::with_history_io(io, |work| crate::conversation::validate_content_path(path, work))?;
     if bytes.len() as u64 > maximum_bytes || bytes.len() as u64 > 9_007_199_254_740_991 {
         return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "content size limit mismatch"));
     }

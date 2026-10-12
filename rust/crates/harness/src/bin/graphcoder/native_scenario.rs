@@ -2,6 +2,7 @@
 #![allow(missing_docs, reason = "private installed-binary scenario boundary")]
 
 use super::native::{AuthorityBinding, Config, ForkSourceConfig};
+use acyclic_harness::runtime::TaskStateProvider;
 use super::native_tools::{NativeToolCaller, NativeToolFork, NativeToolMerge};
 use super::native_writeback::NativePublicationConfig;
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
@@ -63,7 +64,6 @@ struct Producer {
     preparations: Vec<Value>,
     references: BTreeMap<String, FileRef>,
     planned_commands: BTreeMap<String, WorkflowCommand>,
-    planned_inputs: BTreeMap<String, FileRef>,
     leases: BTreeMap<String, PathBuf>,
     cancellation: acyclic_fs::CancellationToken,
 }
@@ -97,8 +97,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         Err(error) => return Err(Error::Storage(error.to_string())),
     }
     let deployment = format!("{ISSUER}.{}", uuid::Uuid::new_v4());
-    let filesystem_provider = ProviderRef::new(&deployment, "filesystem", "2")?;
-    let stream_provider = ProviderRef::new(&deployment, "stream", "2")?;
+    let filesystem_provider = ProviderRef::new(&deployment.into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new(&deployment.into(), "stream".into(), "2".into(), &mut None)?;
     let seed_agent = AgentId::new();
     let private = VolumeRef::new(filesystem_provider.clone(), "bootstrap-private".into(),
         VolumeClass::AgentPrivate, VolumeOwner::Agent(seed_agent), &mut None)?;
@@ -122,9 +122,9 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         "tool:call:acyclic.edit_file".to_owned(),
         private.capability(VolumeOperation::Read, &mut None)?, private.capability(VolumeOperation::Write, &mut None)?,
         project.capability(VolumeOperation::Read, &mut None)?, project.capability(VolumeOperation::Write, &mut None)?,
-        project.directory_read_capability("")?,
+        project.directory_read_capability("", &mut None)?,
     ]);
-    let scope = issuer.root_for_agent(seed_agent, "explicit-trusted-local-bootstrap", grants);
+    let scope = issuer.issue("explicit-trusted-local-bootstrap", &grants, Some(seed_agent), None, &mut None).expect("scope proof");
     let mut owner = AuthorityBinding { authority, issuer: ISSUER.into(), key: TEST_KEY, scope };
     let limits = Limits { file_bytes: PAYLOAD_BYTES, path_bytes: 1024, attachments: 16,
         render_bytes: 16 * 1024, model_steps: 1, model_events_per_step: 64,
@@ -164,9 +164,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     files.create_volume(&private).await?;
     files.create_volume(&project).await?;
     // Known qualification prompts are real provider-owned command artifacts.
-    let project_writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &owner.scope, &project, VolumeOperation::Write)?;
+    let project_writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &owner.scope, &project, VolumeOperation::Write, u64::MAX, &mut None)?;
     let mut planned_commands = BTreeMap::new();
-    let mut planned_inputs = BTreeMap::new();
     let mut artifact_grants = owner.scope.capabilities().iter().map(str::to_owned).collect::<Vec<_>>();
     for label in ["bootstrap", "root", "left", "right", "grandchild", "cross_source"] {
         let input = ModelTaskCommand { input: ModelContent::Text(format!("real isolated {label} qualification task")),
@@ -177,11 +176,10 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
             &IdempotencyKey::new(format!("planned-input-{label}"))?).await?;
         artifact_grants.push(file.read_capability()?);
         let command = WorkflowCommand { operation_id: OperationId::new(), kind: MODEL_TASK_COMMAND_KIND.into(),
-            payload: file.clone() };
+            payload: file };
         planned_commands.insert(label.to_owned(), command);
-        planned_inputs.insert(label.to_owned(), file);
     }
-    owner.scope = issuer.root_for_agent(seed_agent, "explicit-trusted-local-bootstrap", Capabilities::new(artifact_grants));
+    owner.scope = issuer.issue("explicit-trusted-local-bootstrap", &Capabilities::new(artifact_grants), Some(seed_agent), None, &mut None).expect("scope proof");
     config.owner = owner.clone();
     let stream = Arc::new(LocalStream::open(&config.stream_root, Default::default())
         .await.map_err(|error| Error::Storage(error.to_string()))?);
@@ -191,12 +189,12 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     tasks.register(stock.definition()?)?;
     tasks.register(preparation.definition()?)?;
     let mut machines = MachineRegistry::default();
-    machines.register(stock)?;
-    machines.register(preparation)?;
-    let creator = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), issuer.clone())?);
+    machines.register(stock, &mut None)?;
+    machines.register(preparation, &mut None)?;
+    let creator = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
     let runtime = Runtime::open_with_creation_providers(
         stream.clone(), files.clone(), private.clone(), issuer.verifier(&mut None).expect("verifier copy"), owner.scope.clone(),
-        RuntimeScope::new(owner.scope.capabilities().clone(), limits)?.with_run_limits(run_limits)?,
+        RuntimeScope::new(owner.scope.capabilities().clone(), limits)?.with_run_limits(run_limits, &mut None)?,
         tasks, machines, Default::default(), config.session_limits, config.concurrency,
         PAYLOAD_BYTES, Arc::new(SystemUnixMillisClock), None, vec![creator], Default::default(),
     ).await?;
@@ -214,24 +212,21 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let mut aggregate = aggregate(&stream, files.clone(), &owner, &config).await?;
     aggregate.execute(Command { operation_id: OperationId::new(), idempotency_key: IdempotencyKey::new("bind-bootstrap")?,
         expected_revision: 0, scope: owner.scope.clone(), causal_parent: None,
-        action: Action::BindConversation { agent: seed_agent } }).await?;
+        action: Action::BindConversation { agent: seed_agent } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let mut seed = Caller { task: seed_task, binding: owner, project, private, result: None,
         aggregate, lease: seed_lease };
     let mut producer = Producer { root: root.clone(), files, stream, runtime, config, template,
         worker, preparations: Vec::new(), references: BTreeMap::new(),
         leases: BTreeMap::from([("bootstrap_seed".to_owned(), seed_lease_path)]),
-        planned_commands, planned_inputs, cancellation: cancellation.clone() };
+        planned_commands, cancellation: cancellation.clone() };
     let imported_ref = acyclic_harness::resources::GenerationRef::new(producer.config.filesystem_provider.clone(),
-        imported_generation.id().digest().into_bytes(), None)?;
+        imported_generation.id().digest().into_bytes().into(), None)?;
     let imported_bytes = producer.files.read(&workspace_ref(producer.config.filesystem_provider.clone(),
         &seed.project.storage_name(&mut None)?)?, Some(&imported_ref), "/sentinel.txt", PAYLOAD_BYTES).await?;
     let imported_file = FileRef::new(seed.project.clone(), "sentinel.txt".into(),
         (hex::encode(imported_generation.id().digest().into_bytes())).into(),
         acyclic_harness::conversation::FileDescriptor::from_bytes(&imported_bytes, "text/plain", &mut None)?, "sentinel.txt".into(), &mut None)?;
     producer.references.insert("native_import_baseline".into(), imported_file);
-    for (label, file) in &producer.planned_inputs {
-        producer.references.insert(format!("{label}_input"), file.clone());
-    }
     producer.seed(&mut seed, "bootstrap", 1).await?;
     let mut logical_root = producer.fork(&mut seed, "root", None, true).await?
         .ok_or_else(|| Error::Conflict("bootstrap root was not published".into()))?;
@@ -248,7 +243,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     // Authenticated foreign project selection only.
     producer.fork(&mut left, "cross_source", Some(logical_root.task), false).await?;
     let left_issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, left.binding.authority.clone());
-    let notice_writer = ContentGrant::verify(&left_issuer.verifier(&mut None).expect("verifier copy"), &left.binding.scope, &left.private, VolumeOperation::Write)?;
+    let notice_writer = ContentGrant::verify(&left_issuer.verifier(&mut None).expect("verifier copy"), &left.binding.scope, &left.private, VolumeOperation::Write, u64::MAX, &mut None)?;
     let notice_file = producer.files.put_content(&left.private, &notice_writer, "merge/selected-grandchild.txt",
         b"Explicit caller notice: import the selected immutable grandchild project; do not import private scratch.\n",
         "text/plain", "merge-notice.txt", PAYLOAD_BYTES, &IdempotencyKey::new("left-grandchild-merge-notice")?).await?;
@@ -271,17 +266,9 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
                 native_snapshot: None, result_volume: caller.result.clone() });
         }
         identities.insert(label, caller.task);
-        caller_records.insert(label, json!({ "task": caller.task, "agent": caller.binding.scope.agent(),
+        caller_records.insert(label, json!({ "agent": caller.binding.scope.agent(),
             "authority": caller.binding.authority, "project": caller.project, "private_volume": caller.private,
-            "result_volume": caller.result,
-            "admission": producer.runtime.task_host().observe_admission(caller.task).await?,
-            "volume_snapshots": producer.runtime.task_host().observe_volume_snapshots(caller.task).await? }));
-    }
-    let mut file_refs = BTreeMap::new();
-    for (label, file) in &producer.references {
-        let path = root.join("inputs").join(format!("ref-{label}.json"));
-        persist(&path, file).await?;
-        file_refs.insert(label, path);
+            "admission": producer.runtime.task_host().observe_admission(caller.task).await? }));
     }
     let cursor = acyclic_harness::wire::ReplayCursor {
         authority: Some(acyclic_harness::wire_codec::encode_authority(&producer.config.owner.authority)),
@@ -348,35 +335,15 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let manifest = root.join("native-scenario.json");
     persist(&manifest, &json!({
         "format_version": 1,
-        "bootstrap": "genuine ordinary fork-machine/provider precreation; no model dispatch; not a PTY claim",
-        "authentication": "explicit credential-free trusted local AuthorityIssuer; NOT production authentication",
         "config": config_path, "tasks": identities, "callers": caller_records,
         "model_invocation_ledger": producer.config.model_invocation_ledger,
-        "preparations": producer.preparations, "files": producer.references, "file_refs": file_refs,
+        "preparations": producer.preparations, "files": producer.references,
         "leases": producer.leases, "cursor_protobuf": cursor_path,
         "native_command": native_command, "native_publication": publication, "native_publication_request": publication_path,
-        "limits": producer.config.limits, "session_limits": producer.config.session_limits,
-        "history_limits": HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
-        "task_accounting": {
-            "bootstrap_seed_tasks": 1, "logical_agent_tasks": 4, "executed_preparation_tasks": 4,
-            "actual_retained_tasks": caller_records.len() + producer.preparations.iter()
-                .filter(|preparation| preparation["executed"] == true).count(),
-            "pending_preparation_tasks": 1, "pending_agent_tasks": 1,
-            "ordinary_mailbox_helper_tasks": 1, "complete_graph_tasks": 12,
-            "maximum_owned_reservations": 6, "maximum_parent_edges": 3,
-            "preparation_tasks_are_not_agent_ancestry": true
-        },
+        "session_limits": producer.config.session_limits,
         "negative_control": negative_control,
-        "negative_control_assertion": "in the separate eleven-task store, admit one ordinary mailbox helper before cross-source preparation; preparation is task eleven, and prepared child task twelve must be rejected by the original immutable session limit",
         "qualification_ready": true,
-        "missing_prerequisites": [],
-        "effect_assertions": {
-            "creator_provenance": "root/left/right/grandchild admissions must reauthenticate real created-resource proofs",
-            "isolated_forks": "project and agent-private volume identities differ across all logical callers",
-            "cross_source": "pending left-caller fork selects root project only; inherits left transcript and empty left-private lineage",
-            "bounded_history": "root contains 17 genuine local messages; require page16 and continuation",
-            "original_lease": "resume only the exact retained original WorkLease after process death; never reclaim a new reservation"
-        }
+        "missing_prerequisites": []
     })).await?;
     println!("native-scenario bootstrap=real-provider-precreation manifest={} inputs-ready=true; qualification remains unexecuted", manifest.display());
     Ok(manifest)
@@ -391,7 +358,7 @@ impl Producer {
         let operation = OperationId::new();
         let approval = InteractionId::new_v4();
         let issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, caller.binding.authority.clone());
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None)?;
         let budget = self.config.tools.content_budget;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &self.cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -427,14 +394,14 @@ impl Producer {
             environment: Default::default(), timeout_ms: 5000, control_timeout_ms: 1000,
             cancellation_poll_ms: 20, maximum_output_bytes: 1024, maximum_result_bytes: 16 * 1024,
             mcp_stdio: None, standard_input: None, view: view.manifest().clone() };
-        let writer = ContentGrant::verify(&verifier, &caller.binding.scope, &caller.private, VolumeOperation::Write)?;
+        let writer = ContentGrant::verify(&verifier, &caller.binding.scope, &caller.private, VolumeOperation::Write, u64::MAX, &mut None)?;
         let request_file = self.files.put_content(&caller.private, &writer, "command/request.json",
             &serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?,
             "application/json", "request.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-request")?).await?;
         let schema = self.files.put_content(&caller.private, &writer, "command/schema.json", br#"{"type":"object"}"#,
             "application/schema+json", "schema.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-schema")?).await?;
         let digest = request.approval_digest(caller.task, operation)?;
-        let interaction = Interaction::approval("Run the exact native qualification command", operation, digest)?;
+        let interaction = Interaction::approval("Run the exact native qualification command".into(), operation, digest)?;
         let prompt = self.files.put_content(&caller.private, &writer, "command/approval.json",
             &serde_json::to_vec(&interaction).map_err(|error| Error::Invalid(error.to_string()))?,
             "application/json", "approval.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-approval")?).await?;
@@ -454,7 +421,7 @@ impl Producer {
 
     async fn seed(&mut self, caller: &mut Caller, label: &str, messages: usize) -> Result<()> {
         let issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, caller.binding.authority.clone());
-        let writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &caller.binding.scope, &caller.private, VolumeOperation::Write)?;
+        let writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &caller.binding.scope, &caller.private, VolumeOperation::Write, u64::MAX, &mut None)?;
         let scratch = self.files.put_content(&caller.private, &writer, "scratch/caller-marker.txt",
             format!("{label} private scratch; must never be copied as child scratch\n").as_bytes(),
             "text/plain", "caller-marker.txt", PAYLOAD_BYTES,
@@ -476,10 +443,10 @@ impl Producer {
                 causal_parent: None, action: Action::AppendConversationMessage {
                     message: Box::new(ConversationMessage { id: uuid::Uuid::new_v4(), sequence,
                         kind: MessageKind::User, content: file, attachments: Default::default(),
-                        reply_to: None, tool_call_id: None, extensions: Default::default() }) } }).await?;
+                        reply_to: None, tool_call_id: None, extensions: Default::default() }) } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
         }
         let project_writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &caller.binding.scope,
-            &caller.project, VolumeOperation::Write)?;
+            &caller.project, VolumeOperation::Write, u64::MAX, &mut None)?;
         let before = self.files.put_content(&caller.project, &project_writer, "sentinel.txt",
             format!("{label} project baseline\n").as_bytes(), "text/plain", "sentinel.txt", PAYLOAD_BYTES,
             &IdempotencyKey::new(format!("{label}-project-baseline"))?).await?;
@@ -573,8 +540,8 @@ impl Producer {
             "tool:call:acyclic.edit_file".to_owned()]);
         let parent_project_read = parent.project.capability(VolumeOperation::Read, &mut None)?;
         if admission.grants.contains(&parent_project_read) { grants.push(parent_project_read); }
-        for file in self.planned_inputs.values() {
-            let capability = file.read_capability()?;
+        for command in self.planned_commands.values() {
+            let capability = command.payload.read_capability()?;
             if admission.grants.contains(&capability) { grants.push(capability); }
         }
         for grant in &projected_reference_grants {
@@ -614,7 +581,7 @@ impl Producer {
             child_grants.extend(["conversation:bind".into(), "conversation:append".into()]);
             let child_owner = AuthorityBinding {
                 authority: child_authority, issuer: ISSUER.into(), key: TEST_KEY,
-                scope: child_issuer.root_for_agent(agent, "explicit-trusted-pending-child", Capabilities::new(child_grants)),
+                scope: child_issuer.issue("explicit-trusted-pending-child", &Capabilities::new(child_grants), Some(agent), None, &mut None).expect("scope proof"),
             };
             self.config.observed_authorities.push(child_owner.clone());
             self.config.tools.forks.push(NativeToolFork { caller: parent.task, child: child_owner,
@@ -650,7 +617,7 @@ impl Producer {
             }
         }
         let owner = AuthorityBinding { authority: child_authority, issuer: ISSUER.into(), key: TEST_KEY,
-            scope: child_issuer.root_for_agent(agent, "explicit-trusted-created-child", Capabilities::new(signed_grants)) };
+            scope: child_issuer.issue("explicit-trusted-created-child", &Capabilities::new(signed_grants), Some(agent), None, &mut None).expect("scope proof") };
         let mut child_aggregate = aggregate(&self.stream, self.files.clone(), &owner, &self.config).await?;
         let seed = child_aggregate.spawn_from_report(&mut parent.aggregate, report.clone(),
             parent.binding.scope.clone(), owner.scope.clone()).await?;
@@ -683,7 +650,7 @@ async fn aggregate(stream: &std::sync::Arc<LocalStream>, files: Arc<Files>,
         Arc::new(FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES)?),
         Arc::new(StreamHistoryForkVerifier::new(&config.stream_provider, &mut None)?),
     ], &mut None)?);
-    StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new()).await?
+    StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
         .with_content_verifier(content).with_fork_verifier(forks)
         .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(files)))
         .with_limits(config.limits)
@@ -691,12 +658,12 @@ async fn aggregate(stream: &std::sync::Arc<LocalStream>, files: Arc<Files>,
 
 async fn claim(runtime: &Runtime, task: TaskId, worker: &Worker) -> Result<WorkLease> {
     let admission = runtime.task_host().observe_admission(task).await?;
-    let lease = match runtime.task_host().pull_operation(worker, admission.operation_id).await? {
+    let lease = match runtime.task_host().pull_operation(worker, admission.operation_id, &mut None).await? {
         WorkPull::Claimed(lease) => lease,
         WorkPull::Idle => return Err(Error::Conflict(format!("qualification task {task} has no owner lease"))),
         WorkPull::Unresolved { error, .. } => return Err(error),
     };
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     Ok(lease)
 }
 

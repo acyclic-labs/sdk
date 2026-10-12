@@ -12,28 +12,16 @@ pub(crate) type WireMeter<'a> = Option<&'a Arc<dyn NativeReadMeter>>;
 #[cfg(target_arch = "wasm32")]
 pub(crate) type WireMeter<'a> = Option<&'a ()>;
 
-use crate::memory::{MemoryAllocation, MemoryOutput};
+use crate::memory::MemoryOutput;
 
-/// Custody of the actual SDK-owned generated DTO fields.
-pub(crate) struct WireFunding<'a> {
-    #[cfg(not(target_arch = "wasm32"))]
-    meter: WireMeter<'a>,
-    #[cfg(target_arch = "wasm32")]
-    _meter: WireMeter<'a>,
-    allocation: MemoryAllocation,
-}
-
-impl<'a> WireFunding<'a> {
-    pub(crate) fn new(meter: WireMeter<'a>) -> Self {
+impl<'a> MemoryOutput<WireMeter<'a>> {
+    pub(crate) fn fund(meter: WireMeter<'a>) -> Self {
         Self {
+            value: meter,
             #[cfg(not(target_arch = "wasm32"))]
-            meter,
+            allocation: meter.map(ReadAllocation::empty),
             #[cfg(target_arch = "wasm32")]
-            _meter: meter,
-            allocation: MemoryAllocation {
-                #[cfg(not(target_arch = "wasm32"))]
-                allocation: meter.map(ReadAllocation::empty),
-            },
+            allocation: (),
         }
     }
 
@@ -68,7 +56,7 @@ impl<'a> WireFunding<'a> {
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
         let planned = capacity.checked_mul(item)
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-        let before = if self.meter().is_some() {
+        let before = if self.value.is_some() {
             self.capacity().checked_sub(old)
                 .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?
         } else { 0 };
@@ -79,7 +67,7 @@ impl<'a> WireFunding<'a> {
 
     fn reserve_vector<T>(&self, values: &mut Vec<T>, additional: usize) -> std::io::Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.meter {
+        if let Some(meter) = self.value {
             return values.try_reserve_exact(additional)
                 .map_err(|error| meter.allocation_failed(error));
         }
@@ -91,22 +79,15 @@ impl<'a> WireFunding<'a> {
         #[cfg(target_arch = "wasm32")]
         let _ = bytes;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(allocation) = &mut self.allocation.allocation { allocation.release(bytes)?; }
+        if let Some(allocation) = &mut self.allocation { allocation.release(bytes)?; }
         Ok(())
-    }
-
-    pub(crate) fn meter(&self) -> WireMeter<'a> {
-        #[cfg(not(target_arch = "wasm32"))]
-        { self.meter }
-        #[cfg(target_arch = "wasm32")]
-        { self._meter }
     }
 
     pub(crate) fn examine(&self, items: u64) -> std::io::Result<()> {
         #[cfg(target_arch = "wasm32")]
         let _ = items;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.meter {
+        if let Some(meter) = self.value {
             meter.examine(items, 0)?;
         }
         Ok(())
@@ -114,7 +95,7 @@ impl<'a> WireFunding<'a> {
 
     pub(crate) fn capacity(&self) -> usize {
         #[cfg(not(target_arch = "wasm32"))]
-        { self.allocation.allocation.as_ref().map_or(0, |allocation| allocation.bytes() as usize) }
+        { self.allocation.as_ref().map_or(0, |allocation| allocation.bytes() as usize) }
         #[cfg(target_arch = "wasm32")]
         { 0 }
     }
@@ -124,7 +105,7 @@ impl<'a> WireFunding<'a> {
         let _ = bytes;
         #[cfg(not(target_arch = "wasm32"))]
         if bytes != 0
-            && let Some(allocation) = &mut self.allocation.allocation
+            && let Some(allocation) = &mut self.allocation
         {
             allocation.grow(bytes)?;
         }
@@ -135,7 +116,7 @@ impl<'a> WireFunding<'a> {
         #[cfg(target_arch = "wasm32")]
         let _ = (previous, actual);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(allocation) = &mut self.allocation.allocation {
+        if let Some(allocation) = &mut self.allocation {
             let total = previous.checked_add(actual)
                 .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
             allocation.reconcile_capacity(total)?;
@@ -147,7 +128,7 @@ impl<'a> WireFunding<'a> {
         #[cfg(target_arch = "wasm32")]
         let _ = bytes;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.meter {
+        if let Some(meter) = self.value {
             meter.admit_codec(0, bytes as u64, 0)?;
         }
         Ok(())
@@ -157,16 +138,13 @@ impl<'a> WireFunding<'a> {
         #[cfg(target_arch = "wasm32")]
         let _ = bytes;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.meter {
+        if let Some(meter) = self.value {
             meter.record_codec(0, bytes as u64, 0)?;
             meter.check()?;
         }
         Ok(())
     }
 
-    pub(crate) fn finish<T>(self, value: T) -> MemoryOutput<T> {
-        MemoryOutput { value, allocation: self.allocation }
-    }
 }
 
 use crate::{
@@ -202,7 +180,7 @@ struct WireSink<'a> {
     output: Option<&'a mut Vec<u8>>,
     length: usize,
     maximum_record: Option<usize>,
-    observer: Option<&'a crate::memory::MemoryObserver>,
+    observer: WireMeter<'a>,
 }
 
 impl WireSink<'_> {
@@ -248,7 +226,7 @@ impl WireSink<'_> {
     }
 
     fn record(&mut self, tag: u64, value: &crate::OwnedBytes) -> std::io::Result<()> {
-        if let Some(observer) = self.observer { observer.admit_item()?; }
+        crate::memory::admit_item(self.observer)?;
         if let Some(length) = self.maximum_record {
             self.varint((tag << 3) | 2)?;
             self.varint(length as u64)?;
@@ -257,7 +235,7 @@ impl WireSink<'_> {
         } else {
             self.field(tag, value.as_ref(), true)?;
         }
-        if let Some(observer) = self.observer { observer.record_item()?; }
+        crate::memory::record_item(self.observer)?;
         Ok(())
     }
 
@@ -289,7 +267,7 @@ impl WireSink<'_> {
 }
 
 impl CanonicalWire<'_> {
-    pub(crate) fn encoded_len(&self, maximum_record: Option<usize>, observer: Option<&crate::memory::MemoryObserver>) -> std::io::Result<usize> {
+    pub(crate) fn encoded_len(&self, maximum_record: Option<usize>, observer: WireMeter<'_>) -> std::io::Result<usize> {
         let mut sink = WireSink { output: None, length: 0, maximum_record, observer };
         self.write(&mut sink)?;
         Ok(sink.length)
@@ -327,14 +305,14 @@ impl CanonicalWire<'_> {
             }
             Self::Commit(value) => {
                 for value in &value.conditions {
-                    if let Some(observer) = sink.observer { observer.admit_item()?; }
+                    crate::memory::admit_item(sink.observer)?;
                     sink.nested(1, Self::Condition(value))?;
-                    if let Some(observer) = sink.observer { observer.record_item()?; }
+                    crate::memory::record_item(sink.observer)?;
                 }
                 for value in &value.mutations {
-                    if let Some(observer) = sink.observer { observer.admit_item()?; }
+                    crate::memory::admit_item(sink.observer)?;
                     sink.nested(2, Self::Mutation(value))?;
-                    if let Some(observer) = sink.observer { observer.record_item()?; }
+                    crate::memory::record_item(sink.observer)?;
                 }
                 sink.field(3, value.idempotency_key.as_bytes(), false)?;
             }

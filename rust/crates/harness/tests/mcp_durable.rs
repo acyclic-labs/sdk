@@ -245,15 +245,14 @@ async fn bind_conversation(
             id: "mcp-fault".into(),
         },
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     aggregate
         .execute(Command {
             operation_id: OperationId::from_bytes([45; 16]),
             idempotency_key: IdempotencyKey::new("bind:mcp-fault")?,
             expected_revision: 0,
-            scope: issuer.root("owner", Capabilities::new(["conversation:bind"])),
+            scope: issuer.issue("owner", &Capabilities::new(["conversation:bind"]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::BindConversation { agent },
         }, #[cfg(feature = "filesystem")] None, &mut None)
@@ -262,7 +261,7 @@ async fn bind_conversation(
 }
 
 async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, AuthorityIssuer, Scope)> {
-    let provider = ProviderRef::new("mcp-fault", "filesystem", "2")?;
+    let provider = ProviderRef::new("mcp-fault".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(
         Fs::local(LocalOptions::new(root.join("fs")))
             .await
@@ -287,10 +286,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
             id: "mcp-fault".into(),
         },
     );
-    let signed = issuer.root_for_agent(
-        agent,
-        "agent",
-        Capabilities::new([
+    let signed = issuer.issue("agent", &Capabilities::new([
             private.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Write)?,
             "mcp:install:fixture".into(),
@@ -300,8 +296,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
                 "interaction:respond:{}",
                 InteractionId::from_bytes([47; 16])
             ),
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(
         LocalStream::open(root.join("stream"), LocalStreamLimits::default())
             .await
@@ -325,7 +320,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
             .open_interaction(
                 interaction,
                 Interaction::approval(
-                    "Install this exact MCP catalog",
+                    "Install this exact MCP catalog".into(),
                     operation,
                     catalog().installation_digest(None, 1, 8192)?,
                 )?,
@@ -449,7 +444,7 @@ async fn phase(
         2000,
     )?));
     let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     catalog()
         .install_scoped(
             &mut tools,

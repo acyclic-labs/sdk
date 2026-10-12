@@ -12,7 +12,7 @@ use super::{
     AttributeEntry, AttributeName, CanonicalDecodeError, DecodeLimits,
 };
 use crate::foundation::usize_to_u64;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
 use thiserror::Error;
 
@@ -210,15 +210,6 @@ impl persistent_btree::Mutation<AttributeFormat> for AttributeMutation {
     fn map_error(error: persistent_btree::Error<Self::Error>) -> crate::FsError { map_error(error).into() }
 }
 
-/// Candidate attribute root and exact sparse path-copy work.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AttributeMutationReceipt {
-    /// Candidate immutable attribute-tree root.
-    pub root: ObjectId,
-    /// Exact work; authority publication is not included.
-    pub work: WorkCounters,
-}
-
 /// Attribute mutation failure retaining work and safe orphan writes.
 pub type AttributeMutationFailure = OperationFailure<AttributeMutationError>;
 
@@ -231,7 +222,7 @@ pub async fn apply_attribute_mutations<S: crate::AsyncObjectStore>(
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &crate::CancellationToken,
-) -> Result<AttributeMutationReceipt, AttributeMutationFailure> {
+) -> Result<OperationReceipt<ObjectId>, AttributeMutationFailure> {
     let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
     apply_attribute_mutations_with_accounting(store, root, &mutations, maximum_mutations, limits, &mut accounting, cancellation)
         .await.map_err(|error| OperationFailure::new(standalone_error(error), accounting.spent()))
@@ -241,13 +232,12 @@ pub(crate) async fn apply_attribute_mutations_with_accounting<S: crate::AsyncObj
     store: &S, root: ObjectId, mutations: &[AttributeMutation], maximum_mutations: u32,
     limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
-) -> Result<AttributeMutationReceipt, crate::FsError> {
+) -> Result<OperationReceipt<ObjectId>, crate::FsError> {
     accounting.check()?;
     for mutation in mutations { mutation.validate().map_err(crate::FsError::from)?; }
-    let receipt = persistent_btree::apply_with_accounting::<S, AttributeFormat, AttributeMutation>(
+    persistent_btree::apply_with_accounting::<S, AttributeFormat, AttributeMutation>(
         store, root, mutations, maximum_mutations, limits, accounting, cancellation,
-    ).await?;
-    Ok(AttributeMutationReceipt { root: receipt.root, work: receipt.work })
+    ).await
 }
 
 fn standalone_error(error: crate::FsError) -> AttributeMutationError {

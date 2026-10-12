@@ -98,7 +98,7 @@ where
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
+    machines.register(machine, &mut None)?;
     let runtime_scope = RuntimeScope::new(scope.capabilities().clone(), Limits::default())?;
     let runtime = Runtime::open(
         stream,
@@ -241,7 +241,7 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let provider = ProviderRef::new("example", "filesystem", "1")?;
+    let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
     let files = Arc::new(FilesystemHost::new(filesystem, provider.clone())?);
     let agent = AgentId::from_bytes([1; 16]);
     let volume = |name| {
@@ -283,15 +283,11 @@ where
             "tool:call:mcp.example.echo".into(),
         ]);
     }
-    let scope = issuer.root_for_agent(agent, "owner", Capabilities::new(grants));
+    let scope = issuer.issue("owner", &Capabilities::new(grants), Some(agent), None, &mut None).expect("scope proof");
     for volume in [&source, &destination, &results_volume] {
         files.create_volume(volume).await?;
     }
-    let setup_scope = issuer.root_for_agent(
-        agent,
-        "setup",
-        Capabilities::new([source.capability(VolumeOperation::Write)?]),
-    );
+    let setup_scope = issuer.issue("setup", &Capabilities::new([source.capability(VolumeOperation::Write)?]), Some(agent), None, &mut None).expect("scope proof");
     let setup = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
         &setup_scope,
@@ -329,7 +325,7 @@ where
     else {
         return Err("missing task lease".into());
     };
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     let owner = Arc::new(
         runtime
             .task_host()
@@ -340,8 +336,7 @@ where
         &stream.clone(),
         issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     conversation
         .execute(Command {
@@ -463,7 +458,7 @@ where
         .open_interaction(
             approval,
             Interaction::approval(
-                "Run this exact example process",
+                "Run this exact example process".into(),
                 command,
                 request.approval_digest(task_id, command)?,
             )?,
@@ -504,6 +499,7 @@ where
         SchemaRegistry::new(),
         content.clone(),
         registry,
+        None, None,
     )?);
     let mut restart = Restart {
         task: task_id,
@@ -725,6 +721,7 @@ where
         SchemaRegistry::new(),
         content.clone(),
         registry,
+        None, None,
     )?);
     Ok(Recovery {
         owner,

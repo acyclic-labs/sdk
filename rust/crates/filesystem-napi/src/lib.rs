@@ -26,10 +26,10 @@ use acyclic_fs::{
     OperationWindowLease, OperationWindowPhase, PromotionAdmission, PromotionDestination,
     PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint, ResidencyReason,
     ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
-    StorageLocationId, StorageTier, Transaction, TransactionCommit, TransactionConflict,
-    TransactionConflictRegion, TransactionDependencyUse, TransactionRebase, TransactionSparseSeek,
+    StorageLocationId, StorageTier, Transaction, TransactionCommit, RebaseConflict, DependencyState,
+    DependencyRegion, DependencyUse, TransactionRebase, ExtentSeekTarget,
     VolumeId, WatchBatch, WatchChange, WatchInvalidationReason, WorkBudget, Workspace,
-    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage,
+    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, DirectoryPage,
     WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord,
     WorkspaceMetadata, WorkspaceOperationFinish, WorkspaceRebase, WorkspaceRootId, WorkspaceStat,
     canonicalize_git_output_json, canonicalize_git_pending_transition_json,
@@ -1230,14 +1230,14 @@ pub struct NativeWatcher {
 struct PendingWatchBatch {
     batch: WatchBatch,
     poll_work: acyclic_fs::WorkCounters,
-    capture: Option<WatchCaptureReceipt>,
+    capture: Option<acyclic_fs::OperationReceipt<WatchCaptureReceipt>>,
     operation_id: OperationId,
 }
 
 #[derive(Clone, Copy)]
 struct PendingReconcile {
     operation_id: OperationId,
-    epoch: acyclic_fs::WatchEpoch,
+    epoch: u64,
     baseline: CaptureReceipt,
     work: acyclic_fs::WorkCounters,
 }
@@ -2505,7 +2505,7 @@ impl NativeJoinPlan {
             .apply(ApplyOptions {
                 if_target,
                 idempotency_key,
-            })
+            }, acyclic_fs::PublicationPermit::Unrestricted)
             .await
             .map(native_join_result)
             .map_err(napi_error)
@@ -2731,9 +2731,9 @@ fn native_join_result(
         truncated: false,
     };
     match outcome {
-        JoinOutcome::Applied(value) => generation("applied", value.into_generation()),
+        JoinOutcome::Applied(value) => generation("applied", value.generation),
         JoinOutcome::AlreadyApplied(value) => {
-            generation("already-applied", value.into_generation())
+            generation("already-applied", value.generation)
         }
         JoinOutcome::NoChanges(value) => generation("no-changes", value),
         JoinOutcome::StaleTarget(value) => generation("stale-target", value),
@@ -2986,8 +2986,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .write(&path, bytes::Bytes::from(bytes.to_vec()))
-            .await
+            .write(&path, bytes::Bytes::from(bytes.to_vec()), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -3001,8 +3001,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .remove(&path)
-            .await
+            .remove(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -3235,7 +3235,7 @@ fn native_transaction_rebase(
     }
 }
 
-fn native_transaction_conflict(value: TransactionConflict) -> NativeTransactionConflict {
+fn native_transaction_conflict(value: RebaseConflict) -> NativeTransactionConflict {
     let mut result = NativeTransactionConflict {
         region: String::new(),
         file_id: None,
@@ -3246,32 +3246,28 @@ fn native_transaction_conflict(value: TransactionConflict) -> NativeTransactionC
         name: None,
         maximum_entries: None,
         usage: match value.usage {
-            TransactionDependencyUse::Observation => "observation",
-            TransactionDependencyUse::Mutation => "mutation",
-            TransactionDependencyUse::ObservationAndMutation => "observation-and-mutation",
+            DependencyUse::Observation => "observation",
+            DependencyUse::Mutation => "mutation",
+            DependencyUse::ObservationAndMutation => "observation-and-mutation",
         }
         .to_owned(),
-        expected: value
-            .expected
-            .map(|digest| Buffer::from(digest.into_bytes().to_vec())),
-        actual: value
-            .actual
-            .map(|digest| Buffer::from(digest.into_bytes().to_vec())),
+        expected: match value.expected { DependencyState::Absent => None, DependencyState::Present(digest) => Some(Buffer::from(digest.into_bytes().to_vec())) },
+        actual: match value.actual { DependencyState::Absent => None, DependencyState::Present(digest) => Some(Buffer::from(digest.into_bytes().to_vec())) },
     };
     match value.region {
-        TransactionConflictRegion::FileRecord(file_id) => {
+        DependencyRegion::FileRecord(file_id) => {
             "file-record".clone_into(&mut result.region);
             result.file_id = Some(Buffer::from(file_id.into_bytes().to_vec()));
         }
-        TransactionConflictRegion::Metadata(file_id) => {
+        DependencyRegion::Metadata(file_id) => {
             "metadata".clone_into(&mut result.region);
             result.file_id = Some(Buffer::from(file_id.into_bytes().to_vec()));
         }
-        TransactionConflictRegion::FileLength(file_id) => {
+        DependencyRegion::FileLength(file_id) => {
             "file-length".clone_into(&mut result.region);
             result.file_id = Some(Buffer::from(file_id.into_bytes().to_vec()));
         }
-        TransactionConflictRegion::ContentRange {
+        DependencyRegion::ContentRange {
             file_id,
             offset,
             length,
@@ -3281,7 +3277,7 @@ fn native_transaction_conflict(value: TransactionConflict) -> NativeTransactionC
             result.offset = Some(bigint(offset));
             result.length = Some(bigint(length));
         }
-        TransactionConflictRegion::SparseSeek {
+        DependencyRegion::SparseSeek {
             file_id,
             offset,
             target,
@@ -3291,13 +3287,13 @@ fn native_transaction_conflict(value: TransactionConflict) -> NativeTransactionC
             result.offset = Some(bigint(offset));
             result.sparse_target = Some(
                 match target {
-                    TransactionSparseSeek::Data => "data",
-                    TransactionSparseSeek::Hole => "hole",
+                    ExtentSeekTarget::Data => "data",
+                    ExtentSeekTarget::Hole => "hole",
                 }
                 .to_owned(),
             );
         }
-        TransactionConflictRegion::DirectoryName { directory_id, name } => {
+        DependencyRegion::DirectoryName { directory_id, name } => {
             "directory-name".clone_into(&mut result.region);
             result.directory_id = Some(Buffer::from(directory_id.into_bytes().to_vec()));
             result.name = Some(NativeWorkspaceName {
@@ -3305,7 +3301,7 @@ fn native_transaction_conflict(value: TransactionConflict) -> NativeTransactionC
                 bytes: Buffer::from(name.as_bytes().to_vec()),
             });
         }
-        TransactionConflictRegion::DirectoryRange {
+        DependencyRegion::DirectoryRange {
             directory_id,
             after,
             maximum_entries,
@@ -4765,6 +4761,7 @@ impl NativeCheckout {
                 maximum_paths,
                 maximum_extent_spans,
             },
+            &acyclic_fs::CapturePolicy::default(),
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
@@ -5617,7 +5614,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         let receipt = Box::pin(checkout.list_directory_records(
             &path,
-            after.as_ref(),
+            after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
             maximum_entries,
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
@@ -6333,8 +6330,11 @@ impl NativeCheckout {
 impl NativeWatcher {
     fn verify_capture_root(&self) -> Result<()> {
         let root_identity = capture_root_identity(&self.source_root).map_err(napi_error)?;
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
+        ).map_err(|(error, _)| napi_error(error))?;
         lock_state(&self.inner, "native watcher state")?
-            .verify_root_identity(root_identity)
+            .verify_root_identity(root_identity, &work)
             .map_err(napi_error)
     }
 
@@ -6367,6 +6367,7 @@ impl NativeWatcher {
                 maximum_paths,
                 maximum_extent_spans,
             },
+            &acyclic_fs::CapturePolicy::default(),
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
@@ -6450,7 +6451,7 @@ impl NativeWatcher {
             operation_id: OperationId::new(),
         });
         Ok(NativeWatchReconcileResult {
-            epoch: bigint(pending.epoch.get()),
+            epoch: bigint(pending.epoch),
             baseline: NativeCaptureResult {
                 examined_paths: bigint(pending.baseline.examined_paths),
                 changed_paths: bigint(pending.baseline.changed_paths),
@@ -6507,10 +6508,7 @@ impl NativeWatcher {
                 .map_err(napi_error)?;
         }
         let receipt = if let Some(capture) = pending.capture {
-            acyclic_fs::OperationReceipt {
-                value: capture,
-                work: capture.capture.work,
-            }
+            capture
         } else {
             let expected_root_identity =
                 lock_state(&self.inner, "native watcher state")?.root_identity();
@@ -6524,13 +6522,14 @@ impl NativeWatcher {
                     maximum_paths,
                     maximum_extent_spans,
                 },
+                &acyclic_fs::CapturePolicy::default(),
                 acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             ))
             .await
             .map_err(napi_error)?;
             if let Some(retained) = lock_state(&self.pending, "native watcher state")?.as_mut() {
-                retained.capture = Some(receipt.value);
+                retained.capture = Some(receipt.clone());
             }
             receipt
         };
@@ -6555,9 +6554,9 @@ impl NativeWatcher {
             .checked_add(receipt.work)
             .map_err(napi_error)?;
         Ok(NativeWatchCaptureResult {
-            epoch: bigint(receipt.value.epoch.get()),
-            first_sequence: bigint(receipt.value.first_sequence.get()),
-            next_sequence: bigint(receipt.value.next_sequence.get()),
+            epoch: bigint(receipt.value.epoch),
+            first_sequence: bigint(receipt.value.first_sequence),
+            next_sequence: bigint(receipt.value.next_sequence),
             examined_paths: bigint(receipt.value.capture.examined_paths),
             changed_paths: bigint(receipt.value.capture.changed_paths),
             staged_file_bytes: bigint(receipt.value.capture.staged_file_bytes),
@@ -6634,14 +6633,14 @@ pub fn native_capabilities() -> NativeCapabilities {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         local: true,
         native_watch: true,
-        native_watch_backend: watch.backend.as_str().to_owned(),
+        native_watch_backend: watch.backend.to_owned(),
         native_watch_persistent_restart: watch.persistent_restart,
         native_watch_root_identity_fencing: watch.root_identity_fencing,
         platform: std::env::consts::OS.to_owned(),
         architecture: std::env::consts::ARCH.to_owned(),
-        native_mount: mount.available,
-        writable_mount: mount.writable,
-        provider_process_io_observable: mount.provider_process_io_observable,
+        native_mount: mount.available(),
+        writable_mount: mount.available(),
+        provider_process_io_observable: mount.provider_process_io_observable(),
     }
 }
 
@@ -7260,18 +7259,19 @@ fn encode_watch_batch(
             first_sequence,
             next_sequence,
             changes,
+            ..
         } => Ok(NativeWatchBatch {
             status: "changes".to_owned(),
-            epoch: bigint(epoch.get()),
-            first_sequence: Some(bigint(first_sequence.get())),
-            next_sequence: Some(bigint(next_sequence.get())),
+            epoch: bigint(epoch),
+            first_sequence: Some(bigint(first_sequence)),
+            next_sequence: Some(bigint(next_sequence)),
             reason: None,
             changes: changes.into_iter().map(encode_watch_change).collect(),
             work_json: work_json(&work)?,
         }),
         WatchBatch::RescanRequired { epoch, reason } => Ok(NativeWatchBatch {
             status: "rescan-required".to_owned(),
-            epoch: bigint(epoch.get()),
+            epoch: bigint(epoch),
             first_sequence: None,
             next_sequence: None,
             reason: Some(watch_reason(reason).to_owned()),
@@ -7831,7 +7831,7 @@ fn native_workspace_name(value: NativeWorkspaceName) -> Result<LogicalName> {
     LogicalName::new(encoding, value.bytes.to_vec(), u32::MAX).map_err(napi_error)
 }
 
-fn native_workspace_directory_page(value: WorkspaceDirectoryPage) -> NativeWorkspaceDirectoryPage {
+fn native_workspace_directory_page(value: DirectoryPage) -> NativeWorkspaceDirectoryPage {
     NativeWorkspaceDirectoryPage {
         entries: value
             .entries

@@ -2,10 +2,11 @@
 #![allow(missing_docs, reason = "private native binary domain composition")]
 
 use acyclic_fs::{GenerationId, MaterializationJournal, WorkBudget, WorkCounters};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Error, OperationId, Result, TaskId,
     conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeRef},
-    core::{AuthorityIssuer, AuthorityVerifier},
+    core::AuthorityIssuer,
     distributed::WorkLease,
     interaction::{InteractionResolution, InteractionTicket},
 };
@@ -38,11 +39,6 @@ pub struct NativePublicationConfig {
     pub transfer_bytes: u64,
 }
 
-fn verifier(binding: &AuthorityBinding) -> Result<AuthorityVerifier> {
-    let verifier = AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
-    verifier.verify(&binding.scope)?;
-    Ok(verifier)
-}
 impl NativePublicationConfig {
     pub fn validate(&self) -> Result<()> {
         for path in [&self.root, &self.operation_directory, &self.state_root] {
@@ -75,11 +71,11 @@ impl NativePublicationConfig {
         {
             return Err(Error::Invalid("publication source selections must belong to the original filesystem provider".into()));
         }
-        let verifier = verifier(&self.owner)?;
-        ContentGrant::verify(&verifier, &self.owner.scope, &self.from_project, VolumeOperation::Read)?;
-        ContentGrant::verify(&verifier, &self.owner.scope, &self.to_project, VolumeOperation::Read)?;
-        ContentGrant::verify(&verifier, &self.owner.scope, &self.to_project, VolumeOperation::Write)?;
-        ContentGrant::verify(&verifier, &self.owner.scope, &self.private_volume, VolumeOperation::Write)?;
+        let verifier = self.owner.verifier()?;
+        ContentGrant::verify(&verifier, &self.owner.scope, &self.from_project, VolumeOperation::Read, u64::MAX, &mut None)?;
+        ContentGrant::verify(&verifier, &self.owner.scope, &self.to_project, VolumeOperation::Read, u64::MAX, &mut None)?;
+        ContentGrant::verify(&verifier, &self.owner.scope, &self.to_project, VolumeOperation::Write, u64::MAX, &mut None)?;
+        ContentGrant::verify(&verifier, &self.owner.scope, &self.private_volume, VolumeOperation::Write, u64::MAX, &mut None)?;
         Ok(())
     }
 }
@@ -90,13 +86,6 @@ impl NativePublicationConfig {
 pub struct NativePublicationRequest {
     pub operation_id: OperationId,
     pub caller_lease: WorkLease,
-}
-
-#[derive(Serialize)]
-pub struct NativePublicationSource {
-    pub project: VolumeRef,
-    pub workspace: String,
-    pub generation: GenerationId,
 }
 
 #[derive(Serialize)]
@@ -117,13 +106,9 @@ pub struct NativePublicationResult {
     pub interaction: Option<InteractionTicket>,
     pub resolution: Option<InteractionResolution>,
     pub action_digest: Option<[u8; 32]>,
-    pub before: NativePublicationSource,
-    pub proposed: NativePublicationSource,
-    pub source_root_identity: [u8; 16],
     pub publication: Option<NativePublicationReceipt>,
     pub failure: Option<NativePublicationFailure>,
     pub approved_frame_hex: Option<String>,
-    pub declined_frame_hex: Option<String>,
 }
 
 #[cfg(feature = "native-execution")]
@@ -160,7 +145,7 @@ impl NativeSession {
         ).await;
         let receipt = match existing {
             Ok(receipt) => receipt,
-            Err((error, work)) => return publication_failure(binding, error.to_string(), work),
+            Err((error, work)) => return Ok(publication_failure(binding, error.to_string(), work)),
         };
         if let Some(original) = receipt.value {
             if !matches!(original.phase, MaterializationPhase::Preparing) {
@@ -186,7 +171,7 @@ impl NativeSession {
                 self.publication_open_approval(binding, &journal, &receipt.value).await?;
                 self.publication_result(binding, &interactions, Some(NativePublicationReceipt { journal: receipt.value, work: receipt.work })).await
             }
-            Err((error, work)) => publication_failure(binding, error.to_string(), work),
+            Err((error, work)) => Ok(publication_failure(binding, error.to_string(), work)),
         }
     }
 
@@ -197,7 +182,7 @@ impl NativeSession {
         let cancellation = acyclic_fs::CancellationToken::new();
         match acyclic_fs::load_native_materialization_journal(&state, fs_operation(binding.operation_id), binding.budget, &cancellation).await {
             Ok(receipt) => self.publication_result(binding, &interactions, receipt.value.map(|journal| NativePublicationReceipt { journal, work: receipt.work })).await,
-            Err((error, work)) => publication_failure(binding, error.to_string(), work),
+            Err((error, work)) => Ok(publication_failure(binding, error.to_string(), work)),
         }
     }
 
@@ -245,7 +230,7 @@ impl NativeSession {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = match acyclic_fs::NativeMaterializationWork::new(binding.budget, &cancellation) {
             Ok(work) => work,
-            Err((error, work)) => return publication_failure(binding, error.to_string(), work),
+            Err((error, work)) => return Ok(publication_failure(binding, error.to_string(), work)),
         };
         let guard_work = work.clone();
         let guard_journal = &journal;
@@ -259,25 +244,29 @@ impl NativeSession {
                     (&binding.to_project, VolumeOperation::Read),
                     (&binding.to_project, VolumeOperation::Write),
                 ] {
-                    let grant = guard_owner.require_volume_grant_measured(
-                        volume, operation, work.remaining()?, guard_cancellation,
-                    );
-                    account_guard(&work, grant)?;
+                    let mut grant_work = acyclic_harness::store::HistoryWork::new(work.remaining()?, guard_cancellation);
+                    let grant = grant_work.preflight().and_then(|()|
+                        guard_owner.require_volume_grant(volume, operation, &mut Some(&mut grant_work)));
+                    account_guard(&work, grant_work.finish(grant))?;
                 }
                 let approval = guard_journal.verify_measured(
                     interaction_id(binding), binding.operation_id, digest,
                     work.remaining()?, guard_cancellation,
                 ).await;
                 account_guard(&work, approval)?;
-                let owner = guard_owner.verify_dispatch_measured(work.remaining()?, guard_cancellation).await;
-                account_guard(&work, owner)
+                let mut owner_work = acyclic_harness::store::HistoryWork::new(work.remaining()?, guard_cancellation);
+                let owner = async {
+                    owner_work.preflight()?;
+                    guard_owner.verify(false, &mut Some(&mut owner_work)).await
+                }.await;
+                account_guard(&work, owner_work.finish(owner))
             }
         };
         match acyclic_fs::publish_native_generation_transition(&from, &to, &state,
             publication(binding, &excluded, &options, &cancellation), work, before_effect).await
         {
             Ok(receipt) => self.publication_result(binding, &interactions, Some(NativePublicationReceipt { journal: receipt.value, work: receipt.work })).await,
-            Err((error, work)) => publication_failure(binding, error.to_string(), work),
+            Err((error, work)) => Ok(publication_failure(binding, error.to_string(), work)),
         }
     }
 
@@ -309,9 +298,9 @@ impl NativeSession {
         let owner = self.runtime.task_host().journal_owner(binding.caller, LeaseFence::from(&request.caller_lease.reservation)).await?;
         let admission = self.runtime.task_host().observe_admission(binding.caller).await?;
         let maximum_bytes = (MAX_FRAME_BYTES as u64).min(admission.limits.file_bytes);
-        let interaction_verifier = verifier(&binding.owner)?;
+        let interaction_verifier = binding.owner.verifier()?;
         let journal = Journal::for_task(owner, binding.operation_id, binding.operation_id, self.files.clone(),
-            &self.config.private_volume, &verifier(&self.config.owner)?, &self.config.owner.scope, maximum_bytes, None)?
+            &self.config.private_volume, &self.config.owner.verifier()?, &self.config.owner.scope, maximum_bytes, None)?
             .with_interaction_owner(&interaction_verifier, &SchemaRegistry::default(), &binding.owner.scope, &binding.private_volume, None)?;
         let interactions = Interactions::new(self.stream.clone(), self.files.clone(), &binding.owner.authority,
             &interaction_verifier, &SchemaRegistry::default(), &binding.owner.scope, &binding.private_volume, maximum_bytes, None)?;
@@ -330,7 +319,7 @@ impl NativeSession {
     }
 
     async fn publication_result(&self, binding: &NativePublicationConfig, interactions: &Interactions, receipt: Option<NativePublicationReceipt>) -> Result<NativePublicationResult> {
-        let mut result = empty_result(binding)?;
+        let mut result = empty_result(binding);
         if let Some(receipt) = receipt {
             if receipt.journal.phase != MaterializationPhase::Preparing {
                 result.action_digest = Some(publication_digest(binding, &receipt.journal)?);
@@ -367,8 +356,7 @@ impl NativeSession {
                     _ => "rejected",
                 };
             } else if binding.owner.scope.capabilities().contains("interaction:resolve") {
-                result.approved_frame_hex = Some(self.publication_decision_frame(binding, &ticket, true).await?);
-                result.declined_frame_hex = Some(self.publication_decision_frame(binding, &ticket, false).await?);
+                result.approved_frame_hex = Some(self.publication_approval_frame(binding, &ticket).await?);
             }
             result.interaction = Some(ticket);
             result.resolution = resolution;
@@ -376,32 +364,29 @@ impl NativeSession {
         Ok(result)
     }
 
-    async fn publication_decision_frame(&self, binding: &NativePublicationConfig, ticket: &InteractionTicket, approved: bool) -> Result<String> {
+    async fn publication_approval_frame(&self, binding: &NativePublicationConfig, ticket: &InteractionTicket) -> Result<String> {
         // The trusted configured issuer issues only this ticket's responder grant.
         self.runtime.task_host().verify_dispatch_owner(binding.caller, LeaseFence::from(&binding.caller_lease.reservation)).await?;
         let issuer = AuthorityIssuer::new(&binding.owner.issuer, binding.owner.key, binding.owner.authority.clone());
         let capabilities = Capabilities::new(["interaction:resolve".to_owned(), ticket.responder_grant()]);
         let label = format!("native-publication-responder:{}", ticket.id);
-        let scope = match binding.owner.scope.agent() {
-            Some(agent) => issuer.root_for_agent(agent, label, capabilities),
-            None => issuer.root(label, capabilities),
-        };
-        let aggregate = StreamAggregate::open(&self.stream, binding.owner.authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::default()).await?;
-        let operation = decision_operation(binding.operation_id, approved);
+        let scope = issuer.issue(&label, &capabilities, binding.owner.scope.agent(), None, &mut None).expect("scope proof");
+        let aggregate = StreamAggregate::open(&self.stream, binding.owner.authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::default(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
+        let operation = approval_operation(binding.operation_id);
         let action = Action::ResolveInteraction { resolution: InteractionResolution {
             id: ticket.id, expected_version: 1,
-            outcome: if approved { InteractionOutcome::Approved } else { InteractionOutcome::Declined }, detail: None,
+            outcome: InteractionOutcome::Approved, detail: None,
         } };
-        #[derive(Deserialize)]
-        struct SignedScope { id: String, capabilities: Capabilities, agent: Option<acyclic_harness::AgentId>, issuer: String, parent_proof: Option<[u8; 32]>, proof: [u8; 32] }
-        let parts: SignedScope = serde_json::from_value(serde_json::to_value(&scope).map_err(invalid)?).map_err(invalid)?;
+        let proof: [u8; 32] = serde_json::from_value(
+            serde_json::to_value(&scope).map_err(invalid)?["proof"].take(),
+        ).map_err(invalid)?;
         let envelope = wire::CommandEnvelope {
             protocol: Some(current_protocol()), authority: Some(encode_authority(&binding.owner.authority)),
             operation: Some(wire::OperationIdentity { operation_id: operation.to_string(), idempotency_key: format!("native-publication-decision:{operation}") }),
             expected_revision: aggregate.reducer().revision(),
-            scope: Some(wire::Scope { id: parts.id, capabilities: parts.capabilities.iter().map(ToOwned::to_owned).collect(),
-                issuer: parts.issuer, agent_id: parts.agent.map_or_else(String::new, |agent| agent.to_string()),
-                parent_proof: parts.parent_proof.map_or_else(Vec::new, |proof| proof.to_vec()), proof: parts.proof.to_vec() }),
+            scope: Some(wire::Scope { id: scope.id().into(), capabilities: scope.capabilities().iter().map(ToOwned::to_owned).collect(),
+                issuer: issuer.id().into(), agent_id: scope.agent().map_or_else(String::new, |agent| agent.to_string()),
+                parent_proof: Vec::new(), proof: proof.to_vec() }),
             action_type: "resolve_interaction".into(), canonical_action_json: canonical_bytes(&action)?,
             ..Default::default()
         };
@@ -440,11 +425,11 @@ fn interaction_id(binding: &NativePublicationConfig) -> InteractionId {
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     InteractionId::from_bytes(bytes)
 }
-fn decision_operation(operation: OperationId, approved: bool) -> OperationId {
+fn approval_operation(operation: OperationId) -> OperationId {
     let mut hash = blake3::Hasher::new();
     hash.update(b"graphcoder/native-publication/decision/v1\0");
     hash.update(&operation.into_bytes());
-    hash.update(&[u8::from(approved)]);
+    hash.update(&[1]);
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     OperationId::from_bytes(bytes)
@@ -459,12 +444,10 @@ fn publication<'a>(binding: &'a NativePublicationConfig, excluded: &'a [&'a str]
         operation_id: fs_operation(binding.operation_id), from: binding.from, to: binding.to,
         excluded_names: excluded, options, budget: binding.budget, cancellation }
 }
-fn empty_result(binding: &NativePublicationConfig) -> Result<NativePublicationResult> {
-    Ok(NativePublicationResult { operation_id: binding.operation_id, caller: binding.caller, status: "unopened",
+fn empty_result(binding: &NativePublicationConfig) -> NativePublicationResult {
+    NativePublicationResult { operation_id: binding.operation_id, caller: binding.caller, status: "unopened",
         interaction: None, resolution: None, action_digest: None,
-        before: NativePublicationSource { project: binding.from_project.clone(), workspace: binding.from_project.storage_name(&mut None)?, generation: binding.from },
-        proposed: NativePublicationSource { project: binding.to_project.clone(), workspace: binding.to_project.storage_name(&mut None)?, generation: binding.to },
-        source_root_identity: binding.source_root_identity, publication: None, failure: None, approved_frame_hex: None, declined_frame_hex: None })
+        publication: None, failure: None, approved_frame_hex: None }
 }
 fn invalid(error: impl std::fmt::Display) -> Error { Error::Invalid(error.to_string()) }
 fn storage(error: impl std::fmt::Display) -> Error { Error::Storage(error.to_string()) }
@@ -488,10 +471,10 @@ fn account_guard<T>(
         }
     }
 }
-fn publication_failure(binding: &NativePublicationConfig, message: String, work: WorkCounters) -> Result<NativePublicationResult> {
-    let mut result = empty_result(binding)?;
+fn publication_failure(binding: &NativePublicationConfig, message: String, work: WorkCounters) -> NativePublicationResult {
+    let mut result = empty_result(binding);
     result.status = "failed";
     result.failure = Some(NativePublicationFailure { message, work });
-    Ok(result)
+    result
 }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::work;
 use crate::pi_fork::tests::Passive;
 use acyclic_harness::{Admission, AgentId, Capabilities,
@@ -21,7 +22,7 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Result<Self> {
-        let provider = ProviderRef::new("pi-mail", "filesystem", "2")?;
+        let provider = ProviderRef::new("pi-mail".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let agent = AgentId::from_bytes([71;16]);
         let volume = VolumeRef::new(provider, "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
@@ -30,35 +31,35 @@ impl Fixture {
         let grants = Capabilities::new([
             "operation:declare", "operation:observe", "operation:cancel",
             "task:spawn:pi.mail.test@1", "mail:send", "mail:read",
-        ].into_iter().map(str::to_owned).chain([volume.directory_read_capability("pi-inputs")?]));
-        let signed = issuer.root_for_agent(agent, "owner", Capabilities::new(grants.iter().map(str::to_owned).chain([
-            volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
-        ])));
+        ].into_iter().map(str::to_owned).chain([volume.directory_read_capability("pi-inputs", &mut None)?]));
+        let signed = issuer.issue("owner", &Capabilities::new(grants.iter().map(str::to_owned).chain([
+            volume.capability(VolumeOperation::Read, &mut None)?, volume.capability(VolumeOperation::Write, &mut None)?,
+        ])), Some(agent), None, &mut None).expect("scope proof");
         let scope = RuntimeScope::new(grants, Limits::default())?;
         let machine = Arc::new(Passive { identity: MachineIdentity { name: "pi.mail.test".into(), version: "1".into(), digest: [73; 32] }, schema: json!({"type":"object"}) });
         let mut tasks = TaskRegistry::default();
         tasks.register(TaskDefinition::<Value, Value>::resumable(machine.clone(), json!({"type":"object"}), json!({}))?)?;
-        let mut machines = MachineRegistry::default(); machines.register(machine)?;
+        let mut machines = MachineRegistry::default(); machines.register(machine, &mut None)?;
         Ok(Self { stream: Arc::new(MemoryStream::default()), host, volume, issuer, signed, scope, tasks, machines })
     }
     async fn runtime(&self) -> Result<Arc<Runtime>> {
-        Ok(Arc::new(Runtime::open(self.stream.clone(), self.host.clone(), self.volume.clone(), self.issuer.verifier(),
+        Ok(Arc::new(Runtime::open(self.stream.clone(), self.host.clone(), self.volume.clone(), self.issuer.verifier(&mut None).unwrap(),
             self.signed.clone(), self.scope.clone(), self.tasks.clone(), self.machines.clone(), ToolRegistry::default(),
             SessionLimits { active_tasks:8, total_tasks:8, depth:4, model_steps:8 }, 8, 65_536).await?))
     }
     async fn file(&self, operation: OperationId, path: &str, bytes: &[u8]) -> Result<FileRef> {
-        let grant = ContentGrant::verify(&self.issuer.verifier(), &self.signed, &self.volume, VolumeOperation::Write)?;
+        let grant = ContentGrant::verify(&self.issuer.verifier(&mut None).unwrap(), &self.signed, &self.volume, VolumeOperation::Write)?;
         self.host.put_content(&self.volume, &grant, &format!("pi-inputs/{path}"), bytes,
             "application/json", path, 65_536, &acyclic_harness::IdempotencyKey::new(format!("mail:{operation}:{path}"))?).await
     }
     async fn pull(&self, runtime: &Runtime) -> Result<WorkLease> {
         match runtime.task_host().pull_work(&Worker { id:"pi-mail-worker".into(), available:ResourceSnapshot::default(), labels:BTreeMap::new() }).await? {
-            WorkPull::Claimed(lease) => { runtime.task_host().start_task(&lease).await?; Ok(lease) }
+            WorkPull::Claimed(lease) => { runtime.task_host().start_task(&lease, None).await?; Ok(lease) }
             _ => Err(Error::NotFound("mail lease".into())),
         }
     }
     async fn admit(&self, runtime: &Runtime) -> Result<(WorkLease, TaskId)> {
-        let definition = self.tasks.get_version::<Value, Value>("pi.mail.test", "1")?;
+        let definition = self.tasks.get_version::<Value, Value>("pi.mail.test", "1", None)?;
         let operation = OperationId::from_bytes([73;16]);
         assert!(matches!(runtime.harness().admit(operation, &definition, json!({}), None).await?, Admission::Accepted(_)));
         Ok((self.pull(runtime).await?, TaskId::from_bytes(operation.into_bytes())))
@@ -137,7 +138,7 @@ async fn actual_mailbox_lost_ack_exact_sequence_and_original_sender() -> Result<
     child_context.send(parent, OperationId::from_bytes([81;16]), payload.clone()).await?;
     let mut stale = child_fence.clone(); stale.reservation_id.push_str("-replaced");
     assert!(reopened.task_host().send_owned(child, stale, parent, OperationId::from_bytes([82;16]), payload).await.is_err());
-    reopened.task_host().cancel_child_owned(parent, fence, child, OperationId::from_bytes([83;16])).await?;
+    reopened.task_host().cancel_child_owned(parent, &fence, child, OperationId::from_bytes([83;16]), &mut None).await?;
     assert!(child_owner.verify_dispatch().await.is_err());
     child_owner.verify_settlement().await?;
     assert!(authenticate(&child_context, &child_owner, &work).await.is_err());
@@ -162,8 +163,7 @@ async fn actual_passive_checkpoint_owner_replacement_rejects_original_mail_dispa
         .ok_or_else(|| Error::NotFound("actual child suspension".into()))?;
     let operation = OperationId::from_bytes([85;16]);
     let wake = fixture.file(operation, "replacement-wake.json", b"{}").await?;
-    runtime.task_host().resume_workflow(child, suspension.revision, wake,
-        acyclic_harness::IdempotencyKey::new("pi-mail-original-checkpoint-wake")?).await?;
+    runtime.task_host().resume_workflow(child, suspension.revision, wake, acyclic_harness::IdempotencyKey::new("pi-mail-original-checkpoint-wake")?, None).await?;
     let replacement = fixture.pull(&runtime).await?;
     assert_eq!(replacement.operation.operation_id.into_bytes(), child.into_bytes());
     let replacement_fence = LeaseFence::from(&replacement.reservation);

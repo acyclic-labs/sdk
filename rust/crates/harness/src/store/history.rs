@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "filesystem")]
 mod measured;
 #[cfg(feature = "filesystem")]
-pub(crate) use measured::HistoryWork;
+pub use measured::HistoryWork;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -123,8 +123,6 @@ pub trait HistoryIo: Send {
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(())
     }
-    /// Release record.
-    fn release_record(&mut self, bytes: u64) -> Result<()>;
     /// Retain owned.
     fn retain_owned(&mut self, bytes: u64) -> Result<()>;
     /// Admit owned.
@@ -157,8 +155,6 @@ pub trait HistoryIo: Send {
     fn admit_copy(&self, bytes: u64) -> Result<()>;
     /// Copy bytes.
     fn copy_bytes(&mut self, bytes: u64) -> Result<()>;
-    /// Release bytes.
-    fn release_bytes(&mut self, bytes: u64) -> Result<()> { self.release_owned(bytes) }
     /// Encoded bytes.
     fn encoded_bytes(&mut self, bytes: u64) -> Result<()>;
     /// Admit encoding.
@@ -267,40 +263,6 @@ pub struct HistoryReader<P> {
 }
 
 impl<P: StreamProvider> HistoryReader<P> {
-    /// Binds the existing canonical Stream without reading or restoring history.
-    pub fn new(
-        client: &std::sync::Arc<P>,
-        authority: &Authority,
-        verifier: AuthorityVerifier,
-    ) -> Result<Self> {
-        Self::new_owned(client, authority, verifier, &mut None)
-    }
-
-    pub(crate) fn new_with_work(
-        client: &std::sync::Arc<P>,
-        authority: &Authority,
-        verifier: &AuthorityVerifier,
-        work: Option<&mut dyn HistoryIo>,
-    ) -> Result<Self> {
-        let mut work = work;
-        verifier.verify_audience(authority, &mut work)?;
-        let verifier = verifier.copy(&mut work)?;
-        Self::new_owned(client, authority, verifier, &mut work)
-    }
-
-    /// Constructs the original authenticated reader with pre-admitted issuer and path copies on the caller's exact native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn new_with_native_work(
-        client: &std::sync::Arc<P>,
-        authority: &Authority,
-        verifier: &AuthorityVerifier,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let mut io = native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let reader = Self::new_with_work(client, authority, verifier, Some(&mut io))?;
-        Ok((reader, io.into_custody()))
-    }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.verifier.logical_owned_bytes()?
@@ -308,16 +270,20 @@ impl<P: StreamProvider> HistoryReader<P> {
             .ok_or_else(|| Error::Invalid("history reader metadata byte count overflows".into()))
     }
 
-    pub(super) fn new_owned(
+    /// Binds the canonical Stream with an authenticated verifier and optional work.
+    pub fn new(
         client: &std::sync::Arc<P>,
         authority: &Authority,
-        verifier: AuthorityVerifier,
+        verifier: &AuthorityVerifier,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
         verifier.verify_audience(authority, work)?;
-        let path = authority.stream_path(work)?;
+        let verifier = verifier.copy(work)?;
+        let verifier_bytes = if work.is_some() { verifier.logical_owned_bytes()? } else { 0 };
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, verifier_bytes);
+        let path = authority.stream_path(quota.work())?;
         let temporary_bytes = path.capacity() as u64;
-        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, temporary_bytes);
+        quota.adopt(temporary_bytes)?;
         let path_bytes = path.len() as u64;
         let stream: Result<_> = (|| {
             if let Some(work) = quota.work().as_deref_mut() {
@@ -341,17 +307,8 @@ impl<P: StreamProvider> HistoryReader<P> {
         Ok(Self { client: client.clone(), stream, verifier })
     }
 
-    /// Explicitly hydrates one finite logical prefix for fork grant capture.
+    /// Hydrates a bounded logical prefix for fork grant capture.
     pub async fn fork_history(
-        &self,
-        parent: &crate::core::Reducer,
-        through_sequence: u64,
-        limits: HistoryReadLimits,
-    ) -> Result<crate::fork::PreparedForkHistory> {
-        self.fork_history_with_work(parent, through_sequence, limits, &mut None).await
-    }
-
-    pub(crate) async fn fork_history_with_work(
         &self,
         parent: &crate::core::Reducer,
         through_sequence: u64,
@@ -375,7 +332,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             through_revision: parent.revision(),
         };
         let cursor_bytes = cursor.authority.id.capacity() as u64;
-        let messages = self.conversation_range_with_work(
+        let messages = self.conversation_range(
             &cursor, 0, through_sequence, limits, work,
         ).await;
         drop(cursor);
@@ -477,7 +434,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         if parent.verifier.audience() != &seed.parent || self.verifier.audience() != &seed.child {
             return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Unauthorized, "published child differs from the original parent or child audience"));
         }
-        let child_cut = self.pin_with_work(0,
+        let child_cut = self.pin(0,
             work.as_mut().map(|work| &mut **work as &mut dyn HistoryIo)).await?;
         if child_cut.through_revision == 0 {
             return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Unauthorized, "published child is not bound"));
@@ -532,26 +489,8 @@ impl<P: StreamProvider> HistoryReader<P> {
         released_binding
     }
 
-    /// Resolves a globally unique admitted operation without restoring its aggregate.
-    pub async fn operation_event(&self, operation: crate::OperationId) -> Result<Option<Event>> {
-        super::operations::find_operation_bounded_with_work(
-            &self.client,
-            self.verifier.audience(),
-            &self.verifier,
-            operation, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut None,
-        ).await.map(|(event, _)| event)
-    }
-
     /// Resolves an attested operation under a finite encoded-byte allowance.
-    pub async fn operation_event_bounded(
-        &self,
-        operation: crate::OperationId,
-        maximum_bytes: u64,
-    ) -> Result<(Option<Event>, u64)> {
-        self.operation_event_bounded_with_work(operation, maximum_bytes, &mut None).await
-    }
-
-    pub(crate) async fn operation_event_bounded_with_work(
+    pub async fn operation_event(
         &self,
         operation: crate::OperationId,
         maximum_bytes: u64,
@@ -590,7 +529,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         seed.validate(&mut None)?;
         let publication_revision = crate::contract::next_revision(seed.parent_revision)?;
         let (publication, consumed) = self
-            .operation_event_bounded(seed.operation_id, limits.maximum_bytes)
+            .operation_event(seed.operation_id, limits.maximum_bytes, &mut None)
             .await?;
         let publication = publication
             .ok_or_else(|| Error::Conflict("inherited history has no published fork".into()))?;
@@ -626,7 +565,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 maximum_events: limits.maximum_events - 1,
                 maximum_bytes: remaining_bytes,
             },
-        )
+         &mut None)
         .await
     }
 
@@ -713,22 +652,12 @@ impl<P: StreamProvider> HistoryReader<P> {
             })?);
         }
         let view = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).map(|(state, _)| state)?;
-        crate::projection::validate_model_context_selection_at_revision(&view, selection, selection.conversation_revision, None)?;
+        crate::projection::validate_model_context_selection(&view, selection, selection.conversation_revision, &mut None)?;
         Ok(view)
     }
 
-    /// Reads an exact contiguous canonical message range at one event cutoff.
+    /// Reads an exact canonical message range at one event cutoff.
     pub async fn conversation_range(
-        &self,
-        cursor: &HistoryCursor,
-        after_sequence: u64,
-        through_sequence: u64,
-        limits: HistoryReadLimits,
-    ) -> Result<Vec<crate::conversation::ConversationMessage>> {
-        self.conversation_range_with_work(cursor, after_sequence, through_sequence, limits, &mut None).await
-    }
-
-    pub(crate) async fn conversation_range_with_work(
         &self,
         cursor: &HistoryCursor,
         after_sequence: u64,
@@ -786,25 +715,8 @@ impl<P: StreamProvider> HistoryReader<P> {
         Ok(messages)
     }
 
-    /// Reconstructs one exact effect at the pinned canonical cut.
+    /// Reconstructs an effect at the pinned cut and returns its retained bytes.
     pub async fn effect(
-        &self,
-        cursor: &HistoryCursor,
-        effect: crate::EffectId,
-        limits: HistoryReadLimits,
-    ) -> Result<Option<crate::core::EffectState>> {
-        self.effect_with_work(cursor, effect, limits, None).await
-    }
-
-    pub(crate) async fn effect_with_work(
-        &self, cursor: &HistoryCursor, effect: crate::EffectId,
-        limits: HistoryReadLimits, work: Option<&mut dyn HistoryIo>,
-    ) -> Result<Option<crate::core::EffectState>> {
-        self.effect_with_retained_quota(cursor, effect, limits, work).await
-            .map(|effect| effect.map(|(state, _)| state))
-    }
-
-    pub(crate) async fn effect_with_retained_quota(
         &self, cursor: &HistoryCursor, effect: crate::EffectId,
         limits: HistoryReadLimits, mut work: Option<&mut dyn HistoryIo>,
     ) -> Result<Option<(crate::core::EffectState, u64)>> {
@@ -830,12 +742,8 @@ impl<P: StreamProvider> HistoryReader<P> {
         result.map(Some)
     }
 
-    /// Captures a committed boundary once for explicit archival traversal.
-    pub async fn pin(&self, after_revision: u64) -> Result<HistoryCursor> {
-        self.pin_with_work(after_revision, None).await
-    }
-
-    pub(crate) async fn pin_with_work(
+    /// Captures a committed boundary for archival traversal.
+    pub async fn pin(
         &self,
         after_revision: u64,
         mut work: Option<&mut dyn HistoryIo>,
@@ -861,8 +769,9 @@ impl<P: StreamProvider> HistoryReader<P> {
         &self,
         cursor: &HistoryCursor,
         limits: HistoryReadLimits,
+        work: Option<&mut dyn HistoryIo>,
     ) -> Result<HistoryPage> {
-        self.read_page_with_work(cursor, limits, false, None)
+        self.read_page_with_work(cursor, limits, false, work)
             .await
             .map(|(page, _, _, _)| page)
     }
@@ -943,7 +852,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 retained_records.push(record);
             } else {
                 drop(record);
-                if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
+                if let Some(work) = work.as_deref_mut() { work.release_owned(record_bytes)?; }
             }
         }
         if events.is_empty() {
@@ -978,8 +887,6 @@ impl<P: StreamProvider> HistoryReader<P> {
         }
     }
 }
-
-
 
 pub(crate) fn verify_history_record_with_retained_quota(
     verifier: &AuthorityVerifier,

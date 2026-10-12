@@ -164,21 +164,20 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "fork seed verifier is not bound"))?
                 .activate(seed, transient.work()).await?)
         } else { None };
-        let mut append_phase = crate::distributed::CommitPhase::NotCalled;
+        let mut append_phase = crate::distributed::CommitPhase::Uncommitted;
         let appended = async {
             if let Some(owner) = owner {
                 return owner.append_conversation(
                     &publication, key.as_ref().expect("publication key"), write, transient.work(), Some(&mut append_phase)).await;
             }
-            let request = publication.request_with_work(
+            let request = publication.request(
                 &self.client, key.take().expect("publication key"), transient.work()).await?;
             let (outcome, retained) = crate::distributed::commit(
-                request, &self.client, Some(command.operation_id), Some(&mut append_phase), None, None,
-            ).await?;
+                request, &self.client, Some(command.operation_id), Some(&mut append_phase)).await?;
             let mut acknowledged = crate::wire_codec::CodecQuota::from_retained(transient.work(), retained);
             match outcome {
                 CommitOutcome::Committed(envelope) => {
-                    let verified = publication.verify_with_work(&envelope, acknowledged.work());
+                    let verified = publication.verify(&envelope, acknowledged.work());
                     drop(envelope);
                     verified.map_err(|error| guarded_publication_error(error, command.operation_id))?;
                     Ok(true)
@@ -207,8 +206,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Err(error) => {
                 let _ = released_key;
                 let _ = released_publication;
-                if matches!(append_phase, crate::distributed::CommitPhase::NotCalled
-                    | crate::distributed::CommitPhase::Conflict | crate::distributed::CommitPhase::Failed)
+                if matches!(append_phase, crate::distributed::CommitPhase::Uncommitted)
                     && let Some(guard) = fork_guard.as_ref().map(|guard| guard.guard.as_ref()) {
                     let _ = crate::fork::release_fork_guard_with_work(guard, transient.work()).await;
                 }

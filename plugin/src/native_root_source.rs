@@ -286,8 +286,8 @@ impl RootInstrumentation for OrdinaryRootWork<'_> {
     async fn open_source(&mut self, root: &Path, reference: SourceReference,
         watcher: Arc<Mutex<NativeWatch>>) -> Result<Arc<LocalLazySource>, Self::Error> {
         let remaining = self.work.remaining(self.budget).map_err(|error| rejected(error, self.work))?;
-        let source = combine(&mut self.work, NativeDemandSource::open_with_reference_measured(
-            root.to_path_buf(), native_filesystem_profile(), VolumeLimits::default(), reference,
+        let source = combine(&mut self.work, NativeDemandSource::open(
+            std::borrow::Cow::Owned(root.to_path_buf()), native_filesystem_profile(), VolumeLimits::default(), Some(reference),
             Some(watcher as Arc<dyn DemandDirectoryObserver>), remaining, self.cancellation,
         ).await)?;
         Ok(Arc::new(FilteredDemandSource::new(source,
@@ -456,7 +456,7 @@ where G: FnMut() -> F + Send,
         shared.source.inner().validate_root(root, expected, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(self.work))
             .map_err(native_source_error)?;
         shared.watcher.lock().map_err(|_| self.rejection(AcquisitionRejection::PoisonedWatcher, root))?
-            .verify_root_identity_with_native_work(expected, self.work).map_err(native_watch_error)?;
+            .verify_root_identity(expected, self.work).map_err(native_watch_error)?;
         shared.observe_native_transaction(self.work).map(Some)
     }
     fn settle_pending(&mut self, registration: &mut SharedRootRegistration, root: &Path) -> RootResult<()> {
@@ -511,9 +511,9 @@ where G: FnMut() -> F + Send,
     }
     async fn open_source(&mut self, root: &Path, reference: SourceReference,
         watcher: Arc<Mutex<NativeWatch>>) -> RootResult<Arc<LocalLazySource>> {
-        let source = NativeDemandSource::open_with_reference_and_native_work(
-            root, native_filesystem_profile(), VolumeLimits::default(), reference,
-            Some(watcher as Arc<dyn DemandDirectoryObserver>), self.work,
+        let source = NativeDemandSource::open(
+            std::borrow::Cow::Borrowed(root), native_filesystem_profile(), VolumeLimits::default(), Some(reference),
+            Some(watcher as Arc<dyn DemandDirectoryObserver>), self.work, self.work.cancellation(),
         ).await.map_err(native_source_error)?;
         let excluded = native_reserved_paths(self.work)?;
         let mut source = FilteredDemandSource::new_with_native_work(
@@ -702,7 +702,7 @@ mod tests {
         // Fixture::new obtained this protected result by observing the real
         // original Root effect and its actual Filesystem creator resources.
         let created = &fixture.root_allocation.roots[key];
-        if created.repository_workspace_id != fixture.source.workspace().id().into_bytes() {
+        if created.repository_workspace_id != fixture.root_handle.workspace.workspace().id().into_bytes() {
             return Err(RootError::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Conflict,
                 reason: "fixture source differs from its protected original creator",

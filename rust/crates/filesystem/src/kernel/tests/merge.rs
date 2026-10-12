@@ -1,12 +1,12 @@
+use crate::async_storage::AsyncObjectStore;
 use super::*;
-use crate::async_storage::poll_ready;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{
     FileKind, FileMetadata, MetadataField, NameEncoding, TreeEntry, TreePage, encode_file_metadata,
     encode_tree_page, file_metadata_id, tree_page_id,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectKind, ObjectStore};
+use crate::storage::{ObjectKind, };
 use acyclic_stream::OwnedBytes;
 
 fn object(kind: ObjectKind, byte: u8) -> ObjectId {
@@ -73,17 +73,16 @@ fn directory(file: u8, metadata: u8, link_count: u64, entries: u8) -> FileRecord
     )
 }
 
-fn put_metadata(
+async fn put_metadata(
     store: &MemoryObjectStore,
     metadata: FileMetadata,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let object = file_metadata_id(metadata)?;
-    ObjectStore::put(
+    AsyncObjectStore::put(
         store,
         object,
         OwnedBytes::from(encode_file_metadata(metadata, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(object)
 }
 
@@ -95,37 +94,35 @@ fn timed(modified_ns: i64, posix_mode: u32) -> FileMetadata {
     }
 }
 
-fn put_tree(
+async fn put_tree(
     store: &MemoryObjectStore,
     entries: Vec<TreeEntry>,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let page = TreePage::Leaf(entries);
     let object = tree_page_id(&page, 8)?;
-    ObjectStore::put(
+    AsyncObjectStore::put(
         store,
         object,
         OwnedBytes::from(encode_tree_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(object)
 }
 
-fn put_table(
+async fn put_table(
     store: &MemoryObjectStore,
     records: Vec<FileRecord>,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let page = super::super::FileTablePage::Leaf(records);
     let object = super::super::file_table_page_id(&page, 8)?;
-    ObjectStore::put(
+    AsyncObjectStore::put(
         store,
         object,
         OwnedBytes::from(super::super::encode_file_table_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(object)
 }
 
-fn put_generation(
+async fn put_generation(
     store: &MemoryObjectStore,
     generation: &GenerationRoot,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
@@ -134,22 +131,22 @@ fn put_generation(
         kind: ObjectKind::GenerationRoot,
         digest: crate::storage::object_digest(ObjectKind::GenerationRoot, &encoded),
     };
-    ObjectStore::put(store, object, OwnedBytes::from(encoded), WorkBudget::UNBOUNDED)?;
+    AsyncObjectStore::put(store, object, OwnedBytes::from(encoded), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(object)
 }
 
-fn stored_request(
+async fn stored_request(
     store: &MemoryObjectStore,
     base: GenerationRoot,
     ours: GenerationRoot,
     theirs: GenerationRoot,
 ) -> Result<MergeGenerationRequest, Box<dyn std::error::Error>> {
     Ok(MergeGenerationRequest {
-        base_generation: put_generation(store, &base)?,
+        base_generation: put_generation(store, &base).await?,
         base,
         ours_generation: None,
         ours,
-        theirs_generation: put_generation(store, &theirs)?,
+        theirs_generation: put_generation(store, &theirs).await?,
         theirs,
         retain_theirs_parent: true,
         maximum_changes: 8,
@@ -158,38 +155,37 @@ fn stored_request(
     })
 }
 
-fn merge_error(
+async fn merge_error(
     request: MergeGenerationRequest,
     cancellation: &CancellationToken,
 ) -> Result<OperationFailure<MergeGenerationError>, std::io::Error> {
-    let result = poll_ready(merge_generation_async(
+    let result = (merge_generation_async(
         &MemoryObjectStore::default(),
         request,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         cancellation,
-    ))
-    .ok_or_else(|| std::io::Error::other("request guard did not complete synchronously"))?;
+    )).await;
     result
         .err()
         .ok_or_else(|| std::io::Error::other("request guard admitted an invalid request"))
 }
 
-#[test]
-fn merge_request_guards_fail_before_backend_work() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn merge_request_guards_fail_before_backend_work() -> Result<(), Box<dyn std::error::Error>> {
     let valid = root(1, 2, 3);
     let cancellation = CancellationToken::new();
 
     let mut zero_changes = request(valid.clone(), valid.clone(), valid.clone());
     zero_changes.maximum_changes = 0;
-    let failure = merge_error(zero_changes, &cancellation)?;
+    let failure = merge_error(zero_changes, &cancellation).await?;
     assert!(matches!(failure.error, MergeGenerationError::ChangeLimit));
     assert_eq!(*failure.work, WorkCounters::default());
 
     let mut zero_conflicts = request(valid.clone(), valid.clone(), valid.clone());
     zero_conflicts.maximum_conflicts = 0;
     assert!(matches!(
-        merge_error(zero_conflicts, &cancellation)?.error,
+        merge_error(zero_conflicts, &cancellation).await?.error,
         MergeGenerationError::ChangeLimit
     ));
 
@@ -197,7 +193,7 @@ fn merge_request_guards_fail_before_backend_work() -> Result<(), Box<dyn std::er
         merge_error(
             request(valid.clone(), root(9, 2, 3), valid.clone()),
             &cancellation
-        )?
+        ).await?
         .error,
         MergeGenerationError::InvalidDiff
     ));
@@ -205,21 +201,21 @@ fn merge_request_guards_fail_before_backend_work() -> Result<(), Box<dyn std::er
         merge_error(
             request(valid.clone(), valid.clone(), root(1, 9, 3)),
             &cancellation
-        )?
+        ).await?
         .error,
         MergeGenerationError::InvalidDiff
     ));
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = merge_error(request(valid.clone(), valid.clone(), valid), &cancelled)?;
+    let failure = merge_error(request(valid.clone(), valid.clone(), valid), &cancelled).await?;
     assert!(matches!(failure.error, MergeGenerationError::Cancelled(_)));
     assert_eq!(*failure.work, WorkCounters::default());
     Ok(())
 }
 
-#[test]
-fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let directory_id = FileId::from_bytes([7; 16]);
@@ -229,19 +225,18 @@ fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dyn std:
         metadata,
         ..directory(7, 1, 1, 8)
     };
-    let metadata_conflict = poll_ready(merge_directory_record_async(
+    let metadata_conflict = (merge_directory_record_async(
         &store,
         directory_id,
-        with_metadata(put_metadata(&store, timed(1, 0o755))?),
-        with_metadata(put_metadata(&store, timed(1, 0o700))?),
-        with_metadata(put_metadata(&store, timed(1, 0o770))?),
+        with_metadata(put_metadata(&store, timed(1, 0o755)).await?),
+        with_metadata(put_metadata(&store, timed(1, 0o700)).await?),
+        with_metadata(put_metadata(&store, timed(1, 0o770)).await?),
         1,
         1,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or_else(|| std::io::Error::other("scalar conflict did not complete synchronously"))??;
+    )).await?;
     assert!(metadata_conflict.value.record.is_none());
     assert_eq!(
         metadata_conflict.value.conflicts,
@@ -250,7 +245,7 @@ fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dyn std:
     assert!(!metadata_conflict.value.truncated);
     assert_eq!(metadata_conflict.value.examined_changes, 0);
 
-    let bounded_link_conflict = poll_ready(merge_directory_record_async(
+    let bounded_link_conflict = (merge_directory_record_async(
         &store,
         directory_id,
         directory(7, 1, 1, 8),
@@ -261,14 +256,13 @@ fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dyn std:
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or_else(|| std::io::Error::other("bounded conflict did not complete synchronously"))??;
+    )).await?;
     assert!(bounded_link_conflict.value.record.is_none());
     assert!(bounded_link_conflict.value.conflicts.is_empty());
     assert!(bounded_link_conflict.value.truncated);
 
     let non_directory = record(7, 1, 1, FilePayload::Empty, FileKind::Fifo);
-    let result = poll_ready(merge_directory_record_async(
+    let result = (merge_directory_record_async(
         &store,
         directory_id,
         non_directory,
@@ -279,8 +273,7 @@ fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dyn std:
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or_else(|| std::io::Error::other("record validation did not complete synchronously"))?;
+    )).await;
     let failure = result
         .err()
         .ok_or_else(|| std::io::Error::other("directory merge accepted a non-directory record"))?;
@@ -347,8 +340,8 @@ async fn adjust_test_link_counts(
     result.map_err(|error| OperationFailure::new(project_merge_error(error), *work))
 }
 
-#[test]
-fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
+#[tokio::test]
+async fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
@@ -362,9 +355,9 @@ fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
         file_id: target_id,
         kind: FileKind::Fifo,
     };
-    let base_tree = put_tree(&store, vec![entry(a.clone())])?;
-    let empty_tree = put_tree(&store, Vec::new())?;
-    let renamed_tree = put_tree(&store, vec![entry(b)])?;
+    let base_tree = put_tree(&store, vec![entry(a.clone())]).await?;
+    let empty_tree = put_tree(&store, Vec::new()).await?;
+    let renamed_tree = put_tree(&store, vec![entry(b)]).await?;
     let base_directory = FileRecord {
         file_id: directory_id,
         kind: FileKind::Directory,
@@ -387,14 +380,13 @@ fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
     ]);
     let mut remaining_changes = 8;
     let mut work = WorkCounters::default();
-    poll_ready(adjust_test_link_counts(&store,
+    (adjust_test_link_counts(&store,
     &mut resolutions,
     &mut remaining_changes,
     DecodeLimits::default(),
     WorkBudget::UNBOUNDED,
     &cancellation,
-    &mut work,))
-    .ok_or("link-count adjustment unexpectedly suspended")??;
+    &mut work,)).await?;
     assert_eq!(
         resolutions
             .get(&target_id)
@@ -410,14 +402,13 @@ fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
     let introduced = record(33, 1, 1, FilePayload::Empty, FileKind::Fifo);
     let introduced_id = introduced.file_id;
     let mut resolutions = BTreeMap::from([(introduced_id, (None, Some(introduced)))]);
-    poll_ready(adjust_test_link_counts(&store,
+    (adjust_test_link_counts(&store,
     &mut resolutions,
     &mut 8,
     DecodeLimits::default(),
     WorkBudget::UNBOUNDED,
     &cancellation,
-    &mut WorkCounters::default(),))
-    .ok_or("orphaned file adjustment unexpectedly suspended")??;
+    &mut WorkCounters::default(),)).await?;
     assert_eq!(
         resolutions.get(&introduced_id).map(|(_, record)| *record),
         Some(None)
@@ -434,36 +425,34 @@ fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
         (Some(base_directory), Some(renamed_directory)),
     )]);
     let mut remaining_changes = 8;
-    poll_ready(adjust_test_link_counts(&store,
+    (adjust_test_link_counts(&store,
     &mut resolutions,
     &mut remaining_changes,
     DecodeLimits::default(),
     WorkBudget::UNBOUNDED,
     &cancellation,
-    &mut WorkCounters::default(),))
-    .ok_or("rename-neutral link adjustment unexpectedly suspended")??;
+    &mut WorkCounters::default(),)).await?;
     assert!(!resolutions.contains_key(&target_id));
 
     let mut resolutions = BTreeMap::from([(
         directory_id,
         (Some(base_directory), Some(removed_directory)),
     )]);
-    let limit = poll_ready(adjust_test_link_counts(&store,
+    let limit = (adjust_test_link_counts(&store,
     &mut resolutions,
     &mut 0,
     DecodeLimits::default(),
     WorkBudget::UNBOUNDED,
     &cancellation,
-    &mut WorkCounters::default(),))
-    .ok_or("zero link frontier unexpectedly suspended")?
+    &mut WorkCounters::default(),)).await
     .err()
     .ok_or("zero link frontier unexpectedly succeeded")?;
     assert!(matches!(limit.error, MergeGenerationError::ChangeLimit));
     Ok(())
 }
 
-#[test]
-fn pruning_an_unbound_directory_recomputes_descendant_links()
+#[tokio::test]
+async fn pruning_an_unbound_directory_recomputes_descendant_links()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let directory_id = FileId::from_bytes([90; 16]);
@@ -476,7 +465,7 @@ fn pruning_an_unbound_directory_recomputes_descendant_links()
             file_id: child_id,
             kind: FileKind::Fifo,
         }],
-    )?;
+    ).await?;
     let directory = FileRecord {
         file_id: directory_id,
         kind: FileKind::Directory,
@@ -488,39 +477,37 @@ fn pruning_an_unbound_directory_recomputes_descendant_links()
         (directory_id, (None, Some(directory))),
         (child_id, (None, Some(child))),
     ]);
-    poll_ready(adjust_test_link_counts(&store,
+    (adjust_test_link_counts(&store,
     &mut resolutions,
     &mut 8,
     DecodeLimits::default(),
     WorkBudget::UNBOUNDED,
     &CancellationToken::new(),
-    &mut WorkCounters::default(),))
-    .ok_or("orphan pruning unexpectedly suspended")??;
+    &mut WorkCounters::default(),)).await?;
     assert!(resolutions.values().all(|(_, resolved)| resolved.is_none()));
     Ok(())
 }
 
-#[test]
-fn deleting_a_record_with_remaining_links_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn deleting_a_record_with_remaining_links_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let linked = record(92, 1, 2, FilePayload::Empty, FileKind::Fifo);
     let mut resolutions = BTreeMap::from([(linked.file_id, (Some(linked), None))]);
-    let failure = poll_ready(adjust_test_link_counts(&store,
+    let failure = (adjust_test_link_counts(&store,
     &mut resolutions,
     &mut 8,
     DecodeLimits::default(),
     WorkBudget::UNBOUNDED,
     &CancellationToken::new(),
-    &mut WorkCounters::default(),))
-    .ok_or("remaining-link adjustment unexpectedly suspended")?
+    &mut WorkCounters::default(),)).await
     .err()
     .ok_or("remaining-link deletion unexpectedly succeeded")?;
     assert!(matches!(failure.error, MergeGenerationError::InvalidDiff));
     Ok(())
 }
 
-#[test]
-fn generation_merge_covers_union_directory_and_field_resolution_limits()
+#[tokio::test]
+async fn generation_merge_covers_union_directory_and_field_resolution_limits()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
@@ -528,14 +515,14 @@ fn generation_merge_covers_union_directory_and_field_resolution_limits()
     let base_second = record(2, 2, 1, FilePayload::Empty, FileKind::Fifo);
     let ours_first = record(1, 3, 1, FilePayload::Empty, FileKind::Fifo);
     let theirs_second = record(2, 4, 1, FilePayload::Empty, FileKind::Fifo);
-    let base_table = put_table(&store, vec![base_first, base_second])?;
-    let ours_table = put_table(&store, vec![ours_first, base_second])?;
-    let theirs_table = put_table(&store, vec![base_first, theirs_second])?;
+    let base_table = put_table(&store, vec![base_first, base_second]).await?;
+    let ours_table = put_table(&store, vec![ours_first, base_second]).await?;
+    let theirs_table = put_table(&store, vec![base_first, theirs_second]).await?;
     let generation = |table| GenerationRoot {
         file_table: table,
         ..root(1, 9, 1)
     };
-    let union_limit = poll_ready(merge_generation_async(
+    let union_limit = (merge_generation_async(
         &store,
         MergeGenerationRequest {
             maximum_changes: 1,
@@ -548,8 +535,7 @@ fn generation_merge_covers_union_directory_and_field_resolution_limits()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("union-limited generation merge suspended")?
+    )).await
     .err()
     .ok_or("union-limited generation merge succeeded")?;
     assert!(matches!(
@@ -561,7 +547,7 @@ fn generation_merge_covers_union_directory_and_field_resolution_limits()
     let ours_second = record(2, 5, 1, FilePayload::Empty, FileKind::Fifo);
     let theirs_second_overlap = record(2, 6, 1, FilePayload::Empty, FileKind::Fifo);
     let theirs_third = record(3, 7, 1, FilePayload::Empty, FileKind::Fifo);
-    let three_way_union_limit = poll_ready(merge_generation_async(
+    let three_way_union_limit = (merge_generation_async(
         &store,
         MergeGenerationRequest {
             maximum_changes: 2,
@@ -569,22 +555,21 @@ fn generation_merge_covers_union_directory_and_field_resolution_limits()
                 generation(put_table(
                     &store,
                     vec![base_first, base_second, base_third],
-                )?),
+                ).await?),
                 generation(put_table(
                     &store,
                     vec![ours_first, ours_second, base_third],
-                )?),
+                ).await?),
                 generation(put_table(
                     &store,
                     vec![base_first, theirs_second_overlap, theirs_third],
-                )?),
+                ).await?),
             )
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("three-file union-limited generation merge suspended")?
+    )).await
     .err()
     .ok_or("three-file union-limited generation merge succeeded")?;
     assert!(matches!(
@@ -592,20 +577,19 @@ fn generation_merge_covers_union_directory_and_field_resolution_limits()
         MergeGenerationError::ChangeLimit
     ));
 
-    let shared_change_table = put_table(&store, vec![ours_first, base_second])?;
-    let unchanged = poll_ready(merge_generation_async(
+    let shared_change_table = put_table(&store, vec![ours_first, base_second]).await?;
+    let unchanged = (merge_generation_async(
         &store,
         stored_request(
             &store,
             generation(base_table),
             generation(shared_change_table),
             generation(shared_change_table),
-        )?,
+        ).await?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("shared-change generation merge suspended")??;
+    )).await?;
     assert!(matches!(
         unchanged.value,
         MergeGenerationOutcome::Prepared { root, .. } if root.file_table == shared_change_table
@@ -613,22 +597,21 @@ fn generation_merge_covers_union_directory_and_field_resolution_limits()
 
     let ours_field = record(1, 5, 1, FilePayload::Empty, FileKind::Fifo);
     let theirs_field = record(1, 1, 2, FilePayload::Empty, FileKind::Fifo);
-    let base_field_table = put_table(&store, vec![base_first])?;
-    let ours_field_table = put_table(&store, vec![ours_field])?;
-    let theirs_field_table = put_table(&store, vec![theirs_field])?;
-    let combined = poll_ready(merge_generation_async(
+    let base_field_table = put_table(&store, vec![base_first]).await?;
+    let ours_field_table = put_table(&store, vec![ours_field]).await?;
+    let theirs_field_table = put_table(&store, vec![theirs_field]).await?;
+    let combined = (merge_generation_async(
         &store,
         stored_request(
             &store,
             generation(base_field_table),
             generation(ours_field_table),
             generation(theirs_field_table),
-        )?,
+        ).await?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("field-combining generation merge suspended")??;
+    )).await?;
     assert!(matches!(
         combined.value,
         MergeGenerationOutcome::Prepared { .. }
@@ -639,22 +622,21 @@ fn generation_merge_covers_union_directory_and_field_resolution_limits()
         generation(base_field_table),
         generation(ours_field_table),
         generation(theirs_field_table),
-    )?;
+    ).await?;
     linear_request.retain_theirs_parent = false;
-    let linear = poll_ready(merge_generation_async(
+    let linear = (merge_generation_async(
         &store,
         linear_request,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("linear-history generation merge suspended")??;
+    )).await?;
     assert!(matches!(
         linear.value,
         MergeGenerationOutcome::Prepared { root, .. } if root.parents.len() == 1
     ));
 
-    let empty = put_tree(&store, Vec::new())?;
+    let empty = put_tree(&store, Vec::new()).await?;
     let ours_tree = put_tree(
         &store,
         vec![TreeEntry {
@@ -662,7 +644,7 @@ fn generation_merge_covers_union_directory_and_field_resolution_limits()
             file_id: FileId::from_bytes([7; 16]),
             kind: FileKind::Fifo,
         }],
-    )?;
+    ).await?;
     let theirs_tree = put_tree(
         &store,
         vec![TreeEntry {
@@ -670,27 +652,26 @@ fn generation_merge_covers_union_directory_and_field_resolution_limits()
             file_id: FileId::from_bytes([8; 16]),
             kind: FileKind::Fifo,
         }],
-    )?;
+    ).await?;
     let base_directory = directory(3, 1, 1, 1);
     let directory_with = |entries| FileRecord {
         payload: FilePayload::Directory { entries },
         ..base_directory
     };
-    let directory_limit = poll_ready(merge_generation_async(
+    let directory_limit = (merge_generation_async(
         &store,
         MergeGenerationRequest {
             maximum_changes: 1,
             ..request(
-                generation(put_table(&store, vec![directory_with(empty)])?),
-                generation(put_table(&store, vec![directory_with(ours_tree)])?),
-                generation(put_table(&store, vec![directory_with(theirs_tree)])?),
+                generation(put_table(&store, vec![directory_with(empty)]).await?),
+                generation(put_table(&store, vec![directory_with(ours_tree)]).await?),
+                generation(put_table(&store, vec![directory_with(theirs_tree)]).await?),
             )
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("directory-limited generation merge suspended")?
+    )).await
     .err()
     .ok_or("directory-limited generation merge succeeded")?;
     assert!(matches!(
@@ -699,7 +680,7 @@ fn generation_merge_covers_union_directory_and_field_resolution_limits()
     ));
 
     let shared_name = LogicalName::new(NameEncoding::Utf8, b"shared".to_vec(), 16)?;
-    let tree_for = |file: u8| {
+    let tree_for = async |file: u8| {
         put_tree(
             &store,
             vec![TreeEntry {
@@ -707,21 +688,20 @@ fn generation_merge_covers_union_directory_and_field_resolution_limits()
                 file_id: FileId::from_bytes([file; 16]),
                 kind: FileKind::Fifo,
             }],
-        )
+        ).await
     };
-    let conflicted = poll_ready(merge_generation_async(
+    let conflicted = (merge_generation_async(
         &store,
         stored_request(
             &store,
-            generation(put_table(&store, vec![directory_with(tree_for(10)?)])?),
-            generation(put_table(&store, vec![directory_with(tree_for(11)?)])?),
-            generation(put_table(&store, vec![directory_with(tree_for(12)?)])?),
-        )?,
+            generation(put_table(&store, vec![directory_with(tree_for(10).await?)]).await?),
+            generation(put_table(&store, vec![directory_with(tree_for(11).await?)]).await?),
+            generation(put_table(&store, vec![directory_with(tree_for(12).await?)]).await?),
+        ).await?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("binding-conflicted generation merge suspended")??;
+    )).await?;
     assert!(matches!(
         conflicted.value,
         MergeGenerationOutcome::Conflicted { .. }
@@ -729,8 +709,8 @@ fn generation_merge_covers_union_directory_and_field_resolution_limits()
     Ok(())
 }
 
-#[test]
-fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier()
+#[tokio::test]
+async fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
@@ -742,12 +722,12 @@ fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier()
             kind: FileKind::Fifo,
         })
     };
-    let empty = put_tree(&store, Vec::new())?;
+    let empty = put_tree(&store, Vec::new()).await?;
     let a = entry(b"a", 42)?;
     let b = entry(b"b", 43)?;
-    let both = put_tree(&store, vec![a.clone(), b.clone()])?;
-    let only_a = put_tree(&store, vec![a])?;
-    let only_b = put_tree(&store, vec![b])?;
+    let both = put_tree(&store, vec![a.clone(), b.clone()]).await?;
+    let only_a = put_tree(&store, vec![a]).await?;
+    let only_b = put_tree(&store, vec![b]).await?;
     let base = FileRecord {
         file_id: directory_id,
         kind: FileKind::Directory,
@@ -760,7 +740,7 @@ fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier()
         ..base
     };
 
-    let truncated_side = poll_ready(merge_directory_record_async(
+    let truncated_side = (merge_directory_record_async(
         &store,
         directory_id,
         base,
@@ -771,8 +751,7 @@ fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("side-truncated directory merge suspended")?
+    )).await
     .err()
     .ok_or("side-truncated directory merge succeeded")?;
     assert!(matches!(
@@ -780,7 +759,7 @@ fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier()
         MergeGenerationError::ChangeLimit
     ));
 
-    let union_limit = poll_ready(merge_directory_record_async(
+    let union_limit = (merge_directory_record_async(
         &store,
         directory_id,
         base,
@@ -791,8 +770,7 @@ fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("union-limited directory merge suspended")?
+    )).await
     .err()
     .ok_or("union-limited directory merge succeeded")?;
     assert!(matches!(
@@ -802,14 +780,13 @@ fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier()
 
     let mut resolutions = BTreeMap::from([(directory_id, (Some(base), Some(with(both))))]);
     let mut remaining_changes = 1;
-    let failure = poll_ready(adjust_test_link_counts(&store,
+    let failure = (adjust_test_link_counts(&store,
     &mut resolutions,
     &mut remaining_changes,
     DecodeLimits::default(),
     WorkBudget::UNBOUNDED,
     &cancellation,
-    &mut WorkCounters::default(),))
-    .ok_or("truncated link recount suspended")?
+    &mut WorkCounters::default(),)).await
     .err()
     .ok_or("truncated link recount succeeded")?;
     assert!(matches!(failure.error, MergeGenerationError::ChangeLimit));
@@ -854,8 +831,8 @@ fn one_file_added_on_both_sides_keeps_the_later_times() {
     assert!(merge_added_metadata_fields(timed(30, 0o600), timed(20, 0o644)).is_none());
 }
 
-#[test]
-fn sibling_additions_merge_entries_and_reconcile_directory_times()
+#[tokio::test]
+async fn sibling_additions_merge_entries_and_reconcile_directory_times()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
@@ -869,10 +846,10 @@ fn sibling_additions_merge_entries_and_reconcile_directory_times()
     };
     let a = entry(b"a", 52)?;
     let b = entry(b"b", 53)?;
-    let empty = put_tree(&store, Vec::new())?;
-    let only_a = put_tree(&store, vec![a.clone()])?;
-    let only_b = put_tree(&store, vec![b.clone()])?;
-    let both = put_tree(&store, vec![a, b])?;
+    let empty = put_tree(&store, Vec::new()).await?;
+    let only_a = put_tree(&store, vec![a.clone()]).await?;
+    let only_b = put_tree(&store, vec![b.clone()]).await?;
+    let both = put_tree(&store, vec![a, b]).await?;
     let dir = |metadata, entries| FileRecord {
         file_id: directory_id,
         kind: FileKind::Directory,
@@ -880,11 +857,11 @@ fn sibling_additions_merge_entries_and_reconcile_directory_times()
         metadata,
         payload: FilePayload::Directory { entries },
     };
-    let base = dir(put_metadata(&store, timed(10, 0o755))?, empty);
-    let ours = dir(put_metadata(&store, timed(20, 0o755))?, only_a);
-    let theirs = dir(put_metadata(&store, timed(30, 0o755))?, only_b);
+    let base = dir(put_metadata(&store, timed(10, 0o755)).await?, empty);
+    let ours = dir(put_metadata(&store, timed(20, 0o755)).await?, only_a);
+    let theirs = dir(put_metadata(&store, timed(30, 0o755)).await?, only_b);
 
-    let merged = poll_ready(merge_directory_record_async(
+    let merged = (merge_directory_record_async(
         &store,
         directory_id,
         base,
@@ -895,8 +872,7 @@ fn sibling_additions_merge_entries_and_reconcile_directory_times()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("sibling directory merge suspended")??;
+    )).await?;
     assert!(merged.value.conflicts.is_empty());
     let record = merged
         .value
@@ -907,9 +883,9 @@ fn sibling_additions_merge_entries_and_reconcile_directory_times()
 
     // A genuine metadata conflict (mode changed both ways) resolved by a driver
     // still merges the entries; the resolution contributes metadata only.
-    let ours = dir(put_metadata(&store, timed(20, 0o700))?, only_a);
-    let theirs = dir(put_metadata(&store, timed(30, 0o770))?, only_b);
-    let unresolved = poll_ready(merge_directory_record_async(
+    let ours = dir(put_metadata(&store, timed(20, 0o700)).await?, only_a);
+    let theirs = dir(put_metadata(&store, timed(30, 0o770)).await?, only_b);
+    let unresolved = (merge_directory_record_async(
         &store,
         directory_id,
         base,
@@ -920,23 +896,22 @@ fn sibling_additions_merge_entries_and_reconcile_directory_times()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("conflicting directory merge suspended")??;
+    )).await?;
     assert_eq!(
         unresolved.value.conflicts,
         vec![MergeConflict::File(directory_id)]
     );
-    let chosen = put_metadata(&store, timed(30, 0o770))?;
+    let chosen = put_metadata(&store, timed(30, 0o770)).await?;
     let resolutions = BTreeMap::from([(
         MergeConflict::File(directory_id),
         MergeConflictResolution::File(Some(dir(chosen, only_b))),
     )]);
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let mut state = MergeState::new(8, &mut accounting)?;
-    let record = poll_ready(merge_directory_record_with_resolutions_async(
+    let record = (merge_directory_record_with_resolutions_async(
         &store, directory_id, base, ours, theirs, ResolutionView::Map(&resolutions), 8,
         DecodeLimits::default(), &mut state, &mut accounting, &cancellation,
-    )).ok_or("resolved directory merge suspended")??.ok_or("resolved directory merge produced no record")?;
+    )).await?.ok_or("resolved directory merge produced no record")?;
     state.records.retire(&mut accounting)?;
     state.conflicts.retire(&mut accounting)?;
     state.folds.retire(&mut accounting)?;
@@ -1035,36 +1010,36 @@ mod laws {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage()
+#[tokio::test]
+async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let metadata = put_metadata(&store, FileMetadata::default())?;
+    let metadata = put_metadata(&store, FileMetadata::default()).await?;
     let a = FileId::from_bytes([2; 16]);
     let b = FileId::from_bytes([3; 16]);
     let entry = |name: &str, file_id| -> Result<TreeEntry, Box<dyn std::error::Error>> {
         Ok(TreeEntry { name: LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 16)?,
             file_id, kind: FileKind::Fifo })
     };
-    let base_entries = put_tree(&store, vec![entry("alpha", a)?, entry("beta", b)?])?;
-    let ours_entries = put_tree(&store, vec![entry("alpha", a)?, entry("beta", b)?, entry("left", a)?])?;
-    let theirs_entries = put_tree(&store, vec![entry("alpha", a)?, entry("beta", b)?, entry("right", b)?])?;
+    let base_entries = put_tree(&store, vec![entry("alpha", a)?, entry("beta", b)?]).await?;
+    let ours_entries = put_tree(&store, vec![entry("alpha", a)?, entry("beta", b)?, entry("left", a)?]).await?;
+    let theirs_entries = put_tree(&store, vec![entry("alpha", a)?, entry("beta", b)?, entry("right", b)?]).await?;
     let directory = |entries| FileRecord { metadata, payload: FilePayload::Directory { entries }, ..directory(1, 0, 1, 0) };
     let first = FileRecord { metadata, ..record(2, 0, 1, FilePayload::Empty, FileKind::Fifo) };
     let second = FileRecord { metadata, ..record(3, 0, 1, FilePayload::Empty, FileKind::Fifo) };
-    let base = GenerationRoot { file_table: put_table(&store, vec![directory(base_entries), first, second])?, ..root(1, 1, 0) };
+    let base = GenerationRoot { file_table: put_table(&store, vec![directory(base_entries), first, second]).await?, ..root(1, 1, 0) };
     let ours = GenerationRoot { file_table: put_table(&store,
-        vec![directory(ours_entries), FileRecord { link_count: 2, ..first }, second])?, ..root(1, 1, 0) };
+        vec![directory(ours_entries), FileRecord { link_count: 2, ..first }, second]).await?, ..root(1, 1, 0) };
     let ours_table = ours.file_table;
     let theirs = GenerationRoot { file_table: put_table(&store,
-        vec![directory(theirs_entries), first, FileRecord { link_count: 2, ..second }])?, ..root(1, 1, 0) };
-    let request = stored_request(&store, base, ours, theirs)?;
+        vec![directory(theirs_entries), first, FileRecord { link_count: 2, ..second }]).await?, ..root(1, 1, 0) };
+    let request = stored_request(&store, base, ours, theirs).await?;
     let second_parent = GenerationId::new(request.theirs_generation.digest);
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let (outcome, allocation) = poll_ready(merge_generation_with_accounting(
-        &store, request, DecodeLimits::default(), &mut accounting, &cancellation)).ok_or("native merge suspended")??;
+    let (outcome, allocation) = (merge_generation_with_accounting(
+        &store, request, DecodeLimits::default(), &mut accounting, &cancellation)).await?;
     let MergeGenerationOutcome::Prepared { generation_root, root, generation_id } = outcome
         else { return Err("independent native additions conflicted".into()); };
     assert_eq!(generation_id, GenerationId::new(generation_root.digest));
@@ -1072,20 +1047,20 @@ fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage()
     assert_eq!(root.parents.get(1), Some(&second_parent));
     let KernelOwnedAllocation::NativeOriginal(guard) = allocation else { return Err("native merge lost output custody".into()); };
     assert_eq!(guard.bytes(), (root.parents.capacity() * std::mem::size_of::<GenerationId>()) as u64);
-    let changes = poll_ready(super::super::diff_file_records_with_accounting(&store, Some(ours_table), Some(root.file_table),
-        8, DecodeLimits::default(), &mut super::super::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation), &cancellation)).ok_or("merged table diff suspended")??.0;
+    let changes = (super::super::diff_file_records_with_accounting(&store, Some(ours_table), Some(root.file_table),
+        8, DecodeLimits::default(), &mut super::super::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation), &cancellation)).await?.0;
     let merged_second = changes.changes.iter().find(|change| change.key == b).and_then(|change| change.after).ok_or("second hardlink delta missing")?;
     assert_eq!(merged_second.link_count, 2);
     let merged_directory = changes.changes.iter().find(|change| change.key == FileId::from_bytes([1; 16]))
         .and_then(|change| change.after).ok_or("merged directory missing")?;
     let entries = directory_entries(Some(merged_directory)).ok_or("merged directory payload missing")?;
-    let read = ObjectStore::read(&store, entries, DecodeLimits::default().maximum_object_bytes, WorkBudget::UNBOUNDED)?;
+    let read = AsyncObjectStore::read(&store, entries, DecodeLimits::default().maximum_object_bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     let TreePage::Leaf(entries) = super::super::decode_tree_page(&read.value.bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
         else { return Err("small merged directory was not a leaf".into()); };
     assert_eq!(entries.len(), 4);
     assert!(entries.iter().any(|entry| entry.name.as_bytes() == b"left" && entry.file_id == a));
     assert!(entries.iter().any(|entry| entry.name.as_bytes() == b"right" && entry.file_id == b));
-    let stored = ObjectStore::read(&store, generation_root, DecodeLimits::default().maximum_object_bytes, WorkBudget::UNBOUNDED)?;
+    let stored = AsyncObjectStore::read(&store, generation_root, DecodeLimits::default().maximum_object_bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     assert_eq!(super::super::decode_generation_root(&stored.value.bytes, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, root);
     assert!(original.receipt().page_reads > 0);
     assert!(original.receipt().page_writes > 0);
@@ -1095,14 +1070,14 @@ fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_merge_original_allocation_denial_precedes_backend_work()
+#[tokio::test]
+async fn native_merge_original_allocation_denial_precedes_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let base = GenerationRoot { file_table: put_table(&store,
-        vec![record(1, 1, 1, FilePayload::Empty, FileKind::Fifo)])?, ..root(1, 1, 0) };
+        vec![record(1, 1, 1, FilePayload::Empty, FileKind::Fifo)]).await?, ..root(1, 1, 0) };
     let ours = GenerationRoot { file_table: put_table(&store,
-        vec![record(1, 2, 1, FilePayload::Empty, FileKind::Fifo)])?, ..root(1, 1, 0) };
+        vec![record(1, 2, 1, FilePayload::Empty, FileKind::Fifo)]).await?, ..root(1, 1, 0) };
     let request = request(base.clone(), ours, base);
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
@@ -1110,8 +1085,8 @@ fn native_merge_original_allocation_denial_precedes_backend_work()
     let before = original.receipt();
     let baseline = original.allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes())).map(|(value, _allocation)| value)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let result = poll_ready(merge_generation_with_accounting(
-        &store, request, DecodeLimits::default(), &mut accounting, &cancellation)).ok_or("denied native merge suspended")?;
+    let result = (merge_generation_with_accounting(
+        &store, request, DecodeLimits::default(), &mut accounting, &cancellation)).await;
     assert!(matches!(result, Err(FsError::Work(WorkError::BudgetExceeded { counter: "allocation_operations", .. }))));
     assert_eq!(original.receipt(), before);
     assert_eq!(original.receipt().backend_read_operations, 0);

@@ -20,8 +20,8 @@ use std::sync::Arc;
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 async fn project_workspace_binding_uses_parent_forks_published_after_construction() -> Result<()> {
-    let provider = ProviderRef::new("project-workspaces", "filesystem", "2")?;
-    let stream_provider = ProviderRef::new("project-workspaces", "stream", "2")?;
+    let provider = ProviderRef::new("project-workspaces".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new("project-workspaces".into(), "stream".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let parent = Authority {
         kind: AggregateKind::Conversation,
@@ -62,10 +62,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         VolumeOwner::Agent(parent_agent),
     )?;
     let issuer = AuthorityIssuer::new("project-workspaces", [7; 32], parent.clone());
-    let scope = issuer.root_for_agent(
-        parent_agent,
-        "parent",
-        Capabilities::new([
+    let scope = issuer.issue("parent", &Capabilities::new([
             "conversation:bind".to_owned(),
             "fork:publish".to_owned(),
             "project:merge".to_owned(),
@@ -73,16 +70,11 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
             project.capability(VolumeOperation::Write)?,
             child_project.capability(VolumeOperation::Read)?,
             parent_private.capability(VolumeOperation::Read)?,
-        ]),
-    );
+        ]), Some(parent_agent), None, &mut None).expect("scope proof");
 
     let parent_head = host.create_volume(&project).await?;
     let parent_private_head = host.create_volume(&parent_private).await?;
-    let child_scope = issuer.root_for_agent(
-        child_agent,
-        "child",
-        Capabilities::new([child_private.capability(VolumeOperation::Write)?]),
-    );
+    let child_scope = issuer.issue("child", &Capabilities::new([child_private.capability(VolumeOperation::Write)?]), Some(child_agent), None, &mut None).expect("scope proof");
     let child_private_head = host
         .fork_volume(
             &parent_private,

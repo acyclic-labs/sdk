@@ -46,11 +46,11 @@ async fn ntfs_demand_identifies_hard_links_by_file_identity()
     std::fs::write(source.path().join("linked"), b"linked")?;
     std::fs::hard_link(source.path().join("linked"), source.path().join("alias"))?;
     let demand = NativeDemandSource::open(
-        source.path(),
+        std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
         FilesystemProfile::Windows,
-        VolumeLimits::default(), None, None,
+        VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
     )
-    .await?;
+    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut identities = Vec::new();
     for (name, links) in [("single", 1), ("linked", 2), ("alias", 2)] {
         let path = host_path_to_namespace(
@@ -86,11 +86,11 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
     let demand = Arc::new(
         NativeDemandSource::open(
-            source.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
             FilesystemProfile::Windows,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
         )
-        .await?,
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
     );
     let lazy = LazyWorkspace::attach(
         &fs,
@@ -99,20 +99,17 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
         MemoryLazyWorkspaceStore::default(),
     )
     .await?;
-    let exact = tokio::spawn(async move {
-        lazy.exactify("/hot", WorkBudget::UNBOUNDED, &CancellationToken::new(), acyclic_fs::PublicationPermit::Unrestricted)
-            .await
-    })
-    .await??;
-    let file = exact.value.stat("/hot/file", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let alias = exact.value.stat("/hot/alias", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let cancellation = CancellationToken::new();
+    let work = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let exact = lazy.exactify("/hot", PublicationPermit::Unrestricted, &work).await?;
+    let file = exact.stat("/hot/file", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let alias = exact.stat("/hot/alias", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(file.file_id, alias.file_id);
     assert_eq!(file.link_count, 2);
     let view = tempfile::tempdir()?;
     exact
-        .value
-        .materialize_path(
-            "/hot",
+        .materialize(
+            std::iter::once("/hot"),
             &MaterializeOptions::native(view.path()),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -155,10 +152,10 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
     };
     let fs = Fs::memory();
     let workspace = fs.create_workspace("ntfs-metadata-view", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_directory("/tree", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
-        .write("/tree/file", OwnedBytes::from_static(b"payload"))
+        .write("/tree/file", OwnedBytes::from_static(b"payload"), WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await?;
     transaction.hard_link("/tree/file", "/tree/alias", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
@@ -181,13 +178,13 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
                 ..FileMetadata::default()
             }, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let TransactionCommit::Committed(generation) = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
+    let TransactionCommit::Committed(generation) = transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
         return Err("metadata fixture did not commit".into());
     };
     let destination = tempfile::tempdir()?;
     generation
-        .materialize_path(
-            "/tree",
+        .materialize(
+            std::iter::once("/tree"),
             &MaterializeOptions::native(destination.path()),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -247,7 +244,7 @@ async fn captured_ntfs_link_retains_restorable_metadata() -> Result<(), Box<dyn 
             VolumeConfig::native(Lifecycle::Durable),
         acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),)
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let path = host_path_to_namespace(
         std::path::Path::new("link"),
         FilesystemProfile::Windows,
@@ -330,11 +327,11 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     let started = Instant::now();
     let demand = Arc::new(
         NativeDemandSource::open(
-            source.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
             FilesystemProfile::Windows,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
         )
-        .await?,
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
     );
     let lazy = LazyWorkspace::attach(
         &fs,
@@ -355,7 +352,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
             &CancellationToken::new(),
             PublicationPermit::Unrestricted,
         )
-        .await?.value;
+        .await.map_err(|(error, _)| error)?.value;
     let preparation_us = started.elapsed().as_micros();
 
     let warm_view = tempfile::tempdir()?;
@@ -368,7 +365,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
             &CancellationToken::new(),
             PublicationPermit::Unrestricted,
         )
-        .await?.value;
+        .await.map_err(|(error, _)| error)?.value;
     let warm_preparation_us = started.elapsed().as_micros();
     warm_working_set.validate_for_presentation().await?;
 
@@ -414,11 +411,11 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     let phase_fs = Fs::local(LocalOptions::new(phase_state.path())).await?;
     let phase_demand = Arc::new(
         NativeDemandSource::open(
-            source.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
             FilesystemProfile::Windows,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
         )
-        .await?,
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
     );
     let phase_lazy = LazyWorkspace::attach(
         &phase_fs,
@@ -428,19 +425,15 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     )
     .await?;
     let started = Instant::now();
-    let phase_exact = tokio::spawn(async move {
-        phase_lazy
-            .exactify("/hot", WorkBudget::UNBOUNDED, &CancellationToken::new(), acyclic_fs::PublicationPermit::Unrestricted)
-            .await
-    })
-    .await??;
+    let cancellation = CancellationToken::new();
+    let work = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let phase_exact = phase_lazy.exactify("/hot", PublicationPermit::Unrestricted, &work).await?;
     let exactify_us = started.elapsed().as_micros();
     let phase_view = tempfile::tempdir()?;
     let started = Instant::now();
     phase_exact
-        .value
-        .materialize_path(
-            "/hot",
+        .materialize(
+            std::iter::once("/hot"),
             &MaterializeOptions::native(phase_view.path()),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -482,11 +475,11 @@ async fn native_lazy_workspace_lists_windows_source_directories()
     let fs = Fs::local(LocalOptions::new(store.path())).await?;
     let demand = Arc::new(
         NativeDemandSource::open(
-            source.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
             FilesystemProfile::Windows,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
         )
-        .await?,
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
     );
     let lazy = LazyWorkspace::attach_with_config(
         &fs,

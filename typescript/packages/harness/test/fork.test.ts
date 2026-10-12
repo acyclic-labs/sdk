@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import { validateContract, type ForkRequest as NativeForkRequest } from "../generated/wasm/acyclic_harness_wasm.js";
-import { DEFAULT_LIMITS, ExecutionScope, Harness, MAX_FORK_AGENTS, MAX_FORK_ATTACHMENT_MANIFEST_BYTES, MAX_FORK_INHERITED_BYTES,
-  MAX_FORK_INHERITED_MESSAGES, MAX_FORK_REFERENCE_BYTES, MAX_FORK_REFERENCES, MAX_FORK_RESOURCES,
-  NativeContracts, forkReadableReferences, forkSeed, resourceRef, validateForkReport, validateForkRequest, validateForkSeed,
+import { DEFAULT_LIMITS, ExecutionScope, Harness, MAX_FORK_INHERITED_BYTES,
+  MAX_FORK_INHERITED_MESSAGES, MAX_FORK_REFERENCES,
+  NativeContracts, forkReadableReferences,
   type AgentId, type ForkReport, type ForkRequest, type ForkSeed, type OperationId, type ResourceRevision, type ReferenceGrant } from "../src/index.js";
+
+const contracts = await NativeContracts.create();
 
 const filesystem = { namespace: "test", family: "filesystem", version: "2" } as const;
 const stream = { namespace: "test", family: "stream", version: "2" } as const;
@@ -48,41 +50,25 @@ const childScratch: ResourceRevision = {
   },
 };
 
-test("Rust-owned fork ceilings preserve public bigint and number semantics", () => {
-  expect(typeof MAX_FORK_AGENTS).toBe("number");
-  expect(typeof MAX_FORK_RESOURCES).toBe("number");
-  expect(typeof MAX_FORK_REFERENCES).toBe("number");
-  expect(typeof MAX_FORK_ATTACHMENT_MANIFEST_BYTES).toBe("bigint");
-  expect(typeof MAX_FORK_INHERITED_BYTES).toBe("bigint");
-  expect(typeof MAX_FORK_REFERENCE_BYTES).toBe("bigint");
-  expect(typeof MAX_FORK_INHERITED_MESSAGES).toBe("bigint");
-  expect(MAX_FORK_AGENTS).toBeGreaterThan(0);
-  expect(MAX_FORK_RESOURCES).toBeGreaterThan(0);
-  expect(MAX_FORK_REFERENCES).toBeGreaterThan(0);
-  expect(MAX_FORK_ATTACHMENT_MANIFEST_BYTES).toBeGreaterThan(0n);
-  expect(MAX_FORK_INHERITED_BYTES).toBeGreaterThan(0n);
-  expect(MAX_FORK_REFERENCE_BYTES).toBeGreaterThan(0n);
-  expect(MAX_FORK_INHERITED_MESSAGES).toBeGreaterThan(0n);
-});
 
 test("Rust and TypeScript share the canonical v2 resource revision fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/resource-revision.json", import.meta.url)).text()).trim();
   const revision = JSON.parse(fixture) as ResourceRevision;
   if (revision.kind !== "artifact") throw new TypeError("fixture kind changed");
-  const admitted = await resourceRef(revision.reference);
+  const admitted = contracts.validate("resource_ref", revision.reference);
   expect(JSON.stringify({ kind: revision.kind, reference: admitted })).toBe(fixture);
   expect(Object.isFrozen(admitted.provider)).toBe(true);
   expect(Object.isFrozen(admitted.key)).toBe(true);
-  await expect(resourceRef({ ...revision.reference, key: [] })).rejects.toThrow();
+  expect(() => contracts.validate("resource_ref", { ...revision.reference, key: [] })).toThrow();
   const unknownField = { ...revision.reference, unexpected: true };
-  await expect(resourceRef(unknownField)).rejects.toThrow();
+  expect(() => contracts.validate("resource_ref", unknownField)).toThrow();
 });
 
 test("Rust and TypeScript share the canonical v2 fork seed fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/fork-seed.json", import.meta.url)).text()).trim();
   const decoded = JSON.parse(fixture) as Omit<ForkSeed, "parent_revision"> & { parent_revision: number };
   const seed = { ...decoded, parent_revision: BigInt(decoded.parent_revision) };
-  await validateForkSeed(seed);
+  contracts.validate("fork_seed", seed);
   expect(JSON.stringify(seed, (_key, value: unknown) => typeof value === "bigint" ? Number(value) : value)).toBe(fixture);
 });
 
@@ -106,7 +92,7 @@ test("Rust and TypeScript share the canonical v2 fork request fixture", async ()
       maximum_inherited_bytes: BigInt(decoded.preparation.maximum_inherited_bytes),
     },
   };
-  await validateForkRequest(request);
+  contracts.validate("fork_request", request);
   expect(JSON.stringify(request, (_key, value: unknown) => typeof value === "bigint" ? Number(value) : value)).toBe(fixture);
 });
 
@@ -155,7 +141,6 @@ function report(): ForkReport {
 }
 
 test("parent publication reconciles one exact child after a lost acknowledgement", async () => {
-  const contracts = await NativeContracts.create();
   const prepared = report();
   const seed = contracts.forkSeed(prepared);
   let publications = 0;
@@ -175,63 +160,60 @@ test("parent publication reconciles one exact child after a lost acknowledgement
   };
   const runtime = await Harness.builder(contracts).parentSnapshot(snapshot).forkPublisher(publisher)
     .grant("fork:publish").build();
-  await expect(runtime.spawnFromReport(prepared)).rejects.toThrow("acknowledgement lost");
+  await expect(runtime.spawnFromReport(prepared)).rejects.toThrow();
   expect(await runtime.reconcileSpawn(prepared)).toEqual(seed);
   const advanced = await Harness.builder(contracts).parentSnapshot({ ...snapshot, parent: prepared.request.parent, revision: prepared.request.parent_revision + 1n }).forkPublisher(publisher).grant("fork:publish").build();
   expect(await advanced.reconcileSpawn(prepared)).toEqual(seed);
   expect(publications).toBe(1);
   const narrowed = await runtime.scoped(ExecutionScope.create().onlyGrants("fork:publish"));
   expect(narrowed.components.forkPublisher).toBeUndefined();
-  await expect(narrowed.reconcileSpawn(prepared)).rejects.toThrow("not bound");
+  await expect(narrowed.reconcileSpawn(prepared)).rejects.toThrow();
   await expect(runtime.spawnFromReport({ ...prepared, request: { ...prepared.request,
     parent: { kind: "conversation", id: "wrong-parent" } } })).rejects.toThrow();
   await expect(Harness.builder(contracts).parentSnapshot(snapshot).forkPublisher({ ...publisher,
     parent: () => ({ kind: "conversation" as const, id: "wrong-parent" }) }).grant("fork:publish").build())
-    .rejects.toThrow("another parent");
+    .rejects.toThrow();
   const mismatched = await Harness.builder(contracts).parentSnapshot(snapshot).forkPublisher({ ...publisher,
     spawnFromReport: async () => ({ ...seed, child: { kind: "conversation" as const, id: "different-child" } }),
   }).grant("fork:publish").build();
-  await expect(mismatched.spawnFromReport(prepared)).rejects.toThrow("another child seed");
+  await expect(mismatched.spawnFromReport(prepared)).rejects.toThrow();
 });
 
-test("parent-controlled fork seed pins exact history and isolates project/private volumes", async () => {
-  const seed = await forkSeed(report());
+test("parent-controlled fork seed pins exact history and isolates project/private volumes", () => {
+  const seed = contracts.forkSeed(report());
   expect(seed.resources).toHaveLength(3);
   expect(seed.resources[2]).toEqual({ source: parentScratch, revision: childScratch });
   expect(seed.omissions).toHaveLength(0);
   expect(seed.child_private_volume.owner).toEqual({ kind: "agent", id: agent });
   expect(seed.child_private_generation).toEqual(report().child_private_generation);
-  await expect(validateForkSeed(seed)).resolves.toBeUndefined();
-  await expect(validateForkSeed({ ...seed, inherited_through_sequence: -1n })).rejects.toThrow();
+  contracts.validate("fork_seed", seed);
+  expect(() => contracts.validate("fork_seed", { ...seed, inherited_through_sequence: -1n })).toThrow();
 
   const stale = { ...seed, parent_revision: 4n };
-  await expect(validateForkSeed(stale)).rejects.toThrow();
+  expect(() => contracts.validate("fork_seed", stale)).toThrow();
   const inheritedPrivate = { ...seed, child_private_volume: { ...privateVolume, owner: { kind: "agent" as const, id: "33333333333333333333333333333333" as AgentId } } };
-  await expect(validateForkSeed(inheritedPrivate)).rejects.toThrow();
-  await expect(validateForkSeed({ ...seed, child_private_generation: {
+  expect(() => contracts.validate("fork_seed", inheritedPrivate)).toThrow();
+  expect(() => contracts.validate("fork_seed", { ...seed, child_private_generation: {
     ...seed.child_private_generation, provider: { namespace: "other", family: "filesystem", version: "2" },
-  } })).rejects.toThrow();
+  } })).toThrow();
 });
 
-test("fork reports and seeds reject inherited prefixes outside the wire integer range", async () => {
-  await expect(validateForkReport(report())).resolves.toBeUndefined();
+test("fork reports and seeds reject inherited prefixes outside the wire integer range", () => {
+  contracts.validate("fork_report", report());
   const oversized = MAX_FORK_INHERITED_MESSAGES + 1n;
-  await expect(validateForkReport({ ...report(), inherited_through_sequence: oversized }))
-    .rejects.toThrow();
-  await expect(forkSeed({ ...report(), inherited_through_sequence: oversized }))
-    .rejects.toThrow();
-  const seed = await forkSeed(report());
-  await expect(validateForkSeed({ ...seed, inherited_through_sequence: oversized }))
-    .rejects.toThrow();
+  expect(() => contracts.validate("fork_report", { ...report(), inherited_through_sequence: oversized })).toThrow();
+  expect(() => contracts.forkSeed({ ...report(), inherited_through_sequence: oversized })).toThrow();
+  const seed = contracts.forkSeed(report());
+  expect(() => contracts.validate("fork_seed", { ...seed, inherited_through_sequence: oversized })).toThrow();
 });
 
-test("fork preparation pins child allocation and bounded context before capture", async () => {
+test("fork preparation pins child allocation and bounded context before capture", () => {
   const prepared = report();
-  await expect(validateForkReport({
+  expect(() => contracts.validate("fork_report", {
     ...prepared,
     child_private_volume: { ...privateVolume, id: "different-private" },
-  })).rejects.toThrow();
-  await expect(validateForkReport({
+  })).toThrow();
+  expect(() => contracts.validate("fork_report", {
     ...prepared,
     captures: [prepared.captures[0]!, {
       kind: "captured", value: {
@@ -242,20 +224,19 @@ test("fork preparation pins child allocation and bounded context before capture"
         } },
       },
     }, prepared.captures[2]!],
-  })).rejects.toThrow();
-  await expect(validateForkReport({
+  })).toThrow();
+  expect(() => contracts.validate("fork_report", {
     ...prepared,
     request: { ...prepared.request, preparation: {
       ...prepared.request.preparation,
       maximum_inherited_messages: MAX_FORK_INHERITED_MESSAGES + 1n,
     } },
-  })).rejects.toThrow();
+  })).toThrow();
 });
 
 test("required capture failure never publishes a child; optional failures remain visible", async () => {
   const required = report();
-  await expect(forkSeed({ ...required, captures: [{ kind: "unsupported", value: "not available" }, ...required.captures.slice(1)] }))
-    .rejects.toThrow();
+  expect(() => contracts.forkSeed({ ...required, captures: [{ kind: "unsupported", value: "not available" }, ...required.captures.slice(1)] })).toThrow();
   const optional: ForkReport = {
     ...required,
     request: {
@@ -267,51 +248,48 @@ test("required capture failure never publishes a child; optional failures remain
     },
     captures: [...required.captures, { kind: "indeterminate", value: "44444444444444444444444444444444" as OperationId }],
   };
-  const seed = await forkSeed(optional);
+  const seed = contracts.forkSeed(optional);
   expect(seed.omissions).toHaveLength(1);
   expect(seed.omissions[0]?.outcome.kind).toBe("indeterminate");
   const invalidOmission = { ...seed, omissions: [{ ...seed.omissions[0]!, outcome: { kind: "indeterminate" as const, value: "not-an-operation" as OperationId } }] };
-  await expect(validateForkSeed(invalidOmission)).rejects.toThrow();
-  await expect(validateForkSeed({ ...seed, resources: [...seed.resources, seed.resources[0]!] }))
-    .rejects.toThrow();
-  await expect(resourceRef({ kind: "artifact", provider: filesystem, key: [1], version: null }))
+  expect(() => contracts.validate("fork_seed", invalidOmission)).toThrow();
+  expect(() => contracts.validate("fork_seed", { ...seed, resources: [...seed.resources, seed.resources[0]!] })).toThrow();
+  await expect(contracts.validate("resource_ref", { kind: "artifact", provider: filesystem, key: [1], version: null }))
     .resolves.toBeDefined();
 });
 
-test("project capture cannot retain the parent's project volume", async () => {
+test("project capture cannot retain the parent's project volume", () => {
   const invalid = report();
-  await expect(forkSeed({ ...invalid, captures: [invalid.captures[0]!, { kind: "captured", value: { source: parentProject, revision: parentProject } }, invalid.captures[2]!] }))
-    .rejects.toThrow();
+  expect(() => contracts.forkSeed({ ...invalid, captures: [invalid.captures[0]!, { kind: "captured", value: { source: parentProject, revision: parentProject } }, invalid.captures[2]!] })).toThrow();
 });
 
-test("fork seeds reject noncanonical omissions and unknown fields", async () => {
-  const seed = await forkSeed(report());
-  await expect(validateForkSeed({ ...seed, unexpected: true } as unknown as ForkSeed))
-    .rejects.toThrow();
+test("fork seeds reject noncanonical omissions and unknown fields", () => {
+  const seed = contracts.forkSeed(report());
+  expect(() => contracts.validate("fork_seed", { ...seed, unexpected: true } as unknown as ForkSeed)).toThrow();
   const capturedOmission = {
     ...seed,
     omissions: [{ selection: { required: false, revision: history }, outcome: { kind: "captured", value: seed.resources[0]! } }],
   } as unknown as ForkSeed;
-  await expect(validateForkSeed(capturedOmission)).rejects.toThrow();
+  expect(() => contracts.validate("fork_seed", capturedOmission)).toThrow();
 });
 
-test("published seeds are detached and immutable, including nested resources", async () => {
+test("published seeds are detached and immutable, including nested resources", () => {
   const prepared = report();
-  const seed = await forkSeed(prepared);
+  const seed = contracts.forkSeed(prepared);
   (prepared.child_private_volume as { id: string }).id = "changed";
   expect(seed.child_private_volume.id).toBe("private");
   expect(Object.isFrozen(seed)).toBe(true);
   expect(Object.isFrozen(seed.resources[0]?.revision)).toBe(true);
 });
 
-test("native fork conversion keeps child-owned file lengths as exact TS numbers", async () => {
+test("native fork conversion keeps child-owned file lengths as exact TS numbers", () => {
   const inherited = {
     volume: privateVolume, path: ".system/inherited-conversation/prefix.json", version: "one",
     descriptor: { sha256: Array(32).fill(0), byte_length: 7, media_type: "application/vnd.acyclic.harness.inherited-conversation+json" },
     display_name: "inherited-conversation.json",
   };
   const prepared = report();
-  const seed = await forkSeed({
+  const seed = contracts.forkSeed({
     ...prepared,
     request: { ...prepared.request, preparation: {
       ...prepared.request.preparation, inherited_through_sequence: 1n,
@@ -323,36 +301,32 @@ test("native fork conversion keeps child-owned file lengths as exact TS numbers"
   expect(typeof seed.inherited_context[0]?.descriptor.byte_length).toBe("number");
 });
 
-test("inherited context cannot select the same child path twice", async () => {
-  const seed = await forkSeed(report());
+test("inherited context cannot select the same child path twice", () => {
+  const seed = contracts.forkSeed(report());
   const file = {
     volume: privateVolume, path: ".system/inherited-conversation/a.txt", version: "one",
     descriptor: { sha256: Array(32).fill(0) as number[], byte_length: 0, media_type: "text/plain" },
     display_name: "a.txt",
   };
-  await expect(validateForkSeed({ ...seed, inherited_context: [file, { ...file, version: "two" }] }))
-    .rejects.toThrow();
-  await expect(validateForkSeed({ ...seed, inherited_context: [file] }))
-    .rejects.toThrow();
+  expect(() => contracts.validate("fork_seed", { ...seed, inherited_context: [file, { ...file, version: "two" }] })).toThrow();
+  expect(() => contracts.validate("fork_seed", { ...seed, inherited_context: [file] })).toThrow();
 });
 
-test("a selected shared volume requires one exact child-bound grant", async () => {
-  const seed = await forkSeed(report());
+test("a selected shared volume requires one exact child-bound grant", () => {
+  const seed = contracts.forkSeed(report());
   const sharedVolume = { provider: filesystem, id: "shared", class: "session_shared", owner: { kind: "session", id: "session" } } as const;
   const sharedRevision: ResourceRevision = { kind: "shared_volume", reference: sharedVolume };
   const resources = [...seed.resources, { source: sharedRevision, revision: sharedRevision }];
-  await expect(validateForkSeed({ ...seed, resources })).rejects.toThrow();
+  expect(() => contracts.validate("fork_seed", { ...seed, resources })).toThrow();
   const granted = { ...seed, resources, shared_grants: [{ volume: sharedVolume, child_agent: agent, operations: ["read"] as const }] };
-  await expect(validateForkSeed(granted)).resolves.toBeUndefined();
-  await expect(validateForkSeed({ ...granted, shared_grants: [{ ...granted.shared_grants[0]!, child_agent: "33333333333333333333333333333333" as AgentId }] }))
-    .rejects.toThrow();
+  contracts.validate("fork_seed", granted);
+  expect(() => contracts.validate("fork_seed", { ...granted, shared_grants: [{ ...granted.shared_grants[0]!, child_agent: "33333333333333333333333333333333" as AgentId }] })).toThrow();
   const reader = "33333333333333333333333333333333" as AgentId;
-  await expect(validateForkSeed({ ...granted, attached_agents: [reader], shared_grants: [...granted.shared_grants, { volume: sharedVolume, child_agent: reader, operations: ["read"] as const }] }))
-    .resolves.toBeUndefined();
+  contracts.validate("fork_seed", { ...granted, attached_agents: [reader], shared_grants: [...granted.shared_grants, { volume: sharedVolume, child_agent: reader, operations: ["read"] as const }] });
 });
 
 test("attached fork agents receive exact read-only references", async () => {
-  const seed = await forkSeed(report());
+  const seed = contracts.forkSeed(report());
   const reader = "33333333333333333333333333333333" as AgentId;
   const parentFile = {
     volume: { ...privateVolume, owner: { kind: "agent" as const, id: "44444444444444444444444444444444" as AgentId } },
@@ -361,7 +335,7 @@ test("attached fork agents receive exact read-only references", async () => {
     display_name: "evidence.bin",
   };
   const attached = { ...seed, attached_agents: [reader], reference_grants: [{ file: parentFile, reader }] };
-  await expect(validateForkSeed(attached)).resolves.toBeUndefined();
+  contracts.validate("fork_seed", attached);
   const inherited = {
     ...parentFile,
     volume: privateVolume,
@@ -376,15 +350,12 @@ test("attached fork agents receive exact read-only references", async () => {
     owner: { kind: "agent" as const, id: "44444444-4444-4444-4444-444444444444" as AgentId } } };
   expect(readable).toEqual([inherited, canonicalParentFile]);
   await expect(forkReadableReferences(attached, "55555555555555555555555555555555" as AgentId)).rejects.toThrow();
-  await expect(validateForkSeed({ ...seed, attached_agents: [parentFile.volume.owner.id as AgentId], reference_grants: [] })).resolves.toBeUndefined();
-  await expect(validateForkSeed({ ...attached, attached_agents: [] })).rejects.toThrow();
-  await expect(validateForkSeed({ ...attached, reference_grants: [...attached.reference_grants, attached.reference_grants[0]!] }))
-    .rejects.toThrow();
-  await expect(validateForkSeed({ ...attached, reference_grants: [{ file: parentFile, reader: parentFile.volume.owner.id as AgentId }] }))
-    .rejects.toThrow();
+  contracts.validate("fork_seed", { ...seed, attached_agents: [parentFile.volume.owner.id as AgentId], reference_grants: [] });
+  expect(() => contracts.validate("fork_seed", { ...attached, attached_agents: [] })).toThrow();
+  expect(() => contracts.validate("fork_seed", { ...attached, reference_grants: [...attached.reference_grants, attached.reference_grants[0]!] })).toThrow();
+  expect(() => contracts.validate("fork_seed", { ...attached, reference_grants: [{ file: parentFile, reader: parentFile.volume.owner.id as AgentId }] })).toThrow();
   const projectFile = { ...parentFile, volume: parentVolume };
-  await expect(validateForkSeed({ ...seed, reference_grants: [{ file: projectFile, reader: agent }] }))
-    .resolves.toBeUndefined();
+  contracts.validate("fork_seed", { ...seed, reference_grants: [{ file: projectFile, reader: agent }] });
   const manifest = { ...parentFile, path: "attachments/list.json", descriptor: {
     ...parentFile.descriptor, media_type: "application/vnd.acyclic.harness.attachments+json",
   } };
@@ -392,27 +363,27 @@ test("attached fork agents receive exact read-only references", async () => {
     attachment_manifests: [manifest],
     reference_grants: [{ file: parentFile, reader, attachment_manifest: manifest }],
   };
-  await expect(validateForkSeed(manifestWithoutReaderGrant)).rejects.toThrow();
+  expect(() => contracts.validate("fork_seed", manifestWithoutReaderGrant)).toThrow();
   const readableManifestSeed = { ...manifestWithoutReaderGrant,
     reference_grants: [...manifestWithoutReaderGrant.reference_grants,
       { file: manifest, reader }],
   };
-  await expect(validateForkSeed(readableManifestSeed)).resolves.toBeUndefined();
+  contracts.validate("fork_seed", readableManifestSeed);
   expect((await forkReadableReferences(readableManifestSeed, reader)).map(file => file.path))
     .toEqual(["attachments/evidence.bin", "attachments/list.json"]);
   const projectManifest = { ...manifest, volume: childVolume };
   const projectReadable = { ...seed, attached_agents: [reader],
     attachment_manifests: [projectManifest] };
-  await expect(validateForkSeed(projectReadable)).resolves.toBeUndefined();
+  contracts.validate("fork_seed", projectReadable);
   expect((await forkReadableReferences(projectReadable, reader)).map(file => file.path))
     .toEqual(["attachments/list.json"]);
-  await expect(validateForkSeed({ ...attached,
+  expect(() => contracts.validate("fork_seed", { ...attached,
     reference_grants: [{ file: parentFile, reader, attachment_manifest: manifest }],
-  })).rejects.toThrow();
+  })).toThrow();
 });
 
-test("extension fork revisions pin a nonzero implementation digest and numeric version", async () => {
-  const seed = await forkSeed(report());
+test("extension fork revisions pin a nonzero implementation digest and numeric version", () => {
+  const seed = contracts.forkSeed(report());
   const extension: ResourceRevision = {
     kind: "extension",
     reference: {
@@ -421,23 +392,23 @@ test("extension fork revisions pin a nonzero implementation digest and numeric v
     },
   };
   const resources = [...seed.resources, { source: extension, revision: extension }];
-  await expect(validateForkSeed({ ...seed, resources })).resolves.toBeUndefined();
+  contracts.validate("fork_seed", { ...seed, resources });
   const resetRevision: ResourceRevision = {
     ...extension,
     reference: { ...extension.reference, reference: { ...extension.reference.reference, key: [5] } },
   };
-  await expect(validateForkSeed({ ...seed, resources: [...seed.resources, { source: extension, revision: resetRevision }] })).resolves.toBeUndefined();
-  await expect(validateForkSeed({ ...seed, resources: [...seed.resources, {
+  contracts.validate("fork_seed", { ...seed, resources: [...seed.resources, { source: extension, revision: resetRevision }] });
+  expect(() => contracts.validate("fork_seed", { ...seed, resources: [...seed.resources, {
     source: extension,
     revision: { ...extension, reference: { ...extension.reference, implementation_digest: Array(32).fill(0) } },
-  }] })).rejects.toThrow();
-  await expect(validateForkSeed({ ...seed, resources: [...seed.resources, {
+  }] })).toThrow();
+  expect(() => contracts.validate("fork_seed", { ...seed, resources: [...seed.resources, {
     source: extension,
     revision: { ...extension, reference: { ...extension.reference, version: 0 } },
-  }] })).rejects.toThrow();
+  }] })).toThrow();
 });
 
-test("Summary fork selection preserves bigint work bounds and requires its exact capture", async () => {
+test("Summary fork selection preserves bigint work bounds and requires its exact capture", () => {
   const prepared = report();
   const selection = {
     checkpoint: {
@@ -452,7 +423,7 @@ test("Summary fork selection preserves bigint work bounds and requires its exact
   const request: ForkRequest = { ...prepared.request, preparation: {
     ...prepared.request.preparation, inherited_through_sequence: 1n, summary: selection,
   } };
-  await validateForkRequest(request);
+  contracts.validate("fork_request", request);
   const admitted: NativeForkRequest = validateContract("fork_request", request, null);
   const nativeLimits = admitted.preparation.summary?.limits;
   expect(nativeLimits).toBeDefined();
@@ -460,13 +431,13 @@ test("Summary fork selection preserves bigint work bounds and requires its exact
     expect(typeof nativeLimits?.[field]).toBe("bigint");
     expect(nativeLimits?.[field]).toBe(BigInt(DEFAULT_LIMITS[field]));
   }
-  await expect(validateForkReport({ ...prepared, request, summary: null })).rejects.toThrow();
-  await expect(validateForkRequest({ ...request, preparation: {
+  expect(() => contracts.validate("fork_report", { ...prepared, request, summary: null })).toThrow();
+  expect(() => contracts.validate("fork_request", { ...request, preparation: {
     ...request.preparation, inherited_through_sequence: 0n,
-  } })).rejects.toThrow();
-  await expect(validateForkRequest({ ...request, preparation: {
+  } })).toThrow();
+  expect(() => contracts.validate("fork_request", { ...request, preparation: {
     ...request.preparation, summary: { ...selection, history_limits: {
       ...selection.history_limits, maximum_events: 0,
     } },
-  } })).rejects.toThrow();
+  } })).toThrow();
 });

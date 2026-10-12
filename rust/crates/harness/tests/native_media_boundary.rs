@@ -12,6 +12,7 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 mod explicit_conversion;
 
 use acyclic_fs::Fs;
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     bundle::HarnessBuilder,
@@ -541,7 +542,7 @@ fn only_file(file: &FileRef, policy: &NativeMediaPolicy) -> Vec<ModelMessage> {
 }
 
 async fn exercise_live_native_boundary() -> Result<()> {
-    let provider = ProviderRef::new("native-boundary", "filesystem", "2")?;
+    let provider = ProviderRef::new("native-boundary".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent_id = AgentId::new();
     let volume = VolumeRef::new(
@@ -558,10 +559,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let issuer = AuthorityIssuer::new("native-boundary", [21; 32], authority.clone());
     let read = volume.capability(VolumeOperation::Read)?;
     let write = volume.capability(VolumeOperation::Write)?;
-    let owner = issuer.root_for_agent(
-        agent_id,
-        "owner",
-        Capabilities::new([
+    let owner = issuer.issue("owner", &Capabilities::new([
             read.clone(),
             write,
             "extension:configure".into(),
@@ -572,8 +570,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "model:generate".into(),
             "task:spawn:fixture.native_replay@1".into(),
             "tool:call:example.convert_image".into(),
-        ]),
-    );
+        ]), Some(agent_id), None, &mut None).expect("scope proof");
     let writer = FilesystemContentPublisher::new(
         host.clone(),
         &volume,
@@ -596,7 +593,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         version: 1,
     };
     let mut schemas = SchemaRegistry::new();
-    schemas.register_configured(extension.name.clone(),1,json!({"type":"object"}),[31;32],ExtensionForkPolicy::Inherit,[],Some(json!({"type":"object","required":["mode","scale"],"properties":{"mode":{"const":"strict"},"scale":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false})))?;
+    schemas.register(extension.name.clone(),1,json!({"type":"object"}),[31;32],ExtensionForkPolicy::Inherit,[],Some(json!({"type":"object","required":["mode","scale"],"properties":{"mode":{"const":"strict"},"scale":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false})))?;
     let mut agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), schemas.clone());
     agent.validate_configuration_bytes(&extension, &options_file, options_bytes, None)?;
     for (revision, action) in [
@@ -720,7 +717,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         output_schema: json!({"type":"object","required":["files"]}),
         projection_schema: json!({"type":"object","required":["kind","parts"],"properties":{"kind":{"const":"parts"},"parts":{"type":"array"}},"additionalProperties":false}),
     };
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(Tool {
         definition: definition.clone(),
         executor: projector.clone(),
@@ -1055,7 +1052,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
                 let changed_revision = context.scoped_model(
                     context.scope().grants().clone(),
                     context.scope().limits(),
-                    Model::new("fixture-native", "all", "mock-native-2", Value::Null)?,
+                    Model::new("fixture-native".into(), "all".into(), "mock-native-2".into(), Value::Null)?,
                     adapter.clone(),
                 )?;
                 let counts = adapter.counts.load(Ordering::SeqCst);
@@ -1107,11 +1104,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         id: acyclic_harness::ConversationId::new().to_string(),
     };
     let journal_issuer = AuthorityIssuer::new("native-conversation", [22; 32], journal_authority);
-    let journal_scope = journal_issuer.root_for_agent(
-        agent_id,
-        "conversation-owner",
-        Capabilities::new([read.clone(), volume.capability(VolumeOperation::Write)?]),
-    );
+    let journal_scope = journal_issuer.issue("conversation-owner", &Capabilities::new([read.clone(), volume.capability(VolumeOperation::Write)?]), Some(agent_id), None, &mut None).expect("scope proof");
     let journal = Arc::new(FilesystemExecutionJournal::new(
         Arc::new(MemoryStream::default()),
         host.clone(),
@@ -1123,7 +1116,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let bundle = HarnessBuilder::new()
         .journal(journal.clone())
         .model(
-            Model::new("fixture-native", "all", "mock-native-1", Value::Null)?,
+            Model::new("fixture-native".into(), "all".into(), "mock-native-1".into(), Value::Null)?,
             adapter.clone(),
         )
         .content(ContentBindings {
@@ -1248,7 +1241,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let current_bundle = HarnessBuilder::new()
         .journal(journal)
         .model(
-            Model::new("fixture-native", "all", "mock-native-1", Value::Null)?,
+            Model::new("fixture-native".into(), "all".into(), "mock-native-1".into(), Value::Null)?,
             adapter.clone(),
         )
         .content(ContentBindings {
@@ -1352,9 +1345,9 @@ where
     )?;
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
-    let definition = tasks.get_version::<u64, u64>("fixture.native_replay", "1")?;
+    let definition = tasks.get_version::<u64, u64>("fixture.native_replay", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
+    machines.register(machine, &mut None)?;
     let stream = Arc::new(MemoryStream::default());
     let admission = OperationId::from_bytes([115; 16]);
     let task = TaskId::from_bytes(admission.into_bytes());
@@ -1366,13 +1359,9 @@ where
             id: task.to_string(),
         },
     );
-    let signed = issuer.root_for_agent(
-        signed
+    let signed = issuer.issue("native-replay-task-owner", signed.capabilities(), Some(signed
             .agent()
-            .ok_or_else(|| Error::Unauthorized("original Agent identity absent".into()))?,
-        "native-replay-task-owner",
-        signed.capabilities().clone(),
-    );
+            .ok_or_else(|| Error::Unauthorized("original Agent identity absent".into()))?), None, &mut None).expect("scope proof");
     let turn = OperationId::from_bytes([116; 16]);
     let mut model = MockAdapter::new(reader);
     model.receipts_enabled = true;
@@ -1453,7 +1442,7 @@ where
                 WorkPull::Idle => return Err(Error::NotFound("original task lease".into())),
                 WorkPull::Unresolved { error, .. } => return Err(error),
             };
-            runtime.task_host().start_task(&lease).await?;
+            runtime.task_host().start_task(&lease, None).await?;
             fence = Some(LeaseFence::from(&lease.reservation));
         }
         let original = runtime.task_host().observe_admission(task).await?;
@@ -1577,7 +1566,7 @@ where
                     .clone()
                     .ok_or_else(|| Error::NotFound("original lease".into()))?,
                 turn,
-                Model::new("fixture-native", "all", "mock-native-1", Value::Null)?,
+                Model::new("fixture-native".into(), "all".into(), "mock-native-1".into(), Value::Null)?,
                 adapter.clone(),
                 ContextPipeline::default(), None,
             )
@@ -1704,7 +1693,7 @@ where
     use acyclic_harness::resources::StreamRef;
     use acyclic_harness::store::StreamAggregate;
     let stream = Arc::new(MemoryStream::default());
-    let stream_provider = ProviderRef::new("media-fork", "stream", "2")?;
+    let stream_provider = ProviderRef::new("media-fork".into(), "stream".into(), "2".into(), &mut None)?;
     let parent = Authority {
         kind: AggregateKind::Conversation,
         id: "media-parent".into(),
@@ -1731,7 +1720,7 @@ where
         project.capability(VolumeOperation::Read)?,
         project.capability(VolumeOperation::Write)?,
     ]);
-    let scope = issuer.root_for_agent(agent, "media-parent", grants);
+    let scope = issuer.issue("media-parent", &grants, Some(agent), None, &mut None).expect("scope proof");
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
@@ -1744,9 +1733,9 @@ where
     .with_input_verifier(reader.clone());
     let adapter = Arc::new(MockAdapter::new(reader.clone()));
     let model = Model::new(
-        "fixture-native",
-        "all",
-        "mock-native-1",
+        "fixture-native".into(),
+        "all".into(),
+        "mock-native-1".into(),
         json!({"context_tokens":16_384}),
     )?;
     let exchange = vec![
@@ -1784,7 +1773,7 @@ where
     ))
         as Arc<dyn acyclic_harness::context::ContextStage>]);
     let tool_scope = RuntimeScope::new(Capabilities::new(["tool:call:example.convert_image"]), Limits::default())?;
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(tool)?;
     let executor = StockExecutor::new(
         model.clone(),
@@ -1869,8 +1858,7 @@ where
         &stream,
         parent.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(reader.clone())
     .with_fork_verifier(forks.clone());
@@ -1915,7 +1903,7 @@ where
                 scope: scope.clone(),
                 causal_parent: None,
                 action,
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
     }
     let child_agent = AgentId::new();
@@ -1943,6 +1931,7 @@ where
         project.clone(),
         stream_provider.clone(),
         reader.clone(),
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;
     let report = aggregate
         .prepare_fork(
@@ -2001,10 +1990,7 @@ where
         )
         .await?;
     let child_issuer = AuthorityIssuer::new("media-fork-child", [43; 32], child.clone());
-    let child_scope = child_issuer.root_for_agent(
-        child_agent,
-        "media-child",
-        Capabilities::new(
+    let child_scope = child_issuer.issue("media-child", &Capabilities::new(
             [
                 "conversation:bind".into(),
                 child_private.capability(VolumeOperation::Read)?,
@@ -2020,8 +2006,7 @@ where
                     .map(|grant| grant.capability())
                     .collect::<Result<Vec<_>>>()?,
             ),
-        ),
-    );
+        ), Some(child_agent), None, &mut None).expect("scope proof");
     let child_reader = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
         &child_issuer.verifier(&mut None).expect("verifier copy"),
@@ -2032,8 +2017,7 @@ where
         &stream,
         child,
         child_issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(child_reader.clone())
     .with_fork_verifier(forks);
