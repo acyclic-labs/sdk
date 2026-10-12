@@ -695,7 +695,7 @@ impl crate::native_host::NativeHostWork for PathIndexWork<'_, '_> {
         -> (T, Result<(), Self::Error>) {
         match reservation {
             CacheCleanupWrite::Native(reservation) => {
-                let (result, recorded) = reservation.attempt_recorded(operation);
+                let (result, recorded) = reservation.attempt(operation);
                 (result, recorded.map_err(Into::into))
             }
             reservation @ CacheCleanupWrite::Standalone(_) => {

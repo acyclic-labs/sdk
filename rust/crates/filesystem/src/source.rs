@@ -1744,7 +1744,7 @@ mod tests {
             ))
             .await?;
             assert_eq!(
-                Box::pin(workspace.read("/durable.txt", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await?,
+                Box::pin(workspace.read("/durable.txt", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                 acyclic_stream::OwnedBytes::from_static(b"two")
             );
             let wrong_root = tempfile::tempdir()?;
@@ -1886,8 +1886,8 @@ mod tests {
                 .checkout
                 .change_content(
                     path,
-                    crate::facade::ContentChange::Write { offset: 0, bytes: Bytes::from_static(b"captured").into() },
-                    crate::facade::ContentTimes::Preserve,
+                    crate::ContentChange::Write { offset: 0, bytes: acyclic_stream::OwnedBytes::from_static(b"captured") },
+                    crate::ContentTimes::Preserve,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                 )
@@ -1964,8 +1964,8 @@ mod tests {
                 .checkout
                 .change_content(
                     path,
-                    crate::facade::ContentChange::Write { offset: 0, bytes: Bytes::from_static(b"captured").into() },
-                    crate::facade::ContentTimes::Preserve,
+                    crate::ContentChange::Write { offset: 0, bytes: acyclic_stream::OwnedBytes::from_static(b"captured") },
+                    crate::ContentTimes::Preserve,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                 )

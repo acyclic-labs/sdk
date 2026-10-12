@@ -1428,9 +1428,7 @@ where
                         "native working-set root must be absolute",
                     ));
                 }
-                let exact = self.exactify_subtree_with_native_work(
-                    subdirectory, permit, work, cancellation,
-                ).await?;
+                let exact = (async { let accounting = LazyTreapWork::native_with_work(work, cancellation)?; self.exactify(subdirectory, permit, &accounting).await }).await?;
                 let mut mount = (
                     MountOptions::read_write().publication(MountPublication::Manual),
                     work.retain_owned(0)?,
@@ -2504,7 +2502,7 @@ mod tests {
         let operation = crate::OperationId::new();
         let child = lazy.fork("selected-import-child", IdempotencyKey::new()).await?;
         child.workspace().write_text("/selected-import.txt", "selected SDK import").await?;
-        let child_snapshot = child.snapshot(&crate::lazy_workspace::LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)).await?;
+        let child_snapshot = child.snapshot(&LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)).await?;
         let plan = { let plan_cancellation = &cancellation; let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, plan_cancellation); let result = child.prepare_selected_import(child_snapshot, std::slice::from_ref(&imported_path), &accounting).await.map(|phase| match phase { LazyReadonlyNode::Portable(plan) => plan, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary plan uses ordinary funding") }); accounting.measured(result, crate::OperationFailure::new) }?.value;
         let actual = mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation)
             .await.map_err(|(error, _)| error)?;

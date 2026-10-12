@@ -755,7 +755,7 @@ fn clone_summary_native(
         Some(summary) => {
             let mut io = crate::store::history::native_work_io(work)?;
             let output = summary.output.copy(&mut Some(&mut io))?;
-            let custody = io.take_native_custody(output.logical_owned_bytes()?)?;
+            let custody = crate::store::history::HistoryIo::take_native_custody(&mut io, output.logical_owned_bytes()?)?;
             Ok((Some(ContextSummary { operation_id: summary.operation_id, step: summary.step,
                 source_messages: summary.source_messages, source_digest: summary.source_digest,
                 output }), custody))

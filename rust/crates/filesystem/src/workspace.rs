@@ -5064,7 +5064,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         &self, source: &Self, paths: Option<Vec<String>>,
         budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<bool>, WorkspaceError> {
-        self.workspace.volume.fs.verify_fork_selection_measured(
+        self.workspace.volume.fs.verify_fork_selection(
             source, self, paths, budget, cancellation,
         ).await
     }
@@ -5074,7 +5074,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         &self, source: &Self, paths: Option<Vec<String>>,
         original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
     ) -> Result<bool, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        self.workspace.volume.fs.verify_fork_selection_with_native_work(
+        self.workspace.volume.fs.verify_fork_selection(
             source, self, paths, original, cancellation,
         ).await.map_err(|error| (error, None))
     }

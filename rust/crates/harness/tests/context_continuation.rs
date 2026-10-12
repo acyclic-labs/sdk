@@ -1833,7 +1833,7 @@ async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_o
         })
             as Arc<dyn acyclic_harness::context::ContextStage>]))
         .build()?;
-    storage.run_prompt(&bundle, &"q".repeat(60_000)).await?;
+    storage.run_prompt(&bundle, &"q".repeat(60_000), Vec::new()).await?;
     let operation = OperationId::new();
     let file = storage
         .stage(
@@ -1864,7 +1864,7 @@ async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_o
         .len();
     let counted = provider.counts.load(Ordering::SeqCst);
     let transformed = calls.load(Ordering::SeqCst);
-    assert!(storage.run_prompt(&bundle, "another turn").await.is_err());
+    assert!(storage.run_prompt(&bundle, "another turn", Vec::new()).await.is_err());
     let output = storage
         .run_conversation(&bundle, operation, file, Vec::new(), 1)
         .await?;
@@ -1903,7 +1903,7 @@ async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_o
             .count(),
         1
     );
-    storage.run_prompt(&bundle, "after recovery").await?;
+    storage.run_prompt(&bundle, "after recovery", Vec::new()).await?;
     assert_checkpoint_read_admission(&storage, &journal, operation).await?;
     Ok(())
 }
@@ -2238,7 +2238,7 @@ async fn canonical_publication_rejects_fabricated_source_and_summary_then_recove
                 provider.clone(),
             )
             .build()?;
-        storage.run_prompt(&bundle, &"q".repeat(60_000)).await?;
+        storage.run_prompt(&bundle, &"q".repeat(60_000), Vec::new()).await?;
         let operation = OperationId::new();
         let file = storage
             .stage(
