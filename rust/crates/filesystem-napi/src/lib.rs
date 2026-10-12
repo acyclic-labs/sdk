@@ -2941,8 +2941,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .create_dir_all(&path)
-            .await
+            .create_dir_all(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -2956,8 +2956,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .create_directory(&path)
-            .await
+            .create_directory(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -2971,8 +2971,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .create_symbolic_link(&path, bytes::Bytes::from(target.to_vec()))
-            .await
+            .create_symbolic_link(&path, bytes::Bytes::from(target.to_vec()), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -3046,8 +3046,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .hard_link(&source, &destination)
-            .await
+            .hard_link(&source, &destination, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -3064,9 +3064,8 @@ impl NativeWorkspaceTransaction {
             .write_range(
                 &path,
                 bigint_u64(&offset, "offset")?,
-                bytes::Bytes::from(bytes.to_vec()),
-            )
-            .await
+                bytes::Bytes::from(bytes.to_vec()), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
