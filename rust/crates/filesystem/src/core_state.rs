@@ -1,7 +1,7 @@
 //! Journaled local persistence for filesystem control-plane state.
 
 use crate::record_store::Revisioned;
-use crate::lazy_workspace::NativeOwnedCoreState;
+use crate::lazy_workspace::{MemoryLazyNode, NativeOwnedCoreState};
 use crate::workspace_context::{
     WorkspaceContextChildren, discard_context_subtree, plan_context_subtree_discard,
     update_context_children,
@@ -1231,7 +1231,7 @@ impl NativeChange {
             }
         }
         let value = match value {
-            Some(value) => Some(NativeOwnedCoreState::from_parts(value, work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?)),
+            Some(value) => Some(NativeOwnedCoreState::from_parts(value, work.claim(0, 0, crate::WorkCounters::UNCHARGED)?)),
             None => None,
         };
         self.push(key, value, work)
@@ -1241,7 +1241,7 @@ impl NativeChange {
         &mut self, key: RecordKey, value: Option<NativeOwnedCoreState<RecordValue>>,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
-        let mut empty = work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
+        let mut empty = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let needed = self.change.0.len() + 1;
         self.slots.reserve(&mut self.change.0, needed, work)?;
         self.slots.reserve(&mut self.payloads, needed, work)?;
@@ -1348,7 +1348,7 @@ impl Residents {
         }
         let needed = self.1.len() + 1;
         self.2.reserve(&mut self.1, needed, work)?;
-        self.1.push((key, work.claim(0)?));
+        self.1.push((key, work.claim(0, 0, crate::WorkCounters::UNCHARGED)?));
         Ok(self.1.len() - 1)
     }
 
@@ -1364,7 +1364,7 @@ impl Residents {
                 .map(|value| native_records::native_record_owned_bytes(value, work)).transpose()?.unwrap_or(0);
             let slot = self.payload_slot(key, work)?;
             if self.1[slot].1.bytes() < bytes {
-                let mut prefix = work.claim_allocation(bytes - self.1[slot].1.bytes(), 0, crate::WorkCounters::UNCHARGED)?;
+                let mut prefix = work.claim(bytes - self.1[slot].1.bytes(), 0, crate::WorkCounters::UNCHARGED)?;
                 self.1[slot].1.absorb(&mut prefix)?;
             }
         }
@@ -1710,7 +1710,7 @@ fn measured_slots<T>(
     let prior = values.capacity().checked_mul(element)
         .ok_or(crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))? as u64;
     if allocation.bytes() < prior {
-        let mut prefix = work.claim_allocation(prior - allocation.bytes(), 0, crate::WorkCounters::UNCHARGED)?;
+        let mut prefix = work.claim(prior - allocation.bytes(), 0, crate::WorkCounters::UNCHARGED)?;
         allocation.absorb(&mut prefix)?;
     }
     if needed <= values.capacity() { return Ok(()); }
@@ -1722,7 +1722,7 @@ fn measured_slots<T>(
     };
     work.admit(copied)?;
     // The old physical buffer and the entire new allocation overlap in realloc.
-    let mut replacement = work.claim_allocation(bytes, 1, crate::WorkCounters::UNCHARGED)?;
+    let mut replacement = work.claim(bytes, 1, crate::WorkCounters::UNCHARGED)?;
     values.try_reserve_exact(next - values.len())
         .map_err(crate::materializer::NativeTreeMaterializationError::AllocationFailed)?;
     let actual = (values.capacity() * element) as u64;
@@ -1763,10 +1763,10 @@ impl NativeSlotCustody {
         let index = match existing {
             Some(index) => index,
             None => {
-                let backing = self.backing.get_or_insert(work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?);
+                let backing = self.backing.get_or_insert(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?);
                 let needed = self.guards.len() + 1;
                 measured_slots(&mut self.guards, needed, work, backing)?;
-                self.guards.push((pointer, work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?));
+                self.guards.push((pointer, work.claim(0, 0, crate::WorkCounters::UNCHARGED)?));
                 self.guards.len() - 1
             }
         };
@@ -1889,7 +1889,7 @@ impl Namespace {
             Admission::Shared { .. } => {
                 let (paths, _paths_allocation) = self.measured_record(CORE_LOG_FAMILY, &[0; 16], work)?;
                 materialization_lock(paths, _paths_allocation, work, |_| {
-                    let residents_allocation = work.claim_allocation(std::mem::size_of::<RwLock<Residents>>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+                    let residents_allocation = work.claim(std::mem::size_of::<RwLock<Residents>>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
                     let residents = Arc::default();
                     let mut log = CoreLog::open_measured(self, residents, work)?;
                     log.residents_control = Some(residents_allocation);
@@ -2063,7 +2063,7 @@ impl CoreLog {
         let payload = residents.payload_slot(key, work)?;
         let (value, allocation) = match value {
             Some(value) => { let (value, allocation) = value.into_parts(); (Some(value), allocation) },
-            None => (None, work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?),
+            None => (None, work.claim(0, 0, crate::WorkCounters::UNCHARGED)?),
         };
         residents.0.push((key, value));
         residents.1[payload].1 = allocation;
@@ -2075,9 +2075,9 @@ impl CoreLog {
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<Self, LocalCoreStateStoreError> {
         residents.write().unwrap_or_else(PoisonError::into_inner).adopt_native(work)?;
-        let (paths, mut paths_allocation) = root.measured_record(CORE_LOG_FAMILY, &[0; 16], work)?;
+        let (paths, paths_allocation) = root.measured_record(CORE_LOG_FAMILY, &[0; 16], work)?;
         crate::native_host::create_directories(&paths.directory, &mut &*work)?;
-        let mut file = match materialization_open_options(
+        let file = match materialization_open_options(
             &paths.current, &crate::native_host::NativeOpenOptions::ReadWriteCreateNew, work,
         ) {
             Ok(file) => { materialization_sync(&paths.directory, work)?; file }
@@ -2092,7 +2092,7 @@ impl CoreLog {
         let length = crate::native_host::stat_file_with_work(&file, &mut &*work)?.len();
         let size = usize::try_from(length)
             .map_err(|_| crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?;
-        let mut bytes_allocation = work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
+        let mut bytes_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let mut bytes = Vec::new();
         measured_slots(&mut bytes, size, work, &mut bytes_allocation)?;
         work.charge(crate::WorkCounters { bytes_copied: length, ..Default::default() })?;
@@ -2133,7 +2133,7 @@ impl CoreLog {
         // into the owner's fast-path cache.
         let published = matches!(&root.admission, Admission::Owned(_)).then(|| Arc::clone(&residents));
         let _provisional_allocation = if published.is_some() {
-            Some(work.claim(std::mem::size_of::<RwLock<Residents>>() as u64)?)
+            Some(work.claim(std::mem::size_of::<RwLock<Residents>>() as u64, u64::from((std::mem::size_of::<RwLock<Residents>>() as u64) != 0), crate::WorkCounters::UNCHARGED)?)
         } else { None };
         let replay_residents = if published.is_some() { Arc::default() } else { residents };
         let mut log = Self {
@@ -2384,7 +2384,7 @@ impl CoreLog {
         self.adopt_native(work)?;
         let next_sequence = self.sequence.checked_add(1)
             .ok_or(crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?;
-        let mut install_allocation = work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
+        let mut install_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let mut installs: Vec<NativeInstall> = Vec::new();
         measured_slots(&mut installs, change.change.0.len(), work, &mut install_allocation)?;
         {
@@ -2419,7 +2419,7 @@ impl CoreLog {
             .ok_or(crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?;
         self.slots.reserve(&mut self.dirty, needed, work)?;
         let mut buffer = MeasuredLogBuffer {
-            bytes: Vec::new(), allocation: work.claim(0)?, work, failure: None,
+            bytes: Vec::new(), allocation: work.claim(0, 0, crate::WorkCounters::UNCHARGED)?, work, failure: None,
         };
         measured_slots(&mut buffer.bytes, 65, work, &mut buffer.allocation)?;
         work.charge(crate::WorkCounters { bytes_copied: 65, ..Default::default() })?;
@@ -2759,7 +2759,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                 .map_err(|(cause, _work)| LocalCoreStateStoreError::MaterializationWork(cause))?,
         };
         if journal.custody.is_none() {
-            journal.custody = Some(work.retain_owned(crate::materializer::journal_owned_bytes(&journal)?)?);
+            journal.custody = Some(work.claim(crate::materializer::journal_owned_bytes(&journal)?, 0, crate::WorkCounters::UNCHARGED)?);
         }
         self.materialization_with_work(work).prepare_action(journal).await
     }
@@ -2875,7 +2875,7 @@ fn prepare_materialization_encoding(
     journal.work = original_work;
     if let Some(error) = count.failure { return Err(error.into()); }
     encoded?;
-    let mut allocation = work.claim(count.length as u64)?;
+    let mut allocation = work.claim(count.length as u64, u64::from((count.length as u64) != 0), crate::WorkCounters::UNCHARGED)?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(count.length)
         .map_err(crate::materializer::NativeTreeMaterializationError::AllocationFailed)?;
@@ -2905,7 +2905,7 @@ impl LocalCoreStateStore {
         let bytes = self.root.as_os_str().len() as u64;
         let copy = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::default() };
         work.admit(copy)?;
-        let store_allocation = work.claim(bytes)?;
+        let store_allocation = work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let store = self.clone();
         work.spent(copy)?;
         run_local_transaction(move || {
@@ -2913,7 +2913,7 @@ impl LocalCoreStateStore {
             let admission = match &store.ownership {
                 Ownership::Shared => {
                     crate::native_host::create_directories(&store.root, &mut &work)?;
-                    let mut path_allocation = work.claim(0)?;
+                    let mut path_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
                     let path = measured_record_path(&store.root, OWNER_LOCK, &work, &mut path_allocation)?;
                     let lock = materialization_open_options(&path, &crate::native_host::NativeOpenOptions::ReadWriteCreate, &work)?;
                     let cleanup = work.reserve_cleanup_write()?;
@@ -2929,7 +2929,7 @@ impl LocalCoreStateStore {
             let deferred = matches!(admission, Admission::Owned(_))
                 && store.deferral.as_ref().is_some_and(|deferral| deferral.load(Ordering::Acquire));
             work.admit(copy)?;
-            let namespace_allocation = work.claim(bytes)?;
+            let namespace_allocation = work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             let root = store.root.clone();
             work.spent(copy)?;
             let namespace = Namespace { root, admission, durability: if deferred { Durability::Deferred } else { Durability::Flushed }, _allocation: Some(namespace_allocation) };
@@ -2961,7 +2961,7 @@ impl MaterializationJournalStore for MeasuredMaterializationStore<'_> {
                 return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout.into());
             }
             drop(current);
-            let body_custody = work.retain_owned(std::mem::size_of::<LocalMaterializationActionCompletion>() as u64)?;
+            let body_custody = work.claim(std::mem::size_of::<LocalMaterializationActionCompletion>() as u64, 0, crate::WorkCounters::UNCHARGED)?;
             journal.revision = journal.revision.checked_add(1).ok_or(crate::WorkError::Overflow)
                 .map_err(crate::materializer::NativeTreeMaterializationError::from)?;
             let (encoding, encoding_credit, encoding_allocation) = prepare_materialization_encoding(&mut journal, work)?;
@@ -3060,7 +3060,7 @@ impl Namespace {
         work.admit(encoding)?;
         hex::encode_to_slice(key, encoded).map_err(std::io::Error::other)?;
         work.spent(encoding)?;
-        let mut allocation = work.claim(0)?;
+        let mut allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let directory = measured_record_path(&self.root, family, work, &mut allocation)?;
         let mut entry = |suffix: &str| -> Result<PathBuf, LocalCoreStateStoreError> {
             let end = key_bytes.checked_add(suffix.len()).ok_or(crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?;
@@ -3459,7 +3459,7 @@ fn measured_read_file<T: DeserializeOwned>(path: &Path, work: &crate::materializ
         Err(error) => return Err(error.into()),
     };
     let length = crate::native_host::stat_file_with_work(&file, &mut &*work)?.len();
-    let _buffer = work.claim(64 * 1024)?;
+    let _buffer = { let claim_bytes = 64 * 1024; work.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
     let reader = std::io::BufReader::with_capacity(64 * 1024, MaterializationReader { file, work, remaining_file_bytes: length, original_length: length });
     measured_decode_reader(reader, work, std::marker::PhantomData::<T>).map(Some)
 }
@@ -3593,10 +3593,10 @@ fn measured_json_error(error: serde_json::Error) -> LocalCoreStateStoreError {
 // CoreStateFlatMap Vec pairs. Tree/Box/Arc reconstruction is separately metered.
 fn measured_decode_reader<'de, R: Read, S: serde::de::DeserializeSeed<'de>>(reader: R, work: &crate::materializer::NativeMaterializationWork, seed: S) -> Result<(S::Value, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
     let decode = MaterializationDecode {
-        work, allocation: std::cell::RefCell::new(work.claim(0)?),
+        work, allocation: std::cell::RefCell::new(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?),
         failure: std::cell::RefCell::new(None), ignored: std::cell::Cell::new(false),
     };
-    let reader = MeasuredJsonReader { inner: reader, decode: &decode, allocation: work.claim(0)?, state: JsonStringState::Outside, length: 0, capacity: 0, pending_copy: 0 };
+    let reader = MeasuredJsonReader { inner: reader, decode: &decode, allocation: work.claim(0, 0, crate::WorkCounters::UNCHARGED)?, state: JsonStringState::Outside, length: 0, capacity: 0, pending_copy: 0 };
     let mut deserializer = serde_json::Deserializer::from_reader(reader);
     let result = seed.deserialize(MaterializationDeserializer { inner: &mut deserializer, decode: &decode, flat_map: false })
         .and_then(|value| deserializer.end().map(|()| value));
@@ -4038,7 +4038,7 @@ impl Default for NodeMemo {
 }
 
 /// An immutable content-addressed lazy node.
-trait LazyNode: Clone + Default + PartialEq + Serialize + DeserializeOwned + Send + 'static {
+trait LazyNode: crate::lazy_workspace::MemoryLazyNode + Default + Send + 'static {
     type Id: Copy + Ord + Send + 'static;
     type Wire: DeserializeOwned;
     const FAMILY: &'static str;
@@ -4050,11 +4050,6 @@ trait LazyNode: Clone + Default + PartialEq + Serialize + DeserializeOwned + Sen
         work: &crate::materializer::NativeMaterializationWork,
         allocation: &mut crate::materializer::NativeAllocation,
     ) -> Result<Self, LocalCoreStateStoreError>;
-    fn clone_owned(
-        &self,
-        work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<(Self, crate::materializer::NativeAllocation), LocalCoreStateStoreError>;
-    fn owned_bytes(&self) -> u64;
 }
 
 impl LazyNode for LazyOverlay {
@@ -4081,16 +4076,6 @@ impl LazyNode for LazyOverlay {
         Ok(wire)
     }
 
-    fn clone_owned(
-        &self,
-        meter: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<(Self, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
-        meter.allocations(|allocations, work, budget, cancellation| {
-            Ok(crate::lazy_workspace::clone_lazy_node(self, allocations, work, budget, cancellation)?)
-        })
-    }
-
-    fn owned_bytes(&self) -> u64 { self.logical_owned_bytes() }
 }
 
 impl LazyNode for crate::LazyShadow {
@@ -4124,16 +4109,6 @@ impl LazyNode for crate::LazyShadow {
         })
     }
 
-    fn clone_owned(
-        &self,
-        meter: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<(Self, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
-        meter.allocations(|allocations, work, budget, cancellation| {
-            Ok(crate::lazy_workspace::clone_lazy_node(self, allocations, work, budget, cancellation)?)
-        })
-    }
-
-    fn owned_bytes(&self) -> u64 { self.logical_owned_bytes() }
 }
 
 /// The same durable shadow JSON, with its metadata inline during bounded decode.
@@ -4211,6 +4186,14 @@ fn unbounded_lazy_work() -> Result<crate::materializer::NativeMaterializationWor
     ).map_err(|failure| LocalCoreStateStoreError::LazyWork(lazy_native_failure(failure)))
 }
 
+fn clone_node<T: crate::lazy_workspace::MemoryLazyNode>(
+    value: &T, meter: &crate::materializer::NativeMaterializationWork,
+) -> Result<NativeOwnedCoreState<T>, LocalCoreStateStoreError> {
+    meter.allocations(|allocations, work, budget, cancellation| {
+        Ok(crate::lazy_workspace::clone_lazy_node(value, allocations, work, budget, cancellation)?)
+    }).map(|(value, allocation)| NativeOwnedCoreState::from_parts(value, allocation))
+}
+
 impl LocalCoreStateStore {
     async fn load_node<T: LazyNode>(
         &self,
@@ -4218,13 +4201,12 @@ impl LocalCoreStateStore {
         meter: crate::materializer::NativeMaterializationWork,
     ) -> Result<Option<NativeOwnedCoreState<T>>, LocalCoreStateStoreError> {
         if T::address(id) == lazy_digest(&T::default(), &meter)? {
-            return Ok(Some(NativeOwnedCoreState::from_parts(T::default(), meter.claim(0)?)));
+            return Ok(Some(NativeOwnedCoreState::from_parts(T::default(), meter.claim(0, 0, crate::WorkCounters::UNCHARGED)?)));
         }
         let collected = {
             let mut memo = T::memo(&self.nodes);
             if let Some(value) = memo.get(&id, &meter)? {
-                let (value, allocation) = value.clone_owned(&meter)?;
-                return Ok(Some(NativeOwnedCoreState::from_parts(value, allocation)));
+                return clone_node(value, &meter).map(Some);
             }
             memo.collected
         };
@@ -4249,8 +4231,7 @@ impl LocalCoreStateStore {
             let mut memo = T::memo(&self.nodes);
             // Collection's generation guards against a late read resurrecting a memo.
             if memo.collected == collected {
-                let (cached, allocation) = owned.as_state().clone_owned(&meter)?;
-                memo.insert(id, NativeOwnedCoreState::from_parts(cached, allocation), &meter)?;
+                memo.insert(id, clone_node(owned.as_state(), &meter)?, &meter)?;
             }
             Ok(Some(owned))
         } else {
@@ -4347,7 +4328,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         value: LazyOverlay,
     ) -> Result<(), Self::Error> {
         let work = unbounded_lazy_work()?;
-        let allocation = work.retain_owned(value.owned_bytes())?;
+        let allocation = work.claim(value.owned_bytes(), 0, crate::WorkCounters::UNCHARGED)?;
         self.put_node(overlay, NativeOwnedCoreState::from_parts(value, allocation), work).await
     }
 
@@ -4365,7 +4346,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         value: crate::LazyShadow,
     ) -> Result<(), Self::Error> {
         let work = unbounded_lazy_work()?;
-        let allocation = work.retain_owned(value.owned_bytes())?;
+        let allocation = work.claim(value.owned_bytes(), 0, crate::WorkCounters::UNCHARGED)?;
         self.put_node(shadow, NativeOwnedCoreState::from_parts(value, allocation), work).await
     }
 
@@ -4417,7 +4398,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
     ) -> Result<crate::OperationReceipt<()>, crate::LazyWorkspaceError> {
         let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
             .map_err(lazy_native_failure)?;
-        let result = match work.retain_owned(value.owned_bytes()) {
+        let result = match work.claim(value.owned_bytes(), 0, crate::WorkCounters::UNCHARGED) {
             Ok(allocation) => self.put_node(overlay, NativeOwnedCoreState::from_parts(value, allocation), work.clone()).await,
             Err(error) => Err(error.into()),
         };
@@ -4445,7 +4426,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
     ) -> Result<crate::OperationReceipt<()>, crate::LazyWorkspaceError> {
         let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
             .map_err(lazy_native_failure)?;
-        let result = match work.retain_owned(value.owned_bytes()) {
+        let result = match work.claim(value.owned_bytes(), 0, crate::WorkCounters::UNCHARGED) {
             Ok(allocation) => self.put_node(shadow, NativeOwnedCoreState::from_parts(value, allocation), work.clone()).await,
             Err(error) => Err(error.into()),
         };
@@ -4464,7 +4445,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
             if state.schema_version != crate::lazy_workspace::LAZY_STATE_SCHEMA || state.workspace_id != id {
                 return Err(crate::LazyWorkspaceError::NativeRecordIntegrity);
             }
-            let allocation = work.claim(0).map_err(|error| native_core_error(error.into()))?;
+            let allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(|error| native_core_error(error.into()))?;
             Ok(NativeOwnedCoreState::from_parts(state, allocation))
         }).transpose()
     }
@@ -4795,7 +4776,7 @@ fn family_stems(
 }
 
 /// Every stored node of one family the `roots` reach.
-fn reachable_nodes<T: LazyNode>(
+fn reachable_nodes<T: LazyNode + DeserializeOwned>(
     root: &Namespace,
     roots: Vec<T::Id>,
     children: impl Fn(T) -> Vec<[u8; 32]>,
@@ -5629,10 +5610,10 @@ mod tests {
         let measured = store.materialization_with_work(work.clone());
         let original = measured.load(operation).await.expect("original decoder").expect("same operation");
         let root_identity = original.root_identity;
-        let mut file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
             .open(root.join("file.txt")).expect("authorized fixture file");
         let completion = measured.prepare_action(original).await.expect("accepted exact original completion");
-        work.write_owned_bytes(&mut file, b"after").expect("actual bounded SDK action");
+        acyclic_native_runtime::write_all_at(&file, 0, b"after", Some((work.runtime_meter().as_ref(), false))).expect("actual bounded SDK action");
         cancellation.cancel();
         let known_prefix = work.journal_work().expect("actual post-action prefix");
         let allocations = work.receipt().allocation_operations;

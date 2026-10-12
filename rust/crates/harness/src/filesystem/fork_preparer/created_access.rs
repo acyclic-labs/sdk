@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::{
-    Capabilities, TaskId,
+    Capabilities,
     conversation::{BoundedContentFuture, ContentHold},
-    conversation::{Attachment, ContentPublisher, FileRef, Limits, PrivateDirectoryPage, VolumeClass, VolumeOwner},
+    conversation::{ContentPublisher, FileRef, PrivateDirectoryPage, VolumeClass, VolumeOwner},
     core::AuthorityIssuer,
     resource_preparation::{CreatedContentBinding, CreatedReferenceBinding, CreatedResourceOperation,
         CreatedResourceReceipt, ResourceCreationProofRef, ResourceCreationProvider, ResourcePreparationRequest},
@@ -33,24 +33,21 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         let mut native = match work {
             Some(work) => {
-                Some((work.retain_owned(std::mem::size_of::<Self>() as u64).map_err(Error::from)?,
-                    crate::store::history::native_work_io(work)?))
+                let custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::default())?;
+                let mut io = crate::store::history::native_work_io(work)?;
+                crate::store::history::HistoryIo::absorb_native_custody(&mut io, custody)?;
+                Some(io)
             }
             None => None,
         };
         #[cfg(not(target_arch = "wasm32"))]
-        let mut history = native.as_mut().map(|(_, io)| io as &mut dyn crate::store::history::HistoryIo);
+        let mut history = native.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]
         let mut history = None;
         let issuer = issuer.copy(&mut history)?;
         drop(history);
         #[cfg(not(target_arch = "wasm32"))]
-        let native_custody = native.map(|(mut custody, io)| {
-            let mut issuer_custody = io.into_custody();
-            custody.absorb(&mut issuer_custody)
-                .map_err(|cause| Error::NativeWork { cause, custody: Some(issuer_custody) })?;
-            Ok::<_, Error>(custody)
-        }).transpose()?;
+        let native_custody = native.map(|io| io.into_custody());
         Ok(Self { host, issuer,
             #[cfg(not(target_arch = "wasm32"))] native_custody,
             #[cfg(not(target_arch = "wasm32"))] roots: std::array::from_fn(|_| std::sync::OnceLock::new()),
@@ -193,14 +190,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 && volume.owner() != &VolumeOwner::Agent(root.agent()) {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "Root bootstrap differs from its configured creator, actor or namespace" });
             }
-            owner.require_volume_grant_with_native_work(volume, VolumeOperation::Read, work)?;
+            owner.require_volume_grant(volume, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
             let io = PreparationIo::from_native_work(work)?;
             let write = io.capability(volume, "volume:write:")?;
             let writable = context.original_root().grants.contains(&write);
             let write_bytes = write.capacity() as u64;
             drop(write);
             io.release(write_bytes)?;
-            if writable { owner.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)?; }
+            if writable { owner.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?; }
             let publication_lease = if writable {
                 Some(owner.root_bootstrap_publication_lease_with_native_work(work).await?)
             } else { None };
@@ -245,9 +242,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             hex::encode_to_slice(root.original_task().into_bytes(), &mut key_bytes).map_err(|_| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "Root allocation identity encoding failed" })?;
             let suffix = std::str::from_utf8(&key_bytes).map_err(|_| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "Root allocation identity is not ASCII" })?;
             let create = IdempotencyKey::new(bounded_io::join_text("root-bootstrap-journal:", suffix, &io)?)?;
-            bounded_io::create(&self.host, name, &create, Some(&io), false, None,
-                #[cfg(not(target_arch = "wasm32"))]
-                None).await?;
+            let lifecycle = if self.host.filesystem.capabilities().durable {
+                acyclic_fs::Lifecycle::Durable
+            } else { acyclic_fs::Lifecycle::Ephemeral };
+            let creation = acyclic_fs::OperationId::from_bytes(bounded_io::operation_key(&create, Some(&io))?.into_bytes());
+            self.host.filesystem.create_workspace_with_operation_with_native_work(
+                name, acyclic_fs::VolumeConfig::portable(lifecycle), creation, work, work.cancellation(),
+            ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
             match bounded_io::read(&self.host, &journal, "/claim.json", MAX_REQUEST_BYTES, Some(&io)).await {
                 Ok(_) => return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "child allocation cannot be claimed as original Root bootstrap" }),
                 Err(error) if journal_absent(&error) => {},
@@ -761,7 +762,6 @@ struct AuthenticatedAllocation {
     prepared_generation: GenerationRef,
     agent: crate::AgentId,
     authority: Option<Authority>,
-    role: ForkAllocationRole,
     creation_operation: acyclic_fs::OperationId,
     reference_files: Vec<FileRef>,
 }
@@ -820,7 +820,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     let index = request.resources.iter().position(|resource| resource == &proof.resource)
         .ok_or_else(|| Error::Unauthorized("proof does not name a created fork volume".into()))?;
-    let (selected_volume, _) = creation_volumes(&fork).nth(index)
+    let (selected_volume, selected_role) = creation_volumes(&fork).nth(index)
         .ok_or_else(|| Error::Unauthorized("created allocation index is absent".into()))?;
     let evidence = allocation_ref(&host.provider, selected_volume, Some(io))?;
     if evidence.as_resource() != &proof.evidence {
@@ -892,13 +892,12 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let initial = initial.ok_or_else(|| Error::Unauthorized("original fork allocation operation is missing".into()))?;
         let generation = bounded_io::generation_ref(host, &initial, Some(io))?;
         let captured_generation = match role {
-            ForkAllocationRole::Result => seed.child_result_generation.as_ref(),
-            _ => seed.resources.iter().find_map(|resource| match &resource.revision {
-                ResourceRevision::PrivateVolume { volume: captured, generation, .. }
-                | ResourceRevision::Project { volume: captured, generation } if captured == volume => Some(generation),
+            ForkAllocationRole::Scratch => seed.resources.iter().find_map(|resource| match &resource.revision {
+                ResourceRevision::PrivateVolume { volume: captured, generation, .. } if captured == volume => Some(generation),
                 _ => None,
-            }),
-        }.ok_or_else(|| Error::Unauthorized("original allocated volume is absent from the seed".into()))?;
+            }).ok_or_else(|| Error::Unauthorized("original allocated volume is absent from the seed".into()))?,
+            _ => prepared_generation,
+        };
         if captured_generation != &generation {
             return Err(Error::Unauthorized("seed capture differs from the original allocation operation".into()));
         }
@@ -908,7 +907,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 "original allocated task origin is absent".into()))?;
             selected = Some(AuthenticatedAllocation {
                 origin, volume: claim.volume, generation, prepared_generation,
-                agent: fork.child_agent, role, authority: None,
+                agent: fork.child_agent, authority: None,
                 creation_operation: acyclic_fs::OperationId::from_bytes(key.into_bytes()),
                 reference_files: Vec::new(),
             });
@@ -918,7 +917,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
     }
     let mut selected = selected.ok_or_else(|| Error::Unauthorized("created allocation identity is absent".into()))?;
-    if selected.role == ForkAllocationRole::Scratch { selected.authority = Some(fork.child); }
+    if selected_role == ForkAllocationRole::Scratch { selected.authority = Some(fork.child); }
     let mut granted = BTreeSet::new();
     for reference in seed.reference_grants {
         require_reference_donor(&selected.origin.source_grants, &reference, None)?;
@@ -932,7 +931,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             if !request.child.grants.contains(&capability) {
                 return Err(Error::Unauthorized("child admission omitted its sealed exact-file read grant".into()));
             }
-            if selected.role == ForkAllocationRole::Scratch && granted.insert(capability) {
+            if selected.authority.is_some() && granted.insert(capability) {
                 selected.reference_files.push(reference.file);
             }
         }
@@ -943,7 +942,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         {
             return Err(Error::Unauthorized("child input lacks original donor and exact child read authority".into()));
         }
-        if selected.role == ForkAllocationRole::Scratch {
+        if selected.authority.is_some() {
             let bytes = host.read_pinned_io(file, request.maximum_bytes, Some(io)).await?;
             let byte_custody = io.guard_bytes(&bytes)?;
             drop(bytes);
@@ -1079,8 +1078,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             let access = Arc::new(RootCreatedFilesystemAccess {
                 allocation: allocation.clone(), reader, writer, _custody: custody,
             });
-            let mut receipt_custody = work.retain_owned((std::mem::size_of::<RootBootstrapContentReceipt>()
-                - std::mem::size_of::<crate::resource_preparation::RootBootstrapContentRequest>()) as u64)?;
+            let mut receipt_custody = work.claim((std::mem::size_of::<RootBootstrapContentReceipt>()
+                - std::mem::size_of::<crate::resource_preparation::RootBootstrapContentRequest>()) as u64, 0, acyclic_fs::WorkCounters::default())?;
             let (request, mut request_custody) = request.copy(work)?;
             receipt_custody.absorb(&mut request_custody).map_err(|cause| Error::NativeWork {
                 cause, custody: Some(request_custody),
@@ -1209,11 +1208,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         Ok(CreatedResourceReceipt {
             origin: allocation.origin, resource: proof.resource.clone(), evidence: proof.evidence.clone(),
             allocation_generation: allocation.generation, operations, references,
-            content: vec![CreatedContentBinding { volume: allocation.volume,
-                authority: allocation.authority, default_writer: allocation.role == ForkAllocationRole::Scratch,
-                artifact_writer: allocation.role == ForkAllocationRole::Result,
-                scratch_creation: (allocation.role == ForkAllocationRole::Scratch).then(||
+            content: vec![CreatedContentBinding {
+                default_writer: allocation.authority.is_some(),
+                artifact_writer: allocation.authority.is_none() && allocation.volume.class() == VolumeClass::AgentPrivate,
+                scratch_creation: allocation.authority.as_ref().map(|_|
                     crate::resource_preparation::ChildScratchCreationProof::new(access.clone())),
+                authority: allocation.authority, volume: allocation.volume,
                 binding: ContentBindings { reader: access.clone(), writer: Some(access) } }],
         })
     }
@@ -1402,7 +1402,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
 mod tests {
     use super::*;
     use crate::conversation::{VolumeClass, VolumeOwner};
-    use crate::core::AggregateKind;
+    use crate::{AgentId, core::AggregateKind};
 
     fn observation_work() -> Result<acyclic_fs::NativeMaterializationWork> {
         acyclic_fs::NativeMaterializationWork::new(
@@ -1418,18 +1418,11 @@ mod tests {
         let mut metadata = crate::store::history::native_work_io(work)
             .map_err(Error::from)?;
         metadata.retain_owned(std::mem::size_of::<(Authority, AuthorityIssuer, crate::core::Scope)>() as u64)?;
-        let mut custody;
         let audience = metadata.clone_authority(&configured_audience)?;
-        custody = metadata.into_custody();
-        let (issuer, mut issuer_custody) = configured_issuer.clone_with_native_work(work)?;
-        custody.absorb(&mut issuer_custody).map_err(|cause| Error::NativeWork {
-            cause, custody: Some(issuer_custody),
-        })?;
-        let (scope, mut scope_custody) = issuer.root_for_agent_with_native_work(agent,
-            "genuine-original-root-bootstrap", &Capabilities::new(["conversation:bind"]), work)?;
-        custody.absorb(&mut scope_custody).map_err(|cause| Error::NativeWork {
-            cause, custody: Some(scope_custody),
-        })?;
+        let issuer = configured_issuer.copy(&mut Some(&mut metadata))?;
+        let scope = issuer.issue("genuine-original-root-bootstrap", &Capabilities::new(["conversation:bind"]),
+            Some(agent), None, &mut Some(&mut metadata))?;
+        let custody = metadata.into_custody();
         Ok(((audience, issuer, scope), custody))
     }
 
@@ -1493,8 +1486,9 @@ mod tests {
         assert!(scope.created_content(Some(&project.request.volume)).unwrap().writer.is_none());
         assert!(scope.created_content(Some(&scratch.request.volume)).unwrap().writer.is_some());
         let reader = &scope.created_content(Some(&project.request.volume)).unwrap().reader;
-        let (file, bytes, metadata) = reader.read_private_path_with_native_work(
-            &project.request.volume, "", "root.txt", Some(&project.request.generation), 1024, &work,
+        let content_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        let (file, bytes, metadata) = reader.read_private_path(
+            &project.request.volume, "", "root.txt", Some(&project.request.generation), 1024, Some(&content_io),
         )?.await?;
         assert_eq!(bytes.as_ref(), b"original project import");
         assert_eq!(file.volume(), &project.request.volume);
@@ -1502,12 +1496,12 @@ mod tests {
         drop(metadata);
         let private = scope.created_content(Some(&scratch.request.volume)).unwrap();
         let staged_custody;
-        let (staged, custody) = private.writer.as_ref().unwrap().stage_once_with_native_work(
+        let (staged, custody) = private.writer.as_ref().unwrap().stage_once(
             OperationId::from_bytes([185; 16]), "root-output.txt", b"actual original root output",
-            "text/plain", "root-output.txt", &work,
+            "text/plain", "root-output.txt", Some(&content_io),
         )?.await?;
         staged_custody = custody;
-        let output = private.reader.read_with_native_work(&staged, 1024, &work)?.await?;
+        let output = private.reader.read(&staged, 1024, Some(&content_io))?.await?;
         assert_eq!(output.as_ref(), b"actual original root output");
         assert_eq!(staged.volume(), &scratch.request.volume);
         assert_ne!(staged.volume(), &project.request.volume);
@@ -1552,8 +1546,8 @@ mod tests {
         assert!(creator.protect_root_bootstrap_with_native_work(&owner, &birth.volume, RootBootstrapContentRole::Project,
             birth.operation, birth.config, acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(wrong_initial)),
             birth.selected_generation, None, &work)?.await.is_err());
-        let foreign_scratch = VolumeRef::new(fixture.filesystem_provider.clone(), "foreign-original-root-private",
-            VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([184; 16])))?;
+        let foreign_scratch = VolumeRef::new(fixture.filesystem_provider.clone(), "foreign-original-root-private".into(),
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([184; 16])), &mut None)?;
         let denied = creator.protect_root_bootstrap_with_native_work(&owner, &foreign_scratch, RootBootstrapContentRole::Scratch,
             birth.operation, birth.config, birth.initial_generation, birth.selected_generation, None, &work);
         assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
@@ -1574,16 +1568,18 @@ mod tests {
         for control in 0..5 {
             let (mut request, request_custody) = token.request().copy(&work)?;
             match control {
-                0 => request.graph_root = TaskId::from_bytes([181; 16]),
+                0 => request.graph_root = crate::TaskId::from_bytes([181; 16]),
                 1 => request.root_operation = OperationId::from_bytes([182; 16]),
                 2 => request.generation = GenerationRef::new(fixture.filesystem_provider.clone(),
                     birth.initial_generation.digest().into_bytes().to_vec(), None)?,
-                3 => request.volume = VolumeRef::new(fixture.filesystem_provider.clone(), "foreign-root-project",
-                    VolumeClass::Project, VolumeOwner::Project("created-project".into()))?,
+                3 => request.volume = VolumeRef::new(fixture.filesystem_provider.clone(), "foreign-root-project".into(),
+                    VolumeClass::Project, VolumeOwner::Project("created-project".into()), &mut None)?,
                 _ => request.role = RootBootstrapContentRole::Scratch,
             }
-            let denied = creator.verify_root_bootstrap_with_native_work(context, &request, &work);
-            assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+            {
+                let denied = creator.verify_root_bootstrap_with_native_work(context, &request, &work);
+                assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+            }
 
             drop(request);
             drop(request_custody);
@@ -1638,7 +1634,7 @@ mod tests {
         let generation = fixture.filesystem.resolve(&journal).await?.generation;
         fixture.filesystem.apply(&journal, Some(&generation), &[
             super::super::super::WorkspaceMutation::PutFile {
-                path: "/root-bootstrap.json".into(), bytes: b"superseded protected bootstrap".to_vec(),
+                path: "/root-bootstrap.json".into(), bytes: b"superseded protected bootstrap".to_vec().into(),
             },
         ], &IdempotencyKey::new("supersede-genuine-original-root-bootstrap")?).await?;
         assert!(policy.verify_with_native_work(context(), &selection, &work)?.await.is_err());

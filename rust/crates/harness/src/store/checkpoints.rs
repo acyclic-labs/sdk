@@ -986,7 +986,7 @@ mod native_staging_custody_tests {
                 assert!(native.remaining().expect("last alias retains original claim").peak_allocation_bytes
                     <= budget().peak_allocation_bytes - capacity as u64);
                 let remaining = native.remaining().expect("original finite quota").peak_allocation_bytes;
-                assert!(matches!(native.claim(remaining + 1),
+                assert!(matches!(native.claim(remaining + 1, 1, acyclic_fs::WorkCounters::default()),
                     Err(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::BudgetExceeded {
                         counter: "peak_allocation_bytes", ..
                     }))));

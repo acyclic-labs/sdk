@@ -1,8 +1,4 @@
 //! Stable, natural JavaScript DTOs for the Machines provider.
-//!
-//! The simulator and all validation remain in `acyclic-machines`.  This module
-//! only translates the checked Rust domain into the public camelCase DTOs used
-//! by the TypeScript package.
 
 #![allow(
     clippy::needless_pass_by_value,
@@ -37,19 +33,18 @@ pub(crate) fn is_safe_integer(value: f64) -> bool {
         && value <= crate::MAX_SAFE_INTEGER as f64
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct SafeInput(u64);
-impl<'de> Deserialize<'de> for SafeInput {
+pub struct SafeNumber(u64);
+impl<'de> Deserialize<'de> for SafeNumber {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct SafeVisitor;
         impl<'de> Visitor<'de> for SafeVisitor {
-            type Value = SafeInput;
+            type Value = SafeNumber;
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str("a non-negative JavaScript safe integer")
             }
             fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
                 if value <= crate::MAX_SAFE_INTEGER {
-                    Ok(SafeInput(value))
+                    Ok(SafeNumber(value))
                 } else {
                     Err(E::custom("number exceeds JavaScript safe integer range"))
                 }
@@ -73,7 +68,7 @@ impl<'de> Deserialize<'de> for SafeInput {
             )]
             fn visit_f64<E: de::Error>(self, value: f64) -> Result<Self::Value, E> {
                 if is_safe_integer(value) {
-                    Ok(SafeInput(value as u64))
+                    Ok(SafeNumber(value as u64))
                 } else {
                     Err(E::custom("number must be an exact JavaScript safe integer"))
                 }
@@ -83,8 +78,6 @@ impl<'de> Deserialize<'de> for SafeInput {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct SafeNumber(u64);
 impl Serialize for SafeNumber {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if self.0 > crate::MAX_SAFE_INTEGER {
@@ -105,10 +98,6 @@ impl Serialize for SafeNumber {
 fn err(message: impl Into<String>) -> JsValue {
     crate::js_error("invalid", message.into())
 }
-fn invalid(message: impl Into<String>) -> Result<JsValue, JsValue> {
-    Err(err(message))
-}
-
 fn from_js<T: for<'de> Deserialize<'de>>(value: JsValue) -> Result<T, JsValue> {
     serde_wasm_bindgen::from_value(value).map_err(|e| err(e.to_string()))
 }
@@ -143,15 +132,12 @@ fn provider_error(error: ProviderError) -> JsValue {
     };
     crate::js_error(code, error.to_string())
 }
-fn id(kind: &str, value: String) -> Result<String, JsValue> {
-    super::normalize_identity(kind.to_owned(), value)
-}
 fn parse_id<T>(
     kind: &str,
     value: String,
     parse: impl FnOnce(&str) -> Result<T, acyclic_machines::IdentityError>,
 ) -> Result<T, JsValue> {
-    let value = id(kind, value)?;
+    let value = super::normalize_identity(kind.to_owned(), value)?;
     parse(&value).map_err(|e| err(e.to_string()))
 }
 fn key(value: String) -> Result<acyclic_machines::IdempotencyKey, JsValue> {
@@ -182,11 +168,7 @@ fn digest(value: &str, field: &str) -> Result<[u8; 32], JsValue> {
     }
     Ok(bytes)
 }
-fn digest_out(value: [u8; 32]) -> String {
-    encode(value)
-}
-
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ImageIn {
     ManagedOci {
@@ -238,10 +220,10 @@ pub enum ImageOut {
 fn image_out(value: &Image) -> ImageOut {
     match value {
         Image::ManagedOci(d) => ImageOut::ManagedOci {
-            digest_hex: digest_out(d.as_bytes()),
+            digest_hex: encode(d.as_bytes()),
         },
         Image::Custom(d) => ImageOut::Custom {
-            digest_hex: digest_out(d.as_bytes()),
+            digest_hex: encode(d.as_bytes()),
         },
         Image::Checkpoint(id) => ImageOut::Checkpoint {
             checkpoint_id: id.to_string(),
@@ -249,7 +231,7 @@ fn image_out(value: &Image) -> ImageOut {
     }
 }
 
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CompatibilityIn {
     BestEffort {},
@@ -258,7 +240,7 @@ pub enum CompatibilityIn {
         capabilities: Vec<CapabilityIn>,
     },
 }
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Serialize, Tsify)]
 #[serde(rename_all = "kebab-case")]
 pub enum CapabilityIn {
     ElasticCpu,
@@ -327,13 +309,13 @@ fn compatibility_out(value: &CompatibilityPolicy) -> CompatibilityOut {
     }
 }
 
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum SuspensionIn {
     Manual {},
     AfterIdle {
         #[tsify(type = "number")]
-        milliseconds: SafeInput,
+        milliseconds: SafeNumber,
     },
 }
 fn suspension_in(value: SuspensionIn) -> Result<SuspensionPolicy, JsValue> {
@@ -350,21 +332,21 @@ fn suspension_in(value: SuspensionIn) -> Result<SuspensionPolicy, JsValue> {
         }
     }
 }
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ExpirationIn {
     Never {},
     MaxAge {
         #[tsify(type = "number")]
-        milliseconds: SafeInput,
+        milliseconds: SafeNumber,
     },
     At {
         #[tsify(type = "number")]
-        milliseconds: SafeInput,
+        milliseconds: SafeNumber,
     },
     Idle {
         #[tsify(type = "number")]
-        milliseconds: SafeInput,
+        milliseconds: SafeNumber,
     },
 }
 fn expiration_in(value: ExpirationIn) -> Result<ExpirationPolicy, JsValue> {
@@ -444,7 +426,7 @@ fn expiration_out(value: &ExpirationPolicy) -> TimedOut {
         },
     }
 }
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 #[tsify(large_number_types_as_bigints)]
 pub struct BudgetsIn {
@@ -470,7 +452,7 @@ fn budgets_out(value: Budgets) -> BudgetsOut {
         concurrency: value.concurrency,
     }
 }
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateIn {
     idempotency_key: String,
@@ -511,10 +493,10 @@ fn contract_out(value: &MachineContract) -> ContractOut {
         image: image_out(&value.image),
         capabilities: value.capabilities.iter().map(capability_out).collect(),
         compatibility: compatibility_out(&value.compatibility),
-        compatibility_revision_hex: digest_out(value.compatibility_revision),
+        compatibility_revision_hex: encode(value.compatibility_revision),
         suspension: suspension_out(&value.suspension),
         expiration: expiration_out(&value.expiration),
-        network_policy_digest_hex: digest_out(value.network_policy_digest),
+        network_policy_digest_hex: encode(value.network_policy_digest),
         budgets: budgets_out(value.budgets),
     }
 }
@@ -530,7 +512,7 @@ fn qualification_out(value: ImageQualification) -> QualificationOut {
     QualificationOut {
         image: image_out(&value.image),
         capabilities: value.capabilities.iter().map(capability_out).collect(),
-        compatibility_revision_hex: digest_out(value.compatibility_revision),
+        compatibility_revision_hex: encode(value.compatibility_revision),
     }
 }
 fn state_out(value: MachineState) -> &'static str {
@@ -730,7 +712,7 @@ pub struct OperationOut {
     phase: &'static str,
 }
 
-#[derive(Clone, Copy, Serialize, Tsify)]
+#[derive(Serialize, Tsify)]
 #[serde(rename_all = "kebab-case")]
 pub enum ForkFidelityOut {
     MemoryAndDisk,
@@ -834,19 +816,19 @@ fn mutation_out(value: MutationOutcome) -> MutationOut {
     }
 }
 
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineKey {
     machine_id: String,
     idempotency_key: String,
 }
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckpointKey {
     checkpoint_id: String,
     idempotency_key: String,
 }
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForkIn {
     checkpoint_id: String,
@@ -854,43 +836,43 @@ pub struct ForkIn {
     idempotency_key: String,
 }
 
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineForkIn {
     machine_id: String,
     count: u32,
     idempotency_key: String,
 }
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct PolicyIn {
     machine_id: String,
     policy: SuspensionIn,
     idempotency_key: String,
 }
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct ListIn {
     #[tsify(type = "string | null")]
     after: Option<String>,
     limit: u32,
 }
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct EventsIn {
     machine_id: String,
     #[tsify(type = "number | null")]
-    after_sequence: Option<SafeInput>,
+    after_sequence: Option<SafeNumber>,
     limit: u32,
 }
-#[derive(Deserialize, Serialize, Tsify)]
+#[derive(Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageIn {
     machine_id: String,
     #[tsify(type = "number")]
-    start_unix_ms: SafeInput,
+    start_unix_ms: SafeNumber,
     #[tsify(type = "number")]
-    end_unix_ms: SafeInput,
+    end_unix_ms: SafeNumber,
 }
 
 #[allow(
@@ -1066,7 +1048,7 @@ pub async fn dispatch<P: MachinesProvider>(
             }
             to_js(&values)
         }
-        _ => invalid("unknown Machines operation"),
+        _ => Err(err("unknown Machines operation")),
     }
 }
 
@@ -1078,7 +1060,10 @@ mod tests {
     fn public_digest_is_strict_and_lowercase() {
         let value = "AB".repeat(32);
         assert!(digest(&value, "digestHex").is_ok());
-        assert_eq!(digest_out([0xab; 32]), "ab".repeat(32));
+        let ImageOut::ManagedOci { digest_hex } = image_out(&Image::managed([0xab; 32]).expect("valid digest")) else {
+            unreachable!()
+        };
+        assert_eq!(digest_hex, "ab".repeat(32));
     }
 
     #[test]

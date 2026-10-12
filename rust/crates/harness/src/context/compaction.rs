@@ -200,7 +200,7 @@ pub(crate) fn clone_context_prefix(
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let mut result = Context::default();
     let copied = (|| {
-        let (messages, claim) = clone_messages(source, quota.work())?;
+        let (messages, claim) = clone_messages(source, None, &[], quota.work())?;
         result.messages = messages;
         quota.adopt(claim)?;
         let (metadata, claim) = clone_metadata(&context.metadata, quota.work())?;
@@ -243,13 +243,6 @@ pub(crate) fn clone_metadata(
 }
 
 pub(crate) fn clone_messages(
-    messages: &[crate::model::ModelMessage],
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<(Vec<crate::model::ModelMessage>, u64)> {
-    clone_base_messages(messages, None, &[], work)
-}
-
-pub(crate) fn clone_base_messages(
     first: &[crate::model::ModelMessage], user: Option<&crate::model::ModelContent>,
     second: &[crate::model::ModelMessage],
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -447,7 +440,7 @@ fn compaction_step(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<
 fn compaction_error(work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
-        return crate::executor::native_boundary(crate::wire::ErrorCode::Invalid, reason);
+        return crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
     }
     let _ = work;
     Error::Invalid(reason.into())
@@ -504,7 +497,7 @@ mod native {
 
     pub(crate) fn native_vector<T>(capacity: usize, work: &NativeMaterializationWork) -> Result<(Vec<T>, NativeAllocation)> {
         let bytes = capacity.checked_mul(size_of::<T>()).ok_or_else(overflow)? as u64;
-        let mut guard = work.retain_owned(bytes).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut guard = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         if bytes != 0 {
             work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -573,12 +566,13 @@ mod tests {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn observed_compaction_matches_ordinary_exchange_and_input_selection() -> Result<()> {
-        use crate::conversation::{FileDescriptor, FileRef, ProviderRef, VolumeClass, VolumeOwner, VolumeRef};
+        use crate::conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef};
+        use crate::resources::ProviderRef;
         use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
         let file = FileRef::new(VolumeRef::new(
-            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, "context", VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])))?,
-            "context/summary.txt", "pinned", FileDescriptor::from_bytes(b"summary", "text/plain")?, "summary.txt")?;
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, "context".into(), VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])), &mut None)?,
+            "context/summary.txt".into(), "pinned".into(), FileDescriptor::from_bytes(b"summary", "text/plain", &mut None)?, "summary.txt".into(), &mut None)?;
         let context = Context {
             messages: vec![
                 ModelMessage { role: ModelRole::User, content: ModelContent::Text("old".into()) },
@@ -631,7 +625,7 @@ mod tests {
             ModelMessage { role: ModelRole::User, content: ModelContent::Text("second".into()) },
         ];
         let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
-        assert!(clone_messages(&messages, &mut Some(&mut observer)).is_err());
+        assert!(clone_messages(&messages, None, &[], &mut Some(&mut observer)).is_err());
         assert!(work.receipt().bytes_copied >= 5);
         let custody = observer.into_custody();
         assert_eq!(custody.bytes(), 0, "failed partial payload drops before its quota releases");
@@ -639,7 +633,7 @@ mod tests {
         let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
         cancellation.cancel();
         let before = work.receipt();
-        assert!(clone_messages(&messages, &mut Some(&mut observer)).is_err());
+        assert!(clone_messages(&messages, None, &[], &mut Some(&mut observer)).is_err());
         assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
     }
 

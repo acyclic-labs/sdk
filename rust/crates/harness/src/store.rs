@@ -274,9 +274,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "extension migration request is invalid".into(),
             ));
         }
-        if let Some(revision) = self.operation_revision(request.operation_id).await? {
+        if let Some(event) = self.operation_event(request.operation_id).await? {
             return self
-                .replay_extension_migration(request, scope, publisher, revision)
+                .replay_extension_migration(request, scope, publisher, event.revision)
                 .await;
         }
         self.reducer.preflight_extension_migration(
@@ -455,25 +455,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(report)
     }
 
-    /// Publishes a fork report under the admitted owner's atomic fence.
-    #[cfg(feature = "filesystem")]
-    pub async fn publish_fork_report_measured(
-        &mut self,
-        report: ForkReport,
-        scope: Scope,
-        owner: &crate::durable_host::TaskJournalOwner<P>,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<ApplyResult>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.publish_fork_report(
-                report, scope, Some(owner), &mut Some(&mut work)).await
-        }.await;
-        work.finish(result)
-    }
-
     /// Publishes a captured fork through the parent append.
     pub async fn publish_fork_report(
         &mut self, report: ForkReport, scope: Scope,
@@ -552,26 +533,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.bind_published_child(parent, &seed, child_scope, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         Ok(seed)
-    }
-
-    /// Binds only the exact child of an authenticated canonical parent fork.
-    #[cfg(feature = "filesystem")]
-    pub async fn bind_published_child_measured(
-        &mut self,
-        parent: &Self,
-        seed: &ForkSeed,
-        scope: Scope,
-        owner: &crate::durable_host::TaskJournalOwner<P>,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.bind_published_child(
-                parent, seed, scope, Some(owner), &mut Some(&mut work)).await
-        }.await;
-        work.finish(result)
     }
 
     /// Binds a child to its exact published parent seed.
@@ -686,31 +647,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     /// Moves the reducer out without copying or replaying it.
     pub fn into_reducer(self) -> Reducer {
         self.reducer
-    }
-
-    /// Restores a bounded committed cut with a finite work receipt.
-    #[cfg(feature = "filesystem")]
-    #[allow(clippy::too_many_arguments, reason = "original exact-cut open arguments plus the cumulative work receipt")]
-    pub async fn open_measured(
-        client: &std::sync::Arc<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        original_revision: Option<u64>,
-        limits: HistoryReadLimits,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Self>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            Self::open(
-                client,
-                authority,
-                authority_verifier,
-                schemas, None, limits, DEFAULT_TERMINAL_EFFECTS, original_revision, &mut Some(&mut work)).await
-        }.await;
-        work.finish(result)
     }
 
     /// Restores an authenticated aggregate at a bounded committed cut.
@@ -985,13 +921,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
     }
 
-
-    /// Configures the event/retry cache; canonical Stream history and live projections remain authoritative.
-    pub fn with_resident_event_limit(mut self, maximum: usize) -> Result<Self> {
-        self.set_resident_event_limit(maximum)?;
-        Ok(self)
-    }
-
     /// Reconfigures the bounded event/retry cache without moving a borrowed aggregate.
     pub fn set_resident_event_limit(&mut self, maximum: usize) -> Result<()> {
         self.reducer.set_resident_event_limit(maximum)
@@ -1033,12 +962,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self
     }
 
-    /// Configures content and projection bounds for future admissions.
-    pub fn with_limits(mut self, limits: Limits) -> Result<Self> {
-        self.set_limits(limits)?;
-        Ok(self)
-    }
-
     /// Updates admission bounds without discarding the verified projection.
     pub fn set_limits(&mut self, limits: Limits) -> Result<()> {
         limits.validate(&mut None)?;
@@ -1063,14 +986,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
             self.reducer.event_verifier(),
             operation, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut None,
         ).await.map(|(event, _)| event)
-    }
-
-    /// Exact historical operation revision, independent of the resident retry index.
-    pub async fn operation_revision(&self, operation: OperationId) -> Result<Option<u64>> {
-        Ok(self
-            .operation_event(operation)
-            .await?
-            .map(|event| event.revision))
     }
 
     /// Exact committed model selection, including operations archived from resident state.
@@ -1126,7 +1041,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         owned.transfer();
         Ok(Some((ApplyResult::Replayed { event }, original_owned)))
     }
-
 
     /// Opens an archival reader without replaying or cloning the resident event history.
     pub fn history_reader(&self) -> Result<HistoryReader<P>> {
@@ -1406,7 +1320,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }.await)
     }
 
-
     async fn plan_command(&self, command: &Command, fresh_migration: bool) -> Result<ApplyResult> {
         if !fresh_migration {
             if let Some(effect_id) = self.reducer.archived_effect_for_command(command)
@@ -1437,7 +1350,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.validate_admission_content(&command.action).await?;
         self.reducer.plan_indexed_with_retained_quota(command, true, &mut None).map(|(result, _)| result)
     }
-
 
     #[cfg(feature = "filesystem")]
     async fn validate_task_admission_content_with_work(
@@ -1757,8 +1669,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(())
     }
 
-
-
     /// Reconciles a possibly committed append without issuing another append.
     #[cfg_attr(
         not(target_arch = "wasm32"),
@@ -1918,23 +1828,21 @@ mod tests {
     struct InteractionContent(std::collections::BTreeMap<String, Vec<u8>>);
 
     impl ContentResidencyVerifier for InteractionContent {
-        fn verify<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move { self.read(reference).await.map(|_| ()) })
-        }
 
-        fn read<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> std::pin::Pin<Box<dyn Future<Output = Result<acyclic_stream::OwnedBytes>> + Send + 'a>>
-        {
-            Box::pin(async move {
+
+        fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            if io.is_some() { return Err(crate::conversation::content_error(io, crate::wire::ErrorCode::Unsupported, "fixture has no finite content reader")); }
+            crate::conversation::BoundedContentFuture::new(io, || async move {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(Error::Invalid("content exceeds fixture read bound".into()));
+                }
                 let bytes = self
                     .0
                     .get(reference.path())
                     .ok_or_else(|| Error::NotFound(reference.path().into()))?;
+                if bytes.len() as u64 > maximum_bytes { return Err(Error::Invalid("content exceeds byte bound".into())); }
                 reference.descriptor().verify(bytes, &mut None)?;
                 Ok(bytes.clone().into())
             })
@@ -1944,11 +1852,11 @@ mod tests {
     fn interaction_file(path: &str, bytes: &[u8]) -> Result<FileRef> {
         FileRef::new(
             content()?.volume().clone(),
-            path,
-            "generation-1",
-            FileDescriptor::from_bytes(bytes, "application/json")?,
-            "interaction.json",
-        )
+            path.into(),
+            "generation-1".into(),
+            FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
+            "interaction.json".into(),
+         &mut None)
     }
 
     fn authority() -> Authority {
@@ -1979,15 +1887,15 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
-                "extension",
+                "extension".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
-            )?,
-            "extension/event.json",
-            "generation-1",
-            FileDescriptor::from_bytes(EXTENSION_BYTES, "application/json")?,
-            "event.json",
-        )
+             &mut None)?,
+            "extension/event.json".into(),
+            "generation-1".into(),
+            FileDescriptor::from_bytes(EXTENSION_BYTES, "application/json", &mut None)?,
+            "event.json".into(),
+         &mut None)
     }
 
     struct TestContent;
@@ -2022,19 +1930,16 @@ mod tests {
     }
 
     impl ContentResidencyVerifier for MigrationContentStore {
-        fn verify<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move { self.read(reference).await.map(|_| ()) })
-        }
 
-        fn read<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> std::pin::Pin<Box<dyn Future<Output = Result<acyclic_stream::OwnedBytes>> + Send + 'a>>
-        {
-            Box::pin(async move {
+
+        fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            if io.is_some() { return Err(crate::conversation::content_error(io, crate::wire::ErrorCode::Unsupported, "fixture has no finite content reader")); }
+            crate::conversation::BoundedContentFuture::new(io, || async move {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(Error::Invalid("content exceeds fixture read bound".into()));
+                }
                 let bytes = self
                     .0
                     .lock()
@@ -2042,6 +1947,7 @@ mod tests {
                     .get(&Self::key(reference)?)
                     .cloned()
                     .ok_or_else(|| Error::NotFound("migration content is absent".into()))?;
+                if bytes.len() as u64 > maximum_bytes { return Err(Error::Invalid("content exceeds byte bound".into())); }
                 reference.descriptor().verify(&bytes, &mut None)?;
                 Ok(bytes.into())
             })
@@ -2053,16 +1959,11 @@ mod tests {
             &self.volume
         }
 
-        fn stage<'a>(
-            &'a self,
-            _operation_id: OperationId,
-            path: &'a str,
-            bytes: &'a [u8],
-            media_type: &'a str,
-            display_name: &'a str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileRef>> + Send + 'a>>
-        {
-            Box::pin(async move {
+        fn stage<'a>(&'a self, _operation_id: OperationId, path: &'a str, bytes: &'a [u8],
+            media_type: &'a str, display_name: &'a str, io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, Option<crate::conversation::ContentHold<'a>>)>> {
+            self.supports_stage(io)?;
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 if bytes != EXTENSION_BYTES || media_type != "application/json" {
                     return Err(Error::Invalid("unexpected migration output".into()));
                 }
@@ -2070,31 +1971,24 @@ mod tests {
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let reference = FileRef::new(
                     self.volume.clone(),
-                    path,
-                    "generation-1",
-                    FileDescriptor::from_bytes(bytes, media_type)?,
-                    display_name,
-                )?;
+                    path.into(),
+                    "generation-1".into(),
+                    FileDescriptor::from_bytes(bytes, media_type, &mut None)?,
+                    display_name.into(),
+                 &mut None)?;
                 self.files.insert(&reference, bytes)?;
-                Ok(reference)
+                Ok((reference, None))
             })
         }
     }
 
     impl ContentResidencyVerifier for TestContent {
-        fn verify<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move { reference.descriptor().verify(EXTENSION_BYTES, &mut None) })
-        }
-
-        fn read<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> std::pin::Pin<Box<dyn Future<Output = Result<acyclic_stream::OwnedBytes>> + Send + 'a>>
-        {
-            Box::pin(async move {
+        fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            if io.is_some() { return Err(crate::conversation::content_error(io, crate::wire::ErrorCode::Unsupported, "fixture has no finite content reader")); }
+            crate::conversation::BoundedContentFuture::new(io, || async move {
+                if EXTENSION_BYTES.len() as u64 > maximum_bytes { return Err(Error::Invalid("content exceeds byte bound".into())); }
                 reference.descriptor().verify(EXTENSION_BYTES, &mut None)?;
                 Ok(acyclic_stream::OwnedBytes::from_static(EXTENSION_BYTES))
             })
@@ -2171,9 +2065,9 @@ mod tests {
         let client = provider.clone();
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
-                .await?
-                .with_resident_event_limit(1)?,
+                .await?,
         );
+        writer.set_resident_event_limit(1)?;
         let original = command(1)?;
         let first = writer.execute(original.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
         let ApplyResult::Applied { event } = first else {
@@ -2314,8 +2208,8 @@ mod tests {
             .lock()
             .map_err(|_| Error::Storage("head race lock".into()))? = Some(
             publication
-                .request(&client, StreamIdempotencyKey::new("head-racing-commit")?)
-                .await?,
+                .request(&client, StreamIdempotencyKey::new("head-racing-commit")?, &mut None)
+                .await?.0,
         );
         assert!(reader.latest_conversation_message(65_536).await?.is_none());
         assert_eq!(
@@ -2374,9 +2268,9 @@ mod tests {
         let client = provider.clone();
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
-                .await?
-                .with_resident_event_limit(1)?,
+                .await?,
         );
+        writer.set_resident_event_limit(1)?;
         let agent = crate::AgentId::from_bytes([8; 16]);
         let file = content()?;
         let scope = issuer().issue("message-writer", &Capabilities::new([
@@ -2775,14 +2669,14 @@ mod tests {
             )?);
             let private = crate::conversation::VolumeRef::new(
                 filesystem_provider,
-                "journal",
+                "journal".into(),
                 crate::conversation::VolumeClass::AgentPrivate,
                 crate::conversation::VolumeOwner::Agent(agent),
-            )?;
+             &mut None)?;
             host.create_volume(&private).await?;
             let journal_scope = issuer().issue("cold-selection-journal", &Capabilities::new([
-                    private.capability(crate::conversation::VolumeOperation::Read)?,
-                    private.capability(crate::conversation::VolumeOperation::Write)?,
+                    private.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    private.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(agent), None, &mut None).expect("scope proof");
             let journal = crate::filesystem::FilesystemExecutionJournal::new(
                 client.clone(),
@@ -2838,9 +2732,9 @@ mod tests {
         let client = Arc::new(MemoryStream::default());
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
-                .await?
-                .with_resident_event_limit(2)?,
+                .await?,
         );
+        writer.set_resident_event_limit(2)?;
         let original = command(1)?;
         let first = writer.execute(original.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
         for identity in 2..=5 {
@@ -2882,9 +2776,9 @@ mod tests {
                 authority(),
                 issuer().verifier(&mut None).expect("verifier copy"),
                 schemas(), Some(snapshot), crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
-            .await?
-            .with_resident_event_limit(2)?,
+            .await?,
         );
+        restored.set_resident_event_limit(2)?;
         assert_eq!(restored.reducer().archived_through_revision(), 3);
         let ApplyResult::Replayed { event } = restored.execute(original, #[cfg(feature = "filesystem")] None, &mut None).await? else {
             return Err(Error::Invalid("cold retry was not replayed".into()));
@@ -2956,7 +2850,74 @@ mod tests {
         assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
         assert_eq!(cursor.after_revision, 9_997);
         #[cfg(feature = "filesystem")]
-        assert_measured_history_receipts(&provider, &reader, &cursor, limits, &first).await?;
+        {
+            use acyclic_fs::{CancellationToken, WorkBudget};
+            use std::sync::atomic::Ordering;
+            let bytes = acyclic_stream::MAX_RECORD_BYTES as u64 * 4;
+            let budget = WorkBudget {
+                authority_records_read: 8, authority_bytes_read: bytes,
+                backend_read_operations: 8, source_bytes_read: bytes,
+                bytes_copied: bytes, output_bytes: bytes,
+                items_examined: 8, items_returned: 8,
+                allocation_operations: 8, peak_allocation_bytes: bytes,
+                ..WorkBudget::default()
+            };
+            let read = async |cursor: &HistoryCursor, limits: HistoryReadLimits,
+                budget: WorkBudget, cancellation: &CancellationToken| {
+                let mut work = HistoryWork::new(budget, cancellation);
+                let result = async {
+                    work.preflight()?;
+                    reader.read_page(cursor, limits, Some(&mut work)).await
+                }.await;
+                work.finish(result)
+            };
+            let cancellation = CancellationToken::new();
+            let page = read(&cursor, limits, budget, &cancellation).await
+                .map_err(|failure| failure.error)?;
+            assert_eq!(page.value, first);
+            for fault in 1..=6 {
+                provider.history_read_fault.store(fault, Ordering::SeqCst);
+                assert!(read(&cursor,
+                    HistoryReadLimits { maximum_bytes: bytes, ..limits }, budget, &cancellation,
+                ).await.is_err());
+                assert_eq!(read(&cursor, limits, budget, &cancellation).await
+                    .map_err(|failure| failure.error)?.value, first);
+            }
+            for narrow in [
+                WorkBudget { backend_read_operations: 0, ..budget },
+                WorkBudget { authority_bytes_read: 0, ..budget },
+                WorkBudget { output_bytes: 0, ..budget },
+                WorkBudget { peak_allocation_bytes: 0, ..budget },
+            ] {
+                assert!(read(&cursor, limits, narrow, &cancellation).await.is_err());
+            }
+            let invalid = HistoryCursor {
+                authority: Authority { id: "other".into(), ..cursor.authority.clone() }, ..cursor.clone()
+            };
+            assert!(matches!(read(&invalid, limits, budget, &cancellation).await,
+                Err(acyclic_fs::OperationFailure { error: Error::Unauthorized(_), .. })));
+            let cancelled = CancellationToken::new();
+            cancelled.cancel();
+            assert!(async {
+                let mut work = HistoryWork::new(budget, &cancelled);
+                work.preflight()?;
+                reader.pin(0, Some(&mut work)).await
+            }.await.is_err());
+            assert!(read(&cursor, limits, budget, &cancelled).await.is_err());
+            assert!(async {
+                let mut work = HistoryWork::new(WorkBudget::UNBOUNDED, &cancellation);
+                work.preflight()?;
+                reader.pin(0, Some(&mut work)).await
+            }.await.is_err());
+            let terminal = HistoryCursor { after_revision: cursor.through_revision, ..cursor.clone() };
+            assert!(read(&terminal, limits, budget, &cancellation).await
+                .map_err(|failure| failure.error)?.value.events.is_empty());
+            let during_tail = CancellationToken::new();
+            *provider.history_cancel_after_tail.lock()
+                .map_err(|_| Error::Storage("history cancellation fixture poisoned".into()))? =
+                Some(during_tail.clone());
+            assert!(read(&cursor, limits, budget, &during_tail).await.is_err());
+        }
         let encoded =
             serde_json::to_vec(&first.cursor).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(
@@ -2996,92 +2957,7 @@ mod tests {
             reader.read_page(&invalid, limits, None).await,
             Err(Error::Unauthorized(_))
         ));
-        assert_cold_operation_lookup(&reader, last).await?;
-        Ok(())
-    }
-
-    #[cfg(feature = "filesystem")]
-    async fn assert_measured_history_receipts(
-        provider: &crate::test_stream::LostSessionAck<MemoryStream>,
-        reader: &HistoryReader<crate::test_stream::LostSessionAck<MemoryStream>>,
-        cursor: &HistoryCursor,
-        limits: HistoryReadLimits,
-        expected: &HistoryPage,
-    ) -> Result<()> {
-        use acyclic_fs::{CancellationToken, WorkBudget};
-        use std::sync::atomic::Ordering;
-        let bytes = acyclic_stream::MAX_RECORD_BYTES as u64 * 4;
-        let budget = WorkBudget {
-            authority_records_read: 8, authority_bytes_read: bytes,
-            backend_read_operations: 8, source_bytes_read: bytes,
-            bytes_copied: bytes, output_bytes: bytes,
-            items_examined: 8, items_returned: 8,
-            allocation_operations: 8, peak_allocation_bytes: bytes,
-            ..WorkBudget::default()
-        };
-        let read = async |cursor: &HistoryCursor, limits: HistoryReadLimits,
-            budget: WorkBudget, cancellation: &CancellationToken| {
-            let mut work = HistoryWork::new(budget, cancellation);
-            let result = async {
-                work.preflight()?;
-                reader.read_page(cursor, limits, Some(&mut work)).await
-            }.await;
-            work.finish(result)
-        };
-        let cancellation = CancellationToken::new();
-        let page = read(cursor, limits, budget, &cancellation).await
-            .map_err(|failure| failure.error)?;
-        assert_eq!(&page.value, expected);
-        for fault in 1..=6 {
-            provider.history_read_fault.store(fault, Ordering::SeqCst);
-            assert!(read(cursor,
-                HistoryReadLimits { maximum_bytes: bytes, ..limits }, budget, &cancellation,
-            ).await.is_err());
-            assert_eq!(read(cursor, limits, budget, &cancellation).await
-                .map_err(|failure| failure.error)?.value, *expected);
-        }
-        for narrow in [
-            WorkBudget { backend_read_operations: 0, ..budget },
-            WorkBudget { authority_bytes_read: 0, ..budget },
-            WorkBudget { output_bytes: 0, ..budget },
-            WorkBudget { peak_allocation_bytes: 0, ..budget },
-        ] {
-            assert!(read(cursor, limits, narrow, &cancellation).await.is_err());
-        }
-        let invalid = HistoryCursor {
-            authority: Authority { id: "other".into(), ..cursor.authority.clone() }, ..cursor.clone()
-        };
-        assert!(matches!(read(&invalid, limits, budget, &cancellation).await,
-            Err(acyclic_fs::OperationFailure { error: Error::Unauthorized(_), .. })));
-        let cancelled = CancellationToken::new();
-        cancelled.cancel();
-        assert!(async {
-            let mut work = HistoryWork::new(budget, &cancelled);
-            work.preflight()?;
-            reader.pin(0, Some(&mut work)).await
-        }.await.is_err());
-        assert!(read(cursor, limits, budget, &cancelled).await.is_err());
-        assert!(async {
-            let mut work = HistoryWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            work.preflight()?;
-            reader.pin(0, Some(&mut work)).await
-        }.await.is_err());
-        let terminal = HistoryCursor { after_revision: cursor.through_revision, ..cursor.clone() };
-        assert!(read(&terminal, limits, budget, &cancellation).await
-            .map_err(|failure| failure.error)?.value.events.is_empty());
-        let during_tail = CancellationToken::new();
-        *provider.history_cancel_after_tail.lock()
-            .map_err(|_| Error::Storage("history cancellation fixture poisoned".into()))? =
-            Some(during_tail.clone());
-        assert!(read(cursor, limits, budget, &during_tail).await.is_err());
-        Ok(())
-    }
-
-    async fn assert_cold_operation_lookup(
-        reader: &HistoryReader<crate::test_stream::LostSessionAck<MemoryStream>>,
-        expected: crate::core::Event,
-    ) -> Result<()> {
-        assert_eq!(reader.operation_event(expected.operation_id, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await.map(|(event, _)| event)?, Some(expected));
+        assert_eq!(reader.operation_event(last.operation_id, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await.map(|(event, _)| event)?, Some(last));
         assert!(reader.operation_event(OperationId::new(), 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await.map(|(event, _)| event)?.is_none());
         Ok(())
     }
@@ -3361,7 +3237,7 @@ mod tests {
                     "extension:migrate".to_owned(),
                     content()?
                         .volume()
-                        .capability(crate::conversation::VolumeOperation::Write)?,
+                        .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(crate::AgentId::from_bytes([8; 16])), None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::MigrateExtensionState {
@@ -3493,10 +3369,10 @@ mod tests {
         let publisher = TestPublisher {
             volume: VolumeRef::new(
                 ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
-                "extension-child",
+                "extension-child".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([9; 16])),
-            )?,
+             &mut None)?,
             stages: std::sync::atomic::AtomicUsize::new(0),
             files: files.clone(),
         };
@@ -3504,11 +3380,11 @@ mod tests {
                 "extension:migrate".to_owned(),
                 publisher
                     .volume
-                    .capability(crate::conversation::VolumeOperation::Write)?,
+                    .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
             ]), Some(crate::AgentId::from_bytes([9; 16])), None, &mut None).expect("scope proof");
         let unauthorized = issuer().issue("child-unauthorized", &Capabilities::new([publisher
                 .volume
-                .capability(crate::conversation::VolumeOperation::Write)?]), Some(crate::AgentId::from_bytes([9; 16])), None, &mut None).expect("scope proof");
+                .capability(crate::conversation::VolumeOperation::Write, &mut None)?]), Some(crate::AgentId::from_bytes([9; 16])), None, &mut None).expect("scope proof");
         assert!(matches!(
             aggregate
                 .migrate_extension_state(request.clone(), unauthorized, &publisher)
@@ -3526,7 +3402,7 @@ mod tests {
                 "extension:migrate".to_owned(),
                 publisher
                     .volume
-                    .capability(crate::conversation::VolumeOperation::Write)?,
+                    .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
             ]), Some(crate::AgentId::from_bytes([8; 16])), None, &mut None).expect("scope proof");
         assert!(matches!(
             aggregate
@@ -3568,7 +3444,7 @@ mod tests {
             .ok_or_else(|| Error::NotFound("migrated extension state".into()))?;
         assert_eq!(migrated.content.volume(), &publisher.volume);
         assert_eq!(
-            files.read(&migrated.content).await?.as_slice(),
+            files.read(&migrated.content, migrated.content.descriptor().byte_length(), None)?.await?.as_ref(),
             EXTENSION_BYTES
         );
         Ok(())
@@ -3651,14 +3527,14 @@ mod tests {
 
         let agent = crate::AgentId::from_bytes([94; 16]);
         let provider = ProviderRef::new("admission-bytes".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let volume = VolumeRef::new(provider.clone(), "admission-bytes",
-            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+        let volume = VolumeRef::new(provider.clone(), "admission-bytes".into(),
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider)?);
         host.create_volume(&volume).await?;
         let issuer = issuer();
         let scope = issuer.issue("content-owner", &Capabilities::new([
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(agent), None, &mut None).expect("scope proof");
         let publisher = FilesystemContentPublisher::new(
             host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
@@ -3667,7 +3543,7 @@ mod tests {
         let request = Interaction::question("original published prompt".into(), json!({"type": "string"}))?;
         let published = crate::contract::canonical_json_bytes(&request)?;
         let reference = publisher.stage_once(OperationId::from_bytes([95; 16]),
-            "interactions/request.json", &published, "application/json", "request.json").await?;
+            "interactions/request.json", &published, "application/json", "request.json", None)?.await?.0;
         let ticket = InteractionTicket {
             id: uuid::Uuid::from_bytes([96; 16]), kind: InteractionKind::Question,
             request: reference.clone(), deadline_unix_ms: None, approval: None,
@@ -3710,9 +3586,9 @@ mod tests {
             &Action::OpenInteraction { ticket: ticket.clone() }, &mut Some(&mut io)).await?;
         native.admit_retained(available)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let missing = FileRef::new(volume, "interactions/missing.json", reference.version(),
-            FileDescriptor::from_bytes(br#"{"type":"question","value":"yes"}"#, "application/json")?,
-            "missing.json")?;
+        let missing = FileRef::new(volume, "interactions/missing.json".into(), reference.version().into(),
+            FileDescriptor::from_bytes(br#"{"type":"question","value":"yes"}"#, "application/json", &mut None)?,
+            "missing.json".into(), &mut None)?;
         let error = aggregate.validate_interaction_part_with_work(
             &ticket, &missing, None, &mut Some(&mut io)).await
             .expect_err("real publisher has no second response file");
@@ -4035,7 +3911,6 @@ mod tests {
         }
         Ok(())
     }
-
 
     #[tokio::test]
     async fn default_cold_projection_enforces_bounds_and_recovers_failed_observations() -> Result<()>

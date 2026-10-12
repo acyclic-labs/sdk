@@ -62,7 +62,7 @@ impl PiRootHandle {
         }
         let workspace = workspace.into_arc_with_native_work(work)
             .map_err(|source| Error::NativeSource { source, custody: None })?;
-        let mut entry = work.retain_owned(std::mem::size_of::<(String, Self)>() as u64)
+        let mut entry = work.claim(std::mem::size_of::<(String, Self)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         key.1.absorb(&mut entry)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -332,7 +332,7 @@ pub(crate) fn root_provider<P: StreamProvider + 'static>(
     }
     drop(grant);
     drop(authority);
-    let mut custody = original.retain_owned(std::mem::size_of::<PiRootProvider<P>>() as u64).map_err(native)?;
+    let mut custody = original.claim(std::mem::size_of::<PiRootProvider<P>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native)?;
     let (value, resource_custody) = service_resources_with_native_work(resources, &original)?;
     let mut resources = (value, resource_custody);
     custody.absorb(&mut resources.1).map_err(native)?;
@@ -759,8 +759,8 @@ fn encode_pi<T>(
 ) -> Result<(T, NativeAllocation)> {
     let native = |cause| Error::NativeWork { cause, custody: None };
     let remaining = work.remaining().map_err(native)?;
-    let mut custody = work.retain_owned(0).map_err(native)?;
-    let mut diagnostic = work.retain_owned(sdk_json_diagnostic_bytes()).map_err(native)?;
+    let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native)?;
+    let mut diagnostic = work.claim(sdk_json_diagnostic_bytes(), 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native)?;
     let mut parser_quota: Option<NativeAllocation> = None;
     let bounds = JsonBounds {
         maximum_bytes: maximum_bytes.map_or(remaining.bytes_encoded, |maximum| maximum.min(remaining.bytes_encoded)),
@@ -776,7 +776,7 @@ fn encode_pi<T>(
                 let parser_owned = maximum_owned_bytes.checked_sub(sdk_json_diagnostic_bytes())
                     .ok_or(Error::NativeBoundary { code: ErrorCode::Invalid,
                         reason: "SDK raw parser quota omits its diagnostic inventory" })?;
-                let mut quota = work.retain_owned(0).map_err(native)?;
+                let mut quota = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native)?;
                 quota.resize_retained(parser_owned).map_err(native)?;
                 parser_quota = Some(quota);
                 Ok(())
@@ -900,7 +900,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
 ) -> Result<(T, NativeAllocation)> {
     let native_error = |cause| Error::NativeWork { cause, custody: None };
     let remaining = work.remaining().map_err(native_error)?;
-    let mut custody = work.retain_owned(0).map_err(native_error)?;
+    let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     let mut retained_owned = maximum_owned_bytes;
     let bounds = JsonBounds {
         maximum_bytes,
@@ -1028,7 +1028,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
     async fn capture_inputs_with_native_work(&self, effect: EffectId, attempt: EffectAttemptId,
         digest: [u8; 32], work: &NativeMaterializationWork)
         -> Result<(BTreeMap<String, AttachmentInput>, NativeAllocation)> {
-        let mut inputs = (BTreeMap::new(), work.retain_owned(0).map_err(|cause| Error::NativeWork { cause, custody: None })?);
+        let mut inputs = (BTreeMap::new(), work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(|cause| Error::NativeWork { cause, custody: None })?);
         let PiRootIntent::Project { paths, .. } = &self.preparation.request.root else { return Ok(inputs); };
         for key in paths.keys().map(String::as_str).chain(std::iter::once("scratch")) {
             let (volume, config) = if key == "scratch" {
@@ -1063,7 +1063,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                 native_identity: physical.source.inner().root_identity().to_bytes(), budget: allocation_budget(),
             }, volume.1);
             let mut owned_key = work.display(key).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            let mut slot = work.retain_owned(std::mem::size_of::<(String, AttachmentInput)>() as u64)
+            let mut slot = work.claim(std::mem::size_of::<(String, AttachmentInput)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
             inputs.1.absorb(&mut slot).map_err(|cause| Error::NativeWork { cause, custody: None })?;
             inputs.1.absorb(&mut record.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -1143,7 +1143,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                     }
                 };
                 let mut owned_key = work.display(key).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                let mut slot = work.retain_owned(std::mem::size_of::<(String, PiRootHandle)>() as u64)
+                let mut slot = work.claim(std::mem::size_of::<(String, PiRootHandle)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 slot.absorb(&mut owned_key.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 let workspace = workspace.into_arc_with_native_work(work)
@@ -1287,7 +1287,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
     async fn observe_resources_with_native_work(&self, effect: EffectId, attempt: EffectAttemptId,
         digest: [u8; 32], work: &NativeMaterializationWork)
         -> Result<Option<(PiRootAllocation, NativeAllocation)>> {
-        let mut roots = (BTreeMap::new(), work.retain_owned(0).map_err(|cause| Error::NativeWork { cause, custody: None })?);
+        let mut roots = (BTreeMap::new(), work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(|cause| Error::NativeWork { cause, custody: None })?);
         if let PiRootIntent::Project { paths, .. } = &self.preparation.request.root {
             let Some(reference) = self.original_artifact_with_native_work(effect, attempt, "attachments", work).await?
                 else { return Ok(None); };
@@ -1314,7 +1314,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                     return Err(Self::native_failure("root native identity was substituted"));
                 }
                 let owned_key = work.display(key).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                let mut slot = work.retain_owned(std::mem::size_of::<(String, RootCreation)>() as u64)
+                let mut slot = work.claim(std::mem::size_of::<(String, RootCreation)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 roots.1.absorb(&mut slot).map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 let (value, mut _custody) = owned_key;

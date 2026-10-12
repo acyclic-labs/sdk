@@ -1,5 +1,4 @@
 use super::*;
-use crate::runtime::TaskStateProvider;
 use crate::conversation::VolumeRef;
 #[cfg(feature = "filesystem")]
 use crate::conversation::{VolumeClass, VolumeOperation, VolumeOwner};
@@ -138,7 +137,7 @@ impl<'a> RootBootstrapContentContext<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn from_verified_original_root_with_native_work<P: acyclic_stream::StreamProvider>(
         host: &'a crate::durable_host::CoordinatorTaskHost<P>,
-        original: &'a (crate::scheduler::OperationSpec, crate::scheduler::LeaseFence),
+        original: &'a (crate::scheduler::OperationSpec, &'a crate::scheduler::LeaseFence),
         original_root: &'a TaskAdmissionRecord,
         binding: &'a crate::store::VerifiedRootBinding,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -454,7 +453,7 @@ mod tests {
             input_schema: serde_json::json!({"type":"object"}),
             output_schema: serde_json::json!({"type":"object"}),
             parent: None, resource_proofs: Vec::new(), grants: crate::Capabilities::new(labels),
-            limits: crate::Limits::default(), run_limits: crate::runtime::TaskRunLimits::default(),
+            limits: crate::conversation::Limits::default(), run_limits: crate::runtime::TaskRunLimits::default(),
             policy: None, extensions: None, execution: None,
         })
     }

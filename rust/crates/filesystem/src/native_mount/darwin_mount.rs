@@ -1174,7 +1174,7 @@ impl DarwinStartupBuffers {
     fn new(
         destination: &Path, writable: bool, named_attributes: bool, native: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        let mut allocation = native.claim(0)?;
+        let mut allocation = native.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let destination = darwin_startup_string(destination.as_os_str().as_bytes(), native, &mut allocation)?;
         let mut owned = Self {
             destination, arguments: Vec::new(), pointers: Vec::new(), allocation,
@@ -1311,7 +1311,7 @@ impl DriverSessionResources {
         original: &crate::NativeMaterializationWork,
     ) -> Result<(usize, crate::NativeAllocation), NativeMountError> {
         let bytes = unsafe { acyclic_fs_darwin_mount_session_allocation_size() } as u64;
-        let allocation = original.allocation_work().claim_allocation(bytes, 1, crate::WorkCounters {
+        let allocation = original.allocation_work().claim(bytes, 1, crate::WorkCounters {
                 backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
             })?;
         let pointer = unsafe { acyclic_fs_darwin_mount_session_new() } as usize;
@@ -1541,7 +1541,7 @@ impl DarwinMountSession {
                     .map_err(NativeMountError::from)?;
                 let materialization = source_work.clone();
                 let bytes = std::mem::size_of::<(FileId, u64)>() as u64;
-                let mut root_allocation = materialization.claim(bytes).map_err(NativeMountError::from)?;
+                let mut root_allocation = materialization.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
                 let mut root_entries = Vec::new();
                 root_entries.try_reserve_exact(1).map_err(NativeMountError::from)?;
                 root_allocation.reconcile_capacity(
@@ -1559,9 +1559,7 @@ impl DarwinMountSession {
                 context.inodes.get_mut().unwrap_or_else(PoisonError::into_inner)
                     .allocation = Some(root_allocation);
                 context.allocation_custody = Some(custody.clone());
-                context.native_allocation = Some(materialization.claim(
-                    std::mem::size_of::<DarwinMountContext>() as u64,
-                ).map_err(NativeMountError::from)?);
+                context.native_allocation = Some(materialization.claim(std::mem::size_of::<DarwinMountContext>() as u64, u64::from((std::mem::size_of::<DarwinMountContext>() as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?);
                 Arc::new(context)
             };
             let _startup_meter = DarwinStartupMeterScope::new(Arc::clone(&context), source_work)?;
@@ -1575,13 +1573,13 @@ impl DarwinMountSession {
             let bytes = request.destination.as_os_str().as_bytes().len() as u64;
             let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED };
             materialization.admit(copied).map_err(NativeMountError::from)?;
-            let destination_allocation = materialization.claim(bytes).map_err(NativeMountError::from)?;
+            let destination_allocation = materialization.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
             let destination = request.destination.clone();
             materialization.record_admitted(copied).map_err(NativeMountError::from)?;
-            let events_allocation = materialization.claim(std::mem::size_of::<LoopEvents>() as u64)
+            let events_allocation = materialization.claim(std::mem::size_of::<LoopEvents>() as u64, u64::from((std::mem::size_of::<LoopEvents>() as u64) != 0), crate::WorkCounters::UNCHARGED)
                 .map_err(NativeMountError::from)?;
             let events = Arc::new(LoopEvents { _allocation: Some(events_allocation), ..LoopEvents::default() });
-            let resources_allocation = materialization.claim(std::mem::size_of::<DriverSessionResources>() as u64)
+            let resources_allocation = materialization.claim(std::mem::size_of::<DriverSessionResources>() as u64, u64::from((std::mem::size_of::<DriverSessionResources>() as u64) != 0), crate::WorkCounters::UNCHARGED)
                 .map_err(NativeMountError::from)?;
             let cleanup_credit = DriverSessionResources::reserve_cleanup_credit(&materialization)?;
             let resources = Arc::new(DriverSessionResources {
@@ -1667,8 +1665,8 @@ impl DarwinMountSession {
             Arc<DriverSessionResources>, ExitReport, Arc<DarwinStopController>,
             Option<crate::NativeMaterializationWork>, crate::NativeAllocation,
         )>() as u64;
-        let allocation = materialization.claim(payload.checked_add(name.len() as u64)
-            .ok_or(crate::WorkError::Overflow)?)?;
+        let allocation = { let claim_bytes = payload.checked_add(name.len() as u64)
+            .ok_or(crate::WorkError::Overflow)?; materialization.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
         let owned = (data.0, data.1, data.2, data.3, allocation);
         let name = name.to_owned();
         materialization.record_admitted(copied)?;
@@ -2024,7 +2022,7 @@ fn detach_check(
 ) -> Result<(), NativeMountError> {
     match cleanup {
         Some(loan) => loan.check_wait().map_err(NativeMountError::from),
-        None => meter.with_native(|work| work.admit(crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)),
+        None => meter.work().ok_or(crate::DemandError::Cancelled)?.admit(crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from),
     }
 }
 
@@ -2034,7 +2032,7 @@ fn detach_wait(
     detach_check(meter, cleanup)?;
     match cleanup {
         Some(loan) => Ok(loan.cancellation().cloned()),
-        None => meter.with_native(|work| Ok(Some(work.cancellation().clone()))),
+        None => Ok(Some(meter.work().ok_or(crate::DemandError::Cancelled)?.cancellation().clone())),
     }
 }
 
@@ -2045,7 +2043,7 @@ fn detach_started_read(
         Some(loan) => loan.started_io(crate::WorkCounters {
             backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(NativeMountError::from),
-        None => meter.with_native(|work| darwin_native_attempt(work, false)),
+        None => darwin_native_attempt(&meter.work().ok_or(crate::DemandError::Cancelled)?, false),
     }
 }
 
@@ -2054,7 +2052,7 @@ fn detach_observe<T>(
     operation: impl FnOnce() -> T,
 ) -> Result<T, NativeMountError> {
     let delta = crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED };
-    meter.with_native(|work| darwin_probe_cpu(work, cleanup, delta, operation))
+    darwin_probe_cpu(&meter.work().ok_or(crate::DemandError::Cancelled)?, cleanup, delta, operation)
 }
 
 
@@ -2111,14 +2109,14 @@ impl DarwinCleanupPlan {
         let bytes = capacity.checked_mul(std::mem::size_of::<libc::statfs>())
             .ok_or(crate::WorkError::Overflow)?;
         c_int::try_from(bytes).map_err(|_| crate::WorkError::Overflow)?;
-        let mut mounts_allocation = original.claim(bytes as u64)?;
+        let mut mounts_allocation = original.claim(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         let mut mounts = Vec::new();
         mounts.try_reserve_exact(capacity)?;
         let bytes = mounts.capacity().checked_mul(std::mem::size_of::<libc::statfs>())
             .ok_or(crate::WorkError::Overflow)?;
         c_int::try_from(bytes).map_err(|_| crate::WorkError::Overflow)?;
         mounts_allocation.reconcile_capacity(bytes as u64)?;
-        let mut normalized_allocation = original.claim(libc::PATH_MAX as u64)?;
+        let mut normalized_allocation = { let claim_bytes = libc::PATH_MAX as u64; original.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
         let mut normalized = Vec::new();
         normalized.try_reserve_exact(libc::PATH_MAX as usize)?;
         normalized_allocation.reconcile_capacity(normalized.capacity() as u64)?;
@@ -2382,7 +2380,7 @@ impl DarwinStopController {
         mut state: DarwinRecoveryControl,
         original: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, NativeMountError> {
-        let allocation = original.claim(std::mem::size_of::<Self>() as u64)?;
+        let allocation = original.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         if let Some(plan) = &mut state.cleanup_plan {
             let visits = closed_control_visits(MOUNT_LOOP_EXIT_TIMEOUT, STOP_POLL_INTERVAL)?;
             state.observer_credit = Some(plan.credit.partition_work(crate::WorkCounters {
@@ -2493,12 +2491,8 @@ impl Drop for DetachLoan<'_> {
 }
 
 impl DetachReadMeter {
-    fn with_native<T>(
-        &self, call: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, NativeMountError>,
-    ) -> Result<T, NativeMountError> {
-        let native = self.work.lock().unwrap_or_else(PoisonError::into_inner)
-            .as_ref().cloned().ok_or(crate::DemandError::Cancelled)?;
-        call(&native)
+    fn work(&self) -> Option<crate::NativeMaterializationWork> {
+        self.work.lock().unwrap_or_else(PoisonError::into_inner).as_ref().cloned()
     }
 
     fn seal(&self) {
@@ -2552,7 +2546,7 @@ impl DetachPath {
         let copied = crate::WorkCounters { bytes_copied: bytes.len() as u64, ..crate::WorkCounters::UNCHARGED };
         work.admit(copied)?;
         let length = bytes.len().checked_add(1).ok_or(crate::WorkError::Overflow)?;
-        let mut allocation = work.claim(length as u64)?;
+        let mut allocation = work.claim(length as u64, u64::from((length as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         let mut path = Vec::new();
         path.try_reserve_exact(length)?;
         allocation.reconcile_capacity(path.capacity() as u64)?;
@@ -2606,7 +2600,7 @@ fn poll_direct(
     let mut credit = if let Some(cleanup) = cleanup {
         Some(cleanup.admit_completed(visit)?)
     } else {
-        meter.with_native(|work| work.charge(visit).map_err(NativeMountError::from))?;
+        meter.work().ok_or(crate::DemandError::Cancelled)?.charge(visit)?;
         None
     };
     let failed = task.submission_failure.is_some();
@@ -2640,7 +2634,7 @@ fn prepare_direct_unmount(
         backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
     })?;
     let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(credit)?;
-    let task_meter = credit.runtime_meter_owner();
+    let task_meter = credit.runtime_meter();
     let operation = acyclic_native_runtime::NativeOperationReservation::new(
         Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
     ).map_err(|error| NativeMountError::from(native.native_read_meter().take_native_io_failure()
@@ -2678,11 +2672,11 @@ fn bounded_direct_unmount(
     if state.direct.is_none() && resources.is_some() { return Ok(()); }
     if state.direct.is_none() {
         let path = DirectUnmountPath::Recovery(
-            meter.with_native(|work| DetachPath::new(destination, work))?,
+            DetachPath::new(destination, &meter.work().ok_or(crate::DemandError::Cancelled)?)?,
         );
     let original = meter.work.lock().unwrap_or_else(PoisonError::into_inner)
         .as_ref().cloned().ok_or(crate::DemandError::Cancelled)?;
-    let task_meter = original.runtime_meter_owner();
+    let task_meter = original.runtime_meter();
     let operation = acyclic_native_runtime::NativeOperationReservation::new(
         Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
     ).map_err(|error| NativeMountError::from(original.native_read_meter().take_native_io_failure()
@@ -2752,7 +2746,7 @@ impl PreparedDiskutilProcess {
         let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(credit)?;
         let original_work = original.allocation_work();
         let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process(
-            3, original_work.runtime_meter_owner(),
+            3, original_work.runtime_meter(),
         ).map_err(|error| NativeMountError::from(original.runtime_error(error)))?;
         Ok(Self { frame: Some(frame), credit, original_work })
     }
@@ -2780,7 +2774,7 @@ fn spawn_diskutil(
             owned_credit: Some(Arc::clone(&prepared.credit)),
             _original_work: Some(prepared.original_work.clone()),
         });
-        let native = prepared.credit.runtime_meter_owner();
+        let native = prepared.credit.runtime_meter();
         let result = acyclic_native_runtime::ProcessTree::spawn_closed_prepared(
             c"/usr/sbin/diskutil", &[c"unmount", c"force", path.as_c_str()], &mut prepared.frame,
             native.as_ref(), &mut state.diskutil.as_mut().expect("spawn custody installed").tree,
@@ -2797,15 +2791,17 @@ fn spawn_diskutil(
         tree: None, deadline: Instant::now() + DISKUTIL_UNMOUNT_TIMEOUT, failed_spawn: false,
         owned_credit: None, _original_work: None,
     });
-    let result = meter.with_native(|mut work| {
+    let result = (|| {
+        let original = meter.work().ok_or(crate::DemandError::Cancelled)?;
+        let mut work = &original;
         crate::native_host::unix_name_with_work(destination.as_os_str(), &mut work, |path, work| {
             acyclic_native_runtime::ProcessTree::spawn_closed_measured(
-                c"/usr/sbin/diskutil", &[c"unmount", c"force", path], work.runtime_meter(),
+                c"/usr/sbin/diskutil", &[c"unmount", c"force", path], work.runtime_meter().as_ref(),
                 &mut state.diskutil.as_mut().expect("spawn custody").tree,
             ).map_err(|error| crate::materializer::native_materialization_work_error(
                 work.native_read_meter().take_native_io_failure().unwrap_or_else(|| native_demand_error(error))))
         }).map_err(NativeMountError::from)
-    });
+    })();
     if state.diskutil.as_ref().is_some_and(|child| child.tree.is_none()) { state.diskutil.take(); }
     if let Some(child) = &mut state.diskutil { child.failed_spawn = result.is_err(); }
     result
@@ -2815,23 +2811,25 @@ impl DiskutilProcess {
     fn observe(&mut self, meter: &Arc<DetachReadMeter>) -> Result<Option<std::process::ExitStatus>, NativeMountError> {
         if let Some(credit) = &self.owned_credit {
             return self.tree.as_mut().expect("retained process tree")
-                .try_wait(Some(credit.runtime_meter_owner().as_ref()))
+                .try_wait(Some(credit.runtime_meter().as_ref()))
                 .map_err(|error| NativeMountError::from(credit.original_work().runtime_error(error)));
         }
-        meter.with_native(|work| self.tree.as_mut().expect("retained process tree").try_wait(Some(work.runtime_meter()))
+        let work = meter.work().ok_or(crate::DemandError::Cancelled)?;
+        self.tree.as_mut().expect("retained process tree").try_wait(Some(work.runtime_meter().as_ref()))
             .map_err(|error| NativeMountError::from(work.native_read_meter().take_native_io_failure()
-                .unwrap_or_else(|| native_demand_error(error)))))
+                .unwrap_or_else(|| native_demand_error(error))))
     }
 
     fn terminate(&mut self, meter: &Arc<DetachReadMeter>) -> Result<(), NativeMountError> {
         if let Some(credit) = &self.owned_credit {
             return self.tree.as_mut().expect("retained process tree")
-                .terminate(Some(credit.runtime_meter_owner().as_ref()))
+                .terminate(Some(credit.runtime_meter().as_ref()))
                 .map_err(|error| NativeMountError::from(credit.original_work().runtime_error(error)));
         }
-        meter.with_native(|work| self.tree.as_mut().expect("retained process tree").terminate(Some(work.runtime_meter()))
+        let work = meter.work().ok_or(crate::DemandError::Cancelled)?;
+        self.tree.as_mut().expect("retained process tree").terminate(Some(work.runtime_meter().as_ref()))
             .map_err(|error| NativeMountError::from(work.native_read_meter().take_native_io_failure()
-                .unwrap_or_else(|| native_demand_error(error)))))
+                .unwrap_or_else(|| native_demand_error(error))))
     }
 }
 
@@ -2840,7 +2838,7 @@ fn bounded_unmount(
     resources: Option<&Arc<DriverSessionResources>>,
     mut scratch: Option<&mut DarwinStopScratch>, cleanup: Option<&crate::materializer::NativeCleanupLoan<'_>>,
 ) -> Result<bool, NativeMountError> {
-    let mounted = meter.with_native(|work| is_mounted(destination, work, scratch.as_deref_mut(), cleanup))?;
+    let mounted = is_mounted(destination, &meter.work().ok_or(crate::DemandError::Cancelled)?, scratch.as_deref_mut(), cleanup)?;
     state.detached = !mounted;
     if mounted && state.start_aborted {
         return Err(NativeMountError::DestinationBusy);
@@ -2865,7 +2863,7 @@ fn bounded_unmount(
             Ok(()) | Err(NativeMountError::Io(_)) => {}
             Err(error) => return Err(error),
         }
-        if !meter.with_native(|work| is_mounted(destination, work, scratch.as_deref_mut(), cleanup))? {
+        if !is_mounted(destination, &meter.work().ok_or(crate::DemandError::Cancelled)?, scratch.as_deref_mut(), cleanup)? {
             state.detached = true;
             drop(state.prepared_diskutil.take());
             return Ok(true);
@@ -2886,7 +2884,7 @@ fn bounded_unmount(
         std::thread::sleep(STOP_POLL_INTERVAL);
     };
     state.diskutil.take();
-    if !meter.with_native(|work| is_mounted(destination, work, scratch.as_deref_mut(), cleanup))? {
+    if !is_mounted(destination, &meter.work().ok_or(crate::DemandError::Cancelled)?, scratch.as_deref_mut(), cleanup)? {
         state.detached = true;
         return Ok(true);
     }
@@ -2897,7 +2895,7 @@ fn bounded_unmount(
         return Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure::DiskutilExit(status)));
     }
     let verify_deadline = Instant::now() + DISKUTIL_VISIBILITY_TIMEOUT;
-    while meter.with_native(|work| is_mounted(destination, work, scratch.as_deref_mut(), cleanup))? {
+    while is_mounted(destination, &meter.work().ok_or(crate::DemandError::Cancelled)?, scratch.as_deref_mut(), cleanup)? {
         if Instant::now() >= verify_deadline {
             return Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure::MountStillVisible));
         }
@@ -2968,7 +2966,7 @@ impl DarwinRecoveryControl {
         }
         if let Some(child) = &mut self.diskutil {
             let result = child.tree.as_mut().ok_or(NativeMountError::ControlPending)?
-                .terminate(Some(original.runtime_meter()))
+                .terminate(Some(original.runtime_meter().as_ref()))
                 .map_err(|error| NativeMountError::from(original.runtime_error(error)));
             if let Err(error) = result { return Err(failure.unwrap_or(error)); }
             drop(self.diskutil.take());
@@ -3119,7 +3117,7 @@ impl<T> DarwinOwned<T> {
 
     fn claim_more(&mut self, bytes: u64, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
         if bytes == 0 { return Ok(()); }
-        let mut allocation = work.native.claim(bytes)
+        let mut allocation = work.native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)
             .map_err(|error| work.native_error(error.into()))?;
         if let Some(owned) = &mut self.allocation {
             owned.absorb(&mut allocation).map_err(|error| work.native_error(error.into()))?;
@@ -3188,7 +3186,7 @@ impl DarwinCallbackWork<'_> {
         if bytes == 0 {
             return build().map(DarwinOwned::empty).map_err(|error| self.native_error(error));
         }
-        let allocation = self.native.claim(bytes)
+        let allocation = self.native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)
             .map_err(|error| self.native_error(error.into()))?;
         let mut owned = DarwinOwned { value: None, custody: None, bytes: 0, allocation: Some(allocation) };
         owned.value = Some(build().map_err(|error| self.native_error(error))?);
@@ -3226,7 +3224,7 @@ impl DarwinCallbackWork<'_> {
         }
         let delta = crate::WorkCounters { bytes_copied: bytes.len() as u64, ..crate::WorkCounters::UNCHARGED };
         self.native.admit(delta).map_err(|error| self.native_error(error.into()))?;
-        let mut allocation = self.native.claim(bytes.len() as u64).map_err(|error| self.native_error(error.into()))?;
+        let mut allocation = { let claim_bytes = bytes.len() as u64; self.native.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }.map_err(|error| self.native_error(error.into()))?;
         let mut value = Vec::new();
         value.try_reserve_exact(bytes.len()).map_err(|error| self.native_error(NativeMountError::Allocation(error)))?;
         allocation.reconcile_capacity(value.capacity() as u64).map_err(|error| self.native_error(error.into()))?;
@@ -3234,7 +3232,7 @@ impl DarwinCallbackWork<'_> {
         self.native.record_admitted(delta).map_err(|error| self.native_error(error.into()))?;
         let retained = allocation.bytes();
         let value = OwnedBytes::from_vec_with_guard(
-            value, allocation, self.native.runtime_meter_owner(),
+            value, allocation, self.native.runtime_meter(),
         ).map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
                 self.native_error(self.native.runtime_error(error).into())
@@ -4091,7 +4089,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
         if length == 0 {
             return Err(libc::ERANGE);
         }
-        let chunk = context.source.read_link_with_meter(&*mount_path(path, work)?, work.native)
+        let chunk = context.source.read_link(&*mount_path(path, work)?, work.native)
             .map_err(|error| work.native_error(error.into()))?;
         let target = work.source_chunk(chunk);
         if target.len() >= length {
@@ -4228,7 +4226,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
         if !context.may_have_named_attributes(&path, work)? {
             return Err(libc::ENOATTR);
         }
-        let chunk = context.source.read_attribute_with_meter(&path, c_bytes(name, work)?, work.native)
+        let chunk = context.source.read_attribute(&path, c_bytes(name, work)?, work.native)
             .map_err(|error| work.native_error(error.into()))?
             .ok_or(libc::ENOATTR)?;
         let bytes = work.source_chunk(chunk);
@@ -4716,7 +4714,7 @@ mod tests {
         let native = creator.clone();
         let meter = new_detach_meter(&native)?;
         let path = DirectUnmountPath::Recovery(DetachPath::new(temporary.path(), &creator)?);
-        let task_meter = creator.runtime_meter_owner();
+        let task_meter = creator.runtime_meter();
         let operation = acyclic_native_runtime::NativeOperationReservation::new(
             Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
         ).map_err(|error| creator.runtime_error(error))?;
@@ -4869,7 +4867,7 @@ mod tests {
         });
         let source = MemorySource::new_at_meter(
             shared, config, crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
-            original.claim(0)?, &original, Some(&original),
+            original.claim(0, 0, crate::WorkCounters::UNCHARGED)?, &original, Some(&original),
         )?.with_native_callback_guard(guard.clone());
         let source = source.into_arc_meter(&original)?;
         let context = Arc::new(DarwinMountContext::new(
@@ -5041,14 +5039,14 @@ mod tests {
         let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
         let (_, mut context) = checkout_context(MountPublication::Manual)?;
-        context.native_allocation = Some(work.claim(std::mem::size_of::<DarwinMountContext>() as u64)?);
+        context.native_allocation = Some(work.claim(std::mem::size_of::<DarwinMountContext>() as u64, u64::from((std::mem::size_of::<DarwinMountContext>() as u64) != 0), crate::WorkCounters::UNCHARGED)?);
         let context = Arc::new(context);
         let temporary = tempfile::tempdir()?;
         let startup = DarwinStartupBuffers::new(
             temporary.path(), true, context.source.supports_posix_named_attributes(), &work,
         )?;
         let cleanup_credit = DriverSessionResources::reserve_cleanup_credit(&work)?;
-        let allocation = work.claim(std::mem::size_of::<DriverSessionResources>() as u64)?;
+        let allocation = work.claim(std::mem::size_of::<DriverSessionResources>() as u64, u64::from((std::mem::size_of::<DriverSessionResources>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         let (driver_session, sdk_allocation) = DriverSessionResources::new_sdk_session(&work)?;
         let resources = Arc::new(DriverSessionResources {
             context,
@@ -5059,7 +5057,7 @@ mod tests {
         });
         resources.interrupt_accepted_cleanup();
         let events = Arc::new(LoopEvents {
-            _allocation: Some(work.claim(std::mem::size_of::<LoopEvents>() as u64)?),
+            _allocation: Some(work.claim(std::mem::size_of::<LoopEvents>() as u64, u64::from((std::mem::size_of::<LoopEvents>() as u64) != 0), crate::WorkCounters::UNCHARGED)?),
             ..LoopEvents::default()
         });
         let startup = resources.startup.as_ref().expect("the actual original SDK arguments");

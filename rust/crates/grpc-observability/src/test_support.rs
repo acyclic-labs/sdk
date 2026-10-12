@@ -144,6 +144,30 @@ impl Capture {
     }
 }
 
+/// A gRPC body that emits one unavailable trailer after 50 ms.
+pub fn delayed_unavailable_body() -> tonic::body::Body {
+    tonic::body::Body::new(Trailers(Some(Box::pin(tokio::time::sleep(
+        std::time::Duration::from_millis(50),
+    )))))
+}
+
+struct Trailers(Option<std::pin::Pin<Box<tokio::time::Sleep>>>);
+impl http_body::Body for Trailers {
+    type Data = tonic::codegen::Bytes;
+    type Error = std::convert::Infallible;
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        use std::{future::Future as _, task::Poll};
+        let Some(sleep) = self.0.as_mut() else { return Poll::Ready(None); };
+        std::task::ready!(sleep.as_mut().poll(cx));
+        self.0 = None;
+        let mut trailers = tonic::codegen::http::HeaderMap::new();
+        trailers.insert("grpc-status", 14.into());
+        Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))))
+    }
+}
+
 /// Re-executes one TLS test in isolated trust environments, or returns its PEM inputs and mode.
 pub fn tls_fixture(module: &str) -> Result<Option<(String, String, Vec<u8>, String)>, Box<dyn std::error::Error + Send + Sync>> {
     const FIXTURE: &str = "ACYCLIC_TLS_FIXTURE";

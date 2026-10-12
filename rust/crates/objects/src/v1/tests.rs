@@ -31,7 +31,7 @@ pub(super) async fn exercise_uploads<'a>(
     )
     .await?;
     assert_eq!(result.size, 135_000);
-    assert_eq!(provider.get(get("stream"), 135_000).await?.into_body(), bytes);
+    assert_eq!(provider.get(get(bucket(), "stream"), 135_000).await?.into_body(), bytes);
     let failure = || {
         stream::iter([
             Ok(OwnedBytes::from_static(b"partial")),
@@ -73,7 +73,7 @@ pub(super) async fn exercise_uploads<'a>(
             .map(|error| error.code),
         Some(wire::ErrorCode::AccessDenied)
     );
-    assert_eq!(provider.get(get("stream"), 135_000).await?.into_body(), bytes);
+    assert_eq!(provider.get(get(bucket(), "stream"), 135_000).await?.into_body(), bytes);
     let (started, started_rx) = futures::channel::oneshot::channel();
     let pending = stream::once(async move {
         let _ = started.send(());
@@ -172,7 +172,7 @@ pub(super) async fn exercise_streaming<'a>(
         .await?;
     let bytes = OwnedBytes::from((0..=250u8).cycle().take(135_000).collect::<Vec<_>>());
     provider.put(put("stream"), bytes.clone()).await?;
-    let mut selected = get(self::get("stream"), 135_000).await?;
+    let mut selected = get(self::get(bucket(), "stream"), 135_000).await?;
     assert_eq!(
         selected.header.object.as_ref().map(|info| info.size),
         Some(135_000)
@@ -187,11 +187,11 @@ pub(super) async fn exercise_streaming<'a>(
     }
     assert_eq!(chunks, 3);
     assert_eq!(result.as_slice(), bytes.as_slice());
-    let mut cancelled = get(self::get("stream"), 135_000).await?;
+    let mut cancelled = get(self::get(bucket(), "stream"), 135_000).await?;
     assert!(cancelled.body.next().await.transpose()?.is_some());
     drop(cancelled);
     assert_eq!(
-        get(self::get("stream"), 135_000)
+        get(self::get(bucket(), "stream"), 135_000)
             .await?
             .collect(135_000)
             .await?
@@ -199,7 +199,7 @@ pub(super) async fn exercise_streaming<'a>(
         bytes
     );
     assert_eq!(
-        get(self::get("stream"), 16)
+        get(self::get(bucket(), "stream"), 16)
             .await
             .err()
             .map(|error| error.code),
@@ -208,7 +208,7 @@ pub(super) async fn exercise_streaming<'a>(
     provider
         .put(put("terminal-error"), OwnedBytes::from_static(b"body"))
         .await?;
-    let failed = get(self::get("terminal-error"), 16).await?;
+    let failed = get(self::get(bucket(), "terminal-error"), 16).await?;
     assert_eq!(
         failed.collect(16).await.err().map(|error| error.code),
         Some(wire::ErrorCode::AccessDenied)
@@ -231,12 +231,12 @@ pub(super) async fn exercise_streaming<'a>(
     Ok(())
 }
 
-fn bucket() -> Option<wire::BucketRef> {
+pub(super) fn bucket() -> Option<wire::BucketRef> {
     Some(wire::BucketRef {
         name: "customer.inputs".into(),
     })
 }
-fn identity(key: &str) -> Option<wire::MutationIdentity> {
+pub(super) fn identity(key: &str) -> Option<wire::MutationIdentity> {
     Some(wire::MutationIdentity {
         idempotency_key: key.into(),
     })
@@ -248,9 +248,9 @@ fn put(key: &str) -> wire::PutObjectHeader {
         ..Default::default()
     }
 }
-fn get(key: &str) -> wire::GetObjectRequest {
+pub(super) fn get(bucket: Option<wire::BucketRef>, key: &str) -> wire::GetObjectRequest {
     wire::GetObjectRequest {
-        bucket: bucket(),
+        bucket,
         object_key: key.into(),
         ..Default::default()
     }
@@ -319,10 +319,10 @@ async fn native_batch_preserves_order_bounds_and_failed_item_rollback() -> Resul
     );
     let reads = provider
         .get_batch(vec![
-            (get("third"), 3),
-            (get("first"), 2),
-            (get("second"), 8),
-            (get("first"), 3),
+            (get(bucket(), "third"), 3),
+            (get(bucket(), "first"), 2),
+            (get(bucket(), "second"), 8),
+            (get(bucket(), "first"), 3),
         ])
         .await;
     assert_eq!(reads.len(), 4);
@@ -412,14 +412,14 @@ async fn conditional_publication_and_retry_do_not_overwrite_later_values() -> Re
             .map(|error| error.code),
         Some(wire::ErrorCode::PreconditionFailed)
     );
-    let current = provider.get(get("value"), 16).await?;
+    let current = provider.get(get(bucket(), "value"), 16).await?;
     assert_eq!(
         provider
             .put(original.clone(), OwnedBytes::from_static(b"first"))
             .await?,
         first
     );
-    assert_eq!(provider.get(get("value"), 16).await?, current);
+    assert_eq!(provider.get(get(bucket(), "value"), 16).await?, current);
     assert_eq!(
         provider
             .put(original, OwnedBytes::from_static(b"changed"))
@@ -465,7 +465,7 @@ async fn quota_failure_rolls_back_publication_and_retry_receipt() -> Result<(), 
     );
     assert_eq!(
         provider
-            .get(get("new"), 16)
+            .get(get(bucket(), "new"), 16)
             .await
             .err()
             .map(|error| error.code),
@@ -481,13 +481,13 @@ async fn quota_failure_rolls_back_publication_and_retry_receipt() -> Result<(), 
     provider.put(attempted, OwnedBytes::from_static(b"ab")).await?;
     assert_eq!(
         provider
-            .get(get("new"), 1)
+            .get(get(bucket(), "new"), 1)
             .await
             .err()
             .map(|error| error.code),
         Some(wire::ErrorCode::QuotaExceeded)
     );
-    let mut suffix = get("new");
+    let mut suffix = get(bucket(), "new");
     suffix.range = Some(wire::ByteRange {
         selection: Some(wire::byte_range::Selection::SuffixLength(1)),
     });
@@ -682,7 +682,7 @@ async fn multipart_failure_keeps_parts_and_completion_is_atomic_and_replayable()
         Some(wire::ErrorCode::PreconditionFailed)
     );
     assert_eq!(
-        provider.get(get("value"), 16).await?.into_body(),
+        provider.get(get(bucket(), "value"), 16).await?.into_body(),
         OwnedBytes::from_static(b"old")
     );
     let parts = provider
@@ -712,7 +712,7 @@ async fn multipart_failure_keeps_parts_and_completion_is_atomic_and_replayable()
     assert_eq!(provider.complete_multipart(complete).await?, info); // Retried completion does not resurrect the deleted object.
     assert_eq!(
         provider
-            .get(get("value"), 16)
+            .get(get(bucket(), "value"), 16)
             .await
             .err()
             .map(|error| error.code),
@@ -955,7 +955,7 @@ async fn assert_completed_multipart_range(
     info: &wire::ObjectInfo,
 ) -> Result<(), Error> {
     assert_eq!(info.size, 5 * 1024 * 1024 + 3);
-    let mut crossing = get("value");
+    let mut crossing = get(bucket(), "value");
     crossing.range = Some(wire::ByteRange {
         selection: Some(wire::byte_range::Selection::Bytes(wire::InclusiveRange {
             start: 5 * 1024 * 1024 - 2,
@@ -1157,7 +1157,7 @@ fn native_wire_aliases_keep_original_claim_after_context_retirement()
     let observed = Arc::new(NativeTransportMeter::new());
     let meter: Arc<dyn NativeReadMeter> = observed.clone();
     let errors = super::NativeTransportErrors::new(&meter)?;
-    let controls = super::response::NativeGetControls { meter, errors };
+    let controls = errors;
     let (data, allocation) = controls.copy(b"immutable native wire")?;
     let wire = controls.wire_bytes(data, allocation)?;
     let alias = wire.slice(1..4);
@@ -1358,44 +1358,19 @@ async fn native_transport_get<P: ObjectsProvider>(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_input_string(
-    value: &str,
-    meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-) -> Result<(String, acyclic_native_runtime::ReadAllocation), super::NativeObjectsError> {
-    meter.admit_codec(0, value.len() as u64, 0)?;
-    let mut allocation = acyclic_native_runtime::ReadAllocation::new(meter, value.len())?;
-    let mut string = String::new();
-    string.try_reserve_exact(value.len()).map_err(|error| meter.allocation_failed(error))?;
-    allocation.reconcile_capacity(string.capacity())?;
-    string.push_str(value);
-    if let Err(error) = meter.record_codec(0, value.len() as u64, 0) {
-        return Err(super::NativeObjectsError::from(error).with_wire(string.into_bytes(), allocation));
-    }
-    Ok((string, allocation))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn native_get_input(
     query: wire::GetObjectRequest,
     meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
 ) -> Result<(wire::GetObjectRequest, acyclic_native_runtime::ReadAllocation), super::NativeObjectsError> {
-    let mut input = (wire::GetObjectRequest { range: query.range, ..Default::default() },
-        acyclic_native_runtime::ReadAllocation::empty(meter));
-    if let Some(bucket) = &query.bucket {
-        let mut name = native_input_string(&bucket.name, meter)?;
-        input.1.absorb(&mut name.1)?;
-        input.0.bucket = Some(wire::BucketRef { name: name.0 });
-    }
-    let mut key = native_input_string(&query.object_key, meter)?;
-    input.1.absorb(&mut key.1)?;
-    input.0.object_key = key.0;
-    let mut if_match = native_input_string(&query.if_match, meter)?;
-    input.1.absorb(&mut if_match.1)?;
-    input.0.if_match = if_match.0;
-    let mut if_none_match = native_input_string(&query.if_none_match, meter)?;
-    input.1.absorb(&mut if_none_match.1)?;
-    input.0.if_none_match = if_none_match.0;
-    Ok(input)
+    let mut allocation = acyclic_native_runtime::ReadAllocation::empty(meter);
+    let mut text = |value: &str| super::memory::clone_native_text(value, meter, &mut allocation);
+    let query = wire::GetObjectRequest {
+        bucket: query.bucket.as_ref().map(|bucket| text(&bucket.name)
+            .map(|name| wire::BucketRef { name })).transpose()?,
+        object_key: text(&query.object_key)?, if_match: text(&query.if_match)?,
+        if_none_match: text(&query.if_none_match)?, range: query.range,
+    };
+    Ok((query, allocation))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1406,13 +1381,14 @@ async fn native_transport_put<P: ObjectsProvider>(
     body: acyclic_stream::OwnedBytes,
     meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
 ) -> Result<super::ObjectsPutReceipt, super::NativeObjectsError> {
-    let mut input = (wire::PutObjectHeader::default(), acyclic_native_runtime::ReadAllocation::empty(&meter));
-    let mut name = native_input_string(&bucket.name, &meter)?;
-    input.1.absorb(&mut name.1)?;
-    input.0.bucket = Some(wire::BucketRef { name: name.0 });
-    let mut key = native_input_string(key, &meter)?;
-    input.1.absorb(&mut key.1)?;
-    input.0.object_key = key.0;
-    let request = super::ObjectsNativeRequest::new((input.0, body), input.1, &meter)?;
+    let mut allocation = acyclic_native_runtime::ReadAllocation::empty(&meter);
+    let header = wire::PutObjectHeader {
+        bucket: Some(wire::BucketRef {
+            name: super::memory::clone_native_text(&bucket.name, &meter, &mut allocation)?,
+        }),
+        object_key: super::memory::clone_native_text(key, &meter, &mut allocation)?,
+        ..Default::default()
+    };
+    let request = super::ObjectsNativeRequest::new((header, body), allocation, &meter)?;
     provider.put_native(request, meter)?.await
 }

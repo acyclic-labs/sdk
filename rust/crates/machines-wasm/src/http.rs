@@ -1,8 +1,4 @@
 //! Validation for the hosted Machines HTTP DTO boundary.
-//!
-//! The HTTP transport still owns fetching, byte bounds, and the JSON wrapper
-//! codec.  This module owns the response contract so the TypeScript adapter
-//! does not maintain a second, subtly different schema implementation.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use js_sys::{Array, BigInt, Map as JsMap, Object, Reflect, Uint8Array};
@@ -571,9 +567,7 @@ fn bind_mutation(route: &str, value: &Value, expected: &Value) -> Result<(), JsV
     }
 }
 
-/// Validate a decoded hosted HTTP response. `expected` is the request object
-/// captured by the TypeScript adapter before the fetch; IDs remain arbitrary
-/// HTTP strings and are never passed through simulator UUID normalization.
+/// Validates a hosted response against its original request and string identities.
 #[allow(
     clippy::too_many_lines,
     reason = "the hosted HTTP route table intentionally centralizes the wire contract"
@@ -702,9 +696,7 @@ fn validate_values(
     Ok(())
 }
 
-/// Validate and project a hosted response into the same JavaScript DTO shape
-/// produced by the simulator.  The wire wrapper grammar is decoded here so
-/// TypeScript does not maintain a second bigint/bytes implementation.
+/// Validates and projects a hosted response into JavaScript DTOs.
 pub fn decode(route: &str, response_json: &str, expected_json: &str) -> Result<JsValue, JsValue> {
     let response_value: Value =
         serde_json::from_str(response_json).map_err(|e| error(e.to_string()))?;
@@ -756,9 +748,7 @@ fn project(value: &Value) -> Result<JsValue, JsValue> {
     }
 }
 
-/// Encode a natural JavaScript request using the hosted transport's wrapper
-/// grammar.  The traversal is Rust-owned so request and response scalar
-/// boundaries cannot drift apart in TypeScript.
+/// Encodes a JavaScript request with the hosted scalar wrapper grammar.
 pub fn encode_request(value: &JsValue) -> Result<String, JsValue> {
     let seen = JsMap::new();
     let value = encode_js(value, &seen).map_err(error)?;

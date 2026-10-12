@@ -242,7 +242,7 @@ impl<'a> PiControlHost<'a> {
             }
         }
         let pinned = cursor.as_ref().and_then(|cursor| match &cursor.cursor {
-            PageCursor::Inspect(cursor) => Some(cursor.snapshot), PageCursor::Diff(cursor) => Some(cursor.after_snapshot()),
+            PageCursor::Inspect(cursor) => Some(cursor.snapshot), PageCursor::Diff(cursor) => Some(cursor.after.snapshot),
         });
         let base_selection_operation = derived(operation, if command.kind == "acyclic.pi.writeback" {
             "selected-writeback" } else { "selected-import" }, &work)?;
@@ -340,7 +340,7 @@ fn encode_cursor<T: Serialize>(value: &T, cancellation: &CancellationToken,
     let (encoded, encoded_custody) = crate::pi_root_provider::guarded_pi_bytes(value, maximum, work)?;
     let result = (|| {
         let hex_length = (encoded.len() as u64).checked_mul(2).ok_or_else(|| invalid("cursor hex length overflow"))?;
-        let hex_custody = work.claim(hex_length).map_err(native_error)?;
+        let hex_custody = work.claim(hex_length, u64::from((hex_length) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         work.charge(WorkCounters { bytes_copied: hex_length, allocation_operations: u64::from(hex_length != 0),
             ..WorkCounters::default() }).map_err(native_error)?;
         cancellation.check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
@@ -357,7 +357,7 @@ fn decode_cursor<T: serde::de::DeserializeOwned>(value: &str, cancellation: &Can
     }
     cancellation.check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
     let length = value.len() as u64 / 2;
-    let bytes_custody = work.claim(length).map_err(native_error)?;
+    let bytes_custody = work.claim(length, u64::from((length) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     work.charge(WorkCounters { bytes_copied: length, allocation_operations: u64::from(length != 0),
         ..WorkCounters::default() }).map_err(native_error)?;
     let bytes = hex::decode(value).map_err(|_| invalid("selected cursor is not canonical hexadecimal"))?;
@@ -491,7 +491,7 @@ impl PiControlHost<'_> {
             .ok_or_else(|| denied("mounted destination lost its original issued context"))?;
         let guard = live.context.volume_callback_guard_with_native_work(
             &live.owner, &live.original_work).await?;
-        Some(guard.for_volume(&live.owner, volume, true, &publication_work)?)
+        Some(guard.for_volume(&live.owner, volume, true, &publication_work)?.0)
     } else { None };
     let publication = if let Some(view) = self.native.live_view(destination) {
         view.project_publication(volume).ok_or_else(|| denied("destination lacks its ORIGINAL project publication permit"))?
@@ -695,8 +695,8 @@ impl PiControlHost<'_> {
         command: PiSelectedCommand::normalized(input, key),
         operation, approval_digest: &prepared.approval_digest,
         private_volume: &root_binding.scratch.volume,
-        source_snapshot: prepared.original_snapshot(), selected_snapshot: import_receipt.selected_snapshot,
-        imported: prepared.imported(), import_receipt,
+        source_snapshot: prepared.generations.original_snapshot, selected_snapshot: import_receipt.selected_snapshot,
+        imported: prepared.generations.imported, import_receipt,
         journal: &prepared.journal, canonical_digest_input: &prepared.canonical_digest_input,
         root_path: &root_display.0, source_path: source_display.as_ref().map_or("", |(value, _)| value),
     };
@@ -713,8 +713,8 @@ impl PiControlHost<'_> {
         return Err(denied("user approval does not match this exact prepared original-root plan"));
     }
     crate::pi_operator_host::require_resolved_approval(&self.filesystem, &self.stream, &self.protected, descriptor, work).await?;
-    let published = publish_writeback(&prepared, &root, context, owner, verifier, scope, &generations,
-        &self.resources.store, approval, true, &options, &[".git"], cancellation, work).await?;
+    let published = publish_writeback(&prepared, context, owner, verifier, scope,
+        &self.resources.store, approval, true, cancellation, work).await?;
     if published.phase != acyclic_fs::MaterializationPhase::Applied { return Ok(TaskCommandProgress::Pending); }
     owner.native_view_owner().verify_with_native_work(work).await?;
     ready(&PiWritebackResponse { status: "published", source: input.source, root: key,
@@ -769,7 +769,7 @@ pub(crate) async fn read_imported_selected_files(
         .ok_or_else(|| invalid("selected evidence path count overflow"))?;
     let path_slots = path_capacity.checked_mul(std::mem::size_of::<&str>())
         .ok_or_else(|| invalid("selected evidence path allocation overflow"))?;
-    let path_custody = work.claim(path_slots as u64).map_err(native_error)?;
+    let path_custody = work.claim(path_slots as u64, u64::from((path_slots as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     work.charge(WorkCounters { allocation_operations: u64::from(path_capacity != 0),
         items_examined: (descriptor.command.paths.len() + descriptor.journal.plan.edits.len()) as u64,
         ..WorkCounters::default() }).map_err(native_error)?;
@@ -802,7 +802,7 @@ pub(crate) async fn read_imported_selected_files(
     let capacity = paths.0.len();
     let slots = capacity.checked_mul(std::mem::size_of::<(&str, Option<String>)>())
         .ok_or_else(|| invalid("selected evidence payload allocation overflow"))?;
-    let payload_custody = work.claim(slots as u64).map_err(native_error)?;
+    let payload_custody = work.claim(slots as u64, u64::from((slots as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     work.charge(WorkCounters { allocation_operations: u64::from(capacity != 0),
         ..WorkCounters::default() }).map_err(native_error)?;
     let mut payload = (Vec::<(&str, Option<String>)>::with_capacity(capacity), None, payload_custody);

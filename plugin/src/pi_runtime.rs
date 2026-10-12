@@ -170,7 +170,7 @@ where
             builtin.0, builtin.1, executor, projection, &mut tools.1, work,
         )?;
         let resumable_tools = acyclic_harness::durable_tool::ResumableToolRegistry::default();
-        let slot = work.retain_owned(std::mem::size_of::<Self>() as u64)
+        let slot = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
         let retained_journal = journal.clone_with_native_work(work)?;
         let grants = authority.0.scope.grants().clone_with_native_work(work)?;
@@ -194,10 +194,10 @@ where
         let machine = PiTaskMachine::new(work)?;
         let mut tasks = TaskRegistry::default();
         let definition = machine.definition(work)?;
-        tasks.register_with_native_work(definition.0, definition.1, work)?;
+        tasks.register(definition)?;
         let fork_machine = acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?;
         let fork = fork_machine.definition_with_native_work(work)?;
-        tasks.register_with_native_work(fork.0, fork.1, work)?;
+        tasks.register(fork)?;
         let fork_definition = tasks.get_version("acyclic.fork_preparation", "1", Some(work))?;
         let definition = tasks.get_version::<PiTaskInput, FileRef>("acyclic.pi", "1", Some(work))?;
         let mut machines = (MachineRegistry::default(), None, None);

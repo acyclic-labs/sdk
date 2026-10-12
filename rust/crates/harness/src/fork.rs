@@ -676,20 +676,12 @@ fn collect_manifest_grants(
 
 /// Precomputed reader authority for a fork.
 struct ForkVolumeReaders {
-    all: BTreeSet<AgentId>,
     selected_projects: BTreeSet<[u8; 32]>,
     shared: BTreeMap<[u8; 32], BTreeSet<AgentId>>,
 }
 
 impl ForkVolumeReaders {
     fn new(seed: &ForkSeed, owned: &mut CodecQuota<'_, '_>) -> Result<Self> {
-        let mut all = BTreeSet::new();
-        for agent in std::iter::once(seed.child_agent).chain(seed.attached_agents.iter().copied()) {
-            if !all.contains(&agent) {
-                owned.slots::<AgentId>(1)?;
-                all.insert(agent);
-            }
-        }
         let mut selected_projects = BTreeSet::new();
         for resource in &seed.resources {
             if let ResourceRevision::Project { volume, .. } = &resource.revision {
@@ -717,7 +709,6 @@ impl ForkVolumeReaders {
             }
         }
         Ok(Self {
-            all,
             selected_projects,
             shared,
         })
@@ -725,10 +716,8 @@ impl ForkVolumeReaders {
 
     fn allows(&self, volume: &VolumeRef, digest: &[u8; 32], reader: &AgentId) -> bool {
         match volume.class() {
-            VolumeClass::AgentPrivate => volume.owner() == &VolumeOwner::Agent(*reader)
-                && self.all.contains(reader),
-            VolumeClass::Project => self.selected_projects.contains(digest)
-                && self.all.contains(reader),
+            VolumeClass::AgentPrivate => volume.owner() == &VolumeOwner::Agent(*reader),
+            VolumeClass::Project => self.selected_projects.contains(digest),
             VolumeClass::SessionShared => self.shared.get(digest)
                 .is_some_and(|readers| readers.contains(reader)),
         }
@@ -2705,8 +2694,8 @@ mod tests {
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let provider = seed.child_private_volume.provider().clone();
         seed.child_result_volume = Some(VolumeRef::new(
-            provider.clone(), "independent-child-result", VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(seed.child_agent))?);
+            provider.clone(), "independent-child-result".into(), VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(seed.child_agent), &mut None)?);
         seed.child_result_generation = Some(GenerationRef::new(provider.clone(), [73; 32].into(), None)?);
         seed.validate(&mut None)?;
         let mut mutation = seed.clone();
@@ -2810,16 +2799,16 @@ mod tests {
         let provider = ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?;
         let parent = VolumeRef::new(
             provider.clone(),
-            "parent",
+            "parent".into(),
             VolumeClass::Project,
             VolumeOwner::Project("project".into()),
-        )?;
+         &mut None)?;
         let child = VolumeRef::new(
             provider.clone(),
-            "child",
+            "child".into(),
             VolumeClass::Project,
             VolumeOwner::Project("project".into()),
-        )?;
+         &mut None)?;
         let source = ResourceRevision::Project {
             volume: parent,
             generation: GenerationRef::new(provider.clone(), [1; 32].into(), None)?,
@@ -2844,10 +2833,10 @@ mod tests {
         let foreign = ResourceRevision::Project {
             volume: VolumeRef::new(
                 provider.clone(),
-                "foreign",
+                "foreign".into(),
                 VolumeClass::Project,
                 VolumeOwner::Project("other".into()),
-            )?,
+             &mut None)?,
             generation: GenerationRef::new(provider, [3; 32].into(), None)?,
         };
         assert!(
@@ -2891,11 +2880,11 @@ mod tests {
         missing_seed.reference_grants.push(ReferenceGrant {
             file: FileRef::new(
                 source_volume,
-                "files/missing.txt",
-                "one",
+                "files/missing.txt".into(),
+                "one".into(),
                 FileDescriptor::from_bytes(b"missing", "text/plain", &mut None)?,
-                "missing.txt",
-            )?,
+                "missing.txt".into(),
+             &mut None)?,
             reader: seed.child_agent,
             attachment_manifest: None,
         });
@@ -2911,28 +2900,28 @@ mod tests {
         let objects = ProviderRef::new("test".into(), "objects".into(), "2".into(), &mut None)?;
         let object_volume = VolumeRef::new(
             objects.clone(),
-            "attachments",
+            "attachments".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([8; 16])),
-        )?;
+         &mut None)?;
         let member_volume = match &project_resource.source {
             ResourceRevision::Project { volume, .. } => volume.clone(),
             _ => unreachable!("the test selects one project"),
         };
         let member = FileRef::new(
             member_volume.clone(),
-            "files/actual.txt",
-            "one",
+            "files/actual.txt".into(),
+            "one".into(),
             FileDescriptor::from_bytes(b"actual", "text/plain", &mut None)?,
-            "actual.txt",
-        )?;
+            "actual.txt".into(),
+         &mut None)?;
         let forged = FileRef::new(
             member_volume,
-            "files/forged.txt",
-            "two",
+            "files/forged.txt".into(),
+            "two".into(),
             FileDescriptor::from_bytes(b"forged", "text/plain", &mut None)?,
-            "forged.txt",
-        )?;
+            "forged.txt".into(),
+         &mut None)?;
         let bytes = serde_json::to_vec(&vec![crate::conversation::Attachment {
             file: member.clone(),
             label: None,
@@ -2940,11 +2929,11 @@ mod tests {
         .map_err(|error| Error::Invalid(error.to_string()))?;
         let manifest = FileRef::new(
             object_volume,
-            "lists/one.json",
-            "one",
+            "lists/one.json".into(),
+            "one".into(),
             FileDescriptor::from_bytes(&bytes, "application/vnd.acyclic.harness.attachments+json", &mut None)?,
-            "one.json",
-        )?;
+            "one.json".into(),
+         &mut None)?;
         let mut manifest_seed = seed.clone();
         manifest_seed.attachment_manifests.push(manifest.clone());
         manifest_seed.reference_grants.push(ReferenceGrant {
@@ -3006,10 +2995,10 @@ mod tests {
         futures::executor::block_on(verifier.verify(&manifest_seed, &mut None))?;
         let optional = ResourceRevision::SharedVolume(VolumeRef::new(
             filesystem,
-            "shared",
+            "shared".into(),
             VolumeClass::SessionShared,
             VolumeOwner::Session("session".into()),
-        )?);
+         &mut None)?);
         let report = ForkReport {
             child_result_volume: seed.child_result_volume.clone(),
             child_result_generation: seed.child_result_generation.clone(),
@@ -3092,10 +3081,10 @@ mod tests {
         let mut changed_private = report.clone();
         changed_private.child_private_volume = VolumeRef::new(
             changed_private.child_private_volume.provider().clone(),
-            "different-child-private",
+            "different-child-private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(changed_private.request.child_agent),
-        )?;
+         &mut None)?;
         assert!(changed_private.validate(&mut None).is_err());
         let mut changed_project = report.clone();
         if let Some(Capture::Captured(project)) = changed_project.captures.get_mut(1)
@@ -3103,10 +3092,10 @@ mod tests {
         {
             *volume = VolumeRef::new(
                 volume.provider().clone(),
-                "different-child-project",
+                "different-child-project".into(),
                 VolumeClass::Project,
                 volume.owner().clone(),
-            )?;
+             &mut None)?;
         }
         assert!(changed_project.validate(&mut None).is_err());
         let mut changed_prefix = report.clone();
@@ -3151,14 +3140,14 @@ mod tests {
         assert!(shared_seed.validate(&mut None).is_err());
         let inherited = FileRef::new(
             seed.child_private_volume.clone(),
-            ".system/inherited-conversation/prefix.json",
-            "one",
+            ".system/inherited-conversation/prefix.json".into(),
+            "one".into(),
             FileDescriptor::from_bytes(
                 b"one",
                 "application/vnd.acyclic.harness.inherited-conversation+json", &mut None,
             )?,
-            "prefix.json",
-        )?;
+            "prefix.json".into(),
+         &mut None)?;
         seed.inherited_through_sequence = 1;
         seed.inherited_context = vec![inherited.clone(), inherited.clone()];
         assert!(seed.validate(&mut None).is_err());
@@ -3172,7 +3161,7 @@ mod tests {
             !access.contains(
                 &seed
                     .child_private_volume
-                    .capability(VolumeOperation::Write)?
+                    .capability(VolumeOperation::Write, &mut None)?
             )
         );
         assert!(

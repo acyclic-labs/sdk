@@ -186,8 +186,8 @@ mod tests {
                 8192,
                 1000,
             )?;
-            let result = transport.call(operation, "echo", json!({})).await;
-            assert!(transport.reconcile(operation).await?.is_none());
+            let result = transport.call(operation, "echo", json!({}), None).await;
+            assert!(transport.reconcile(operation, None).await?.is_none());
             server.await.map_err(|e| Error::Storage(e.to_string()))??;
             if matches!(mode, "json" | "sse") {
                 assert_eq!(result?.content[0]["text"], "local");

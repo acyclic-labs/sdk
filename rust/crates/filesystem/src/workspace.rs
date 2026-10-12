@@ -386,20 +386,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             let reservation = async {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(original) = accounting.native_work() {
-                    let head = authority.head_with_native_work(authority_id, original, cancellation)
-                        .await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
-                    return authority.reserve_publication_with_native_work(
-                        authority_id, head, operation_id, original, cancellation,
-                    ).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)));
+                    let head = ({ let __authority_args = (authority_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_result }).map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
+                    return ({ let __authority_args = (authority_id, head, operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.3, __authority_args.4); let __authority_result = authority.reserve_publication(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.and_then(|value| match value { crate::ReservationOutcome::Reserved(proof) | crate::ReservationOutcome::AlreadyReserved(proof) => Ok(proof), crate::ReservationOutcome::Conflict { .. } => Err(crate::AuthorityStoreError::RejectedStatic("publication reservation head or gate changed")) }); __authority_result }).map_err(|error| WorkspaceError::from(FsError::Authority(error)));
                 }
-                let head = authority.head(authority_id, accounting.remaining()?, cancellation).await
+                let head = ({ let __authority_args = (authority_id, accounting.remaining()?, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                     .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::UNCHARGED,
                         |error| WorkspaceError::from(FsError::Authority(error))));
                 let (_, counters, _, _) = accounting.standalone_parts().ok_or(crate::WorkError::Overflow)?;
                 let head = merge_workspace_backend(head, counters, 0)?.value;
-                let reserved = authority.reserve_publication(
-                    authority_id, head, operation_id, accounting.remaining()?, cancellation,
-                ).await.map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::UNCHARGED,
+                let reserved = ({ let __authority_args = (authority_id, head, operation_id, accounting.remaining()?, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = authority.reserve_publication(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::UNCHARGED,
                     |error| WorkspaceError::from(FsError::Authority(error))));
                 let (_, counters, _, _) = accounting.standalone_parts().ok_or(crate::WorkError::Overflow)?;
                 match merge_workspace_backend(reserved, counters, 0)?.value {
@@ -429,10 +424,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             accounting.check()?;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                return self.volume.fs.authority().release_publication_with_native_work(reservation, original, cancellation)
-                    .await.map_err(|error| WorkspaceError::from(FsError::Authority(error)));
+                return ({ let __authority_args = (reservation, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = self.volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_result }).map_err(|error| WorkspaceError::from(FsError::Authority(error)));
             }
-            let released = self.volume.fs.authority().release_publication(reservation, accounting.remaining()?, cancellation).await
+            let released = ({ let __authority_args = (reservation, accounting.remaining()?, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = self.volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                 .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::UNCHARGED,
                     |error| WorkspaceError::from(FsError::Authority(error))));
             let (_, counters, _, _) = accounting.standalone_parts().ok_or(crate::WorkError::Overflow)?;
@@ -450,9 +444,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let result = async {
             original.admit(crate::WorkCounters::UNCHARGED).map_err(WorkspaceError::from)?;
             cancellation.check().map_err(WorkspaceError::from)?;
-            let reservation = self.volume.fs.authority().publication_reservation_with_native_work(
-                self.authority_id(), operation_id, original, cancellation,
-            ).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
+            let reservation = ({ let __authority_args = (self.authority_id(), operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.volume.fs.authority().publication_reservation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result }).map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
             if let Some(proof) = reservation
                 && (proof.authority_id != self.authority_id() || proof.operation_id != operation_id)
             {
@@ -987,7 +979,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             }
             let current_record = current_records
                 .next()
-                .ok_or_else(|| WorkspaceError::manual_engine("missing batch lookup result"))?;
+                .ok_or_else(|| WorkspaceError::Engine("missing batch lookup result".to_owned()))?;
             if self.same_path_state(current_record, source_record).await? {
                 continue;
             }
@@ -1502,7 +1494,7 @@ async fn read_checkout_whole_with_accounting<A: AsyncAuthorityStore, O: AsyncObj
     let retained = path.retained_bytes();
     let path = crate::kernel::Owned::new(path, allocation, retained);
     let (lookup, allocation) = checkout.lookup_no_follow_with_accounting(
-        &path.value, accounting, cancellation,
+        &path.value, accounting, cancellation, true
     ).await.map_err(WorkspaceError::from)?;
     drop(allocation);
     let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
@@ -1664,7 +1656,7 @@ async fn plan_generation_extents<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             length,
             source_end: offset
                 .checked_add(length)
-                .ok_or_else(|| WorkspaceError::manual_engine("file range overflows"))?,
+                .ok_or_else(|| WorkspaceError::Engine("file range overflows".to_owned()))?,
             kind: WorkspaceExtentKind::Content,
         }],
     };
@@ -1692,37 +1684,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         }
     }
 
-    /// Reuses the workspace transaction compiler against a private checkout
-    pub(crate) fn for_checkout_candidate(
-        workspace: &Workspace<A, O>,
-        checkout: Checkout<A, O>,
-    ) -> Self {
-        Self {
-            workspace: workspace.clone(),
-            checkout,
-            idempotency_key: IdempotencyKey::new(),
-            requires_rebase: false,
-        }
-    }
-
-    /// Moves a private candidate with its already-bound SDK operation identity.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn for_checkout_candidate_with_native_work(
-        workspace: &Workspace<A, O>,
-        checkout: Checkout<A, O>,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Self, WorkspaceError> {
-        original.admit(crate::WorkCounters::UNCHARGED).map_err(FsError::from)
-            .map_err(WorkspaceError::from)?;
-        cancellation.check()?;
-        let operation = checkout.bound_authored_operation_id()
-            .ok_or_else(|| WorkspaceError::from(FsError::MutationNotAllowed))?;
-        Ok(Self {
-            workspace: workspace.clone(), checkout,
-            idempotency_key: IdempotencyKey::from_bytes(operation.into_bytes()),
-            requires_rebase: false,
-        })
+    /// Wraps a private candidate using its original native retry identity when funded.
+    pub(crate) fn for_checkout_candidate<W: crate::facade::FsWork>(
+        workspace: &Workspace<A, O>, checkout: Checkout<A, O>,
+        work: W, cancellation: &crate::CancellationToken,
+    ) -> W::Output<Self, WorkspaceError> {
+        let accounting = work.accounting(cancellation);
+        let result = (|| -> Result<Self, WorkspaceError> {
+            accounting.check()?;
+            let idempotency_key = match checkout.bound_authored_operation_id() {
+                #[cfg(not(target_arch = "wasm32"))]
+                Some(operation) if accounting.native_work().is_some() => IdempotencyKey::from_bytes(operation.into_bytes()),
+                #[cfg(not(target_arch = "wasm32"))]
+                None if accounting.native_work().is_some() => return Err(WorkspaceError::from(FsError::MutationNotAllowed)),
+                _ => IdempotencyKey::new(),
+            };
+            Ok(Self { workspace: workspace.clone(), checkout, idempotency_key, requires_rebase: false })
+        })();
+        work.finish(result, &accounting)
     }
 
     fn mutation_path_with_accounting(
@@ -1834,12 +1813,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             self.checkout.validate_native_work(original)?;
         }
         let depth = PortablePath::validate(path, self.checkout.volume_config().limits)
-            .map_err(|error| namespace_path_error(crate::kernel::NamespacePathError::Path(error)))?;
+            .map_err(|error| WorkspaceError::from(crate::kernel::NamespacePathError::Path(error)))?;
         if depth == 0 { return Ok(()); }
         for end in path.match_indices('/').skip(1).map(|(index, _)| index)
             .chain(std::iter::once(path.len())) {
             let path = self.mutation_path_with_accounting(&path[..end], accounting, cancellation)?;
-            match self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation).await?.0.record {
+            match self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true).await?.0.record {
                 Some(record) if record.kind == FileKind::Directory => { path.retire(accounting)?; }
                 Some(_) => { path.retire(accounting)?; return Err(WorkspaceError::NotDirectory); }
                 None => {
@@ -2149,7 +2128,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             if let Some(record) = entry.record {
                 if selected_subtrees && record.kind == FileKind::Directory {
                     let destination = self.checkout.lookup_no_follow_with_accounting(
-                        &path.value, accounting, cancellation,
+                        &path.value, accounting, cancellation, true
                     ).await?.0.record;
                     let absolute = Workspace::<A, O>::restore_absolute_path_with_accounting(
                         relative, accounting, cancellation,
@@ -2235,7 +2214,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         cancellation: &crate::CancellationToken,
     ) -> Result<(), WorkspaceError> {
         let path = self.mutation_path_with_accounting(path, accounting, cancellation)?;
-        let existing = self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation).await?.0.record;
+        let existing = self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true).await?.0.record;
         let operations = match existing {
             None => {
                 let operation = crate::kernel::Owned::new(
@@ -2331,7 +2310,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> Result<(), WorkspaceError> {
         let path = self.mutation_path_with_accounting(path, accounting, cancellation)?;
         let existing = self.checkout.lookup_no_follow_with_accounting(
-            &path.value, accounting, cancellation,
+            &path.value, accounting, cancellation, true
         ).await?.0.record.ok_or(WorkspaceError::NotFound)?;
         let operation = crate::kernel::Owned::new(
             AuthoredMutation::Remove { path: path.value, expected_file_id: Some(existing.file_id) },
@@ -2584,7 +2563,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let outcome = if self.requires_rebase {
             self.checkout.retry_stale_commit_with_native_work(self.idempotency_key.operation_id(), permit, original, cancellation, before_publication, None, context, operation_evidence, original_fingerprint_permit).await?
         } else {
-            Some(self.checkout.commit_with_native_work(self.idempotency_key.operation_id(), context, operation_evidence, original_fingerprint_permit, permit, original, cancellation, (*before_publication).clone()).await?)
+            let mut before_publication = (*before_publication).clone();
+            let mode = self.checkout.mode();
+            if mode.access != crate::model::AccessMode::ReadWrite || mode.mutations != crate::model::MutationMode::PrivateOverlay {
+                return Err(E::from(FsError::MutationNotAllowed));
+            }
+            Some(self.checkout.publish_pending_with_native_work(self.idempotency_key.operation_id(), context, operation_evidence, original_fingerprint_permit, permit, original, cancellation, &mut before_publication, None).await?)
         };
         if let Some(value) = outcome.and_then(|outcome| self.commit_outcome_value(outcome)) {
             return Ok(value);
@@ -2875,6 +2859,24 @@ impl<A, O> ChangeSet<A, O> {
     }
 }
 
+fn bounded_search<T>(
+    values: &[T], accounting: &mut KernelAccounting<'_>,
+    mut compare: impl FnMut(&T, &mut KernelAccounting<'_>) -> Result<std::cmp::Ordering, FsError>,
+) -> Result<(usize, bool), FsError> {
+    let mut low = 0;
+    let mut high = values.len();
+    while low < high {
+        accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        let middle = low + (high - low) / 2;
+        match compare(&values[middle], accounting)? {
+            std::cmp::Ordering::Less => low = middle + 1,
+            std::cmp::Ordering::Greater => high = middle,
+            std::cmp::Ordering::Equal => return Ok((middle, true)),
+        }
+    }
+    Ok((low, false))
+}
+
 fn sorted_changed_file_ids(
     file_ids: impl IntoIterator<Item = FileId>,
     accounting: &mut KernelAccounting<'_>,
@@ -2882,18 +2884,7 @@ fn sorted_changed_file_ids(
     let mut ids = (Vec::<FileId>::new(), accounting.claim_owned(0, 0)?);
     for file_id in file_ids {
         accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        let mut low = 0;
-        let mut high = ids.0.len();
-        let mut present = false;
-        while low < high {
-            accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-            let middle = low + (high - low) / 2;
-            match ids.0[middle].cmp(&file_id) {
-                std::cmp::Ordering::Less => low = middle + 1,
-                std::cmp::Ordering::Greater => high = middle,
-                std::cmp::Ordering::Equal => { present = true; break; }
-            }
-        }
+        let (low, present) = bounded_search(&ids.0, accounting, |id, _| Ok(id.cmp(&file_id)))?;
         if present { continue; }
         reverse_grow(&mut ids.0, &mut ids.1, accounting)?;
         let copied = crate::WorkCounters {
@@ -2908,36 +2899,25 @@ fn sorted_changed_file_ids(
 }
 
 fn changed_path_position<'a>(
-    paths: &[ChangedPath],
-    components: impl Iterator<Item = &'a LogicalName> + Clone,
+    paths: &[ChangedPath], components: impl Iterator<Item = &'a LogicalName> + Clone,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(usize, bool), WorkspaceError> {
-    let mut low = 0;
-    let mut high = paths.len();
-    while low < high {
-        accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        let middle = low + (high - low) / 2;
-        let mut left = paths[middle].path.components().iter();
+    bounded_search(paths, accounting, |path, accounting| {
+        let mut left = path.path.components().iter();
         let mut right = components.clone();
-        let ordering = loop {
+        loop {
             accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
             match (left.next(), right.next()) {
                 (Some(left), Some(right)) => match left.cmp(right) {
                     std::cmp::Ordering::Equal => {}
-                    ordering => break ordering,
+                    ordering => return Ok(ordering),
                 },
-                (Some(_), None) => break std::cmp::Ordering::Greater,
-                (None, Some(_)) => break std::cmp::Ordering::Less,
-                (None, None) => break std::cmp::Ordering::Equal,
+                (Some(_), None) => return Ok(std::cmp::Ordering::Greater),
+                (None, Some(_)) => return Ok(std::cmp::Ordering::Less),
+                (None, None) => return Ok(std::cmp::Ordering::Equal),
             }
-        };
-        match ordering {
-            std::cmp::Ordering::Less => low = middle + 1,
-            std::cmp::Ordering::Greater => high = middle,
-            std::cmp::Ordering::Equal => return Ok((middle, true)),
         }
-    }
-    Ok((low, false))
+    }).map_err(WorkspaceError::from)
 }
 
 fn set_changed_record(
@@ -2990,11 +2970,11 @@ fn merge_binding_endpoint(
     change: &crate::DirectoryBindingChange, limits: crate::model::VolumeLimits, before: bool,
     accounting: &mut KernelAccounting<'_>, cancellation: &crate::CancellationToken,
 ) -> Result<(), WorkspaceError> {
-    let Some(parents) = namespace_record_entries(directories, &change.directory_id, accounting)?
+    let Some(parents) = bounded_search(directories, accounting, |record, _| Ok(record.0.cmp(&change.directory_id))).map(|(index, present)| present.then(|| &directories[index].1))?
         else { return Ok(()); };
     let binding = if before { change.before.as_ref() } else { change.after.as_ref() };
     let record = match binding {
-        Some(entry) => namespace_record_entries(directories, &entry.file_id, accounting)?
+        Some(entry) => bounded_search(directories, accounting, |record, _| Ok(record.0.cmp(&entry.file_id))).map(|(index, present)| present.then(|| &directories[index].1))?
             .and_then(|records| records.first().map(|(_, record)| *record)),
         None => None,
     };
@@ -3050,13 +3030,8 @@ fn reverse_grow<T>(values: &mut Vec<T>, allocation: &mut KernelOwnedAllocation, 
 
 fn reverse_insert(records: &mut NamespaceRecords, allocation: &mut KernelOwnedAllocation, path: (NamespacePath, KernelOwnedAllocation),
     record: crate::kernel::FileRecord, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
-    let mut index = 0;
-    while let Some((file_id, _)) = records.get(index) {
-        accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        if *file_id >= record.file_id { break; }
-        index += 1;
-    }
-    if records.get(index).is_none_or(|(id, _)| *id != record.file_id) {
+    let (index, present) = bounded_search(records, accounting, |entry, _| Ok(entry.0.cmp(&record.file_id)))?;
+    if !present {
         reverse_grow(records, allocation, accounting)?;
         accounting.charge(crate::WorkCounters { bytes_copied: ((records.len() - index)
             * std::mem::size_of::<(FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>)>()) as u64,
@@ -3087,15 +3062,6 @@ fn reverse_sort(records: &mut NamespaceRecords, accounting: &mut KernelAccountin
         }
     }
     Ok(())
-}
-
-fn reverse_contains(ids: &[FileId], id: FileId, accounting: &mut KernelAccounting<'_>) -> Result<bool, FsError> {
-    for candidate in ids {
-        accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        if *candidate == id { return Ok(true); }
-        if *candidate > id { break; }
-    }
-    Ok(false)
 }
 
 async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -3175,7 +3141,7 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
     if let Some(record) = crate::kernel::lookup_path_async_with_accounting(
         volume.fs.objects(), root, &namespace_root, volume.config(), accounting, cancellation, None,
     ).await?.record {
-        if reverse_contains(ids, record.file_id, accounting)? {
+        if bounded_search(ids, accounting, |id, _| Ok(id.cmp(&record.file_id)))?.1 {
             let allocation = accounting.claim_owned(0, 0)?;
             reverse_insert(&mut matches.0.records, &mut matches.1,
                 (NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?, allocation), record, accounting)?;
@@ -3218,7 +3184,7 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
                     return Ok(matches);
                 }
                 examined += 1;
-                let found = reverse_contains(ids, entry.record.file_id, accounting)?;
+                let found = bounded_search(ids, accounting, |id, _| Ok(id.cmp(&entry.record.file_id)))?.1;
                 let is_directory = entry.record.kind == FileKind::Directory;
                 if !found && !is_directory { continue; }
                 let (path, allocation) = directory.0.child_with_accounting(
@@ -3306,23 +3272,6 @@ struct NamespaceRecordSearch {
 }
 
 type NamespaceRecords = Vec<(FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>)>;
-
-fn namespace_record_entries<'a>(
-    records: &'a NamespaceRecords, file_id: &FileId, accounting: &mut KernelAccounting<'_>,
-) -> Result<Option<&'a Vec<(NamespacePath, crate::kernel::FileRecord)>>, WorkspaceError> {
-    let mut low = 0;
-    let mut high = records.len();
-    while low < high {
-        accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        let middle = low + (high - low) / 2;
-        match records[middle].0.cmp(file_id) {
-            std::cmp::Ordering::Less => low = middle + 1,
-            std::cmp::Ordering::Greater => high = middle,
-            std::cmp::Ordering::Equal => return Ok(Some(&records[middle].1)),
-        }
-    }
-    Ok(None)
-}
 
 fn namespace_records_bytes(records: &NamespaceRecords) -> u64 {
     workspace_vec_bytes(records) + records.iter().map(|(_, records)|
@@ -4349,7 +4298,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             ).await?;
             return Ok((JoinOutcome::StaleTarget(Generation {
                 workspace: self.target.clone(), id, publication_closure: None,
-            }), original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED).map_err(FsError::from)?));
+            }), original.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(FsError::from)?));
         }
         let (outcome, allocation) = self.target.volume.fs.apply_workspace_join_guarded_with_native_work(
             crate::facade::WorkspaceJoinRequest {
@@ -4681,24 +4630,14 @@ impl<A, O> Generation<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
-    /// Uses the original finite selection builder and preserves every failed prefix.
-    pub async fn matches_fork_selection(
+    /// Verifies the exact frozen selection under supplied work limits.
+    pub async fn matches_fork_selection<W: crate::facade::FsWork>(
         &self, source: &Self, paths: Option<Vec<String>>,
-        budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<bool>, WorkspaceError> {
+        work: W, cancellation: &crate::CancellationToken,
+    ) -> W::Output<bool, WorkspaceError> {
         self.workspace.volume.fs.verify_fork_selection(
-            source, self, paths, budget, cancellation,
+            source, self, paths, work, cancellation,
         ).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn matches_fork_selection_with_native_work(
-        &self, source: &Self, paths: Option<Vec<String>>,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<bool, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        self.workspace.volume.fs.verify_fork_selection(
-            source, self, paths, original, cancellation,
-        ).await.map_err(|error| (error, None))
     }
 
     /// Computes the exact normalized second-parent identity that a merge of
@@ -4918,17 +4857,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 ).await?;
                 let bytes = lookup.retained_allocation_bytes;
                 let lookup = crate::kernel::Owned::new(lookup, allocation, bytes);
-                let requested = lookup.value.entries.len().checked_mul(std::mem::size_of::<Option<crate::kernel::FileRecord>>())
-                    .ok_or(crate::WorkError::Overflow)? as u64;
-                accounting.claim_owned(requested, u64::from(requested != 0))?;
-                let mut records = Vec::new();
-                records.try_reserve_exact(lookup.value.entries.len())
-                    .map_err(|_| crate::FsError::HandleAllocationFailed)?;
+                let mut records = crate::kernel::Owned::allocate(lookup.value.entries.len(), &mut accounting)
+                    .map_err(|error| match error {
+                        FsError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed) => FsError::HandleAllocationFailed,
+                        error => error,
+                    })?;
                 for entry in lookup.value.entries {
                     accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-                    records.push(entry.record);
+                    records.value.push(entry.record);
                 }
-                Ok(records)
+                Ok(records.value)
             }.await;
             result.map(|value| crate::FsReceipt { value, work })
                 .map_err(|error| crate::OperationFailure::new(error, work))
@@ -4992,7 +4930,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 &[file_id], maximum_entries, &mut accounting, cancellation,
             ).await?;
             let mut paths = crate::kernel::Owned::allocate(0, &mut accounting)?;
-            if let Some(records) = namespace_record_entries(&search.0.records, &file_id, &mut accounting)? {
+            if let Some(records) = bounded_search(&search.0.records, &mut accounting, |record, _| Ok(record.0.cmp(&file_id))).map(|(index, present)| present.then(|| &search.0.records[index].1))? {
                 for (path, _) in records {
                     paths.ensure_for_push(records.len(), &mut accounting)?;
                     let (text, mut allocation) = path.unicode_text_with_accounting(&mut accounting, cancellation)?;
@@ -5322,15 +5260,7 @@ impl WorkspaceError {
         Self::Engine(error.to_string())
     }
 
-    /// Intentional human-authored diagnostics are not canonical error aliases.
-    pub(crate) fn manual_engine(message: &'static str) -> Self {
-        Self::Engine(message.to_owned())
-    }
 
-    /// Only intentional human-authored semantic diagnostics use this buffer.
-    pub(crate) fn path(message: &'static str) -> Self {
-        Self::Path(message.to_owned())
-    }
 }
 
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
@@ -5423,7 +5353,6 @@ pub(crate) fn workspace_bounded_error(
     bounded!(crate::kernel::FileRangeReadError; [Extent, Blob, Context]; [Cancelled]);
     bounded!(crate::kernel::DirectoryReadError; [Storage]; [Cancelled]);
     bounded!(crate::kernel::AttributeLookupError; [Storage]; [Cancelled]);
-    bounded!(crate::kernel::AttributeListError; [Storage]; [Cancelled]);
     bounded!(crate::kernel::AttributeMutationError; [Storage]; []);
     bounded!(crate::kernel::AuthenticatedProbeError;
         [Storage, FileRecord, Tree, Directory, Extent, Blob]; [Cancelled]);
@@ -5462,7 +5391,7 @@ impl From<FsError> for WorkspaceError {
             return bounded;
         }
         match error {
-            FsError::Path(crate::kernel::PathLookupError::NamespacePath(error)) => namespace_path_error(error),
+            FsError::Path(crate::kernel::PathLookupError::NamespacePath(error)) => Self::from(error),
             FsError::SourceSnapshotStale => Self::StaleSource,
             FsError::NotFound => Self::NotFound,
             FsError::NotDirectory => Self::NotDirectory,
@@ -5479,7 +5408,11 @@ impl From<FsError> for WorkspaceError {
 
 impl From<crate::kernel::NamespacePathError> for WorkspaceError {
     fn from(error: crate::kernel::NamespacePathError) -> Self {
-        namespace_path_error(error)
+        match error {
+            crate::kernel::NamespacePathError::Work(error) => Self::Work(error),
+            crate::kernel::NamespacePathError::Cancelled => Self::Cancelled(crate::CancellationError),
+            error => Self::NamespacePath(error),
+        }
     }
 }
 
@@ -5545,9 +5478,9 @@ pub(crate) fn customer_path(
     NamespacePath::parse_in_profile_with_ledger(
         path, config.profile, config.limits,
         &mut crate::kernel::allocation::AllocationLedger::default(),
-        &mut crate::WorkCounters::UNCHARGED, crate::WorkBudget::UNBOUNDED,
+        &mut crate::WorkCounters::default(), crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).map_err(namespace_path_error)
+    ).map_err(WorkspaceError::from)
 }
 
 /// Borrows the caller's original accounting owner; no SDK path producer is
@@ -5562,13 +5495,6 @@ pub(crate) fn customer_path_with_accounting(
     ).map_err(WorkspaceError::from)
 }
 
-pub(crate) fn namespace_path_error(error: crate::kernel::NamespacePathError) -> WorkspaceError {
-    match error {
-        crate::kernel::NamespacePathError::Work(error) => WorkspaceError::Work(error),
-        crate::kernel::NamespacePathError::Cancelled => WorkspaceError::Cancelled(crate::CancellationError),
-        error => WorkspaceError::NamespacePath(error),
-    }
-}
 
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 fn merge_workspace_work<T>(

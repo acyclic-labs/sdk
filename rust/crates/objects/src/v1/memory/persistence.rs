@@ -2,7 +2,7 @@
 use super::super::response;
 use super::*;
 use crate::LocalObjectsLimits;
-use crate::body::{BodyParts, LocalBodyLocation};
+use crate::body::{LocalBodyLocation};
 use crate::physical::native_durability;
 use fs2::FileExt;
 use std::collections::BTreeSet;
@@ -17,47 +17,48 @@ const MINIMUM_MAINTENANCE_INLINE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Current invocation authority and custody for temporary publication controls.
 pub(crate) struct Publication {
-    pub(crate) meter: Option<Arc<dyn NativeReadMeter>>,
-    retained: Option<ReadAllocation>,
+    pub(crate) native: Option<(Arc<dyn NativeReadMeter>, ReadAllocation)>,
 }
 impl Publication {
     pub(crate) fn new(meter: Option<Arc<dyn NativeReadMeter>>) -> Self {
-        let retained = meter.as_ref().map(ReadAllocation::empty);
-        Self { meter, retained }
+        Self { native: meter.map(|meter| {
+            let retained = ReadAllocation::empty(&meter);
+            (meter, retained)
+        }) }
     }
     pub(crate) fn check(&self) -> Result<(), NativeObjectsError> {
-        if let Some(meter) = &self.meter { meter.check()?; }
+        if let Some((meter, _)) = &self.native { meter.check()?; }
         Ok(())
     }
     pub(crate) fn allocate(&mut self, bytes: usize) -> Result<(), NativeObjectsError> {
-        if let Some(meter) = &self.meter {
+        if let Some((meter, retained)) = &mut self.native {
             let mut claim = ReadAllocation::new(meter, bytes)?;
-            self.retained.as_mut().ok_or(Error::from(Unavailable))?.absorb(&mut claim)?;
+            retained.absorb(&mut claim)?;
         }
         Ok(())
     }
     pub(crate) fn retain(&mut self, bytes: usize) -> Result<(), NativeObjectsError> {
-        if let Some(meter) = &self.meter {
+        if let Some((meter, retained)) = &mut self.native {
             let mut claim = ReadAllocation::adopt(meter, bytes)?;
-            self.retained.as_mut().ok_or(Error::from(Unavailable))?.absorb(&mut claim)?;
+            retained.absorb(&mut claim)?;
         }
         Ok(())
     }
     pub(crate) fn retain_capacity(&mut self, requested: usize, actual: usize) -> Result<(), NativeObjectsError> {
-        if let Some(retained) = &mut self.retained {
+        if let Some((_, retained)) = &mut self.native {
             let total = usize::try_from(retained.bytes()).map_err(|_| Error::from(QuotaExceeded))?;
             retained.reconcile_capacity(total.checked_sub(requested).and_then(|bytes| bytes.checked_add(actual)).ok_or(Error::from(QuotaExceeded))?)?;
         }
         Ok(())
     }
     pub(crate) fn allocation_failed(&self, error: std::collections::TryReserveError) -> NativeObjectsError {
-        match &self.meter {
-            Some(meter) => NativeObjectsError::from(NativeObjectsCause::Admission(meter.allocation_failed(error))),
+        match &self.native {
+            Some((meter, _)) => NativeObjectsError::from(NativeObjectsCause::Admission(meter.allocation_failed(error))),
             None => NativeObjectsError::from(NativeObjectsCause::Service(Unavailable.into())),
         }
     }
     pub(crate) fn retire(&mut self, bytes: usize) -> Result<(), NativeObjectsError> {
-        if let Some(retained) = &mut self.retained { retained.release(bytes)?; }
+        if let Some((_, retained)) = &mut self.native { retained.release(bytes)?; }
         Ok(())
     }
     pub(crate) fn reserve<T>(&mut self, value: &mut Vec<T>, additional: usize) -> Result<(), NativeObjectsError> {
@@ -66,16 +67,12 @@ impl Publication {
         let width = std::mem::size_of::<T>();
         let old = value.capacity().checked_mul(width).ok_or(Error::from(QuotaExceeded))?;
         let requested = needed.checked_mul(width).ok_or(Error::from(QuotaExceeded))?;
-        let mut claim = self.meter.as_ref().map(|meter| ReadAllocation::new(meter, requested)).transpose()?;
+        let mut claim = self.native.as_ref().map(|(meter, _)| ReadAllocation::new(meter, requested)).transpose()?;
         if let Err(error) = value.try_reserve_exact(additional) {
-            return Err(self.meter.as_ref().map_or_else(
-                || NativeObjectsError::from(NativeObjectsCause::Service(Unavailable.into())),
-                |meter| NativeObjectsError::from(NativeObjectsCause::Admission(meter.allocation_failed(error))),
-            ));
+            return Err(self.allocation_failed(error));
         }
-        if let Some(claim) = &mut claim {
+        if let (Some(claim), Some((_, retained))) = (&mut claim, &mut self.native) {
             let reconciled = claim.reconcile_capacity(value.capacity().checked_mul(width).ok_or(Error::from(QuotaExceeded))?);
-            let retained = self.retained.as_mut().ok_or(Error::from(Unavailable))?;
             retained.resize_retained(usize::try_from(retained.bytes()).map_err(|_| Error::from(QuotaExceeded))?.saturating_sub(old))?;
             retained.absorb(claim)?;
             reconciled?;
@@ -92,30 +89,30 @@ impl Publication {
         Ok(())
     }
     pub(crate) fn codec<T>(&self, encoded: usize, copied: usize, hashed: usize, work: impl FnOnce() -> T) -> Result<T, NativeObjectsError> {
-        if let Some(meter) = &self.meter {
+        if let Some((meter, _)) = &self.native {
             meter.admit_codec(encoded as u64, copied as u64, hashed as u64)?;
         }
         let value = work();
-        if let Some(meter) = &self.meter {
+        if let Some((meter, _)) = &self.native {
             meter.record_codec(encoded as u64, copied as u64, hashed as u64)?;
         }
         Ok(value)
     }
     pub(crate) fn text(&mut self, value: &str) -> Result<String, NativeObjectsError> {
-        match (&self.meter, &mut self.retained) {
-            (Some(meter), Some(retained)) => clone_native_text(value, meter, retained),
+        match &mut self.native {
+            Some((meter, retained)) => clone_native_text(value, meter, retained),
             _ => Ok(value.to_owned()),
         }
     }
     fn info(&mut self, value: &wire::ObjectInfo) -> Result<wire::ObjectInfo, NativeObjectsError> {
-        match (&self.meter, &mut self.retained) {
-            (Some(meter), Some(retained)) => clone_native_info(value, meter, retained),
+        match &mut self.native {
+            Some((meter, retained)) => clone_native_info(value, meter, retained),
             _ => Ok(value.clone()),
         }
     }
     fn metadata(&mut self, value: &wire::ObjectMetadata) -> Result<wire::ObjectMetadata, NativeObjectsError> {
-        match (&self.meter, &mut self.retained) {
-            (Some(meter), Some(retained)) => clone_native_metadata(value, meter, retained),
+        match &mut self.native {
+            Some((meter, retained)) => clone_native_metadata(value, meter, retained),
             _ => Ok(value.clone()),
         }
     }
@@ -132,6 +129,32 @@ impl Publication {
         self.codec(length, 0, 0, || value.encode(&mut output))?
             .map_err(|_| NativeObjectsError::from(NativeObjectsCause::Service(Unavailable.into())))?;
         Ok(output)
+    }
+
+    fn relocated(
+        &mut self, body: &StoredBody, moves: &crate::body::LocalBodyRelocations,
+    ) -> Result<Option<StoredBody>, NativeObjectsError> {
+        self.check()?;
+        match body {
+            StoredBody::Memory(_) => Ok(None),
+            StoredBody::Composite { parts, length } => {
+                if !has_relocation(body, moves) { return Ok(None); }
+                let mut moved = Vec::new();
+                self.reserve(&mut moved, parts.value.len())?;
+                for part in &parts.value {
+                    let relocated = self.relocated(part, moves)?;
+                    self.codec(0, std::mem::size_of::<StoredBody>(), 0, || {
+                        moved.push(relocated.unwrap_or_else(|| part.clone()));
+                    })?;
+                }
+                composite_publication(moved, *length, self).map(Some)
+            }
+            StoredBody::Local { root, digest, length, location } => {
+                Ok(moves.get(&(location.clone(), *digest)).map(|location| StoredBody::Local {
+                    root: Arc::clone(root), digest: *digest, length: *length, location: location.clone(),
+                }))
+            }
+        }
     }
 }
 
@@ -156,30 +179,28 @@ fn open_error(error: NativeObjectsError) -> LocalOpenError {
 }
 
 fn composite_publication(parts: Vec<StoredBody>, length: usize, publication: &mut Publication) -> Result<StoredBody, NativeObjectsError> {
-    match &publication.meter {
-        Some(meter) => {
+    match &mut publication.native {
+        Some((meter, retained)) => {
             let capacity = parts.capacity().checked_mul(std::mem::size_of::<StoredBody>()).ok_or(Error::from(QuotaExceeded))?;
-            let allocation = publication.retained.as_mut().ok_or(Error::from(Unavailable))?.split(capacity)?;
+            let allocation = retained.split(capacity)?;
             StoredBody::composite_measured(parts, length, meter, allocation)
         }
-        None => Ok(StoredBody::Composite { parts: Arc::new(BodyParts { values: parts, _allocation: None }), length }),
+        None => Ok(StoredBody::Composite { parts: Arc::new(crate::v1::Guarded { value: parts, _allocation: None }), length }),
     }
 }
 
-fn relocated_publication(body: &StoredBody, moves: &crate::body::LocalBodyRelocations, publication: &Publication) -> Result<Option<StoredBody>, NativeObjectsError> {
-    use crate::body::BodyReadMode;
-    let mode = match &publication.meter {
-        Some(meter) => { meter.check()?; BodyReadMode::Native(Arc::clone(meter)) }
-        None => BodyReadMode::Ordinary,
-    };
-    body.relocated(&|location, digest| moves.get(&(location.clone(), *digest)).cloned(), &mode)
-        .map_err(Into::into)
+fn has_relocation(body: &StoredBody, moves: &crate::body::LocalBodyRelocations) -> bool {
+    match body {
+        StoredBody::Memory(_) => false,
+        StoredBody::Composite { parts, .. } => parts.value.iter().any(|part| has_relocation(part, moves)),
+        StoredBody::Local { location, digest, .. } => moves.contains_key(&(location.clone(), *digest)),
+    }
 }
 
 fn unpersisted(body: &StoredBody) -> bool {
     match body {
         StoredBody::Memory(_) => true,
-        StoredBody::Composite { parts, .. } => parts.values.iter().any(unpersisted),
+        StoredBody::Composite { parts, .. } => parts.value.iter().any(unpersisted),
         StoredBody::Local { .. } => false,
     }
 }
@@ -566,9 +587,9 @@ fn load_header(
         acyclic_native_runtime::sync_parent(root, native_durability(limits.durability))?;
         return Ok(header);
     }
-    let mut magic = vec![0; MAGIC.len()];
+    let mut magic = [0; MAGIC.len()];
     file.read_exact(&mut magic).map_err(corrupt)?;
-    if magic != MAGIC {
+    if magic.as_slice() != MAGIC {
         return Err(LocalOpenError::Corrupt);
     }
     let mut length = [0; 4];
@@ -800,8 +821,8 @@ impl Journal {
             }
             StoredBody::Composite { parts, length } => {
                 let mut output = Vec::new();
-                publication.reserve(&mut output, parts.values.len())?;
-                for part in parts.values.iter() {
+                publication.reserve(&mut output, parts.value.len())?;
+                for part in parts.value.iter() {
                     output.push(self.external(part, publication)?);
                 }
                 composite_publication(output, *length, publication)
@@ -856,7 +877,7 @@ fn bodies(body: &StoredBody, publication: &mut Publication) -> Result<Vec<BodyRe
                 Ok(())
             }
             StoredBody::Composite { parts, .. } => {
-                for part in parts.values.iter() { ordered(part, out, publication)?; }
+                for part in parts.value.iter() { ordered(part, out, publication)?; }
                 Ok(())
             }
             _ => Err(Error::from(Unavailable).into()),
@@ -1030,7 +1051,7 @@ fn restore_body(
         return Err(LocalOpenError::Corrupt);
     }
     Ok(StoredBody::Composite {
-        parts: Arc::new(BodyParts { values: leaves, _allocation: None }),
+        parts: Arc::new(crate::v1::Guarded { value: leaves, _allocation: None }),
         length,
     })
 }
