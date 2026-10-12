@@ -110,7 +110,7 @@ pub(crate) struct PiWritebackPublicationGuard<P> {
     protected: std::sync::Arc<crate::pi_owner::PiOwnerConfig>,
     resources: crate::ServiceResources,
     filesystem: std::sync::Arc<acyclic_harness::filesystem::FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
-    stream: acyclic_stream::StreamClient<P>,
+    stream: std::sync::Arc<P>,
     context: std::sync::Arc<acyclic_harness::NativeTaskContext>,
     owner: std::sync::Arc<TaskJournalOwner<P>>,
     request: crate::pi_root_inputs::PiRootRequest,
@@ -127,7 +127,7 @@ impl<P: StreamProvider + 'static> PiWritebackPublicationGuard<P> {
         protected: std::sync::Arc<crate::pi_owner::PiOwnerConfig>,
         resources: &crate::ServiceResources,
         filesystem: std::sync::Arc<acyclic_harness::filesystem::FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
-        stream: acyclic_stream::StreamClient<P>,
+        stream: std::sync::Arc<P>,
         context: std::sync::Arc<acyclic_harness::NativeTaskContext>,
         owner: std::sync::Arc<TaskJournalOwner<P>>,
         request: (crate::pi_root_inputs::PiRootRequest, acyclic_fs::NativeAllocation),
@@ -146,7 +146,7 @@ impl<P: StreamProvider + 'static> PiWritebackPublicationGuard<P> {
             .ok_or_else(|| selected_unauthorized("writeback lost its original project"))?
             .capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
         let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
-            &protected, &filesystem, &request.0, std::sync::Arc::clone(&context), work).await?;
+            &protected, &filesystem, &request.0.binding, &request.0.root, std::sync::Arc::clone(&context), work).await?;
         let original = crate::pi_root_provider::observe_root_allocation(
             std::sync::Arc::clone(&protected), resources, std::sync::Arc::clone(&filesystem),
             stream.clone(), preparation, work).await?
@@ -178,7 +178,7 @@ impl<P: StreamProvider + 'static> PiWritebackPublicationGuard<P> {
         self.owner.require_volume_grant_with_native_work(volume,
             acyclic_harness::conversation::VolumeOperation::Write, work)?;
         let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
-            &self.protected, &self.filesystem, &self.request,
+            &self.protected, &self.filesystem, &self.request.binding, &self.request.root,
             std::sync::Arc::clone(&self.context), work).await?;
         let identity = crate::pi_root_provider::guard_created_root_source_with_native_work(
             std::sync::Arc::clone(&self.protected), &self.resources,

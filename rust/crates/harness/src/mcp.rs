@@ -263,7 +263,7 @@ impl McpCatalog {
         installation: McpCatalogInstallation<'_>,
     ) -> Result<()> {
         self.validate_transport_binding(transport.as_ref())?;
-        installation.verifier.verify(installation.scope)?;
+        installation.verifier.verify(installation.scope, &mut None)?;
         if !installation
             .scope
             .capabilities()
@@ -345,16 +345,9 @@ impl McpCatalog {
     }
 
     fn selected_tools(&self) -> impl Iterator<Item = &McpToolDefinition> {
-        let names: Option<BTreeSet<&str>> = match &self.schema_exposure {
-            McpSchemaExposure::Eager => None,
-            McpSchemaExposure::Selected { names } => {
-                Some(names.iter().map(String::as_str).collect())
-            }
-        };
-        self.tools.iter().filter(move |tool| {
-            names
-                .as_ref()
-                .is_none_or(|names| names.contains(tool.name.as_str()))
+        self.tools.iter().filter(move |tool| match &self.schema_exposure {
+            McpSchemaExposure::Eager => true,
+            McpSchemaExposure::Selected { names } => names.contains(&tool.name),
         })
     }
 
@@ -465,16 +458,18 @@ impl McpCatalog {
         }
         for remote in &self.tools {
             let definition = self.definition(remote)?;
+            let name = definition.name.clone();
             next.register(Tool {
-                definition: definition.clone(),
+                definition,
                 executor: Arc::new(RemoteTool {
                     server: self.server.clone(),
-                    remote: remote.clone(),
+                    name: remote.name.clone(),
+                    output_schema: remote.output_schema.clone(),
                     transport: Arc::clone(transport),
                 }),
                 projection: Arc::clone(projection),
             })?;
-            next.remove_from_model(&definition.name)?;
+            next.remove_from_model(&name)?;
         }
         for remote in self.selected_tools() {
             let definition = self.definition(remote)?;
@@ -525,7 +520,8 @@ impl McpCatalog {
 
 struct RemoteTool {
     server: String,
-    remote: McpToolDefinition,
+    name: String,
+    output_schema: Option<Value>,
     transport: Arc<dyn McpToolTransport>,
 }
 
@@ -541,31 +537,14 @@ impl RemoteTool {
         self.authorize(Some(context.task().scope()), invocation)
     }
 
-    fn validate_result(
-        &self,
-        result: &McpToolResult,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        if !result.is_error
-            && let Some(schema) = &self.remote.output_schema
-        {
-            let Some(value) = result.structured_content.as_ref() else {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if io.and_then(|io| io.original_native_work()).is_some() {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid,
-                        reason: "MCP structured result missing",
-                    });
-                }
-                return Err(Error::Invalid("MCP structured result missing".into()));
-            };
-            crate::contract::validate_json_schema_value(schema, value, "MCP output", io)?;
-        }
-        Ok(())
-    }
-
     fn result(&self, result: McpToolResult) -> Result<ToolResult> {
-        self.validate_result(&result, None)?;
+        if !result.is_error
+            && let Some(schema) = &self.output_schema
+        {
+            let value = result.structured_content.as_ref()
+                .ok_or_else(|| Error::Invalid("MCP structured result missing".into()))?;
+            crate::contract::validate_json_schema_value(schema, value, "MCP output", None)?;
+        }
         let value = serde_json::to_value(result)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         rpc::check_dto(rpc::Dto::CallToolResult, &value, None)?;
@@ -599,7 +578,7 @@ impl ToolExecutor for RemoteTool {
                 self.transport
                     .call(
                         invocation.operation_id,
-                        &self.remote.name,
+                        &self.name,
                         invocation.arguments,
                     )
                     .await?,
@@ -629,7 +608,7 @@ impl ToolExecutor for RemoteTool {
             self.authorize_context(&context, &invocation)?;
             self.result(
                 self.transport
-                    .call_with_context(context, &self.remote.name, invocation.arguments)
+                    .call_with_context(context, &self.name, invocation.arguments)
                     .await?,
             )
         })
@@ -711,17 +690,18 @@ mod tests {
         assert_eq!(definition.projection_schema, selected.projection_schema);
         definition.validate_projection(
             &json!({"kind":"parts","parts":[{"kind":"text","text":"bounded view"}]}),
+            Limits::default(), None,
         )?;
         assert!(
             definition
-                .validate_projection(&json!({"kind":"json","value":{}}))
+                .validate_projection(&json!({"kind":"json","value":{}}), Limits::default(), None)
                 .is_err()
         );
         assert!(
             definition
                 .validate_projection(&json!({"kind":"parts","parts":[
                     {"kind":"tool_call","name":"nested","call_id":"nested","arguments":{}}
-                ]}))
+                ]}), Limits::default(), None)
                 .is_err()
         );
         let digest = selected.installation_digest(None, 8, 8192)?;
@@ -770,10 +750,10 @@ mod tests {
         };
         let issuer = AuthorityIssuer::new("catalog", [8; 32], authority.clone());
         let foreign = AuthorityIssuer::new("catalog", [9; 32], authority);
-        let scope = issuer.root("installer", Capabilities::new(["mcp:install:fixture"]));
-        let missing = issuer.root("installer", Capabilities::default());
-        let forged = foreign.root("installer", Capabilities::new(["mcp:install:fixture"]));
-        let verifier = issuer.verifier();
+        let scope = issuer.issue("installer", &Capabilities::new(["mcp:install:fixture"]), None, None, &mut None).expect("scope proof");
+        let missing = issuer.issue("installer", &Capabilities::default(), None, None, &mut None).expect("scope proof");
+        let forged = foreign.issue("installer", &Capabilities::new(["mcp:install:fixture"]), None, None, &mut None).expect("scope proof");
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let original = catalog("1", &["a", "b"]);
         let approval = CatalogApproval {
             operation: OperationId::from_bytes([46; 16]),
@@ -886,8 +866,8 @@ mod tests {
                 id: "catalog".into(),
             },
         );
-        let scope = issuer.root("installer", Capabilities::new(["mcp:install:fixture"]));
-        let verifier = issuer.verifier();
+        let scope = issuer.issue("installer", &Capabilities::new(["mcp:install:fixture"]), None, None, &mut None).expect("scope proof");
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let original = catalog("1", &["a", "b"]);
         let mut replacement = catalog("2", &["a"]);
         replacement.schema_exposure = McpSchemaExposure::Selected { names: vec![] };
@@ -1224,9 +1204,11 @@ mod tests {
         input.server = "fixture".into();
         input.tools[0].input_schema = json!({"type":"unknown"});
         assert!(input.validate(1, 8192).is_err());
+        let remote = catalog("1", &["a"]).tools.remove(0);
         let tool = RemoteTool {
             server: "fixture".into(),
-            remote: catalog("1", &["a"]).tools.remove(0),
+            name: remote.name,
+            output_schema: remote.output_schema,
             transport: Arc::new(Transport::default()),
         };
         assert!(

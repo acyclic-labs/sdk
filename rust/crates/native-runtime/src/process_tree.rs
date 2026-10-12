@@ -256,7 +256,7 @@ impl ProcessTree {
     pub(crate) fn spawn(command: &mut Command) -> io::Result<Self> {
         let mut custody = None;
         if let Err(admission) = Self::spawn_controlled(command, None, &mut custody) {
-            if let Some(tree) = custody.as_mut() { tree.terminate()?; }
+            if let Some(tree) = custody.as_mut() { tree.terminate(None)?; }
             return Err(admission);
         }
         custody.ok_or_else(|| io::ErrorKind::NotFound.into())
@@ -282,7 +282,7 @@ impl ProcessTree {
         );
         let program = std::path::Path::new(command.get_program()).file_name();
         operation.record("program", program.and_then(|name| name.to_str()));
-        operation.scope(|| operation.finish(platform::spawn_controlled(command, meter, custody)))
+        operation.in_scope(|| operation.finish(platform::spawn_controlled(command, meter, custody)))
     }
 
     /// Starts a closed-stream Unix child using borrowed, terminated arguments, and retains it in this same process-tree owner before spawn cleanup.
@@ -416,15 +416,17 @@ impl ProcessTree {
     }
 
     /// Polls the direct child without releasing ownership of its descendants.
-    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.capture_try_wait(None)
-    }
-
-    /// Observes the same unreaped owned leader, admitting every actual waitid attempt (including EINTR retries).
-    pub fn try_wait_measured(
-        &mut self, meter: &dyn crate::NativeReadMeter,
+    pub fn try_wait(
+        &mut self, meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<Option<ExitStatus>> {
-        self.capture_try_wait(Some(meter))
+        self.select_control_meter(meter);
+        #[cfg(unix)]
+        return platform::observe_exit_id(self.owned_child_id()?, meter);
+        #[cfg(windows)]
+        {
+            let child = self.child.as_mut().ok_or(io::ErrorKind::NotFound)?;
+            process_control_attempt(meter, crate::NativeOperationKind::Read, || child.try_wait())
+        }
     }
 
     #[cfg(unix)]
@@ -442,23 +444,10 @@ impl ProcessTree {
         }
     }
 
-    fn capture_try_wait(
-        &mut self, meter: Option<&dyn crate::NativeReadMeter>,
-    ) -> io::Result<Option<ExitStatus>> {
-        self.select_control_meter(meter);
-        #[cfg(unix)]
-        return platform::observe_exit_id(self.owned_child_id()?, meter);
-        #[cfg(windows)]
-        {
-            let child = self.child.as_mut().ok_or(io::ErrorKind::NotFound)?;
-            process_control_attempt(meter, false, || child.try_wait())
-        }
-    }
-
     fn capture_close_stdin(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
         self.select_control_meter(meter);
         if self.child.as_ref().is_some_and(|child| child.stdin.is_some()) {
-            process_control_attempt(meter, true, || { self.close_stdin(); Ok(()) })?;
+            process_control_attempt(meter, crate::NativeOperationKind::Write, || { self.close_stdin(); Ok(()) })?;
         }
         Ok(())
     }
@@ -468,7 +457,7 @@ impl ProcessTree {
         let operation = obs::span!(
             INFO, "acyclic.runtime.wait", outcome = obs::Empty, error.kind = obs::Empty
         );
-        operation.scope(|| operation.finish((|| {
+        operation.in_scope(|| operation.finish((|| {
             let deadline = Instant::now().checked_add(timeout)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow"))?;
             if self.is_reaped() {
@@ -476,7 +465,7 @@ impl ProcessTree {
             }
             self.close_stdin();
             loop {
-                if let Some(status) = self.try_wait()? { return Ok(status); }
+                if let Some(status) = self.try_wait(None)? { return Ok(status); }
                 if Instant::now() >= deadline {
                     return Err(io::Error::new(io::ErrorKind::TimedOut,
                         "process exit deadline exceeded; termination may be unresolved"));
@@ -512,7 +501,7 @@ impl ProcessTree {
             error.kind = obs::Empty
         );
         let mut remaining = max_bytes;
-        let result = operation.scope(|| {
+        let result = operation.in_scope(|| {
             if self.output_taken {
                 return Err(ProcessCaptureFailure::before_capture(io::Error::other(
                     "process output was already collected",
@@ -563,7 +552,7 @@ impl ProcessTree {
                     input.observe(chunk, &mut observe, meter)?;
                 }
                 if status.is_none()
-                    && let Some(exit) = self.capture_try_wait(meter)?
+                    && let Some(exit) = self.try_wait(meter)?
                 {
                     status = Some(exit);
                     self.capture_terminate_descendants(meter)?;
@@ -618,19 +607,15 @@ impl ProcessTree {
     }
 
     /// Terminates containment and reaps the direct child.
-    pub fn terminate(&mut self) -> io::Result<()> {
+    pub fn terminate(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
+        if meter.is_some() { return self.capture_terminate(meter); }
         let operation = obs::span!(
             INFO,
             "acyclic.runtime.terminate",
             outcome = obs::Empty,
             error.kind = obs::Empty
         );
-        operation.scope(|| operation.finish(self.capture_terminate(None)))
-    }
-
-    /// Cleans up through the same containment/observation/reap engine, with admission at each signal, membership probe and wait attempt.
-    pub fn terminate_measured(&mut self, meter: &dyn crate::NativeReadMeter) -> io::Result<()> {
-        self.capture_terminate(Some(meter))
+        operation.in_scope(|| operation.finish(self.capture_terminate(meter)))
     }
 
     fn capture_terminate(
@@ -646,24 +631,24 @@ impl ProcessTree {
             self.capture_close_stdin(meter)?;
             if self.child.is_some() {
                 let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
-                while self.capture_try_wait(meter)?.is_none() {
+                while self.try_wait(meter)?.is_none() {
                     if Instant::now() >= deadline { return Err(io::ErrorKind::TimedOut.into()); }
-                    process_control_attempt(meter, false, || {
+                    process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                         std::thread::sleep(Self::TERMINATION_POLL_INTERVAL);
                         Ok(())
                     })?;
                 }
                 if let Some(child) = self.child.as_mut() {
                     if child.stdout.is_some() {
-                        process_control_attempt(meter, true, || { drop(child.stdout.take()); Ok(()) })?;
+                        process_control_attempt(meter, crate::NativeOperationKind::Write, || { drop(child.stdout.take()); Ok(()) })?;
                     }
                     if child.stderr.is_some() {
-                        process_control_attempt(meter, true, || { drop(child.stderr.take()); Ok(()) })?;
+                        process_control_attempt(meter, crate::NativeOperationKind::Write, || { drop(child.stderr.take()); Ok(()) })?;
                     }
                 }
                 // Child's private Win32 handle release is one opaque std SDK
                 // boundary, not an estimate of hidden handle/kernel internals.
-                process_control_attempt(meter, true, || { drop(self.child.take()); Ok(()) })?;
+                process_control_attempt(meter, crate::NativeOperationKind::Write, || { drop(self.child.take()); Ok(()) })?;
             }
             self.guard.close(meter)
         }
@@ -680,7 +665,7 @@ impl ProcessTree {
                 if Instant::now() >= deadline {
                     return Err(io::ErrorKind::TimedOut.into());
                 }
-                process_control_attempt(meter, false, || {
+                process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                     std::thread::sleep(Self::TERMINATION_POLL_INTERVAL);
                     Ok(())
                 })?;
@@ -691,10 +676,10 @@ impl ProcessTree {
             // in the final Child release.
             if let Some(child) = self.child.as_mut() {
                 if child.stdout.is_some() {
-                    process_control_attempt(meter, true, || { drop(child.stdout.take()); Ok(()) })?;
+                    process_control_attempt(meter, crate::NativeOperationKind::Write, || { drop(child.stdout.take()); Ok(()) })?;
                 }
                 if child.stderr.is_some() {
-                    process_control_attempt(meter, true, || { drop(child.stderr.take()); Ok(()) })?;
+                    process_control_attempt(meter, crate::NativeOperationKind::Write, || { drop(child.stderr.take()); Ok(()) })?;
                 }
             }
             let (reaped, recorded) = platform::reap_exit_id(self.owned_child_id()? as libc::pid_t, meter)?;
@@ -730,7 +715,7 @@ impl ProcessTree {
             outcome = obs::Empty,
             error.kind = obs::Empty
         );
-        operation.scope(|| operation.finish((|| {
+        operation.in_scope(|| operation.finish((|| {
         #[cfg(unix)]
         self.guard.request_termination(None)?;
         #[cfg(windows)]
@@ -743,11 +728,11 @@ impl ProcessTree {
                 self.wait(Duration::from_secs(5))?
             }
             Err(error) => {
-                self.terminate()?;
+                self.terminate(None)?;
                 return Err(error);
             }
         };
-        self.terminate()?;
+        self.terminate(None)?;
         Ok(status)
         })()))
     }
@@ -768,7 +753,7 @@ impl ProcessTree {
         {
             let direct = if !self.guard.assigned && !self.guard.direct_termination_sent {
                 if let Some(child) = self.child.as_mut() {
-                    process_control_attempt(meter, true, || {
+                    process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                         child.kill()?;
                         self.guard.direct_termination_sent = true;
                         Ok(())
@@ -869,15 +854,14 @@ fn pipe_operation_attempt<T>(
 impl Drop for ProcessTree {
     fn drop(&mut self) {
         if !self.cleanup_on_drop { return; }
-        let _ = self.terminate();
+        let _ = self.terminate(None);
     }
 }
 
 /// One actual SDK/kernel attempt, not a prediction of its hidden internals.
 fn process_control_attempt<T>(
-    meter: Option<&dyn crate::NativeReadMeter>, write: bool, call: impl FnOnce() -> io::Result<T>,
+    meter: Option<&dyn crate::NativeReadMeter>, kind: crate::NativeOperationKind, call: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
-    let kind = if write { crate::NativeOperationKind::Write } else { crate::NativeOperationKind::Read };
     let (result, recorded) = pipe_operation_attempt(meter, kind, call)?;
     match result {
         Err(error) => Err(error),
@@ -1051,7 +1035,7 @@ mod platform {
 
         pub(super) fn cleanup(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
             if self.actions.is_some() {
-                super::process_control_attempt(meter, true, || {
+                super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                     let actions = self.actions.as_mut().ok_or(io::ErrorKind::NotFound)?;
                     let status = unsafe { libc::posix_spawn_file_actions_destroy(actions) };
                     if status != 0 { return Err(io::Error::from_raw_os_error(status)); }
@@ -1060,7 +1044,7 @@ mod platform {
                 })?;
             }
             if self.attributes.is_some() {
-                super::process_control_attempt(meter, true, || {
+                super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                     let attributes = self.attributes.as_mut().ok_or(io::ErrorKind::NotFound)?;
                     let status = unsafe { libc::posix_spawnattr_destroy(attributes) };
                     if status != 0 { return Err(io::Error::from_raw_os_error(status)); }
@@ -1077,7 +1061,7 @@ mod platform {
         custody: &mut Option<super::ProcessTree>,
     ) -> io::Result<()> {
         command.process_group(0);
-        super::process_control_attempt(meter, true, || {
+        super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
             let child = command.spawn()?;
             // A Unix Child ID originated as pid_t at this same SDK boundary.
             let process_group = child.id() as libc::pid_t;
@@ -1155,7 +1139,7 @@ mod platform {
             let mut actions_initialized = false;
             let spawned = (|| {
                 let native = |call: &mut dyn FnMut() -> libc::c_int| {
-                    super::process_control_attempt(Some(meter), true, || {
+                    super::process_control_attempt(Some(meter), crate::NativeOperationKind::Write, || {
                         let status = call();
                         if status == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(status)) }
                     })
@@ -1252,7 +1236,7 @@ mod platform {
             if !self.active {
                 return Ok(());
             }
-            let signal = super::process_control_attempt(meter, true, || {
+            let signal = super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                 // SAFETY: the unreaped owned leader reserves this process group.
                 if unsafe { libc::kill(-self.process_group, libc::SIGTERM) } == 0 { Ok(()) }
                 else { Err(io::Error::last_os_error()) }
@@ -1274,7 +1258,7 @@ mod platform {
             }
             // SAFETY: a negative, nonzero pid addresses exactly this owned
             // process group; SIGKILL requires no shared memory or signal data.
-            let signal = super::process_control_attempt(meter, true, || {
+            let signal = super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                 if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } == 0 {
                     self.active = false;
                     Ok(())
@@ -1303,7 +1287,7 @@ mod platform {
             if std::time::Instant::now() >= deadline {
                 return Ok(false);
             }
-            super::process_control_attempt(meter, false, || {
+            super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                 std::thread::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
                 Ok(())
             })?;
@@ -1317,7 +1301,7 @@ mod platform {
         let id = u32::try_from(group).map_err(io::Error::other)?;
         // SAFETY: thread-local errno and a writable, correctly sized PID array.
         // libproc returns zero both for an empty list and for an errno failure.
-        let read = super::process_control_attempt(meter, false, || {
+        let read = super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
             Ok(unsafe {
                 *libc::__error() = 0;
                 libc::proc_listpids(2, id, members.as_mut_ptr().cast(), bytes)
@@ -1379,7 +1363,7 @@ mod tests {
         assert_eq!(tree.wait(std::time::Duration::from_secs(5))?.code(), Some(7));
         assert!(!tree.is_reaped());
         assert_eq!(original.memory.load(std::sync::atomic::Ordering::Acquire), bytes, "observed exit is not physical reap");
-        tree.terminate()?;
+        tree.terminate(None)?;
         assert!(tree.is_reaped() && tree.prepared_spawn.is_none());
         assert_eq!(original.memory.load(std::sync::atomic::Ordering::Acquire), 0);
         Ok(())
@@ -1412,10 +1396,10 @@ mod tests {
         let mut tree = ProcessTree::spawn(&mut command("child", temporary.path()))?;
         let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, 0);
         meter.operation_denial = Some(crate::NativeOperationKind::Read);
-        assert!(tree.terminate_measured(&meter).is_err());
+        assert!(tree.terminate(Some(&meter)).is_err());
         assert!(!tree.is_reaped());
         tree.wait(Duration::from_secs(5))?;
-        tree.terminate()?;
+        tree.terminate(None)?;
         assert!(tree.is_reaped());
         Ok(())
     }
@@ -1432,7 +1416,7 @@ mod tests {
         let mut tree = custody.take().expect("suspended child remains owned");
         assert!(!tree.is_reaped());
         assert_eq!(tree.wait(Duration::from_secs(5)).unwrap_err().kind(), io::ErrorKind::TimedOut);
-        tree.terminate()?;
+        tree.terminate(None)?;
         assert!(tree.is_reaped());
         Ok(())
     }
@@ -1476,7 +1460,7 @@ mod tests {
     }
 
     fn tree_exited(tree: &mut ProcessTree) -> bool {
-        tree.try_wait().map_or(true, |status| status.is_some())
+        tree.try_wait(None).map_or(true, |status| status.is_some())
     }
 
     /// Asks any descendant that outlived its tree's cleanup to mark its escape, then checks that none did.
@@ -1642,8 +1626,8 @@ mod tests {
                 ProcessTree::spawn(&mut command("child", temporary.path())).expect("spawn tree");
             ready(temporary.path(), "tree-ready", || tree_exited(&mut tree));
             if explicit {
-                tree.terminate().expect("terminate tree");
-                tree.terminate().expect("repeat termination");
+                tree.terminate(None).expect("terminate tree");
+                tree.terminate(None).expect("repeat termination");
                 assert!(tree.child.is_none());
             }
             drop(tree);
@@ -1698,7 +1682,7 @@ mod tests {
             }
             assert!(Instant::now() < deadline, "streaming output deadline");
         }
-        tree.terminate().expect("clean streaming tree");
+        tree.terminate(None).expect("clean streaming tree");
         assert!(bytes.ends_with(b"stdout-marker"));
     }
 
@@ -1742,7 +1726,7 @@ mod tests {
         assert_eq!(output.stderr, b"stderr-marker");
         assert!(tree.child.is_none());
         assert!(tree.wait_with_output(Duration::ZERO, 0, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None).map_err(|failure| failure.error).is_err());
-        tree.terminate().expect("repeat cleanup");
+        tree.terminate(None).expect("repeat cleanup");
         let mut command = self::command("output", temporary.path());
         command.env("EXPLICIT_PROCESS_INPUT", "allowed");
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
@@ -1949,7 +1933,7 @@ mod tests {
             }
             assert!(started.elapsed() < Duration::from_secs(7));
             assert!(tree.child.is_none());
-            tree.terminate().expect("repeat cleanup");
+            tree.terminate(None).expect("repeat cleanup");
             assert_no_escape(temporary.path());
         }
     }
@@ -2000,7 +1984,7 @@ mod tests {
         command.env("EXPLICIT_PROCESS_INPUT", "allowed");
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
         let deadline = Instant::now() + Duration::from_secs(5);
-        while tree.try_wait().expect("poll exit").is_none() {
+        while tree.try_wait(None).expect("poll exit").is_none() {
             assert!(Instant::now() < deadline);
             thread::sleep(Duration::from_millis(1));
         }
@@ -2015,7 +1999,7 @@ mod tests {
                 .expect("exited leader")
                 .success()
         );
-        tree.terminate().expect("terminate and reap");
+        tree.terminate(None).expect("terminate and reap");
         assert!(tree.child.is_none());
         let mut tree = ProcessTree::spawn(&mut self::command("exit-code", temporary.path()))
             .expect("spawn nonzero exit");
@@ -2025,7 +2009,7 @@ mod tests {
                 .code(),
             Some(7)
         );
-        tree.terminate().expect("reap nonzero exit");
+        tree.terminate(None).expect("reap nonzero exit");
 
         let mut tree = ProcessTree::spawn(&mut self::command("child", temporary.path()))
             .expect("spawn signalled child");
@@ -2037,7 +2021,7 @@ mod tests {
                 .signal(),
             Some(libc::SIGKILL)
         );
-        tree.terminate().expect("reap signal exit");
+        tree.terminate(None).expect("reap signal exit");
     }
 }
 
@@ -2184,12 +2168,12 @@ mod platform {
         initialized?;
         let tree = custody.as_mut().ok_or(io::ErrorKind::NotFound)?;
         command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
-        super::process_control_attempt(meter, true, || {
+        super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
             tree.child = Some(command.spawn()?);
             Ok(())
         })?;
         let child = tree.child.as_ref().ok_or(io::ErrorKind::NotFound)?;
-        super::process_control_attempt(meter, true, || {
+        super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
             // SAFETY: both handles are owned and the child is still suspended.
             if unsafe { AssignProcessToJobObject(tree.guard.job, child.as_raw_handle().cast()) } == 0 {
                 Err(io::Error::last_os_error())
@@ -2249,7 +2233,7 @@ mod platform {
         }
 
         fn initialize(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
-            super::process_control_attempt(meter, true, || {
+            super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                 // SAFETY: unnamed Job with default security, owned on success.
                 let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
                 if job.is_null() { return Err(io::Error::last_os_error()); }
@@ -2259,7 +2243,7 @@ mod platform {
             })?;
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
             if meter.is_none() { limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; }
-            super::process_control_attempt(meter, true, || {
+            super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                 // SAFETY: initialized fixed ABI structure and owned Job.
                 if unsafe { SetInformationJobObject(
                     self.job, JobObjectExtendedLimitInformation, (&raw const limits).cast(),
@@ -2275,7 +2259,7 @@ mod platform {
         pub(super) fn release_setup(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
             for handle in [&mut self.thread, &mut self.snapshot] {
                 if !handle.is_null() {
-                    super::process_control_attempt(meter, true, || {
+                    super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                         // SAFETY: this exclusively owned handle is no longer borrowed.
                         if unsafe { CloseHandle(*handle) } == 0 { return Err(io::Error::last_os_error()); }
                         *handle = std::ptr::null_mut();
@@ -2289,7 +2273,7 @@ mod platform {
         pub(super) fn close(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
             self.release_setup(meter)?;
             if !self.job.is_null() {
-                super::process_control_attempt(meter, true, || {
+                super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                     // SAFETY: cleanup observed an empty Job; this is its owned handle.
                     if unsafe { CloseHandle(self.job) } == 0 { return Err(io::Error::last_os_error()); }
                     self.job = std::ptr::null_mut();
@@ -2309,7 +2293,7 @@ mod platform {
         ) -> io::Result<()> {
             if !self.active { return Ok(()); }
             if !self.termination_sent {
-                super::process_control_attempt(meter, true, || {
+                super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                     // SAFETY: the exclusively owned live Job contains this tree.
                     if unsafe { TerminateJobObject(self.job, 1) } == 0 { return Err(io::Error::last_os_error()); }
                     self.termination_sent = true;
@@ -2319,7 +2303,7 @@ mod platform {
             let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
             loop {
                 let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
-                super::process_control_attempt(meter, false, || {
+                super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                     // SAFETY: writable fixed ABI structure and owned live Job.
                     if unsafe { QueryInformationJobObject(
                         self.job, JobObjectBasicAccountingInformation, (&raw mut accounting).cast(),
@@ -2330,7 +2314,7 @@ mod platform {
                 })?;
                 if !self.active { return Ok(()); }
                 if std::time::Instant::now() >= deadline { return Err(io::ErrorKind::TimedOut.into()); }
-                super::process_control_attempt(meter, false, || {
+                super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                     std::thread::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
                     Ok(())
                 })?;
@@ -2354,7 +2338,7 @@ mod platform {
             super::ProcessTree::spawn(&mut super::tests::command("child", temporary.path()))
                 .expect("spawn tree");
         super::tests::ready(temporary.path(), "tree-ready", || {
-            tree.try_wait().map_or(true, |status| status.is_some())
+            tree.try_wait(None).map_or(true, |status| status.is_some())
         });
         let mut restricted = std::ptr::null_mut();
         // SAFETY: both source and target are this process; the duplicate has
@@ -2386,7 +2370,7 @@ mod platform {
         let recollection = tree.wait_with_output(std::time::Duration::ZERO, 4096, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None).map_err(|failure| failure.error);
         let restricted = std::mem::replace(&mut tree.guard, original);
         drop(restricted);
-        tree.terminate().expect("cleanup with original authority");
+        tree.terminate(None).expect("cleanup with original authority");
         assert_eq!(
             result.expect_err("cleanup must fail").kind(),
             io::ErrorKind::PermissionDenied
@@ -2451,7 +2435,7 @@ mod platform {
         fn resume_process(
             &mut self, process_id: u32, meter: Option<&dyn crate::NativeReadMeter>,
         ) -> io::Result<()> {
-            super::process_control_attempt(meter, false, || {
+            super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                 // SAFETY: SDK returns a newly owned system-thread snapshot.
                 let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
                 if snapshot == INVALID_HANDLE_VALUE { return Err(io::Error::last_os_error()); }
@@ -2460,7 +2444,7 @@ mod platform {
             })?;
             let mut entry: THREADENTRY32 = unsafe { zeroed() };
             entry.dwSize = size_of::<THREADENTRY32>() as u32;
-            let mut found = super::process_control_attempt(meter, false, || {
+            let mut found = super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                 // SAFETY: owned live snapshot and initialized writable ABI record.
                 if unsafe { Thread32First(self.snapshot, &raw mut entry) } != 0 { return Ok(true); }
                 let error = io::Error::last_os_error();
@@ -2469,14 +2453,14 @@ mod platform {
             while found {
                 if let Some(meter) = meter { meter.examine(1, 0)?; }
                 if entry.th32OwnerProcessID == process_id {
-                    super::process_control_attempt(meter, false, || {
+                    super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                         // SAFETY: ID belongs to the just-observed snapshot entry.
                         let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
                         if thread.is_null() { return Err(io::Error::last_os_error()); }
                         self.thread = thread;
                         Ok(())
                     })?;
-                    super::process_control_attempt(meter, true, || {
+                    super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                         // SAFETY: owned live handle with resume access.
                         if unsafe { ResumeThread(self.thread) } == u32::MAX {
                             Err(io::Error::last_os_error())
@@ -2484,7 +2468,7 @@ mod platform {
                     })?;
                     return self.release_setup(meter);
                 }
-                found = super::process_control_attempt(meter, false, || {
+                found = super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                     // SAFETY: owned snapshot and writable record remain valid.
                     if unsafe { Thread32Next(self.snapshot, &raw mut entry) } != 0 { return Ok(true); }
                     let error = io::Error::last_os_error();

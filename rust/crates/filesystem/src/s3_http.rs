@@ -1035,9 +1035,9 @@ where
         let mut source =
             StreamingBodySource::new(request.input.body.take(), expected_crc32.is_some());
         let staged = transaction
-            .stage_content(&mut source, self.limits.maximum_multipart_part_bytes)
-            .await
-            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
+            .stage_content(&mut source, self.limits.maximum_multipart_part_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value)
+            .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?;
         if request
             .input
             .content_length
@@ -1756,9 +1756,9 @@ where
         let mut source =
             StreamingBodySource::new(request.input.body.take(), expected_crc32.is_some());
         let staged = transaction
-            .stage_content(&mut source, self.limits.maximum_request_bytes)
-            .await
-            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
+            .stage_content(&mut source, self.limits.maximum_request_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value)
+            .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?;
         if request
             .input
             .content_length

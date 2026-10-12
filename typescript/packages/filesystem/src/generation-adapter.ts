@@ -1,15 +1,9 @@
-import type {
-  FsGeneration, WasmRawGeneration, WorkspaceDirectoryPage, WorkspaceExtentPlan, WorkspaceStat,
-} from "./contracts.js";
+import type { FsGeneration, WasmRawGeneration } from "./contracts.js";
 import { copyBytes, ownBytes } from "./binding-values.js";
+import { copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan } from "./workspace-copies.js";
 
 /** One generation facade per binding, preserving the binding's identity domain. */
-export function createGenerationAdapter(
-  decodeStat: (value: WorkspaceStat) => WorkspaceStat,
-  decodePage: (value: WorkspaceDirectoryPage) => WorkspaceDirectoryPage,
-  decodePlan: (value: WorkspaceExtentPlan) => WorkspaceExtentPlan,
-  ownerLabel = "filesystem runtime",
-) {
+export function createGenerationAdapter() {
   const handles = new WeakMap<FsGeneration, WasmRawGeneration>();
   function adaptGeneration(raw: WasmRawGeneration): FsGeneration {
     const generation: FsGeneration = {
@@ -20,13 +14,13 @@ export function createGenerationAdapter(
         return ownBytes(await raw.read(path, maximumBytes));
       },
       async readRange(path, offset, length) { return ownBytes(await raw.readRange(path, offset, length)); },
-      async stat(path) { return decodeStat(await raw.stat(path)); },
+      async stat(path) { return copyWorkspaceStat(await raw.stat(path)); },
       async listDirectory(path, after, maximumEntries) {
-        return decodePage(await raw.listDirectory(path, after, maximumEntries));
+        return copyWorkspaceDirectoryPage(await raw.listDirectory(path, after, maximumEntries));
       },
       async readSymbolicLink(path) { return ownBytes(await raw.readSymbolicLink(path)); },
       async planExtents(path, offset, length, maximumSpans) {
-        return decodePlan(await raw.planExtents(path, offset, length, maximumSpans));
+        return copyWorkspaceExtentPlan(await raw.planExtents(path, offset, length, maximumSpans));
       },
       async pin(identity) {
         if (identity.length === 0) throw new RangeError("workspace name must be non-empty");
@@ -38,7 +32,7 @@ export function createGenerationAdapter(
   }
   function rawGeneration(generation: FsGeneration): WasmRawGeneration {
     const raw = handles.get(generation);
-    if (raw === undefined) throw new TypeError(`generation belongs to another ${ownerLabel}`);
+    if (raw === undefined) throw new TypeError("generation belongs to another filesystem runtime");
     return raw;
   }
   return { adaptGeneration, rawGeneration };

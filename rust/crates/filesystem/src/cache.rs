@@ -24,8 +24,6 @@ use crate::storage::{
 };
 use acyclic_stream::OwnedBytes;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::async_storage::{NativeObjectRead, NativeObjectReadBatch};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::materializer::{NativeAllocation, NativeMaterializationWork};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
@@ -273,13 +271,13 @@ impl Flight {
                         replacement.values.try_reserve_exact(capacity).map_err(|error| ObjectStoreError::Native(
                             crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)))?;
                     }
-                    let copy = work.map(|work| work.reserve_copy((waiters.values.len() * size_of::<Waker>()) as u64)).transpose()?;
+                    let copy = work.map(|work| work.reserve_work(crate::WorkCounters { bytes_copied: (waiters.values.len() * size_of::<Waker>()) as u64, ..crate::WorkCounters::UNCHARGED })).transpose()?;
                     replacement.values.append(&mut waiters.values);
                     let copied = (replacement.values.len() * size_of::<Waker>()) as u64;
                     // Commit moved waiters before a late refusal, preserving all
                     // prior registrations. Free old storage before its guard.
                     drop(std::mem::replace(waiters, replacement));
-                    if let Some(copy) = copy { copy.record(copied)?; }
+                    if let Some(copy) = copy { { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }) }?; }
                     if let Some(work) = work {
                         KernelAccounting::native(work, work.cancellation())
                             .record_completed(WorkCounters::UNCHARGED)
@@ -795,7 +793,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(native) = native {
                 return self.inner.read_with_native_work(object_id, maximum_bytes, native, cancellation)
-                    .await.map(|read| ObjectReceipt { value: read.into_read(), work: WorkCounters::default() })
+                    .await.map(|read| ObjectReceipt { value: read, work: WorkCounters::default() })
                     .map_err(|error| (error, prior));
             }
             let remaining = prior.remaining(budget).map_err(|error| (error.into(), prior))?;
@@ -985,15 +983,13 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             #[cfg(not(target_arch = "wasm32"))] native,
         ).map_err(|error| (error, prepared.work))?;
         #[cfg(not(target_arch = "wasm32"))]
-        let copy = native.map(|native| native.reserve_copy(
-            (prepared.leaders.values.len() * size_of::<ObjectReadRequest>()) as u64,
-        )).transpose().map_err(|error| (error.into(), prepared.work))?;
+        let copy = native.map(|native| native.reserve_work(crate::WorkCounters { bytes_copied: (prepared.leaders.values.len() * size_of::<ObjectReadRequest>()) as u64, ..crate::WorkCounters::UNCHARGED })).transpose().map_err(|error| (error.into(), prepared.work))?;
         requests.values.extend(prepared.leaders.values.iter().map(|leader| ObjectReadRequest {
             object_id: leader.object_id, maximum_bytes: leader.maximum_bytes,
         }));
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(copy) = copy {
-            copy.record((requests.values.len() * size_of::<ObjectReadRequest>()) as u64)
+            { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: (requests.values.len() * size_of::<ObjectReadRequest>()) as u64, ..crate::WorkCounters::UNCHARGED }) }
                 .map_err(|error| (error.into(), prepared.work))?;
         }
         let mut guards = BatchBuffer::new(prepared.leaders.values.len(), "object cache flight guard allocation failed",
@@ -1007,7 +1003,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             if let Some(native) = native {
                 let batch = self.inner.read_many_with_native_work(&requests.values, native, cancellation).await
                     .map_err(|error| (error, prepared.work))?;
-                let (values, allocation) = batch.into_parts();
+                let (values, allocation) = batch;
                 return Ok(ObjectReceipt {
                     value: BatchBuffer { values, allocation: Some(KernelOwnedAllocation::NativeOriginal(allocation)) },
                     work: WorkCounters::default(),
@@ -1341,13 +1337,13 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         maximum_bytes: u64,
         work: &NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<NativeObjectRead, ObjectStoreError> {
+    ) -> Result<ObjectRead, ObjectStoreError> {
         let mut read = self.read_engine(object_id, maximum_bytes, work.remaining()?, cancellation, Some(work))
             .await.map_err(|(error, _)| error)?.value;
         // Genuine native backend bytes have intrinsic canonical OwnedBytes custody;
         // cache and flight clones share that owner, not a second body claim.
         read.retention = ObjectReadRetention::Shared;
-        NativeObjectRead::shared(read)
+        Ok(read)
     }
 
     async fn read_many(
@@ -1365,12 +1361,12 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
     #[cfg(not(target_arch = "wasm32"))]
     async fn read_many_with_native_work(
         &self, requests: &[ObjectReadRequest], work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<NativeObjectReadBatch, ObjectStoreError> {
+    ) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
         let receipt = self.read_many_engine(requests, work.remaining()?, cancellation, Some(work))
             .await.map_err(|(error, _)| error)?;
         let BatchBuffer { values, allocation } = receipt.value;
         match allocation {
-            Some(KernelOwnedAllocation::NativeOriginal(allocation)) => NativeObjectReadBatch::new(values, allocation),
+            Some(KernelOwnedAllocation::NativeOriginal(allocation)) => crate::async_storage::native_read_batch(values, allocation),
             _ => {
                 drop(values);
                 Err(ObjectStoreError::Corrupt)

@@ -729,15 +729,15 @@ pub enum DemandError {
     /// A held Linux metadata mutation failed without losing its typed cause.
     #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
     #[error(transparent)]
-    LinuxMetadata(#[from] crate::native_host::LinuxMetadataError),
+    LinuxMetadata(#[from] crate::native_host::NativeMetadataError),
     /// A held macOS metadata mutation failed without losing its typed cause.
     #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
     #[error(transparent)]
-    MacMetadata(#[from] crate::native_host::MacMetadataError),
+    MacMetadata(#[from] crate::native_host::NativeMetadataError),
     /// A held Windows metadata mutation failed without losing its typed cause.
     #[cfg(all(windows, any(feature = "native-mount", test)))]
     #[error(transparent)]
-    WindowsMetadata(#[from] crate::native_host::WindowsMetadataError),
+    WindowsMetadata(#[from] crate::native_host::NativeMetadataError),
 }
 
 impl From<std::io::Error> for DemandError {
@@ -1678,10 +1678,10 @@ pub(crate) trait SourceDemandReadWork:
     fn original_meter(&self) -> Option<&Arc<NativeDemandReadMeter>> { self.native_source_work().map(|work| work.original) }
     fn reserve_source_copy(
         &mut self, bytes: u64,
-    ) -> Result<Option<crate::materializer::NativeCopyReservation>, DemandError> {
+    ) -> Result<Option<crate::materializer::NativeWorkReservation>, DemandError> {
         self.check()?;
         if let Some(source) = self.native_source_work() {
-            return source.materialization_work()?.reserve_copy(bytes)
+            return source.materialization_work()?.reserve_work(crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED })
                 .map(Some).map_err(crate::native_name::original_name_error);
         }
         self.admit(WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED })?;
@@ -2033,7 +2033,7 @@ impl DemandWork {
             let mut admitted = delta;
             admitted.allocation_operations = admitted.allocation_operations.checked_add(operations)
                 .ok_or(crate::WorkError::Overflow)?;
-            return resource.admission(admitted, bytes, || self.with_resource_scope(None,
+            return resource.admission(admitted, bytes, &mut || self.with_resource_scope(None,
                 |work| work.claim_native_owned(bytes, operations, delta, capture)));
         }
         self.reconcile_cancellation_registry()?;
@@ -2055,7 +2055,7 @@ impl DemandWork {
         capture: &Option<std::sync::Arc<CaptureTransientCustody>>,
     ) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.admission(WorkCounters::UNCHARGED, bytes, || self.with_resource_scope(None, |work| work.retain_native_owned(bytes, capture)));
+            return resource.admission(WorkCounters::UNCHARGED, bytes, &mut || self.with_resource_scope(None, |work| work.retain_native_owned(bytes, capture)));
         }
         if self.cancellation_wait.native_poisoned { return Err(DemandError::OriginalWorkPoisoned); }
         self.allocations.claim_bytes(bytes, 0, &mut self.work, self.budget)
@@ -2114,7 +2114,7 @@ impl DemandWork {
 
     pub(crate) fn reserve_native_allocation(&mut self, bytes: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.reserve(crate::materializer::NativeResourceCredit::AllocationOperations.delta(1), bytes, None, || {
+            return resource.reserve(crate::materializer::NativeResourceCredit::AllocationOperations.delta(1), bytes, None, &mut || {
                 self.with_resource_scope(None, |work| work.reserve_native_allocation(bytes))
             });
         }
@@ -2131,7 +2131,7 @@ impl DemandWork {
 
     pub(crate) fn cancel_reserved_native_allocation(&mut self, bytes: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.settle_allocation(bytes, false, || {
+            return resource.settle_allocation(bytes, false, &mut || {
                 self.with_resource_scope(None, |work| work.cancel_reserved_native_allocation(bytes))
             });
         }
@@ -2147,7 +2147,7 @@ impl DemandWork {
 
     pub(crate) fn record_reserved_native_allocation(&mut self, bytes: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.settle_allocation(bytes, true, || {
+            return resource.settle_allocation(bytes, true, &mut || {
                 self.with_resource_scope(None, |work| work.record_reserved_native_allocation(bytes))
             });
         }
@@ -2169,7 +2169,7 @@ impl DemandWork {
             return Err(DemandError::InvalidRequest);
         }
         if let Some(resource) = self.resource_scope() {
-            return resource.reserve(maximum, 0, None, || self.with_resource_scope(None, |work| work.reserve_native_work(maximum)));
+            return resource.reserve(maximum, 0, None, &mut || self.with_resource_scope(None, |work| work.reserve_native_work(maximum)));
         }
         self.admit(maximum)?;
         let budget = maximum.remaining(self.budget)?;
@@ -2514,7 +2514,7 @@ impl DemandWork {
 
     pub(crate) fn charge(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.admission(delta, 0, || self.with_resource_scope(None, |work| work.charge(delta)));
+            return resource.admission(delta, 0, &mut || self.with_resource_scope(None, |work| work.charge(delta)));
         }
         self.reconcile_cancellation_registry()?;
         self.check()?;
@@ -2569,7 +2569,7 @@ impl DemandWork {
 
     pub(crate) fn reserve(&mut self, kind: crate::materializer::NativeResourceCredit, maximum: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.reserve(kind.delta(maximum), 0, None, || self.with_resource_scope(None, |work| work.reserve(kind, maximum)));
+            return resource.reserve(kind.delta(maximum), 0, None, &mut || self.with_resource_scope(None, |work| work.reserve(kind, maximum)));
         }
         let mut delta = WorkCounters::UNCHARGED;
         *Self::credit_counter(kind, &mut delta) = maximum;
@@ -2664,7 +2664,7 @@ impl DemandWork {
     pub(crate) fn adopt_retained(&mut self, bytes: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
             let delta = WorkCounters::UNCHARGED;
-            return resource.admission(delta, bytes, || self.with_resource_scope(None, |work| work.adopt_retained(bytes)));
+            return resource.admission(delta, bytes, &mut || self.with_resource_scope(None, |work| work.adopt_retained(bytes)));
         }
         self.allocations.claim_bytes(bytes, 0, &mut self.work, self.budget)
             .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
@@ -5071,7 +5071,7 @@ pub mod native {
                 grown.append(&mut active.slots);
                 let retired = std::mem::replace(&mut *active, CursorSlots { slots: grown, ownership });
                 let completed = if let Some(copy) = copy {
-                    copy.record(copied as u64).map_err(crate::native_name::original_name_error)
+                    { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: copied as u64, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)
                 } else {
                     work.record(WorkCounters { bytes_copied: copied as u64, ..WorkCounters::UNCHARGED })
                 };
@@ -5698,9 +5698,9 @@ pub mod native {
             let mut prepared = if work.is_native_original() {
                 let original = work.native_source_work().ok_or(DemandError::NativeWorkUnavailable)?
                     .materialization_work()?;
-                let copied = original.reserve_copy(capacity).map_err(crate::native_name::original_name_error)?;
+                let copied = original.reserve_work(crate::WorkCounters { bytes_copied: capacity, ..crate::WorkCounters::UNCHARGED }).map_err(crate::native_name::original_name_error)?;
                 bytes.resize(bytes.capacity(), 0);
-                copied.record(capacity).map_err(crate::native_name::original_name_error)?;
+                { let mut copy = copied; copy.record_completed(crate::WorkCounters { bytes_copied: capacity, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
                 Some(acyclic_stream::PreparedOwnedBytes::new(
                     std::mem::take(&mut bytes), ownership.take().expect("original source custody"),
                     original.runtime_meter_owner(),

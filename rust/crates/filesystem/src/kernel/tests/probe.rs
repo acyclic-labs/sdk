@@ -1185,7 +1185,7 @@ impl AsyncObjectStore for PanicProbeStore<'_> {
     async fn read_with_native_work(
         &self, object: ObjectId, maximum_bytes: u64, work: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
+    ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
         cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
         work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })
             .map_err(ObjectStoreError::Native)?;
@@ -1201,7 +1201,7 @@ impl AsyncObjectStore for PanicProbeStore<'_> {
     async fn read_many_with_native_work(
         &self, requests: &[crate::storage::ObjectReadRequest], work: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
+    ) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
         crate::async_storage::read_many_sequential_with_native_work(self, requests, work, cancellation).await
     }
 }

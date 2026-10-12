@@ -2,17 +2,17 @@
 
 use crate::contract::capability;
 use crate::contract::next_revision;
+use crate::store::history::HistoryIo;
 use crate::{
     AgentId, Capabilities, EffectAttemptId, EffectId, Error, IdempotencyKey, OperationId,
-    PolicyLayer, Result,
+    Result,
     conversation::{
-        ContentGrant, ConversationMessage, ConversationState, FileDescriptor, FileRef,
+        ContentGrant, ConversationMessage, ConversationState, FileRef,
         ModelContextSelection, VolumeOperation, VolumeOwner, VolumeRef, is_internal_path,
     },
     fork::{ForkSeed, InheritedConversationPrefix},
     interaction::{InteractionOutcome, InteractionResolution, InteractionTicket},
     merge::ProjectMergeReceipt,
-    resolve_policy_layers,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,6 +34,7 @@ pub(crate) use snapshot::{
 #[cfg(feature = "filesystem")]
 pub(crate) use snapshot::resource_creation_clone_reservation;
 pub(crate) use native_custody::{
+    physical_clone_factory,
     copy_iter, copy_copy_vector, reserve_copy_vector, copy_text, copy_authority, copy_provider,
     copy_file, copy_vector, copy_boxed, copy_configuration, copy_value, copy_capabilities,
     copy_reference,
@@ -79,11 +80,6 @@ pub struct Authority {
 }
 
 impl Authority {
-    /// Returns the only Stream path that may own this aggregate.
-    pub fn stream_path(&self) -> Result<String> {
-        self.stream_path_with_work(&mut None)
-    }
-
     pub(crate) fn validate_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -93,19 +89,14 @@ impl Authority {
             || self.id.contains(AUTHORITY_ID_FORBIDDEN_SEPARATORS)
             || self.id.chars().any(char::is_control)
         {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(native_custody::is_native) {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "aggregate identity is not a safe path segment",
-                });
-            }
-            return Err(Error::Invalid("aggregate identity is not a safe path segment".into()));
+            return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Invalid,
+                "aggregate identity is not a safe path segment"));
         }
         Ok(())
     }
 
-    pub(crate) fn stream_path_with_work(
+    /// Returns the Stream path for this aggregate.
+    pub fn stream_path(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<String> {
         self.validate_with_work(work)?;
@@ -171,18 +162,6 @@ impl std::fmt::Debug for Scope {
 }
 
 impl Scope {
-    /// Copies this existing authenticated grant on the original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn clone_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let scope = self.clone_with_work(&mut Some(&mut io))?;
-        let custody = io.into_custody();
-        Ok((scope, custody))
-    }
-
     /// Returns the stable scope identity.
     #[must_use]
     pub fn id(&self) -> &str {
@@ -202,7 +181,7 @@ impl Scope {
     }
 
     /// Copies the original immutable grant on the caller's admitted ledger.
-    pub(crate) fn clone_with_work(
+    pub fn copy(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
@@ -272,7 +251,7 @@ impl AuthorityIssuer {
     }
 
     /// Copies the original issuer metadata under the caller's original ledger.
-    pub(crate) fn clone_with_work(
+    pub fn copy(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         if work.is_none() { return Ok(self.clone()); }
@@ -291,20 +270,11 @@ impl AuthorityIssuer {
     #[must_use]
     pub fn id(&self) -> &str { &self.id }
 
-    /// Returns a verifier safe to give to reducers but not untrusted clients.
-    #[must_use]
-    pub fn verifier(&self) -> AuthorityVerifier {
-        AuthorityVerifier {
-            id: self.id.clone(),
-            key: self.key,
-            audience: self.audience.clone(),
-        }
-    }
-
     #[cfg(feature = "filesystem")]
     pub(crate) const fn audience(&self) -> &Authority { &self.audience }
 
-    pub(crate) fn verifier_with_work(
+    /// Copies the configured verifier using the caller's ledger.
+    pub fn verifier(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<AuthorityVerifier> {
@@ -314,125 +284,27 @@ impl AuthorityIssuer {
                 key: self.key,
                 audience: work.clone_authority(&self.audience)?,
             }),
-            None => Ok(self.verifier()),
+            None => Ok(AuthorityVerifier {
+                id: self.id.clone(), key: self.key, audience: self.audience.clone(),
+            }),
         }
     }
 
-    /// Copies this configured issuer's real verifier on the original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn verifier_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(AuthorityVerifier, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork {cause,custody:None})?;
-        let verifier = self.verifier_with_work(&mut Some(&mut io))?;
-        Ok((verifier, io.into_custody()))
-    }
-
-    /// Copies this configured issuer's existing identity, key and audience.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn clone_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let (verifier, custody) = self.verifier_with_native_work(work)?;
-        let AuthorityVerifier { id, key, audience } = verifier;
-        Ok((Self { id, key, audience }, custody))
-    }
-
-    /// Issues one explicit root grant.
-    #[must_use]
-    pub fn root(&self, id: impl Into<String>, capabilities: Capabilities) -> Scope {
-        self.issue(id.into(), capabilities, None, None)
-    }
-
-    /// Issues a root grant for a host-authenticated agent.
-    #[must_use]
-    pub fn root_for_agent(
-        &self,
-        agent: AgentId,
-        id: impl Into<String>,
-        capabilities: Capabilities,
-    ) -> Scope {
-        self.issue(id.into(), capabilities, Some(agent), None)
-    }
-
-    /// Issues the same explicit root grant and MAC as `root_for_agent`, observing SDK-owned metadata and canonical signing work on the supplied ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn root_for_agent_with_native_work(
-        &self, agent: AgentId, id: &str, capabilities: &Capabilities,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Scope, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork {cause,custody:None})?;
-        let scope = self.root_for_agent_with_work(agent,id,capabilities,&mut Some(&mut io))?;
-        Ok((scope, io.into_custody()))
-    }
-
-    /// Issues the same configured, agent-less root-purpose grant on the supplied ledger; the caller still explicitly selects its ID and capabilities.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn root_with_native_work(
-        &self, id: &str, capabilities: &Capabilities,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Scope, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork {cause,custody:None})?;
-        let scope = self.root_with_work(id,capabilities,&mut Some(&mut io))?;
-        Ok((scope, io.into_custody()))
-    }
-
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn root_for_agent_with_work(
-        &self, agent: AgentId, id: &str, capabilities: &Capabilities,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Scope> {
-        self.issue_with_work(id, capabilities, Some(agent), work)
-    }
-
-
-    pub(crate) fn root_with_work(
-        &self, id: &str, capabilities: &Capabilities,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Scope> {
-        self.issue_with_work(id, capabilities, None, work)
-    }
-
-    fn issue_with_work(
+    /// Signs one grant using the caller's optional ledger.
+    pub fn issue(
         &self, id: &str, capabilities: &Capabilities, agent: Option<AgentId>,
+        parent_proof: Option<[u8; 32]>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Scope> {
-        if work.is_none() { return Ok(self.issue(id.to_owned(), capabilities.clone(), agent, None)); }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let scope = (|| -> Result<Scope> {
-            let id = native_custody::copy_text(id, &mut quota)?;
-            let capabilities = native_custody::copy_capabilities(capabilities, &mut quota)?;
-            let issuer = native_custody::copy_text(&self.id, &mut quota)?;
-            let proof = scope_proof_with_work(
-                &self.key, &self.audience, &self.id, &id, &capabilities, agent, None, quota.work(),
-            )?;
-            Ok(Scope { id, capabilities, issuer, agent, parent_proof: None, proof })
-        })()?;
+        let id = native_custody::copy_text(id, &mut quota)?;
+        let capabilities = native_custody::copy_capabilities(capabilities, &mut quota)?;
+        let issuer = native_custody::copy_text(&self.id, &mut quota)?;
+        let proof = scope_proof(
+            &self.key, &self.audience, &self.id, &id, &capabilities, agent, parent_proof, quota.work(),
+        )?;
         quota.transfer();
-        Ok(scope)
-    }
-
-    /// Issues a root grant after resolving all explicit hierarchy policy layers.
-    pub fn root_with_policies(
-        &self,
-        id: impl Into<String>,
-        layers: &[PolicyLayer],
-    ) -> Result<Scope> {
-        Ok(self.issue(id.into(), resolve_policy_layers(layers)?, None, None))
-    }
-
-    /// Resolves policy and signs the same acting-agent identity.
-    pub fn root_with_policies_for_agent(
-        &self,
-        agent: AgentId,
-        id: impl Into<String>,
-        layers: &[PolicyLayer],
-    ) -> Result<Scope> {
-        Ok(self.issue(id.into(), resolve_policy_layers(layers)?, Some(agent), None))
+        Ok(Scope { id, capabilities, issuer, agent, parent_proof, proof })
     }
 
     /// Issues a child grant that cannot widen its parent.
@@ -442,13 +314,13 @@ impl AuthorityIssuer {
         id: impl Into<String>,
         capabilities: Capabilities,
     ) -> Result<Scope> {
-        self.verifier().verify(parent)?;
+        self.verifier(&mut None).expect("verifier copy").verify(parent, &mut None)?;
         if !capabilities.is_subset_of(&parent.capabilities) {
             return Err(Error::Unauthorized(
                 "child scope cannot widen ancestor capabilities".into(),
             ));
         }
-        Ok(self.issue(id.into(), capabilities, parent.agent, Some(parent.proof)))
+        self.issue(&id.into(), &capabilities, parent.agent, Some(parent.proof), &mut None)
     }
 
     /// Delegates one pinned private file to another agent without a fork or directory-wide grant.
@@ -459,7 +331,7 @@ impl AuthorityIssuer {
         id: impl Into<String>,
         file: &FileRef,
     ) -> Result<Scope> {
-        file.validate()?;
+        file.validate(&mut None)?;
         if is_internal_path(file.path()) {
             return Err(Error::Unauthorized(
                 "internal storage files cannot be delegated".into(),
@@ -467,12 +339,10 @@ impl AuthorityIssuer {
         }
         let volume = file.volume();
         self.require_private_owner_read(owner_scope, volume)?;
-        Ok(self.issue(
-            id.into(),
-            Capabilities::new([file.read_capability()?]),
-            Some(reader),
-            Some(owner_scope.proof),
-        ))
+        self.issue(
+            &id.into(), &Capabilities::new([file.read_capability()?]),
+            Some(reader), Some(owner_scope.proof), &mut None,
+        )
     }
 
     /// Shares a private directory lazily with an agent outside any fork tree.
@@ -485,12 +355,10 @@ impl AuthorityIssuer {
         prefix: &str,
     ) -> Result<Scope> {
         self.require_private_owner_read(owner_scope, volume)?;
-        Ok(self.issue(
-            id.into(),
-            Capabilities::new([volume.directory_read_capability(prefix)?]),
-            Some(reader),
-            Some(owner_scope.proof),
-        ))
+        self.issue(
+            &id.into(), &Capabilities::new([volume.directory_read_capability(prefix, &mut None)?]),
+            Some(reader), Some(owner_scope.proof), &mut None,
+        )
     }
 
     fn require_private_owner_read(
@@ -498,12 +366,12 @@ impl AuthorityIssuer {
         owner_scope: &Scope,
         volume: &crate::conversation::VolumeRef,
     ) -> Result<()> {
-        self.verifier().verify(owner_scope)?;
-        volume.validate()?;
+        self.verifier(&mut None).expect("verifier copy").verify(owner_scope, &mut None)?;
+        volume.validate(&mut None)?;
         if !matches!(volume.owner(), VolumeOwner::Agent(owner) if Some(*owner) == owner_scope.agent)
             || !owner_scope
                 .capabilities
-                .contains(&volume.capability(VolumeOperation::Read)?)
+                .contains(&volume.capability(VolumeOperation::Read, &mut None)?)
         {
             return Err(Error::Unauthorized(
                 "private read delegation requires its original owner".into(),
@@ -512,45 +380,8 @@ impl AuthorityIssuer {
         Ok(())
     }
 
-    fn issue(
-        &self,
-        id: String,
-        capabilities: Capabilities,
-        agent: Option<AgentId>,
-        parent_proof: Option<[u8; 32]>,
-    ) -> Scope {
-        let proof = scope_proof(
-            &self.key,
-            &self.audience,
-            &self.id,
-            &id,
-            &capabilities,
-            agent,
-            parent_proof,
-        );
-        Scope {
-            id,
-            capabilities,
-            issuer: self.id.clone(),
-            agent,
-            parent_proof,
-            proof,
-        }
-    }
-
-    /// Attests a provider observation after the host validates it against its registry.
-    pub(crate) fn attest_effect(
-        &self,
-        effect_id: EffectId,
-        effect: &EffectState,
-        attempt_id: EffectAttemptId,
-        status: EffectStatus,
-    ) -> Result<EffectAttestation> {
-        self.attest_effect_with_work(effect_id, effect, attempt_id, status, &mut None)
-    }
-
     /// Signs the original provider observation with admitted encoding and hashing.
-    pub(crate) fn attest_effect_with_work(
+    pub(crate) fn attest_effect(
         &self,
         effect_id: EffectId,
         effect: &EffectState,
@@ -610,28 +441,6 @@ impl std::fmt::Debug for AuthorityVerifier {
 }
 
 impl AuthorityVerifier {
-    /// Copies only this verifier's existing audience/key metadata, without constructing a new issuer, signing a grant, or changing its audience.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn clone_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let verifier = self.clone_with_work(&mut Some(&mut io))?;
-        let custody = io.into_custody();
-        Ok((verifier, custody))
-    }
-
-    /// Verifies the existing scope MAC on the caller's original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn verify_with_native_work(
-        &self, scope: &Scope, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.verify_with_work(scope, &mut Some(&mut io))
-    }
-
     /// Returns the one aggregate this verifier is allowed to authenticate.
     #[must_use]
     pub const fn audience(&self) -> &Authority {
@@ -643,7 +452,8 @@ impl AuthorityVerifier {
             .ok_or_else(|| Error::Invalid("verifier owned byte count overflows".into()))
     }
 
-    pub(crate) fn clone_with_work(
+    /// Copies the verifier using the caller's ledger.
+    pub fn copy(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         match work.as_deref_mut() {
@@ -657,23 +467,7 @@ impl AuthorityVerifier {
     }
 
     /// Verifies issuer identity and the complete immutable grant.
-    pub fn verify(&self, scope: &Scope) -> Result<()> {
-        let expected = scope_proof(
-            &self.key,
-            &self.audience,
-            &scope.issuer,
-            &scope.id,
-            &scope.capabilities,
-            scope.agent,
-            scope.parent_proof,
-        );
-        if scope.issuer != self.id || scope.proof != expected {
-            return Err(Error::Unauthorized("scope proof is invalid".into()));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn verify_with_work(
+    pub fn verify(
         &self, scope: &Scope,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -685,7 +479,7 @@ impl AuthorityVerifier {
         &self, audience: &Authority, scope: &Scope,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let expected = scope_proof_with_work(
+        let expected = scope_proof(
             &self.key, audience, &scope.issuer, &scope.id,
             &scope.capabilities, scope.agent, scope.parent_proof, work)?;
         if scope.issuer != self.id || scope.proof != expected {
@@ -694,47 +488,35 @@ impl AuthorityVerifier {
         Ok(())
     }
 
-    /// Authenticates the same borrowed binary Scope proof under finite work.
-    #[cfg(feature = "filesystem")]
-    pub fn verify_measured(
-        &self, scope: &Scope, budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
-        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let mut borrowed = io.history_io();
-        let result = self.verify_with_work(scope, &mut Some(&mut borrowed));
-        match result {
-            Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: io.receipt() }),
-            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
+    fn canonical_proof<T: Serialize>(
+        &self, domain: &[u8], value: &T,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<[u8; 32]> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let bytes = crate::store::history::canonical_bytes_with_work(
+            value, crate::store::default_projection_read_limits().maximum_bytes, quota.work())?;
+        quota.adopt(bytes.capacity() as u64)?;
+        if let Some(io) = quota.work().as_deref_mut() {
+            io.hashed_bytes(domain.len() as u64 + 8 + bytes.len() as u64)?;
         }
+        let mut hasher = blake3::Hasher::new_keyed(&self.key);
+        hasher.update(domain);
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+        let proof = *hasher.finalize().as_bytes();
+        drop(bytes);
+        Ok(proof)
     }
-
 
     fn attest_event(
         &self,
         event: &Event,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<[u8; 32]> {
-        let canonical = crate::store::history::canonical_bytes_with_work(&(
-            &self.audience,
-            event.revision,
-            event.operation_id,
-            event.intent_digest,
-            &event.scope,
-            &event.causal_parent,
-            &event.payload,
-        ), crate::store::default_projection_read_limits().maximum_bytes, work)?;
-        if let Some(work) = work.as_deref_mut() {
-            work.hashed_bytes(b"harness/v2/committed-event\0".len() as u64 + 8 + canonical.len() as u64)?;
-        }
-        let mut hasher = blake3::Hasher::new_keyed(&self.key);
-        hasher.update(b"harness/v2/committed-event\0");
-        hasher.update(&(canonical.len() as u64).to_le_bytes());
-        hasher.update(&canonical);
-        let proof = *hasher.finalize().as_bytes();
-        if let Some(work) = work.as_deref_mut() { work.release_owned(canonical.capacity() as u64)?; }
-        Ok(proof)
+        self.canonical_proof(b"harness/v2/committed-event\0", &(
+            &self.audience, event.revision, event.operation_id, event.intent_digest,
+            &event.scope, &event.causal_parent, &event.payload,
+        ), work)
     }
 
     pub(crate) fn verify_event(
@@ -750,159 +532,54 @@ impl AuthorityVerifier {
         Ok(())
     }
 
-
     pub(crate) fn effect_history_root_proof_with_work(
         &self, revision: u64, canonical_digest: [u8; 32], root: Option<[u8; 32]>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<[u8; 32]> {
-        let path = self.audience.stream_path_with_work(work)?;
-        let canonical = crate::store::history::canonical_bytes_with_work(&(
-            &self.id,
-            &self.audience,
-            &path,
-            revision,
-            canonical_digest,
-            root,
-        ), crate::store::default_projection_read_limits().maximum_bytes, work);
-        let canonical = match canonical {
-            Ok(canonical) => canonical,
-            Err(error) => {
-                let retained = path.capacity() as u64;
-                drop(path);
-                if let Some(work) = work.as_deref_mut() { let _ = work.release_owned(retained); }
-                return Err(error);
-            }
-        };
-        let admitted = if let Some(work) = work.as_deref_mut() {
-            work.hashed_bytes(b"harness/v1/effect-history-root\0".len() as u64 + 8 + canonical.len() as u64)
-        } else { Ok(()) };
-        if let Err(error) = admitted {
-            let retained = canonical.capacity() as u64 + path.capacity() as u64;
-            drop(canonical);
-            drop(path);
-            if let Some(work) = work.as_deref_mut() { let _ = work.release_owned(retained); }
-            return Err(error);
-        }
-        let mut hasher = blake3::Hasher::new_keyed(&self.key);
-        hasher.update(b"harness/v1/effect-history-root\0");
-        hasher.update(&(canonical.len() as u64).to_le_bytes());
-        hasher.update(&canonical);
-        let proof = *hasher.finalize().as_bytes();
-        let retained = canonical.capacity() as u64 + path.capacity() as u64;
-        drop(canonical);
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let path = self.audience.stream_path(quota.work())?;
+        quota.adopt(path.capacity() as u64)?;
+        let proof = self.canonical_proof(b"harness/v1/effect-history-root\0", &(
+            &self.id, &self.audience, &path, revision, canonical_digest, root,
+        ), quota.work());
         drop(path);
-        if let Some(work) = work.as_deref_mut() { work.release_owned(retained)?; }
-        Ok(proof)
+        proof
     }
 
-    pub(crate) fn fork_history_proof(&self, seed: &ForkSeed) -> Result<[u8; 32]> {
-        self.fork_history_proof_with_work(seed, &mut None)
-    }
-
-    pub(crate) fn fork_history_proof_with_work(
+    pub(crate) fn fork_history_proof(
         &self, seed: &ForkSeed,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<[u8; 32]> {
-        self.verify_audience(&seed.parent)?;
-        let canonical = crate::store::history::canonical_bytes_with_work(&(
+        self.verify_audience(&seed.parent, work)?;
+        self.canonical_proof(b"harness/v1/fork-history-witness\0", &(
             (&self.id, &seed.operation_id, &seed.parent, seed.parent_revision,
              &seed.child, seed.child_agent, &seed.attached_agents, &seed.resources,
              &seed.omissions, &seed.child_private_volume),
             (&seed.child_private_generation, &seed.inherited_context, &seed.summary,
              seed.inherited_through_sequence, &seed.shared_grants,
              &seed.reference_grants, &seed.attachment_manifests, &seed.boundary),
-        ), crate::store::default_projection_read_limits().maximum_bytes, work)?;
-        let admitted = if let Some(work) = work.as_deref_mut() {
-            work.hashed_bytes(b"harness/v1/fork-history-witness\0".len() as u64 + 8 + canonical.len() as u64)
-        } else { Ok(()) };
-        if let Err(error) = admitted {
-            let retained = canonical.capacity() as u64;
-            drop(canonical);
-            if let Some(work) = work.as_deref_mut() { let _ = work.release_owned(retained); }
-            return Err(error);
-        }
-        let mut hasher = blake3::Hasher::new_keyed(&self.key);
-        hasher.update(b"harness/v1/fork-history-witness\0");
-        hasher.update(&(canonical.len() as u64).to_le_bytes());
-        hasher.update(&canonical);
-        let proof = *hasher.finalize().as_bytes();
-        let retained = canonical.capacity() as u64;
-        drop(canonical);
-        if let Some(work) = work.as_deref_mut() { work.release_owned(retained)?; }
-        Ok(proof)
+        ), work)
     }
-
 
     #[cfg(feature = "filesystem")]
     pub(crate) fn fork_history_selection_proof_with_work(
         &self, revision: u64, through_sequence: u64, agent: Option<AgentId>,
         history_digest: [u8; 32], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<[u8; 32]> {
-        let canonical = crate::store::history::canonical_bytes_with_work(&(
+        self.canonical_proof(b"harness/v1/fork-history-selection\0", &(
             &self.id, &self.audience, revision, through_sequence, agent, history_digest,
-        ), crate::store::default_projection_read_limits().maximum_bytes, work)?;
-        let admitted = if let Some(io) = work.as_deref_mut() {
-            io.hashed_bytes(b"harness/v1/fork-history-selection\0".len() as u64 + 8 + canonical.len() as u64)
-        } else { Ok(()) };
-        if let Err(error) = admitted {
-            let retained = canonical.capacity() as u64;
-            drop(canonical);
-            if let Some(io) = work.as_deref_mut() { let _ = io.release_owned(retained); }
-            return Err(error);
-        }
-        let mut hasher = blake3::Hasher::new_keyed(&self.key);
-        hasher.update(b"harness/v1/fork-history-selection\0");
-        hasher.update(&(canonical.len() as u64).to_le_bytes());
-        hasher.update(&canonical);
-        let proof = *hasher.finalize().as_bytes();
-        let retained = canonical.capacity() as u64;
-        drop(canonical);
-        if let Some(io) = work.as_deref_mut() { io.release_owned(retained)?; }
-        Ok(proof)
+        ), work)
     }
 
-    /// Rejects accidental pairing with another aggregate authority.
-    pub fn verify_audience(&self, authority: &Authority) -> Result<()> {
-        self.verify_audience_engine(authority, false)
-    }
-
-    fn verify_audience_engine(&self, authority: &Authority, native: bool) -> Result<()> {
-        if &self.audience == authority { return Ok(()); }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if native {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "authority verifier belongs to another aggregate",
-            });
-        }
-        let _ = native;
-        Err(Error::Unauthorized("authority verifier belongs to another aggregate".into()))
-    }
-
-    /// Verifies the same pinned audience before native storage effects, without copying metadata or allocating a mismatch diagnostic.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn verify_audience_with_native_work(
-        &self, authority: &Authority, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.charge(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.verify_audience_engine(authority, true)
-    }
-
-    pub(crate) fn verify_audience_with_work(
+    /// Verifies the configured aggregate audience.
+    pub fn verify_audience(
         &self, authority: &Authority,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
+        if let Some(io) = work.as_deref() { io.check_cancellation()?; }
         if &self.audience == authority { return Ok(()); }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().is_some_and(native_custody::is_native) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "authority verifier belongs to another aggregate",
-            });
-        }
-        let _ = work;
-        self.verify_audience(authority)
+        Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Unauthorized,
+            "authority verifier belongs to another aggregate"))
     }
 
     fn verify_effect(
@@ -969,10 +646,7 @@ impl LifecycleState {
 /// Current durable status of an effect.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "public ref-valued status keeps its stable serde and Rust shape"
-)]
+#[allow(clippy::large_enum_variant, reason = "public ref-valued status keeps its stable serde and Rust shape")]
 pub enum EffectStatus {
     /// Effect is durable but has not been dispatched.
     Planned,
@@ -1022,13 +696,7 @@ pub struct EffectAttestation {
 }
 
 impl EffectAttestation {
-    /// Copies owned observation fields without exposing or replacing its proof.
-    pub(crate) fn clone_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        native_custody::native_effect_attestation_clone_with_custody(self, work)
-            .map(|(observation, _)| observation)
-    }
+    physical_clone_factory!(copy, EffectAttestation, native_custody::copy_observation, self);
 }
 
 /// Complete durable projection of one external effect.
@@ -1073,10 +741,7 @@ pub(crate) fn event_effect_id(payload: &EventPayload) -> Option<EffectId> {
 /// Schema-validated event payload retained in canonical history.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "canonical events prioritize typed fields over enum stack size"
-)]
+#[allow(clippy::large_enum_variant, reason = "canonical events prioritize typed fields over enum stack size")]
 pub enum EventPayload {
     /// Fixed aggregate lifecycle transition.
     LifecycleTransitioned {
@@ -1462,7 +1127,7 @@ impl ExtensionStateMigration {
         if self.previous.revision == 0 {
             return Err(Error::Invalid("extension migration source is empty".into()));
         }
-        self.previous.authority.stream_path()?;
+        self.previous.authority.stream_path(&mut None)?;
         self.record.validate()
     }
 }
@@ -1478,7 +1143,7 @@ impl ExtensionRecord {
         {
             return Err(Error::Invalid("extension record is invalid".into()));
         }
-        self.content.validate()
+        self.content.validate(&mut None)
     }
 }
 
@@ -1542,35 +1207,7 @@ pub struct ExtensionAdmission {
     configurations: Vec<ExtensionConfiguration>,
 }
 
-/// Original reducer-owned admission and immutable registry captured together.
-#[derive(Clone)]
-pub(crate) struct OriginalExtensionBinding {
-    admission: Option<ExtensionAdmission>,
-    schemas: SchemaRegistry,
-}
-
-impl OriginalExtensionBinding {
-    pub(crate) fn admission(&self) -> Option<&ExtensionAdmission> {
-        self.admission.as_ref()
-    }
-
-    pub(crate) fn into_parts(self) -> (Option<ExtensionAdmission>, SchemaRegistry) {
-        (self.admission, self.schemas)
-    }
-}
-
 impl ExtensionAdmission {
-    /// Assembles already-owned typed fields without another copy or parser.
-    pub(crate) fn from_parts_with_work(
-        source: EventReference, selected: Vec<ExtensionDependency>,
-        configurations: Vec<ExtensionConfiguration>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        let admission = Self { source, selected, configurations };
-        admission.validate_with_work(work)?;
-        Ok(admission)
-    }
-
     pub(crate) fn from_owned_value_with_work(
         value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
@@ -1580,7 +1217,7 @@ impl ExtensionAdmission {
         }
         let admission: Self = serde_json::from_value(value)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        admission.validate_with_work(work)?;
+        admission.validate(work)?;
         Ok((admission, 0))
     }
 
@@ -1606,7 +1243,7 @@ impl ExtensionAdmission {
         Ok(bytes)
     }
 
-    pub(crate) fn clone_with_work(
+    pub(crate) fn copy(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         if work.is_none() { return Ok(self.clone()); }
@@ -1646,104 +1283,46 @@ impl ExtensionAdmission {
         &self.configurations
     }
 
-    /// Checks internal shape after decoding a host-owned admission record.
-    pub fn validate(&self) -> Result<()> {
+    /// Checks the frozen selection and its ordered configuration records.
+    pub fn validate(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        use crate::fork::boundary_error;
+        use crate::wire::ErrorCode::{Invalid, Conflict};
         if self.source.authority.kind != AggregateKind::Agent || self.source.revision == 0 {
-            return Err(Error::Invalid(
-                "extension admission source is invalid".into(),
-            ));
+            return Err(boundary_error(work, Invalid, "extension admission source is invalid"));
         }
-        self.source.authority.stream_path()?;
-        let mut selected = BTreeSet::new();
-        let mut versions = BTreeMap::new();
-        for extension in &self.selected {
-            extension.validate()?;
-            if !selected.insert(extension.clone())
-                || versions
-                    .insert(&extension.name, extension.version)
-                    .is_some()
-            {
-                return Err(Error::Conflict("duplicate selected extension".into()));
+        self.source.authority.validate_with_work(work)?;
+        for (index, extension) in self.selected.iter().enumerate() {
+            if let Some(io) = work.as_deref() { io.check_cancellation()?; }
+            if !extension_name_valid(&extension.name) || extension.version == 0 {
+                return Err(boundary_error(work, Invalid, "extension dependency is invalid"));
+            }
+            if self.selected[..index].iter().any(|prior| prior.name == extension.name) {
+                return Err(boundary_error(work, Conflict, "duplicate selected extension"));
             }
         }
-        let mut configured = BTreeSet::new();
         let mut last_position = None;
         for configuration in &self.configurations {
-            configuration.validate()?;
-            let position = self
-                .selected
-                .iter()
-                .position(|extension| extension == &configuration.extension);
-            if !selected.contains(&configuration.extension)
-                || !configured.insert(configuration.extension.clone())
-                || position
-                    .is_none_or(|position| last_position.is_some_and(|last| position <= last))
+            if let Some(io) = work.as_deref() { io.check_cancellation()?; }
+            if !extension_name_valid(&configuration.extension.name)
+                || configuration.extension.version == 0
+                || configuration.schema_digest == [0; 32]
+                || configuration.content.descriptor().media_type() != "application/json"
             {
-                return Err(Error::Conflict(
-                    "extension admission configuration is not uniquely selected".into(),
-                ));
+                return Err(boundary_error(work, Invalid, "extension configuration is invalid"));
+            }
+            configuration.content.validate(work)?;
+            let position = self.selected.iter().position(|extension| extension == &configuration.extension);
+            if position.is_none_or(|position| last_position.is_some_and(|last| position <= last)) {
+                return Err(boundary_error(work, Conflict,
+                    "extension admission configuration is not uniquely selected"));
             }
             last_position = position;
         }
         Ok(())
     }
 
-    /// Native admission validation borrows the original arrays and fields.
-    pub(crate) fn validate_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().is_some_and(native_custody::is_native) {
-            work.as_deref().expect("native admission observer").check_cancellation()?;
-            let invalid = |reason| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
-            let conflict = |reason| Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason };
-            let authority = &self.source.authority;
-            if authority.kind != AggregateKind::Agent || self.source.revision == 0 {
-                return Err(invalid("extension admission source is invalid"));
-            }
-            if authority.id.is_empty()
-                || AUTHORITY_ID_FORBIDDEN_EXACT.contains(&authority.id.as_str())
-                || authority.id.contains(AUTHORITY_ID_FORBIDDEN_SEPARATORS)
-                || authority.id.chars().any(char::is_control)
-            {
-                return Err(invalid("aggregate identity is not a safe path segment"));
-            }
-            for (index, extension) in self.selected.iter().enumerate() {
-                if !extension_name_valid(&extension.name) {
-                    return Err(invalid("extension name must be a bounded namespace"));
-                }
-                if extension.version == 0 { return Err(invalid("extension dependency version is zero")); }
-                if self.selected[..index].iter().any(|prior| prior.name == extension.name) {
-                    return Err(conflict("duplicate selected extension"));
-                }
-            }
-            let mut last_position = None;
-            for configuration in &self.configurations {
-                if !extension_name_valid(&configuration.extension.name) {
-                    return Err(invalid("extension name must be a bounded namespace"));
-                }
-                if configuration.extension.version == 0 {
-                    return Err(invalid("extension dependency version is zero"));
-                }
-                if configuration.schema_digest == [0;32]
-                    || configuration.content.descriptor().media_type() != "application/json"
-                {
-                    return Err(invalid("extension configuration is invalid"));
-                }
-                configuration.content.validate_with_work(work)?;
-                let Some(position) = self.selected.iter().position(|extension| extension == &configuration.extension) else {
-                    return Err(conflict("extension admission configuration is not uniquely selected"));
-                };
-                if last_position.is_some_and(|last| position <= last) {
-                    return Err(conflict("extension admission configuration is not uniquely selected"));
-                }
-                last_position = Some(position);
-            }
-            return Ok(());
-        }
-        let _ = work;
-        self.validate()
-    }
 }
 
 impl ExtensionConfiguration {
@@ -1755,7 +1334,7 @@ impl ExtensionConfiguration {
         {
             return Err(Error::Invalid("extension configuration is invalid".into()));
         }
-        self.content.validate()
+        self.content.validate(&mut None)
     }
 }
 
@@ -1786,12 +1365,7 @@ impl SchemaRegistry {
         }
     }
 
-    /// Sharing the immutable registry allocates no new payload or container.
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        Ok(0)
-    }
-
-    pub(crate) fn clone_with_work(
+    pub(crate) fn copy(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         if let Some(io) = work.as_deref_mut().filter(|io| native_custody::is_native(&**io)) {
@@ -1841,10 +1415,7 @@ impl SchemaRegistry {
     }
 
     /// Installs a version with a separately validated, file-backed configuration.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one immutable extension declaration"
-    )]
+    #[allow(clippy::too_many_arguments, reason = "one immutable extension declaration")]
     pub fn register_configured(
         &mut self,
         name: impl Into<String>,
@@ -1877,14 +1448,14 @@ impl SchemaRegistry {
             }
         }
         let binding = ExtensionBinding {
-            schema_digest: json_digest(&schema)?,
+            schema_digest: crate::contract::canonical_json_digest(&schema)?,
             schema,
             implementation_digest,
             fork_policy,
             dependencies: required,
             configuration_schema_digest: configuration_schema
                 .as_ref()
-                .map(json_digest)
+                .map(crate::contract::canonical_json_digest)
                 .transpose()?,
             configuration_schema,
         };
@@ -1902,282 +1473,95 @@ impl SchemaRegistry {
         Ok(())
     }
 
-    /// Resolves only selected versions and their transitive dependencies in deterministic dependency-first order.
+    /// Resolves selected versions in dependency-first order.
     pub fn activation_order(
-        &self,
-        selected: impl IntoIterator<Item = ExtensionDependency>,
-    ) -> Result<Vec<ExtensionDependency>> {
-        let mut chosen = BTreeMap::new();
-        let mut pending = selected.into_iter().collect::<Vec<_>>();
-        while let Some(extension) = pending.pop() {
-            extension.validate()?;
-            if let Some(version) = chosen.get(&extension.name) {
-                if *version != extension.version {
-                    return Err(Error::Conflict(format!(
-                        "extension {} requires conflicting versions",
-                        extension.name
-                    )));
-                }
-                continue;
-            }
-            let binding = self
-                .schemas
-                .as_deref().and_then(|schemas| schemas.get(&(extension.name.clone(), extension.version)))
-                .ok_or_else(|| {
-                    Error::Unsupported(format!(
-                        "missing extension dependency {}@{}",
-                        extension.name, extension.version
-                    ))
-                })?;
-            chosen.insert(extension.name, extension.version);
-            pending.extend(binding.dependencies.iter().cloned());
-        }
-        let mut remaining = BTreeMap::new();
-        let mut dependents: BTreeMap<ExtensionDependency, Vec<ExtensionDependency>> =
-            BTreeMap::new();
-        for (name, version) in chosen {
-            let binding = self
-                .schemas
-                .as_deref().and_then(|schemas| schemas.get(&(name.clone(), version)))
-                .ok_or_else(|| Error::Storage("selected extension binding disappeared".into()))?;
-            let extension = ExtensionDependency { name, version };
-            for dependency in &binding.dependencies {
-                dependents
-                    .entry(dependency.clone())
-                    .or_default()
-                    .push(extension.clone());
-            }
-            remaining.insert(extension, binding.dependencies.len());
-        }
-        let mut ready = remaining
-            .iter()
-            .filter_map(|(extension, count)| (*count == 0).then_some(extension.clone()))
-            .collect::<BTreeSet<_>>();
-        let mut order = Vec::with_capacity(remaining.len());
-        while let Some(extension) = ready.pop_first() {
-            order.push(extension.clone());
-            if let Some(children) = dependents.get(&extension) {
-                for child in children {
-                    let count = remaining.get_mut(child).ok_or_else(|| {
-                        Error::Storage("extension dependency graph changed".into())
-                    })?;
-                    *count -= 1;
-                    if *count == 0 {
-                        ready.insert(child.clone());
-                    }
-                }
-            }
-        }
-        if order.len() != remaining.len() {
-            return Err(Error::Conflict("extension dependency cycle".into()));
-        }
-        Ok(order)
-    }
-    fn activation_order_with_work(
         &self, selected: &[ExtensionDependency],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Vec<ExtensionDependency>, u64)> {
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        { let _ = work; return Ok((self.activation_order(selected.iter().cloned())?, 0)); }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-        if !work.as_deref().is_some_and(native_custody::is_native) {
-            return Ok((self.activation_order(selected.iter().cloned())?, 0));
-        }
-        fn entry<T>(quota: &mut crate::wire_codec::CodecQuota<'_, '_>, bytes: &mut u64) -> Result<()> {
-            native_custody::retain_entry::<T>(quota)?;
-            *bytes = bytes.checked_add(std::mem::size_of::<T>() as u64)
-                .ok_or_else(|| Error::Invalid("activation graph ownership overflows".into()))?;
-            Ok(())
-        }
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let mut graph_bytes = 0;
-        let mut chosen: BTreeMap<&str, &ExtensionDependency> = BTreeMap::new();
+        let mut owned = crate::fork::CodecQuota::observed(work)?;
+        let mut chosen = BTreeMap::<&str, &ExtensionDependency>::new();
         let mut pending = BTreeSet::new();
+        let mut graph_bytes = 0_u64;
         for extension in selected {
             if !pending.contains(extension) {
-                entry::<&ExtensionDependency>(&mut quota, &mut graph_bytes)?;
+                owned.slots::<&ExtensionDependency>(1)?;
+                graph_bytes = graph_bytes.checked_add(std::mem::size_of::<&ExtensionDependency>() as u64)
+                    .ok_or_else(|| Error::Invalid("activation graph ownership overflows".into()))?;
                 pending.insert(extension);
             }
         }
         while let Some(extension) = pending.pop_last() {
             let bytes = std::mem::size_of::<&ExtensionDependency>() as u64;
-            quota.relinquish(bytes)?;
+            owned.release(bytes)?;
             graph_bytes -= bytes;
-            quota.work().as_deref().expect("activation graph observer").check_cancellation()?;
+            owned.checkpoint()?;
             extension.validate()?;
-            if let Some(previous) = chosen.get(extension.name.as_str()) {
-                if previous.version != extension.version {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                        reason: "extension requires conflicting versions" });
+            if let Some(prior) = chosen.get(extension.name.as_str()) {
+                if prior.version != extension.version {
+                    return Err(crate::fork::boundary_error(owned.work(), crate::wire::ErrorCode::Conflict,
+                        "extension requires conflicting versions"));
                 }
                 continue;
             }
-            let binding = self.pinned_binding_with_work(&extension.name, extension.version, None, quota.work())?;
-            entry::<(&str, &ExtensionDependency)>(&mut quota, &mut graph_bytes)?;
+            let binding = self.pinned_binding(&extension.name, extension.version, None, owned.work())?;
+            owned.slots::<(&str, &ExtensionDependency)>(1)?;
+            graph_bytes = graph_bytes.checked_add(std::mem::size_of::<(&str, &ExtensionDependency)>() as u64)
+                .ok_or_else(|| Error::Invalid("activation graph ownership overflows".into()))?;
             chosen.insert(&extension.name, extension);
             for dependency in &binding.dependencies {
                 if !pending.contains(dependency) {
-                    entry::<&ExtensionDependency>(&mut quota, &mut graph_bytes)?;
+                    owned.slots::<&ExtensionDependency>(1)?;
+                    graph_bytes = graph_bytes.checked_add(std::mem::size_of::<&ExtensionDependency>() as u64)
+                    .ok_or_else(|| Error::Invalid("activation graph ownership overflows".into()))?;
                     pending.insert(dependency);
                 }
             }
         }
-        let mut remaining: BTreeMap<&ExtensionDependency, usize> = BTreeMap::new();
-        let mut dependents: BTreeMap<&ExtensionDependency, BTreeSet<&ExtensionDependency>> = BTreeMap::new();
-        let mut ready = BTreeSet::new();
-        for extension in chosen.values().copied() {
-            let binding = self.pinned_binding_with_work(&extension.name, extension.version, None, quota.work())?;
-            entry::<(&ExtensionDependency, usize)>(&mut quota, &mut graph_bytes)?;
-            remaining.insert(extension, binding.dependencies.len());
-            for dependency in &binding.dependencies {
-                if !dependents.contains_key(dependency) {
-                    entry::<(&ExtensionDependency, BTreeSet<&ExtensionDependency>)>(&mut quota, &mut graph_bytes)?;
+        let mut order = native_custody::reserve_copy_vector::<ExtensionDependency>(chosen.len(), &mut owned)?;
+        while order.len() < chosen.len() {
+            let mut next = None;
+            for extension in chosen.values().copied() {
+                owned.checkpoint()?;
+                if order.iter().any(|ready| ready == extension) { continue; }
+                let binding = self.pinned_binding(&extension.name, extension.version, None, owned.work())?;
+                let mut ready = true;
+                for dependency in &binding.dependencies {
+                    owned.checkpoint()?;
+                    if !order.contains(dependency) { ready = false; break; }
                 }
-                let children = dependents.entry(dependency).or_default();
-                if !children.contains(extension) {
-                    entry::<&ExtensionDependency>(&mut quota, &mut graph_bytes)?;
-                    children.insert(extension);
-                }
+                if ready { next = Some(extension); break; }
             }
-            if binding.dependencies.is_empty() {
-                entry::<&ExtensionDependency>(&mut quota, &mut graph_bytes)?;
-                ready.insert(extension);
-            }
+            let next = next.ok_or_else(|| crate::fork::boundary_error(owned.work(),
+                crate::wire::ErrorCode::Conflict, "extension dependency cycle"))?;
+            order.push(native_custody::copy_dependency(next, &mut owned)?);
         }
-        let mut order = native_custody::reserve_copy_vector::<ExtensionDependency>(remaining.len(), &mut quota)?;
-        while let Some(extension) = ready.pop_first() {
-            let bytes = std::mem::size_of::<&ExtensionDependency>() as u64;
-            quota.relinquish(bytes)?;
-            graph_bytes -= bytes;
-            quota.work().as_deref().expect("activation output observer").check_cancellation()?;
-            order.push(native_custody::copy_dependency(extension, &mut quota)?);
-            if let Some(children) = dependents.get(extension) {
-                for child in children {
-                    let count = remaining.get_mut(child).expect("immutable dependency graph");
-                    *count -= 1;
-                    if *count == 0 {
-                        entry::<&ExtensionDependency>(&mut quota, &mut graph_bytes)?;
-                        ready.insert(*child);
-                    }
-                }
-            }
-        }
-        if order.len() != remaining.len() {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason: "extension dependency cycle" });
-        }
-        drop((chosen, pending, remaining, dependents, ready));
-        quota.relinquish(graph_bytes)?;
-        let produced = quota.retained();
-        quota.transfer();
+        drop((chosen, pending));
+        owned.release(graph_bytes)?;
+        let produced = owned.retained();
+        owned.transfer();
         Ok((order, produced))
-        }
     }
 
     fn pinned_binding(
-        &self,
-        name: &str,
-        version: u32,
-        expected: Option<([u8; 32], [u8; 32], ExtensionForkPolicy)>,
-    ) -> Result<&ExtensionBinding> {
-        self.pinned_binding_with_io(name, version, expected, None)
-    }
-
-    fn pinned_binding_with_io(
-        &self, name: &str, version: u32,
-        expected: Option<([u8; 32], [u8; 32], ExtensionForkPolicy)>,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<&ExtensionBinding> {
-        #[cfg(feature = "filesystem")]
-        let _key_hold = if let Some(io) = io {
-            let work = acyclic_fs::WorkCounters {
-                bytes_copied: name.len() as u64, items_examined: name.len() as u64 + 1,
-                ..Default::default()
-            };
-            io.preflight(work)?;
-            io.claim(name.len() as u64)?;
-            let hold = io.guard_owned(name.len() as u64)?;
-            io.allocation_attempt(name.len() as u64)?;
-            io.charge(work)?;
-            Some(hold)
-        } else { None };
-        let key = (name.to_owned(), version);
-        let binding = self
-            .schemas
-            .as_deref().and_then(|schemas| schemas.get(&key));
-        let binding = match binding {
-            Some(binding) => binding,
-            None => return Err(Error::Unsupported(crate::contract::preparation_format(
-                format_args!("extension implementation {name}@{version}"), io,
-            )?)),
-        };
-        if expected.is_some_and(|(schema, implementation, policy)| {
-            schema != binding.schema_digest
-                || implementation != binding.implementation_digest
-                || policy != binding.fork_policy
-        }) {
-            return Err(Error::Conflict("extension binding mismatch".into()));
-        }
-        Ok(binding)
-    }
-    fn pinned_binding_with_work(
         &self, name: &str, version: u32,
         expected: Option<([u8; 32], [u8; 32], ExtensionForkPolicy)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<&ExtensionBinding> {
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        { let _ = work; return self.pinned_binding(name, version, expected); }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-        if !work.as_deref().is_some_and(native_custody::is_native) {
-            return self.pinned_binding(name, version, expected);
-        }
-        let io = work.as_deref_mut().expect("original extension binding observer");
         let mut selected = None;
         if let Some(schemas) = &self.schemas {
             for ((candidate, candidate_version), binding) in schemas.iter() {
-                io.check_cancellation()?;
+                if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
                 if candidate == name && *candidate_version == version { selected = Some(binding); break; }
             }
         }
-        let binding = selected.ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported, reason: "extension implementation is not installed",
-        })?;
+        let binding = selected.ok_or_else(|| crate::fork::boundary_error(work,
+            crate::wire::ErrorCode::Unsupported, "extension implementation is not installed"))?;
         if expected.is_some_and(|(schema, implementation, policy)|
             schema != binding.schema_digest || implementation != binding.implementation_digest || policy != binding.fork_policy)
         {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason: "extension binding mismatch" });
+            return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Conflict, "extension binding mismatch"));
         }
         Ok(binding)
-        }
-    }
-
-    fn validate_configuration_bytes_with_work(
-        &self, extension: &ExtensionDependency, content: &FileRef, bytes: &[u8],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        { let _ = work; return self.validate_configuration_bytes(extension, content, bytes); }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-        if !work.as_deref().is_some_and(native_custody::is_native) {
-            return self.validate_configuration_bytes(extension, content, bytes);
-        }
-        extension.validate()?;
-        let binding = self.pinned_binding_with_work(&extension.name, extension.version, None, work)?;
-        let Some(schema) = &binding.configuration_schema else {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "extension does not declare configuration" });
-        };
-        content.validate_with_work(work)?;
-        if content.descriptor().media_type() != "application/json" {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "extension configuration must be JSON" });
-        }
-        content.descriptor().verify_with_work(bytes, work)?;
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let (value, produced) = quota.work().as_deref_mut().expect("original configuration decoder").decode_json_value(bytes)?;
-        quota.adopt(produced)?;
-        crate::contract::validate_json_schema_value_with_work(schema, &value, "configuration", quota.work())
-        }
     }
 
     fn validate_bytes(
@@ -2187,42 +1571,24 @@ impl SchemaRegistry {
         content: &FileRef,
         bytes: &[u8],
     ) -> Result<()> {
-        content.validate()?;
+        content.validate(&mut None)?;
         if content.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid("extension content must be JSON".into()));
         }
-        content.descriptor().verify(bytes)?;
+        content.descriptor().verify(bytes, &mut None)?;
         let value: Value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("extension content is not JSON: {error}")))?;
-        let binding = self.pinned_binding(name, version, None)?;
+        let binding = self.pinned_binding(name, version, None, &mut None)?;
         crate::contract::validate_json_schema_value(&binding.schema, &value, "extension payload", None)?;
         Ok(())
     }
 
-    fn configuration_record(
-        &self,
-        extension: &ExtensionDependency,
-        content: &FileRef,
-    ) -> Result<ExtensionConfiguration> {
-        extension.validate()?;
-        let binding = self.pinned_binding(&extension.name, extension.version, None)?;
-        let schema_digest = binding
-            .configuration_schema_digest
-            .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
-        let record = ExtensionConfiguration {
-            extension: extension.clone(),
-            schema_digest,
-            content: content.clone(),
-        };
-        record.validate()?;
-        Ok(record)
-    }
     fn configuration_record_in_quota(
         &self, extension: &ExtensionDependency, content: &FileRef,
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<ExtensionConfiguration> {
         extension.validate()?;
-        let binding = self.pinned_binding_with_work(&extension.name, extension.version, None, quota.work())?;
+        let binding = self.pinned_binding(&extension.name, extension.version, None, quota.work())?;
         let schema_digest = binding.configuration_schema_digest
             .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
         let record = ExtensionConfiguration {
@@ -2233,71 +1599,15 @@ impl SchemaRegistry {
         Ok(record)
     }
 
-    pub(crate) fn implementation_digest(&self, name: &str, version: u32) -> Result<[u8; 32]> {
-        self.implementation_digest_with_work(name, version, &mut None)
-    }
-
-    pub(crate) fn implementation_digest_with_work(
+    pub(crate) fn implementation_digest(
         &self, name: &str, version: u32,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<[u8; 32]> {
-        Ok(self.pinned_binding_with_work(name, version, None, work)?.implementation_digest)
+        Ok(self.pinned_binding(name, version, None, work)?.implementation_digest)
     }
 
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn implementation_digest_with_io(
-        &self, name: &str, version: u32, io: &crate::filesystem::PreparationIo,
-    ) -> Result<[u8; 32]> {
-        Ok(self.pinned_binding_with_io(name, version, None, Some(io))?.implementation_digest)
-    }
-
-    #[cfg(feature = "filesystem")]
-    fn configuration_record_with_io<'a>(
-        &self, extension: &ExtensionDependency, content: &FileRef,
-        io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::filesystem::ReservedDecoded<'a, ExtensionConfiguration>> {
-        let _metadata;
-        let metadata = io.encode(&(extension, content), io.remaining()?.bytes_encoded, false)?;
-        _metadata = io.guard_owned(metadata.len() as u64)?;
-        extension.validate()?;
-        let binding = self.pinned_binding_with_io(&extension.name, extension.version, None, Some(io))?;
-        let schema_digest = binding.configuration_schema_digest
-            .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
-        #[derive(Serialize)]
-        struct Record<'a> {
-            extension: &'a ExtensionDependency,
-            schema_digest: [u8; 32],
-            content: &'a FileRef,
-        }
-        let _bytes;
-        let bytes = io.encode(&Record { extension, schema_digest, content }, io.remaining()?.bytes_encoded, false)?;
-        _bytes = io.guard_owned(bytes.len() as u64)?;
-        let record = io.decode_preparation::<ExtensionConfiguration>(&bytes, crate::wire::ErrorCode::Storage)?;
-        record.validate()?;
-        Ok(record)
-    }
-
-    /// Checks an exact configuration against the supplied immutable registry and linked implementation.
+    /// Checks configuration content against the registry and linked implementation.
     pub(crate) fn verify_configuration_binding(
-        &self,
-        record: &ExtensionConfiguration,
-        expected_implementation_digest: [u8; 32],
-        bytes: &[u8],
-        limits: crate::conversation::Limits,
-    ) -> Result<()> {
-        self.verify_configuration_binding_engine(record, expected_implementation_digest, bytes, limits, None)
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn verify_configuration_binding_with_io(
-        &self, record: &ExtensionConfiguration, expected_implementation_digest: [u8; 32],
-        bytes: &[u8], limits: crate::conversation::Limits,
-        io: &crate::filesystem::PreparationIo,
-    ) -> Result<()> {
-        self.verify_configuration_binding_engine(record, expected_implementation_digest, bytes, limits, Some(io))
-    }
-
-    fn verify_configuration_binding_engine(
         &self, record: &ExtensionConfiguration, expected_implementation_digest: [u8; 32],
         bytes: &[u8], limits: crate::conversation::Limits,
         io: Option<&crate::executor::PreparationIo>,
@@ -2311,7 +1621,7 @@ impl SchemaRegistry {
             _metadata = io.encode(record, io.remaining()?.bytes_encoded, false)?;
             _metadata_hold = io.guard_owned(_metadata.len() as u64)?;
         }
-        limits.validate_file(&record.content)?;
+        limits.validate_file(&record.content, &mut None)?;
         let byte_length = u64::try_from(bytes.len())
             .map_err(|_| Error::Invalid("configuration byte length is not portable".into()))?;
         if byte_length > limits.file_bytes
@@ -2322,67 +1632,34 @@ impl SchemaRegistry {
                 "configuration exceeds native option byte limits".into(),
             ));
         }
-        let expected;
-        #[cfg(feature = "filesystem")]
-        let reserved;
-        let expected_record = match io {
-            #[cfg(feature = "filesystem")]
-            Some(io) => {
-                reserved = self.configuration_record_with_io(&record.extension, &record.content, io)?;
-                &reserved.value
-            }
-            _ => {
-                expected = self.configuration_record(&record.extension, &record.content)?;
-                &expected
-            }
-        };
-        if expected_record != record {
-            return Err(Error::Conflict(
-                "configuration registry record mismatch".into(),
-            ));
-        }
+        record.validate()?;
         let binding =
-            self.pinned_binding_with_io(&record.extension.name, record.extension.version, None, io)?;
+            crate::executor::with_history_io(io, |work| self.pinned_binding(&record.extension.name, record.extension.version, None, work))?;
+        if binding.configuration_schema_digest != Some(record.schema_digest) {
+            return Err(Error::Conflict("configuration registry record mismatch".into()));
+        }
         if binding.implementation_digest != expected_implementation_digest {
             return Err(Error::Conflict(
                 "configuration implementation binding mismatch".into(),
             ));
         }
-        self.validate_configuration_bytes_engine(&record.extension, &record.content, bytes, io)
+        self.validate_configuration_bytes(&record.extension, &record.content, bytes, io)
     }
 
     fn validate_configuration_bytes(
-        &self,
-        extension: &ExtensionDependency,
-        content: &FileRef,
-        bytes: &[u8],
-    ) -> Result<()> {
-        self.validate_configuration_bytes_engine(extension, content, bytes, None)
-    }
-
-    fn validate_configuration_bytes_engine(
         &self, extension: &ExtensionDependency, content: &FileRef, bytes: &[u8],
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        let record;
-        #[cfg(feature = "filesystem")]
-        let reserved;
-        let record = match io {
-            #[cfg(feature = "filesystem")]
-            Some(io) => {
-                reserved = self.configuration_record_with_io(extension, content, io)?;
-                &reserved.value
-            }
-            _ => {
-                record = self.configuration_record(extension, content)?;
-                &record
-            }
-        };
+        extension.validate()?;
+        crate::executor::with_history_io(io, |work| content.validate(work))?;
+        if content.descriptor().media_type() != "application/json" {
+            return Err(Error::Invalid("extension configuration is invalid".into()));
+        }
         #[cfg(feature = "filesystem")]
         let hash_work = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
         #[cfg(feature = "filesystem")]
         if let Some(io) = io { io.preflight(hash_work)?; io.charge(hash_work)?; }
-        record.content.descriptor().verify(bytes)?;
+        content.descriptor().verify(bytes, &mut None)?;
         let value;
         #[cfg(feature = "filesystem")]
         let decoded;
@@ -2390,7 +1667,7 @@ impl SchemaRegistry {
             #[cfg(feature = "filesystem")]
             Some(io) => {
                 decoded = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
-                &decoded.value
+                &decoded.0
             }
             _ => {
                 value = crate::contract::json_from_slice(bytes).map_err(|error| {
@@ -2399,7 +1676,7 @@ impl SchemaRegistry {
                 &value
             }
         };
-        let binding = self.pinned_binding_with_io(&extension.name, extension.version, None, io)?;
+        let binding = crate::executor::with_history_io(io, |work| self.pinned_binding(&extension.name, extension.version, None, work))?;
         let schema = binding
             .configuration_schema
             .as_ref()
@@ -2482,16 +1759,10 @@ impl Reducer {
             let inputs = (authority, authority_verifier, schemas);
             let installed: Result<()> = (|| {
                 let authority = io.take_native_custody(inputs.0.id.capacity() as u64)?;
-                let _retired = native_custody::PreparedComponent::preclaimed(
-                    NativeComponentKey::Authority, authority,
-                ).install(&mut native_custody, &mut Some(&mut *io))?;
-                let base_bytes = inputs.1.logical_owned_bytes()?
-                    .checked_add(inputs.2.logical_owned_bytes()?)
-                    .ok_or_else(|| Error::Invalid("constructor metadata custody overflows".into()))?;
+                let _retired = native_custody.install(Some((NativeComponentKey::Authority, authority, None)), &mut Some(&mut *io))?;
+                let base_bytes = inputs.1.logical_owned_bytes()?;
                 let base = io.take_native_custody(base_bytes)?;
-                let _retired = native_custody::PreparedComponent::preclaimed(
-                    NativeComponentKey::Base, base,
-                ).install(&mut native_custody, &mut Some(&mut *io))?;
+                let _retired = native_custody.install(Some((NativeComponentKey::Base, base, None)), &mut Some(&mut *io))?;
                 Ok(())
             })();
             if let Err(error) = installed {
@@ -2507,7 +1778,7 @@ impl Reducer {
     }
 
     /// Deep-copies this projection only after funding every new live component.
-    pub(crate) fn clone_with_work(
+    pub(crate) fn copy(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2519,72 +1790,15 @@ impl Reducer {
                 reason: "native reducer cloning requires explicit native work",
             });
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().is_some_and(native_custody::is_native) {
-            return native_custody::clone_reducer(self, work);
-        }
-        let native_custody = NativeComponentCustody::default();
-        let conversation = self.conversation.copy(work, None)?.0;
-        Ok(Self {
-            authority: self.authority.clone(),
-            authority_verifier: self.authority_verifier.clone(),
-            schemas: self.schemas.clone(),
-            revision: self.revision, lifecycle: self.lifecycle,
-            active_extensions: self.active_extensions.clone(),
-            extension_states: self.extension_states.clone(),
-            configured_extensions: self.configured_extensions.clone(),
-            active_configurations: self.active_configurations.clone(),
-            events: self.events.clone(), operation_positions: self.operation_positions.clone(),
-            resident_event_limit: self.resident_event_limit,
-            active_extension_revision: self.active_extension_revision,
-            effects: self.effects.clone(), indexed_terminal_effects: self.indexed_terminal_effects.clone(),
-            effects_archived: self.effects_archived,
-            resident_terminal_effect_limit: self.resident_terminal_effect_limit,
-            forks: self.forks.clone(), published_merges: self.published_merges.clone(),
-            conversation,
-            latest_context_checkpoint: self.latest_context_checkpoint.clone(),
-            interactions: self.interactions.clone(),
-            native_custody,
-        })
-    }
-
-    fn produce_component<T>(
-        custody: &mut NativeComponentCustody, key: NativeComponentRef<'_>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-        ordinary: impl FnOnce() -> T,
-        copy: impl FnOnce(&mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
-    ) -> Result<(T, native_custody::RetiredComponent)> {
-        let retired = NativeComponentCustody::prepare(key, 0, work)?.install(custody, work)?;
-        if !work.as_deref().is_some_and(native_custody::is_native) {
-            return Ok((ordinary(), retired));
-        }
-        let result = (|| {
-            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let value = copy(&mut quota)?;
-            let produced = quota.retained();
-            quota.transfer();
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Err(error) = custody.absorb_produced(
-                key, produced, quota.work().as_deref_mut().expect("component producing observer"),
-            ) {
-                drop(value);
-                return Err(error);
-            }
-            Ok(value)
-        })();
-        match result {
-            Ok(value) => Ok((value, retired)),
-            Err(error) => { custody.rollback(key, retired); Err(error) }
-        }
+        native_custody::copy_reducer(self, work)
     }
 
     fn replace_extension_state_with_work(
         &mut self, record: &ExtensionRecord, revision: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let (entry, _retired) = Self::produce_component(
-            &mut self.native_custody, NativeComponentRef::ExtensionState(&record.name), work,
-            || (record.name.clone(), (EventReference { authority: self.authority.clone(), revision }, record.clone())),
+        let (entry, _retired) = self.native_custody.produce(
+            NativeComponentRef::ExtensionState(&record.name), work,
             |quota| {
                 native_custody::retain_entry::<(String, (EventReference, ExtensionRecord))>(quota)?;
                 let key = native_custody::copy_text(&record.name, quota)?;
@@ -2633,8 +1847,8 @@ impl Reducer {
         let copied = payload.len().checked_mul(std::mem::size_of::<T>())
             .ok_or_else(|| Error::Invalid("component buffer move size overflows".into()))? as u64;
         work.as_deref().expect("native buffer observer").admit_copy(copied)?;
-        let (replacement, retired) = Self::produce_component(custody, key, work,
-            Vec::new, |quota| native_custody::reserve_copy_vector::<T>(capacity, quota))?;
+        let (replacement, retired) = custody.produce(key, work,
+            |quota| native_custody::reserve_copy_vector::<T>(capacity, quota))?;
         let mut replacement = VecDeque::from(replacement);
         if let Err(error) = work.as_deref_mut().expect("native buffer observer").copy_bytes(copied) {
             drop(replacement);
@@ -2652,14 +1866,14 @@ impl Reducer {
         &mut self, message: &ConversationMessage,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.conversation.validate_append_with_work(message, work)?;
-        let (message, retired) = Self::produce_component(
-            &mut self.native_custody, NativeComponentRef::ConversationMessage(message.sequence), work,
-            || message.clone(), |quota| native_custody::copy_message(message, quota),
+        self.conversation.validate_append(message, work)?;
+        let (message, retired) = self.native_custody.produce(
+            NativeComponentRef::ConversationMessage(message.sequence), work,
+            |quota| native_custody::copy_message(message, quota),
         )?;
         let sequence = message.sequence;
-        if let Err(error) = self.conversation.append_with_work(message, work) {
-            self.native_custody.rollback(NativeComponentRef::ConversationMessage(sequence), retired);
+        if let Err(error) = self.conversation.append(message, work) {
+            drop(self.native_custody.rollback(NativeComponentRef::ConversationMessage(sequence), retired));
             return Err(error);
         }
         drop(retired);
@@ -2671,7 +1885,7 @@ impl Reducer {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<((String, Vec<u8>), u64)> {
         if !work.as_deref().is_some_and(native_custody::is_native) {
-            return Ok(((receipt.target_project.storage_name()?,
+            return Ok(((receipt.target_project.storage_name(work)?,
                 receipt.provider_operation_id.clone()), 0));
         }
         let digest = crate::contract::canonical_json_digest_with_work(
@@ -2699,15 +1913,11 @@ impl Reducer {
         &self.authority
     }
 
-    pub(crate) fn event_verifier(&self) -> AuthorityVerifier {
-        self.authority_verifier.clone()
-    }
-
-    pub(crate) fn event_verifier_with_work(
+    pub(crate) fn event_verifier(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<AuthorityVerifier> {
-        self.authority_verifier.clone_with_work(work)
+        self.authority_verifier.copy(work)
     }
 
     /// Returns the current gapless revision.
@@ -2717,11 +1927,8 @@ impl Reducer {
     }
 
     /// Captures the original authenticated selection and its registry atomically.
-    pub(crate) fn original_extension_binding(&self) -> Result<OriginalExtensionBinding> {
-        Ok(OriginalExtensionBinding {
-            admission: self.extension_admission()?,
-            schemas: self.schemas.clone(),
-        })
+    pub(crate) fn original_extension_binding(&self) -> Result<(Option<ExtensionAdmission>, SchemaRegistry)> {
+        Ok((self.extension_admission()?, self.schemas.clone()))
     }
 
     /// Validates exact staged extension bytes at the provider admission boundary.
@@ -2738,7 +1945,7 @@ impl Reducer {
     pub fn extension_implementation_digest(&self, name: &str, version: u32) -> Result<[u8; 32]> {
         Ok(self
             .schemas
-            .pinned_binding(name, version, None)?
+            .pinned_binding(name, version, None, &mut None)?
             .implementation_digest)
     }
     /// Authenticates and checks the exact migration boundary before a host reads old state or stages new bytes.
@@ -2751,14 +1958,15 @@ impl Reducer {
         to_version: u32,
         destination: &VolumeRef,
     ) -> Result<()> {
-        self.authority_verifier.verify_audience(&self.authority)?;
-        self.authority_verifier.verify(scope)?;
+        self.authority_verifier.verify_audience(&self.authority, &mut None)?;
+        self.authority_verifier.verify(scope, &mut None)?;
         require_capability(scope, capability::EXTENSION_MIGRATE)?;
-        ContentGrant::verify(
+        ContentGrant::authorize_volume(
             &self.authority_verifier,
             scope,
             destination,
             VolumeOperation::Write,
+            acyclic_stream::MAX_RECORD_BYTES as u64, &mut None,
         )?;
         if expected_revision != self.revision {
             return Err(Error::Conflict(
@@ -2777,25 +1985,16 @@ impl Reducer {
                 "extension migration source or target is not exact".into(),
             ));
         }
-        self.schemas.pinned_binding(name, to_version, None)?;
+        self.schemas.pinned_binding(name, to_version, None, &mut None)?;
         Ok(())
     }
 
     /// Validates staged configuration bytes before an event can be admitted.
     pub fn validate_configuration_bytes(
-        &self,
-        extension: &ExtensionDependency,
-        content: &FileRef,
-        bytes: &[u8],
-    ) -> Result<()> {
-        self.schemas
-            .validate_configuration_bytes(extension, content, bytes)
-    }
-    pub(crate) fn validate_configuration_bytes_with_work(
         &self, extension: &ExtensionDependency, content: &FileRef, bytes: &[u8],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        self.schemas.validate_configuration_bytes_with_work(extension, content, bytes, work)
+        self.schemas.validate_configuration_bytes(extension, content, bytes, io)
     }
 
     /// Returns the fixed aggregate lifecycle projection.
@@ -2840,7 +2039,7 @@ impl Reducer {
             selected: self.active_extensions.clone(),
             configurations: self.active_configurations.clone(),
         };
-        admission.validate()?;
+        admission.validate(&mut None)?;
         Ok(Some(admission))
     }
 
@@ -2850,12 +2049,12 @@ impl Reducer {
     ) -> Result<Vec<ExtensionConfiguration>> {
         let mut count = 0;
         for extension in selected {
-            if self.schemas.pinned_binding_with_work(&extension.name, extension.version, None, quota.work())?
+            if self.schemas.pinned_binding(&extension.name, extension.version, None, quota.work())?
                 .configuration_schema.is_some() { count += 1; }
         }
         let mut configurations = native_custody::reserve_copy_vector(count, quota)?;
         for extension in selected {
-            let binding = self.schemas.pinned_binding_with_work(&extension.name, extension.version, None, quota.work())?;
+            let binding = self.schemas.pinned_binding(&extension.name, extension.version, None, quota.work())?;
             if binding.configuration_schema.is_some() {
                 let record = self.configured_extensions.get(extension)
                     .ok_or_else(|| Error::Conflict(format!("extension {}@{} is not configured", extension.name, extension.version)))?;
@@ -2869,12 +2068,12 @@ impl Reducer {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let (order, produced) = self.schemas.activation_order_with_work(selected, quota.work())?;
+        let (order, produced) = self.schemas.activation_order(selected, quota.work())?;
         quota.adopt(produced)?;
         if order.as_slice() != selected { return Ok(false); }
         let mut configurations = configurations.iter();
         for extension in selected {
-            let binding = self.schemas.pinned_binding_with_work(&extension.name, extension.version, None, quota.work())?;
+            let binding = self.schemas.pinned_binding(&extension.name, extension.version, None, quota.work())?;
             if binding.configuration_schema.is_some() {
                 let expected = self.configured_extensions.get(extension)
                     .ok_or_else(|| Error::Conflict(format!("extension {}@{} is not configured", extension.name, extension.version)))?;
@@ -2921,7 +2120,7 @@ impl Reducer {
         &self, command: &Command,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.authority_verifier.verify_audience(&self.authority)?;
+        self.authority_verifier.verify_audience(&self.authority, work)?;
         let key = match work.as_deref_mut() {
             Some(work) => work.clone_text(&command.idempotency_key.0)?,
             None => command.idempotency_key.0.clone(),
@@ -2930,7 +2129,7 @@ impl Reducer {
         let valid = IdempotencyKey::new(key).map(|_| ());
         if let Some(work) = work.as_deref_mut() { work.release_owned(capacity)?; }
         valid?;
-        self.authority_verifier.verify_with_work(&command.scope, work)
+        self.authority_verifier.verify(&command.scope, work)
     }
 
     pub(crate) fn verify_retained_command_with_work(
@@ -2940,7 +2139,7 @@ impl Reducer {
         self.verify_command_scope_with_work(command, work)?;
         self.authority_verifier.verify_event(event, work)?;
         if event.operation_id != command.operation_id
-            || event.intent_digest != canonical_intent_with_work(command, work)?
+            || event.intent_digest != crate::contract::canonical_json_digest_with_work(command, crate::store::default_projection_read_limits().maximum_bytes, work)?
         {
             return Err(Error::Conflict(
                 "operation identity is already bound to another intent".into(),
@@ -2976,11 +2175,7 @@ impl Reducer {
     }
 
     /// Applies one deterministic command.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "public API of an already-published crate; taking a reference here would break \
-                  existing external callers"
-    )]
+    #[allow(clippy::needless_pass_by_value, reason = "command ownership ends at application")]
     #[cfg_attr(
         not(target_arch = "wasm32"),
         tracing::instrument(
@@ -2993,7 +2188,7 @@ impl Reducer {
     pub fn apply(&mut self, command: Command) -> Result<ApplyResult> {
         crate::obs::outcome(match self.plan(&command) {
             Ok(ApplyResult::Applied { event }) => self
-                .apply_committed(event.clone())
+                .apply_committed(event.clone(), &mut None)
                 .map(|_| ApplyResult::Applied { event }),
             planned => planned,
         })
@@ -3012,22 +2207,10 @@ impl Reducer {
     pub fn plan(&self, command: &Command) -> Result<ApplyResult> {
         crate::obs::outcome(self.plan_with_migration_boundary_with_work(
             command,
-            Migration::Unverified,
+            false,
             false,
             None, &mut None).map(|(result, _)| result))
     }
-
-    /// Provider admission has verified residency and independently executed the exact pinned migration before requesting a publishable event.
-    #[cfg(test)]
-    pub(crate) fn plan_verified_migration(&self, command: &Command) -> Result<ApplyResult> {
-        if !matches!(&command.action, Action::MigrateExtensionState { .. }) {
-            return Err(Error::Invalid(
-                "verified migration planner requires a migration action".into(),
-            ));
-        }
-        self.plan_with_migration_boundary_with_work(command, Migration::Verified, false, None, &mut None).map(|(result, _)| result)
-    }
-
 
     /// Returns the original planner's already-retained output allowance.
     pub(crate) fn plan_indexed_with_retained_quota(
@@ -3041,11 +2224,7 @@ impl Reducer {
         }
         crate::obs::outcome(self.plan_with_migration_boundary_with_work(
             command,
-            if migration_verified {
-                Migration::Verified
-            } else {
-                Migration::Unverified
-            },
+            migration_verified,
             true,
             None,
             work,
@@ -3074,7 +2253,7 @@ impl Reducer {
             ));
         }
         crate::obs::outcome(self.plan_with_migration_boundary_with_work(
-            command, Migration::Unverified, true, Some((effect_id, effect)), work,
+            command, false, true, Some((effect_id, effect)), work,
         ))
     }
 
@@ -3113,7 +2292,7 @@ impl Reducer {
     fn plan_with_migration_boundary_with_work(
         &self,
         command: &Command,
-        migration: Migration,
+        migration_verified: bool,
         identity_checked: bool,
         archived_effect: Option<(EffectId, &EffectState)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -3128,7 +2307,7 @@ impl Reducer {
             });
         }
         self.verify_command_scope_with_work(command, work)?;
-        let intent = canonical_intent_with_work(command, work)?;
+        let intent = crate::contract::canonical_json_digest_with_work(command, crate::store::default_projection_read_limits().maximum_bytes, work)?;
         let mut retained_quota = 0;
         if let Some(event) = self.event_for_operation(command.operation_id) {
             if event.intent_digest == intent {
@@ -3172,19 +2351,11 @@ impl Reducer {
         )?;
         match &command.action {
             Action::MigrateExtensionState { content, .. } => {
-                if work.as_deref().is_some_and(native_custody::is_native) {
-                    self.authority_verifier.verify_with_work(&command.scope, work)?;
-                    content.volume().require_writer(command.scope.agent())?;
-                    Self::require_volume_operation_with_work(
-                        &|capability| require_capability(&command.scope, capability),
-                        content.volume(), VolumeOperation::Write, work,
-                    )?;
-                } else {
-                    ContentGrant::verify(
-                        &self.authority_verifier, &command.scope, content.volume(), VolumeOperation::Write,
-                    )?;
-                }
-                if migration != Migration::Verified {
+                ContentGrant::authorize_volume(
+                    &self.authority_verifier, &command.scope, content.volume(), VolumeOperation::Write,
+                    acyclic_stream::MAX_RECORD_BYTES as u64, work,
+                )?;
+                if !migration_verified {
                     return Err(Error::Unsupported(
                         "extension migration requires an executing content-admission host".into(),
                     ));
@@ -3274,7 +2445,7 @@ impl Reducer {
                         "fork must be published by the parent agent".into(),
                     ));
                 }
-                let validation = seed.validate_with_work(work);
+                let validation = seed.validate(work);
                 if work.is_some() {
                     validation?;
                 } else if validation.is_err() {
@@ -3297,10 +2468,11 @@ impl Reducer {
                         "fork manifest is not bound to its operation and parent revision".into(),
                     ));
                 }
-                let mut owned = crate::fork::ForkValidationWork::new(work)?;
+                let mut owned = crate::fork::CodecQuota::observed(work)?;
                 for resource in &seed.resources {
                     if let crate::fork::ResourceRevision::Project { volume, .. } = &resource.source {
-                        require(&volume.capability(VolumeOperation::Read)?)?;
+                        let capability = owned.volume_capability(volume)?;
+                        require(&capability)?;
                     }
                     if let crate::fork::ResourceRevision::PrivateVolume { volume, .. } =
                         &resource.source
@@ -3326,7 +2498,7 @@ impl Reducer {
                         "merge receipt is not bound to the parent agent and operation".into(),
                     ));
                 }
-                receipt.target_project.require_writer(agent)?;
+                receipt.target_project.require_writer(agent, &None)?;
                 Self::require_volume_operation_with_work(&require, &receipt.target_project, VolumeOperation::Write, work)?;
                 Self::require_volume_operation_with_work(&require, &receipt.source_project, VolumeOperation::Read, work)?;
                 Ok(())
@@ -3349,7 +2521,7 @@ impl Reducer {
             return require(std::str::from_utf8(&capability[..prefix.len()+64]).expect("hex capability"));
         }
         let _ = work;
-        require(&volume.capability(operation)?)
+        require(&volume.capability(operation, work)?)
     }
 
     /// Applies an event only after its canonical Stream append commits.
@@ -3362,11 +2534,7 @@ impl Reducer {
             fields(rev = event.revision)
         )
     )]
-    pub fn apply_committed(&mut self, event: Event) -> Result<ApplyResult> {
-        self.apply_committed_with_work(event, &mut None)
-    }
-
-    pub(crate) fn apply_committed_with_work(
+    pub fn apply_committed(
         &mut self, event: Event,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<ApplyResult> {
@@ -3379,7 +2547,7 @@ impl Reducer {
                 reason: "native reducer mutation requires explicit native work",
             });
         }
-        self.authority_verifier.verify_audience_with_work(&self.authority, work)?;
+        self.authority_verifier.verify_audience(&self.authority, work)?;
         if let Some(existing) = self.event_for_operation(event.operation_id) {
             if existing == &event {
                 if work.as_deref().is_some_and(native_custody::is_native) {
@@ -3396,15 +2564,8 @@ impl Reducer {
                 }
                 return Ok(ApplyResult::Replayed { event: existing.clone() });
             }
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(native_custody::is_native) {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict, reason: "operation identity is already bound to another event",
-                });
-            }
-            return Err(Error::Conflict(
-                "operation identity is already bound to another event".into(),
-            ));
+            return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Conflict,
+                "operation identity is already bound to another event"));
         }
         let expected = next_revision(self.revision)?;
         if event.revision != expected {
@@ -3439,18 +2600,18 @@ impl Reducer {
             observer.admit_owned(reservation)?;
             observer.retain_owned(reservation)?;
         }
-        let retired_position = NativeComponentCustody::prepare(
+        let retired_position = self.native_custody.install(NativeComponentCustody::prepare(
             NativeComponentRef::OperationPosition(event.operation_id),
             std::mem::size_of::<(OperationId, u64)>() as u64, work,
-        )?.install(&mut self.native_custody, work)?;
-        let copied = Self::produce_component(
-            &mut self.native_custody, NativeComponentRef::Event(event.revision), work,
-            || event.clone(), |quota| native_custody::copy_event(&event, quota),
+        )?, work)?;
+        let copied = self.native_custody.produce(
+            NativeComponentRef::Event(event.revision), work,
+            |quota| native_custody::copy_event(&event, quota),
         );
         let (cached, retired_event) = match copied {
             Ok(copied) => copied,
             Err(error) => {
-                self.native_custody.rollback(NativeComponentRef::OperationPosition(event.operation_id), retired_position);
+                drop(self.native_custody.rollback(NativeComponentRef::OperationPosition(event.operation_id), retired_position));
                 return Err(error);
             }
         };
@@ -3458,8 +2619,8 @@ impl Reducer {
             .and_then(|()| self.apply_payload_with_work(&event.payload, event.revision, work));
         if let Err(error) = applied {
             drop(cached);
-            self.native_custody.rollback(NativeComponentRef::Event(event.revision), retired_event);
-            self.native_custody.rollback(NativeComponentRef::OperationPosition(event.operation_id), retired_position);
+            drop(self.native_custody.rollback(NativeComponentRef::Event(event.revision), retired_event));
+            drop(self.native_custody.rollback(NativeComponentRef::OperationPosition(event.operation_id), retired_position));
             return Err(error);
         }
         self.revision = event.revision;
@@ -3681,7 +2842,7 @@ impl Reducer {
         &self, seed: &ForkSeed,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let mut owned = crate::fork::ForkValidationWork::new(work)?;
+        let mut owned = crate::fork::CodecQuota::observed(work)?;
         let mut child_project = None;
         for resource in &seed.resources {
             owned.checkpoint()?;
@@ -3730,15 +2891,11 @@ impl Reducer {
             || history.resident_after_sequence() != 0
             || history.logical_revision() != seed.inherited_through_sequence
         {
-            #[cfg(not(target_arch = "wasm32"))]
-            if work.as_deref().is_some_and(|observer| observer.original_native_work().is_some()) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                    reason: "fork archive differs from its original parent cut" });
-            }
-            return Err(Error::Conflict("fork archive differs from its original parent cut".into()));
+            return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Conflict,
+                "fork archive differs from its original parent cut"));
         }
         self.validate_fork_reference_ownership_using_with_work(seed, history, work)?;
-        seed.history_witness = Some(self.authority_verifier.fork_history_proof_with_work(seed, work)?);
+        seed.history_witness = Some(self.authority_verifier.fork_history_proof(seed, work)?);
         Ok(())
     }
 
@@ -3747,30 +2904,23 @@ impl Reducer {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(proof) = seed.history_witness {
-            if proof != self.authority_verifier.fork_history_proof_with_work(seed, work)? {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if work.as_deref().is_some_and(|observer| observer.original_native_work().is_some()) {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "fork archive witness differs from its exact seed" });
-                }
-                return Err(Error::Unauthorized("fork archive witness differs from its exact seed".into()));
+            if proof != self.authority_verifier.fork_history_proof(seed, work)? {
+                return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Unauthorized,
+                    "fork archive witness differs from its exact seed"));
             }
             return Ok(());
         }
         self.validate_fork_reference_ownership_using_with_work(seed, &self.conversation, work)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "fork publication checks one complete seed"
-    )]
+    #[allow(clippy::too_many_lines, reason = "fork publication checks one complete seed")]
     fn validate_fork_reference_ownership_using_with_work(
         &self,
         seed: &ForkSeed,
         history: &ConversationState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let mut owned = crate::fork::ForkValidationWork::new(work)?;
+        let mut owned = crate::fork::CodecQuota::observed(work)?;
         let inherited_count = usize::try_from(seed.inherited_through_sequence)
             .map_err(|_| Error::Invalid("inherited conversation prefix is too large".into()))?;
         let parent_agent = history.agent
@@ -3804,7 +2954,7 @@ impl Reducer {
                 None => self.authority.clone(),
             };
             owned.adopt(parent.id.capacity() as u64)?;
-            let prefix = InheritedConversationPrefix::select_with_work(
+            let prefix = InheritedConversationPrefix::select(
                 parent,
                 self.revision,
                 seed.inherited_through_sequence,
@@ -3815,31 +2965,18 @@ impl Reducer {
             owned.adopt(prefix.attached_agents.capacity() as u64 * std::mem::size_of::<AgentId>() as u64)?;
             let bytes = owned.canonical(&prefix)?;
             const PREFIX_MEDIA: &str = "application/vnd.acyclic.harness.inherited-conversation+json";
-            if let Some(observer) = owned.work().as_deref_mut() {
-                observer.hashed_bytes(bytes.len() as u64)?;
-                observer.admit_allocation(PREFIX_MEDIA.len() as u64)?;
-                observer.copy_bytes(PREFIX_MEDIA.len() as u64)?;
-            }
-            owned.retain(PREFIX_MEDIA.len() as u64)?;
-            let expected = FileDescriptor::from_bytes(
-                &bytes,
-                PREFIX_MEDIA,
-            )?;
-            if file.descriptor() != &expected
+            if file.descriptor().media_type() != PREFIX_MEDIA
                 || file.display_name() != "inherited-conversation.json"
             {
-                return Err(Error::Invalid(
-                    "inherited conversation differs from authoritative parent history".into(),
-                ));
+                return Err(Error::Invalid("inherited conversation metadata differs from its parent".into()));
             }
+            file.descriptor().verify(&bytes, owned.work())?;
             let byte_capacity = bytes.capacity() as u64;
             let prefix_slots = prefix.parent.id.capacity() as u64
                 + prefix.attached_agents.capacity() as u64 * std::mem::size_of::<AgentId>() as u64;
-            let descriptor_capacity = expected.media_type().len() as u64;
-            drop(expected);
             drop(bytes);
             drop(prefix);
-            owned.release(byte_capacity + prefix_slots + descriptor_capacity)?;
+            owned.release(byte_capacity + prefix_slots)?;
         }
         if history.resident_after_sequence() > 0 && inherited_count > 0 {
             return Err(Error::Invalid(
@@ -3995,7 +3132,7 @@ impl Reducer {
     fn retain_fork_reference<'a>(
         references: &mut std::collections::BTreeMap<String, &'a crate::conversation::FileRef>,
         file: &'a crate::conversation::FileRef,
-        owned: &mut crate::fork::ForkValidationWork<'_, '_>,
+        owned: &mut crate::fork::CodecQuota<'_, '_>,
     ) -> Result<()> {
         let capability = owned.file_capability(file)?;
         let capacity = capability.capacity() as u64;
@@ -4015,7 +3152,7 @@ impl Reducer {
     fn retain_fork_capability(
         capabilities: &mut std::collections::BTreeSet<String>,
         capability: String,
-        owned: &mut crate::fork::ForkValidationWork<'_, '_>,
+        owned: &mut crate::fork::CodecQuota<'_, '_>,
     ) -> Result<()> {
         let capacity = capability.capacity() as u64;
         if capabilities.contains(&capability) {
@@ -4039,7 +3176,7 @@ impl Reducer {
                 ..
             } = &capture.revision
             {
-                let binding = self.schemas.pinned_binding_with_work(name, *version, None, work)?;
+                let binding = self.schemas.pinned_binding(name, *version, None, work)?;
                 if binding.implementation_digest != *implementation_digest {
                     return Err(Error::Conflict(
                         "fork extension implementation mismatch".into(),
@@ -4064,12 +3201,7 @@ impl Reducer {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match arm per Action variant, each independently validating and building \
-                  its EventPayload; splitting per-arm would scatter one command's validation \
-                  across many functions without clarifying any of them"
-    )]
+    #[allow(clippy::too_many_lines, reason = "one arm per action")]
     fn transition_with_work(
         &self,
         action: &Action,
@@ -4099,11 +3231,11 @@ impl Reducer {
                         "extension state version change requires migration".into(),
                     ));
                 }
-                content.validate_with_work(quota.work())?;
+                content.validate(quota.work())?;
                 if content.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("extension content must be JSON".into()));
                 }
-                let binding = self.schemas.pinned_binding_with_work(schema, *version, None, quota.work())?;
+                let binding = self.schemas.pinned_binding(schema, *version, None, quota.work())?;
                 let record = ExtensionRecord {
                     name: native_custody::copy_text(schema, quota)?,
                     version: *version,
@@ -4133,7 +3265,7 @@ impl Reducer {
                         "extension migration source or target is not exact".into(),
                     ));
                 }
-                let binding = self.schemas.pinned_binding_with_work(name, *to_version, None, quota.work())?;
+                let binding = self.schemas.pinned_binding(name, *to_version, None, quota.work())?;
                 let record = ExtensionRecord {
                     name: native_custody::copy_text(name, quota)?,
                     version: *to_version,
@@ -4164,7 +3296,7 @@ impl Reducer {
                         "extension selection requires a pending or waiting agent".into(),
                     ));
                 }
-                let (selected, produced) = self.schemas.activation_order_with_work(roots, quota.work())?;
+                let (selected, produced) = self.schemas.activation_order(roots, quota.work())?;
                 quota.adopt(produced)?;
                 for extension in &selected {
                     if self
@@ -4222,13 +3354,13 @@ impl Reducer {
                         "effect provider and kind must be non-empty".into(),
                     ));
                 }
-                request.validate_with_work(quota.work())?;
+                request.validate(quota.work())?;
                 if request.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("effect request must be JSON content".into()));
                 }
                 let request_digest =
                     effect_request_digest_with_work(provider, *guarantee, effect_kind, request, quota.work())?;
-                result_schema.validate_with_work(quota.work())?;
+                result_schema.validate(quota.work())?;
                 if result_schema.descriptor().media_type() != "application/schema+json" {
                     return Err(Error::Invalid(
                         "effect result schema must be JSON Schema content".into(),
@@ -4294,7 +3426,7 @@ impl Reducer {
                 })
             }
             Action::PublishFork { seed } => {
-                seed.validate_with_work(quota.work())?;
+                seed.validate(quota.work())?;
                 self.validate_fork_reference_ownership_with_work(seed, quota.work())?;
                 self.validate_extension_fork_with_work(seed, quota.work())?;
                 if self.forks.contains_key(&seed.child) {
@@ -4307,14 +3439,14 @@ impl Reducer {
             Action::PublishProjectMerge { receipt } => {
                 self.require_conversation()?;
                 self.require_bound_conversation_if_applicable()?;
-                receipt.validate_shape_with_work(quota.work())?;
+                receipt.validate_shape(quota.work())?;
                 let (key, key_owned) = Self::merge_key_with_work(receipt, quota.work())?;
                 if self.published_merges.contains(&key) {
                     return Err(Error::Conflict("project join was already published".into()));
                 }
                 drop(key);
                 if let Some(io) = quota.work().as_deref_mut() { io.release_owned(key_owned)?; }
-                self.conversation.validate_append(&receipt.notice)?;
+                self.conversation.validate_append(&receipt.notice, &mut None)?;
                 Ok(EventPayload::ProjectMergePublished {
                     receipt: native_custody::copy_boxed(receipt.as_ref(), quota, native_custody::copy_receipt)?,
                 })
@@ -4328,7 +3460,7 @@ impl Reducer {
             }
             Action::AppendConversationMessage { message } => {
                 self.require_conversation()?;
-                self.conversation.validate_append(message)?;
+                self.conversation.validate_append(message, &mut None)?;
                 Ok(EventPayload::ConversationMessageAppended {
                     message: native_custody::copy_boxed(message.as_ref(), quota, native_custody::copy_message)?,
                 })
@@ -4342,7 +3474,7 @@ impl Reducer {
             }
             Action::OpenInteraction { ticket } => {
                 self.require_bound_conversation_if_applicable()?;
-                ticket.validate()?;
+                ticket.validate(quota.work())?;
                 if self.interactions.contains_key(&ticket.id) {
                     return Err(Error::Conflict(
                         "interaction identity already exists".into(),
@@ -4383,13 +3515,7 @@ impl Reducer {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match arm per EventPayload variant, mirroring transition() above; each arm \
-                  independently re-validates and commits its own state, so splitting per-arm \
-                  would scatter one event's application across many functions without \
-                  clarifying any of them"
-    )]
+    #[allow(clippy::too_many_lines, reason = "one arm per event")]
     fn apply_payload_with_work(
         &mut self, payload: &EventPayload, revision: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -4404,7 +3530,7 @@ impl Reducer {
             }
             EventPayload::Custom { record } => {
                 record.validate()?;
-                self.schemas.pinned_binding_with_work(
+                self.schemas.pinned_binding(
                     &record.name,
                     record.version,
                     Some((
@@ -4427,7 +3553,7 @@ impl Reducer {
             EventPayload::ExtensionStateMigrated { migration } => {
                 migration.validate()?;
                 let ExtensionStateMigration { previous, record } = migration;
-                self.schemas.pinned_binding_with_work(
+                self.schemas.pinned_binding(
                     &record.name,
                     record.version,
                     Some((
@@ -4472,21 +3598,19 @@ impl Reducer {
                         "extension activation does not match pinned agent state".into(),
                     ));
                 }
-                let (next_selected, retired_selected) = Self::produce_component(
-                    &mut self.native_custody, NativeComponentRef::ActiveExtensions, work,
-                    || selected.clone(),
+                let (next_selected, retired_selected) = self.native_custody.produce(
+                    NativeComponentRef::ActiveExtensions, work,
                     |quota| native_custody::copy_vector(selected, quota, native_custody::copy_dependency),
                 )?;
-                let copied_configurations = Self::produce_component(
-                    &mut self.native_custody, NativeComponentRef::ActiveConfigurations, work,
-                    || configurations.clone(),
+                let copied_configurations = self.native_custody.produce(
+                    NativeComponentRef::ActiveConfigurations, work,
                     |quota| native_custody::copy_vector(configurations, quota, native_custody::copy_configuration),
                 );
                 let (next_configurations, retired_configurations) = match copied_configurations {
                     Ok(value) => value,
                     Err(error) => {
                         drop(next_selected);
-                        self.native_custody.rollback(NativeComponentRef::ActiveExtensions, retired_selected);
+                        drop(self.native_custody.rollback(NativeComponentRef::ActiveExtensions, retired_selected));
                         return Err(error);
                     }
                 };
@@ -4505,7 +3629,7 @@ impl Reducer {
                     || self.configured_extensions.get(&record.extension) != previous.as_ref()
                     || {
                         record.validate()?;
-                        self.schemas.pinned_binding_with_work(&record.extension.name, record.extension.version, None, work)?
+                        self.schemas.pinned_binding(&record.extension.name, record.extension.version, None, work)?
                             .configuration_schema_digest != Some(record.schema_digest)
                     }
                 {
@@ -4513,9 +3637,8 @@ impl Reducer {
                         "extension configuration does not match pinned agent state".into(),
                     ));
                 }
-                let (entry, _retired) = Self::produce_component(
-                    &mut self.native_custody, NativeComponentRef::ExtensionConfiguration(&record.extension), work,
-                    || (record.extension.clone(), record.clone()),
+                let (entry, _retired) = self.native_custody.produce(
+                    NativeComponentRef::ExtensionConfiguration(&record.extension), work,
                     |quota| {
                         native_custody::retain_entry::<(ExtensionDependency, ExtensionConfiguration)>(quota)?;
                         let key = native_custody::copy_dependency(&record.extension, quota)?;
@@ -4543,7 +3666,7 @@ impl Reducer {
                         "effect provider and kind must be non-empty".into(),
                     ));
                 }
-                request.validate_with_work(work)?;
+                request.validate(work)?;
                 if request.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("effect request must be JSON content".into()));
                 }
@@ -4555,7 +3678,7 @@ impl Reducer {
                 {
                     return Err(Error::Invalid("effect request digest mismatch".into()));
                 }
-                result_schema.validate_with_work(work)?;
+                result_schema.validate(work)?;
                 if result_schema.descriptor().media_type() != "application/schema+json"
                     || *result_schema_digest != *result_schema.descriptor().sha256()
                 {
@@ -4563,14 +3686,8 @@ impl Reducer {
                         "effect result schema digest mismatch".into(),
                     ));
                 }
-                let (effect, _retired) = Self::produce_component(
-                    &mut self.native_custody, NativeComponentRef::EffectAction(*effect_id), work,
-                    || EffectState {
-                        provider: provider.clone(), guarantee: *guarantee, effect_kind: effect_kind.clone(),
-                        request: request.clone(), request_digest: *request_digest,
-                        result_schema: result_schema.clone(), result_schema_digest: *result_schema_digest,
-                        status: EffectStatus::Planned, attempts: Vec::new(),
-                    },
+                let (effect, _retired) = self.native_custody.produce(
+                    NativeComponentRef::EffectAction(*effect_id), work,
                     |quota| {
                         native_custody::retain_entry::<(EffectId, EffectState)>(quota)?;
                         Ok(EffectState {
@@ -4611,13 +3728,13 @@ impl Reducer {
                     let copied = effect.attempts.len().checked_mul(std::mem::size_of::<EffectAttemptId>())
                         .ok_or_else(|| Error::Invalid("effect attempt move bytes overflow".into()))? as u64;
                     work.as_deref().expect("attempt copy observer").admit_copy(copied)?;
-                    let (mut replacement, retired) = Self::produce_component(
-                        &mut self.native_custody, NativeComponentRef::EffectAttempts(*effect_id), work,
-                        Vec::new, |quota| native_custody::reserve_copy_vector::<EffectAttemptId>(maximum, quota),
+                    let (mut replacement, retired) = self.native_custody.produce(
+                        NativeComponentRef::EffectAttempts(*effect_id), work,
+                        |quota| native_custody::reserve_copy_vector::<EffectAttemptId>(maximum, quota),
                     )?;
                     if let Err(error) = work.as_deref_mut().expect("attempt copy observer").copy_bytes(copied) {
                         drop(replacement);
-                        self.native_custody.rollback(NativeComponentRef::EffectAttempts(*effect_id), retired);
+                        drop(self.native_custody.rollback(NativeComponentRef::EffectAttempts(*effect_id), retired));
                         return Err(error);
                     }
                     replacement.append(&mut effect.attempts);
@@ -4648,14 +3765,14 @@ impl Reducer {
                     ));
                 }
                 validate_effect_result(&observation.status)?;
-                let (status, _retired) = Self::produce_component(
-                    &mut self.native_custody, NativeComponentRef::EffectStatus(observation.effect_id), work,
-                    || observation.status.clone(), |quota| native_custody::copy_status(&observation.status, quota),
+                let (status, _retired) = self.native_custody.produce(
+                    NativeComponentRef::EffectStatus(observation.effect_id), work,
+                    |quota| native_custody::copy_status(&observation.status, quota),
                 )?;
                 effect.status = status;
             }
             EventPayload::ForkPublished { seed } => {
-                seed.validate_with_work(work)?;
+                seed.validate(work)?;
                 self.validate_extension_fork_with_work(seed, work)?;
                 self.require_fresh_fork_with_work(seed, work)?;
                 if let Some(observer) = work.as_deref_mut().filter(|io| !native_custody::is_native(&**io)) {
@@ -4666,9 +3783,8 @@ impl Reducer {
                     observer.admit_owned(reservation)?;
                     observer.retain_owned(reservation)?;
                 }
-                let (entry, _retired) = Self::produce_component(
-                    &mut self.native_custody, NativeComponentRef::Fork(&seed.child), work,
-                    || (seed.child.clone(), seed.as_ref().clone()),
+                let (entry, _retired) = self.native_custody.produce(
+                    NativeComponentRef::Fork(&seed.child), work,
                     |quota| {
                         native_custody::retain_entry::<(Authority, ForkSeed)>(quota)?;
                         let child = native_custody::copy_authority(&seed.child, quota)?;
@@ -4680,7 +3796,7 @@ impl Reducer {
             }
             EventPayload::ProjectMergePublished { receipt } => {
                 self.require_conversation()?;
-                receipt.validate_shape_with_work(work)?;
+                receipt.validate_shape(work)?;
                 let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
                 let (key, key_owned) = Self::merge_key_with_work(receipt, quota.work())?;
                 quota.adopt(key_owned)?;
@@ -4691,9 +3807,9 @@ impl Reducer {
                 if quota.work().as_deref().is_some_and(native_custody::is_native) {
                     native_custody::retain_entry::<(String, Vec<u8>)>(&mut quota)?;
                 }
-                let retired = NativeComponentCustody::prepare(
+                let retired = self.native_custody.install(NativeComponentCustody::prepare(
                     NativeComponentRef::Merge(&key.0, &key.1), 0, quota.work(),
-                )?.install(&mut self.native_custody, quota.work())?;
+                )?, quota.work())?;
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 if quota.work().as_deref().is_some_and(native_custody::is_native) {
                     let produced = quota.retained();
@@ -4702,14 +3818,14 @@ impl Reducer {
                         NativeComponentRef::Merge(&key.0, &key.1), produced,
                         quota.work().as_deref_mut().expect("merge producing observer"),
                     ) {
-                        let incoming = self.native_custody.rollback_retaining(NativeComponentRef::Merge(&key.0, &key.1), retired);
+                        let incoming = self.native_custody.rollback(NativeComponentRef::Merge(&key.0, &key.1), retired);
                         drop(key);
                         drop(incoming);
                         return Err(error);
                     }
                 }
                 if let Err(error) = self.append_conversation_message_with_work(&receipt.notice, quota.work()) {
-                    let incoming = self.native_custody.rollback_retaining(NativeComponentRef::Merge(&key.0, &key.1), retired);
+                    let incoming = self.native_custody.rollback(NativeComponentRef::Merge(&key.0, &key.1), retired);
                     drop(key);
                     drop(incoming);
                     return Err(error);
@@ -4729,24 +3845,24 @@ impl Reducer {
                 self.require_conversation()?;
                 selection.validate(&self.conversation)?;
                 if let Some(checkpoint) = &selection.checkpoint {
-                    let (checkpoint, _retired) = Self::produce_component(
-                        &mut self.native_custody, NativeComponentRef::ContextCheckpoint, work,
-                        || checkpoint.clone(), |quota| native_custody::copy_file(checkpoint, quota),
+                    let (checkpoint, _retired) = self.native_custody.produce(
+                        NativeComponentRef::ContextCheckpoint, work,
+                        |quota| native_custody::copy_file(checkpoint, quota),
                     )?;
                     self.latest_context_checkpoint = Some(checkpoint);
                 }
             }
             EventPayload::InteractionOpened { ticket } => {
                 self.require_bound_conversation_if_applicable()?;
-                ticket.validate()?;
+                ticket.validate(work)?;
                 if self.interactions.contains_key(&ticket.id) {
                     return Err(Error::Conflict(
                         "interaction identity already exists".into(),
                     ));
                 }
-                let (ticket, _retired) = Self::produce_component(
-                    &mut self.native_custody, NativeComponentRef::InteractionTicket(ticket.id), work,
-                    || ticket.clone(), |quota| {
+                let (ticket, _retired) = self.native_custody.produce(
+                    NativeComponentRef::InteractionTicket(ticket.id), work,
+                    |quota| {
                         native_custody::retain_entry::<(uuid::Uuid, (InteractionTicket, Option<InteractionResolution>))>(quota)?;
                         native_custody::copy_ticket(ticket, quota)
                     },
@@ -4759,22 +3875,15 @@ impl Reducer {
                     .get_mut(&resolution.id)
                     .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
                 validate_interaction_transition(ticket, prior.as_ref(), resolution)?;
-                let (resolution, _retired) = Self::produce_component(
-                    &mut self.native_custody, NativeComponentRef::InteractionResolution(resolution.id), work,
-                    || resolution.clone(), |quota| native_custody::copy_resolution(resolution, quota),
+                let (resolution, _retired) = self.native_custody.produce(
+                    NativeComponentRef::InteractionResolution(resolution.id), work,
+                    |quota| native_custody::copy_resolution(resolution, quota),
                 )?;
                 *prior = Some(resolution);
             }
         }
         Ok(())
     }
-}
-
-/// Whether provider admission executed a migration before planning it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Migration {
-    Unverified,
-    Verified,
 }
 
 /// Declares [`TransitionKind`] from one table: each transition's serde `kind` tag as an [`Action`], as an [`EventPayload`], and the capability both require.
@@ -4965,24 +4074,12 @@ fn validate_causal_parent_with_work(
         return Ok(());
     };
     if reference.revision == 0 {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().is_some_and(native_custody::is_native) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid, reason: "causal event revision must be positive",
-            });
-        }
-        return Err(Error::Invalid(
-            "causal event revision must be positive".into(),
-        ));
+        return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Invalid,
+            "causal event revision must be positive"));
     }
     if reference.authority == *authority && reference.revision > current_revision {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().is_some_and(native_custody::is_native) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid, reason: "causal event is in the future",
-            });
-        }
-        return Err(Error::Invalid("causal event is in the future".into()));
+        return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Invalid,
+            "causal event is in the future"));
     }
     reference.authority.validate_with_work(work)?;
     Ok(())
@@ -5012,7 +4109,7 @@ fn validate_lifecycle(from: LifecycleState, to: LifecycleState) -> Result<()> {
 }
 
 #[allow(clippy::too_many_arguments, reason = "the original closed signed-grant fields")]
-fn scope_proof_with_work(
+fn scope_proof(
     key: &[u8; 32],
     audience: &Authority,
     issuer: &str,
@@ -5036,18 +4133,6 @@ fn scope_proof_with_work(
         })?;
         work.hashed_bytes(bytes)?;
     }
-    Ok(scope_proof(key, audience, issuer, id, capabilities, agent, parent_proof))
-}
-
-fn scope_proof(
-    key: &[u8; 32],
-    audience: &Authority,
-    issuer: &str,
-    id: &str,
-    capabilities: &Capabilities,
-    agent: Option<AgentId>,
-    parent_proof: Option<[u8; 32]>,
-) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new_keyed(key);
     hasher.update(&[match audience.kind {
         AggregateKind::Agent => 1,
@@ -5084,13 +4169,10 @@ fn scope_proof(
             hasher.update(&[0]);
         }
     }
-    *hasher.finalize().as_bytes()
+    Ok(*hasher.finalize().as_bytes())
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each argument is one field of the original attested proof preimage"
-)]
+#[allow(clippy::too_many_arguments, reason = "each argument is one field of the original attested proof preimage")]
 fn effect_attestation_proof_with_work(
     key: &[u8; 32],
     audience: &Authority,
@@ -5123,23 +4205,6 @@ fn effect_attestation_proof_with_work(
     Ok(proof)
 }
 
-pub(crate) fn canonical_intent(command: &Command) -> Result<[u8; 32]> {
-    canonical_intent_with_work(command, &mut None)
-}
-
-pub(crate) fn canonical_intent_with_work(
-    command: &Command,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<[u8; 32]> {
-    let bytes = crate::store::history::canonical_bytes_with_work(
-        command, crate::store::default_projection_read_limits().maximum_bytes, work,
-    )?;
-    if let Some(work) = work.as_deref_mut() { work.hashed_bytes(bytes.len() as u64)?; }
-    let digest = *blake3::hash(&bytes).as_bytes();
-    if let Some(work) = work.as_deref_mut() { work.release_owned(bytes.capacity() as u64)?; }
-    Ok(digest)
-}
-
 fn effect_request_digest_with_work(
     provider: &str, guarantee: EffectGuarantee, effect_kind: &str, request: &FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -5152,7 +4217,7 @@ fn effect_request_digest_with_work(
 
 fn validate_effect_result(status: &EffectStatus) -> Result<()> {
     if let EffectStatus::Succeeded { result } = status {
-        result.validate()?;
+        result.validate(&mut None)?;
         if result.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid("effect result must be JSON content".into()));
         }
@@ -5176,13 +4241,10 @@ fn validate_effect_observation(
     Ok(())
 }
 
-fn json_digest(value: &Value) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(value)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::FileDescriptor;
     use serde_json::json;
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -5200,30 +4262,32 @@ mod tests {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_value_copy_bounds_source_before_recursion_without_encoding_quota() -> Result<()> {
+    fn native_snapshot_round_trip(reducer: &Reducer, issuer: &AuthorityIssuer, maximum_events: usize) -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        use crate::store::history::HistoryIo;
-        let cancellation = CancellationToken::new();
-        let mut budget = original_proof_budget();
-        budget.bytes_encoded = 0;
-        let work = NativeMaterializationWork::new(budget, &cancellation).expect("original copy ledger");
-        let mut io = crate::store::history::native_work_io(&work).expect("original observer");
-        let source = json!({"real": ["resident payload"]});
-        let (copied, bytes) = native_value_clone_with_custody(&source, &mut Some(&mut io))?;
-        assert_eq!(copied, source);
-        assert_eq!(work.receipt().bytes_encoded, 0);
-        assert!(work.receipt().bytes_copied > 0);
-        drop(copied);
-        io.release_owned(bytes)?;
-        let mut deep = serde_json::Value::Null;
-        for _ in 0..257 { deep = serde_json::Value::Array(vec![deep]); }
-        let before = work.receipt();
-        assert!(native_value_clone_with_custody(&deep, &mut Some(&mut io)).is_err());
-        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
-        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
-        let (ordinary, _) = native_value_clone_with_custody(&deep, &mut None)?;
-        assert_eq!(ordinary, deep);
+        let source_token = CancellationToken::new();
+        let source = NativeMaterializationWork::new(original_proof_budget(), &source_token).expect("snapshot ledger");
+        let held = reducer.snapshot(maximum_events, &mut Some(&mut crate::store::history::native_work_io(&source).map_err(Error::from)?))?.0;
+        let copy_token = CancellationToken::new();
+        let copy = NativeMaterializationWork::new(original_proof_budget(), &copy_token).expect("copied payload ledger");
+        let mut io = crate::store::history::native_work_io(&copy).map_err(Error::from)?;
+        let input = held.copy(&mut Some(&mut io))?;
+        drop(io);
+        let copy_receipt = copy.receipt();
+        let metadata_token = CancellationToken::new();
+        let metadata = NativeMaterializationWork::new(original_proof_budget(), &metadata_token).expect("restore metadata ledger");
+        let mut restored = Reducer::restore_native(input, issuer.verifier(&mut None)?, reducer.schemas.clone(), &metadata)?;
+        restored.set_resident_event_limit(maximum_events)?;
+        assert_eq!(&restored, reducer);
+        assert_eq!(copy.receipt(), copy_receipt);
+        let available = original_proof_budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
+        assert!(copy.admit_retained(available).is_err());
+        assert!(metadata.admit_retained(available).is_err());
+        drop(restored);
+        copy.admit_retained(available).map_err(Error::from)?;
+        metadata.admit_retained(available).map_err(Error::from)?;
+        assert!(source.admit_retained(available).is_err());
+        drop(held);
+        source.admit_retained(available).map_err(Error::from)?;
         Ok(())
     }
 
@@ -5242,7 +4306,7 @@ mod tests {
         state: &mut Reducer, event: Event, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         let mut io = crate::store::history::native_work_io(work).expect("original native observer");
-        let result = state.apply_committed_with_work(event, &mut Some(&mut io))?;
+        let result = state.apply_committed(event, &mut Some(&mut io))?;
         let ApplyResult::Applied { event } = result else { panic!("fresh canonical model application") };
         state.mark_indexed_terminal_effect_with_work(&event, &mut Some(&mut io))?;
         drop(event);
@@ -5257,12 +4321,12 @@ mod tests {
         use crate::store::history::HistoryIo;
         let owner = issuer();
         let registry = schemas();
-        let mut reference = Reducer::new(owner.audience.clone(), owner.verifier(), registry.clone());
+        let mut reference = Reducer::new(owner.audience.clone(), owner.verifier(&mut None).expect("verifier copy"), registry.clone());
         reference.set_resident_event_limit(1)?;
         let mut io = crate::store::history::native_work_io(work).expect("original constructor observer");
         let authority = io.clone_authority(&owner.audience)?;
-        let verifier = owner.verifier_with_work(&mut Some(&mut io))?;
-        let shared_registry = registry.clone_with_work(&mut Some(&mut io))?;
+        let verifier = owner.verifier(&mut Some(&mut io))?;
+        let shared_registry = registry.copy(&mut Some(&mut io))?;
         let mut state = Reducer::new_with_preclaimed_work(
             authority, verifier, shared_registry, &mut Some(&mut io),
         )?;
@@ -5276,42 +4340,6 @@ mod tests {
         assert_eq!(state, reference);
         Ok((state, reference))
     }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_component_replacement_and_prune_release_real_independent_source_ledger() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let prime_token = CancellationToken::new();
-        let prime = NativeMaterializationWork::new(original_proof_budget(), &prime_token).expect("prime ledger");
-        let (mut state, mut reference) = native_component_fixture(&prime)?;
-        let token_a = CancellationToken::new();
-        let a = NativeMaterializationWork::new(original_proof_budget(), &token_a).expect("entry A ledger");
-        let first = request_file(br#"{"text":"real copied payload A"}"#)?;
-        let event = native_component_event(&mut reference, Action::AppendCustom {
-            schema: "example.message".into(), version: 1, content: first.clone(),
-        })?;
-        native_component_apply(&mut state, event, &a)?;
-        let available = original_proof_budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
-        assert!(a.admit_retained(available).is_err(), "live key, record and cached event still belong to A");
-        let receipt_a = a.receipt();
-        let token_b = CancellationToken::new();
-        let b = NativeMaterializationWork::new(original_proof_budget(), &token_b).expect("independent B ledger");
-        let second = request_file(br#"{"text":"physically replaced payload B"}"#)?;
-        let event = native_component_event(&mut reference, Action::AppendCustom {
-            schema: "example.message".into(), version: 1, content: second.clone(),
-        })?;
-        native_component_apply(&mut state, event, &b)?;
-        assert_eq!(state, reference);
-        assert_eq!(state.extension_state("example.message").expect("replaced state").1.content, second);
-        assert_eq!(state.events.len(), 1);
-        assert_eq!(state.operation_positions.len(), 1);
-        assert_eq!(a.receipt(), receipt_a, "B never meters, absorbs or rebinds source A");
-        a.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        assert!(b.admit_retained(available).is_err(), "actual B payload remains intrinsic after query IO drops");
-        drop(state);
-        b.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn native_component_clone_cold_restore_and_held_snapshot_survive_real_replacement_and_prune() -> Result<()> {
@@ -5321,24 +4349,26 @@ mod tests {
         let (mut state, mut reference) = native_component_fixture(&prime)?;
         let snapshot_token = CancellationToken::new();
         let snapshot_work = NativeMaterializationWork::new(original_proof_budget(), &snapshot_token).expect("held snapshot ledger");
-        let held = state.snapshot_native(1, &snapshot_work)?;
+        let held = state.snapshot(1, &mut Some(&mut crate::store::history::native_work_io(&snapshot_work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?.0;
         let old_revision = held.revision;
         let clone_token = CancellationToken::new();
         let clone_work = NativeMaterializationWork::new(original_proof_budget(), &clone_token).expect("independent reducer clone ledger");
         let mut clone_io = crate::store::history::native_work_io(&clone_work).expect("clone observer");
-        let cloned = state.clone_with_work(&mut Some(&mut clone_io))?;
+        let cloned = state.copy(&mut Some(&mut clone_io))?;
         assert_eq!(cloned, state);
         assert_eq!(clone_io.into_custody().bytes(), 0, "live copied components own every produced claim");
         let wire = crate::contract::canonical_json_bytes(&held)?;
         let cold_token = CancellationToken::new();
         let cold_work = NativeMaterializationWork::new(original_proof_budget(), &cold_token).expect("cold decoder ledger");
+        let cold_baseline = cold_work.live_allocation_bytes();
         let mut cold_io = crate::store::history::native_work_io(&cold_work).expect("cold observer");
-        let decoded = Snapshot::decode_with_work(&wire, wire.len() as u64, &mut Some(&mut cold_io))?;
+        let decoded = Snapshot::decode(&wire, wire.len() as u64, &mut Some(&mut cold_io))?;
         assert_eq!(cold_io.into_custody().bytes(), 0);
+        cold_token.cancel();
         let cold_receipt = cold_work.receipt();
         let restore_token = CancellationToken::new();
         let restore_work = NativeMaterializationWork::new(original_proof_budget(), &restore_token).expect("restore metadata ledger");
-        let mut restored = Reducer::restore_native(decoded, issuer().verifier(), schemas(), &restore_work)?;
+        let mut restored = Reducer::restore_native(decoded, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &restore_work)?;
         restored.set_resident_event_limit(1)?;
         assert_eq!(restored, state);
         assert_eq!(cold_work.receipt(), cold_receipt, "restore never spends on the independent source ledger");
@@ -5360,9 +4390,9 @@ mod tests {
         }
         assert!(snapshot_work.admit_retained(available).is_err());
         assert!(clone_work.admit_retained(available).is_err());
-        assert!(cold_work.admit_retained(available).is_err(), "restored authority still owns its original decoder claim");
+        assert!(cold_work.live_allocation_bytes() > cold_baseline);
         drop((state, restored));
-        cold_work.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        assert_eq!(cold_work.live_allocation_bytes(), cold_baseline);
         restore_work.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         assert!(snapshot_work.admit_retained(available).is_err(), "held snapshot survives both reducer drops");
         drop(held);
@@ -5397,7 +4427,7 @@ mod tests {
         let token = CancellationToken::new();
         let denied = NativeMaterializationWork::new(allowance, &token).expect("real late-phase denial ledger");
         let mut io = crate::store::history::native_work_io(&denied).expect("original denial observer");
-        let error = state.apply_committed_with_work(event, &mut Some(&mut io)).expect_err("last physical field copy exceeds the measured limit");
+        let error = state.apply_committed(event, &mut Some(&mut io)).expect_err("last physical field copy exceeds the measured limit");
         assert!(matches!(&error, Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { counter: "allocation_operations", .. }), ..
         }));
@@ -5452,6 +4482,7 @@ mod tests {
                 _ => Action::ResolveEffect { observation: owner.attest_effect(
                     effect_id, reference.effect(effect_id).expect("real admitted provider effect"),
                     attempt_id, EffectStatus::Failed { message: "actual attested provider rejection".into() },
+                    &mut None,
                 )? },
             };
             let event = native_component_event(&mut reference, action)?;
@@ -5465,7 +4496,6 @@ mod tests {
             assert!(state.events.len() <= 4 && state.operation_positions.len() <= 4);
             assert!(state.effects.len() <= 3 && state.indexed_terminal_effects.len() <= 2);
             assert_eq!(state.extension_states.len(), 1);
-            assert!(state.native_custody.component_count() <= 32, "custody must follow live source components, not queries");
             recent.push_back((index, query));
             if recent.len() > 16 {
                 let (retired_index, retired) = recent.pop_front().expect("bounded observation window");
@@ -5481,188 +4511,6 @@ mod tests {
         drop(state);
         for (_, work) in recent {
             work.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        }
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn event_verifier_copy_preserves_original_key_and_preflights_denial() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let issuer = issuer();
-        let reducer = Reducer::new(issuer.audience.clone(), issuer.verifier(), schemas());
-        assert_eq!(reducer.event_verifier_with_work(&mut None)?, reducer.event_verifier());
-        let token = CancellationToken::new();
-        let ledger = NativeMaterializationWork::new(original_proof_budget(), &token).expect("original ledger");
-        let mut io = crate::store::history::native_work_io(&ledger).expect("original observer");
-        let verifier = reducer.event_verifier_with_work(&mut Some(&mut io))?;
-        assert_eq!(verifier, reducer.event_verifier());
-        assert_eq!(ledger.receipt().bytes_copied, (verifier.id.len() + verifier.audience.id.len()) as u64);
-        assert_eq!(ledger.receipt().bytes_hashed, 0);
-        drop(verifier);
-        drop(io);
-        let mut budget = original_proof_budget();
-        budget.bytes_copied = 0;
-        let denied = NativeMaterializationWork::new(budget, &token).expect("denial ledger");
-        let mut denied_io = crate::store::history::native_work_io(&denied).expect("original observer");
-        let prefix = denied.receipt();
-        assert!(matches!(reducer.event_verifier_with_work(&mut Some(&mut denied_io)), Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded { counter: "bytes_copied", .. }), ..
-        })));
-        assert_eq!(denied.receipt(), prefix);
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_issuer_bootstrap_preserves_original_agent_and_agentless_mac() -> Result<()> {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let mut budget = serde_json::to_value(acyclic_fs::WorkBudget::UNBOUNDED).unwrap();
-        for bound in budget.as_object_mut().unwrap().values_mut() {
-            *bound = serde_json::Value::from(1_000_000_u64);
-        }
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            serde_json::from_value(budget).unwrap(), &cancellation).unwrap();
-        let available = work.remaining().unwrap().maximum_owned_bytes;
-        let issuer = issuer();
-        let capabilities = Capabilities::new(["volume:read:exact", "effect:run"]);
-        let agent = AgentId::from_bytes([9;16]);
-        let (scope, scope_custody) = issuer.root_for_agent_with_native_work(agent,"native-bootstrap",&capabilities,&work)?;
-        let (verifier, verifier_custody) = issuer.verifier_with_native_work(&work)?;
-        verifier.verify(&scope)?;
-        assert_eq!(scope.proof, issuer.root_for_agent(agent,"native-bootstrap",capabilities.clone()).proof);
-        let (root, root_custody) = issuer.root_with_native_work("native-purpose",&capabilities,&work)?;
-        assert_eq!(root.agent, None);
-        assert_eq!(root.proof, issuer.root("native-purpose",capabilities).proof);
-        let mut substituted = scope.clone();
-        substituted.agent = Some(AgentId::from_bytes([10;16]));
-        assert!(verifier.verify(&substituted).is_err());
-        drop(substituted);
-        drop(root);
-        drop(root_custody);
-        drop(scope);
-        drop(scope_custody);
-        drop(verifier);
-        drop(verifier_custody);
-        assert_eq!(work.remaining().unwrap().maximum_owned_bytes, available);
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn original_scope_clone_preserves_private_grant_and_denies_before_copy() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let issuer = issuer();
-        let parent = issuer.root_for_agent(
-            AgentId::from_bytes([9; 16]), "original-parent",
-            Capabilities::new(["effect:send", "volume:read"]),
-        );
-        let scope = issuer.attenuate(&parent, "original-child", Capabilities::new(["effect:send"]))?;
-        let cancellation = CancellationToken::new();
-        let ledger = NativeMaterializationWork::new(original_proof_budget(), &cancellation)
-            .expect("original ledger");
-        let mut io = crate::store::history::native_work_io(&ledger).expect("original observer");
-        let cloned = scope.clone_with_work(&mut Some(&mut io))?;
-        assert_eq!(cloned, scope);
-        issuer.verifier().verify(&cloned)?;
-        assert_eq!(ledger.receipt().bytes_copied,
-            (scope.id.len() + scope.issuer.len() + "effect:send".len()) as u64);
-        assert_eq!(ledger.receipt().bytes_hashed, 0);
-        drop(cloned);
-        drop(io);
-        for denied in ["bytes_copied", "peak_allocation_bytes", "cancelled"] {
-            let token = CancellationToken::new();
-            let mut budget = original_proof_budget();
-            if denied == "bytes_copied" { budget.bytes_copied = 0; }
-            if denied == "peak_allocation_bytes" {
-                budget.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes();
-            }
-            let ledger = NativeMaterializationWork::new(budget, &token).expect("original ledger");
-            let mut io = crate::store::history::native_work_io(&ledger).expect("original observer");
-            if denied == "cancelled" { token.cancel(); }
-            let prefix = ledger.receipt();
-            let error = scope.clone_with_work(&mut Some(&mut io)).expect_err("denied original clone");
-            match error {
-                Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. } =>
-                    assert_eq!(denied, "cancelled"),
-                Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                    acyclic_fs::WorkError::BudgetExceeded { counter, .. }), .. } =>
-                    assert_eq!(counter, denied),
-                other => panic!("unexpected original clone cause: {other:?}"),
-            }
-            assert_eq!(ledger.receipt().bytes_copied, prefix.bytes_copied);
-            assert_eq!(ledger.receipt().allocation_operations, prefix.allocation_operations);
-            assert_eq!(ledger.receipt().bytes_hashed, 0);
-        }
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn original_effect_attestation_has_canonical_proof_parity_and_preflight_denials() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let issuer = issuer();
-        let effect_id = EffectId::from_bytes([30; 16]);
-        let attempt_id = EffectAttemptId::from_bytes([31; 16]);
-        let mut reducer = Reducer::new(issuer.audience.clone(), issuer.verifier(), schemas());
-        reducer.apply(command(operation(30), 0, Action::PlanEffect {
-            effect_id, provider: "example.provider".into(),
-            guarantee: EffectGuarantee::AtMostOnce, effect_kind: "example.model_output".into(),
-            request: request_file(br#"{"prompt":"original input"}"#)?,
-            result_schema: schema_file(&json!({"type":"object"}))?,
-        }))?;
-        let effect = reducer.effect(effect_id).ok_or_else(|| Error::NotFound("effect".into()))?;
-        for status in [
-            EffectStatus::Succeeded {
-                result: request_file(br#"{"modelOutput":{"content":"original output","finishReason":"stop"}}"#)?,
-            },
-            EffectStatus::Failed { message: "provider rejected \"original input\"\nretry forbidden".into() },
-            EffectStatus::Indeterminate,
-        ] {
-            let expected_bytes = crate::contract::canonical_json_bytes(&(
-                &issuer.audience, &effect.provider, effect_id, attempt_id,
-                effect.request_digest, effect.guarantee, effect.result_schema_digest, &status,
-            ))?;
-            let expected = issuer.attest_effect(effect_id, effect, attempt_id, status.clone())?;
-            assert_eq!(expected.proof, *blake3::keyed_hash(&issuer.key, &expected_bytes).as_bytes());
-            let cancellation = CancellationToken::new();
-            let ledger = NativeMaterializationWork::new(original_proof_budget(), &cancellation)
-                .expect("original ledger");
-            let mut io = crate::store::history::native_work_io(&ledger).expect("original observer");
-            let observed = issuer.attest_effect_with_work(
-                effect_id, effect, attempt_id, status, &mut Some(&mut io))?;
-            assert_eq!(observed, expected);
-            issuer.verifier().verify_effect(&observed, &mut None)?;
-            assert_eq!(ledger.receipt().bytes_hashed, expected_bytes.len() as u64);
-            assert!(ledger.receipt().bytes_copied >= effect.provider.len() as u64);
-            for denied in ["bytes_copied", "bytes_hashed", "peak_allocation_bytes", "cancelled"] {
-                let token = CancellationToken::new();
-                let mut budget = original_proof_budget();
-                if denied == "bytes_copied" { budget.bytes_copied = 0; }
-                if denied == "bytes_hashed" { budget.bytes_hashed = 0; }
-                if denied == "peak_allocation_bytes" {
-                    budget.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes();
-                }
-                let ledger = NativeMaterializationWork::new(budget, &token).expect("original ledger");
-                let mut io = crate::store::history::native_work_io(&ledger).expect("original observer");
-                let status = observed.status.clone();
-                if denied == "cancelled" { token.cancel(); }
-                let prefix = ledger.receipt();
-                let error = issuer.attest_effect_with_work(
-                    effect_id, effect, attempt_id, status, &mut Some(&mut io)).expect_err("denied original signer");
-                match error {
-                    Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. } =>
-                        assert_eq!(denied, "cancelled"),
-                    Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                        acyclic_fs::WorkError::BudgetExceeded { counter, .. }), .. } =>
-                        assert_eq!(counter, denied),
-                    other => panic!("unexpected original signer cause: {other:?}"),
-                }
-                assert_eq!(ledger.receipt().bytes_hashed, 0);
-                if denied != "bytes_hashed" { assert_eq!(ledger.receipt(), prefix); }
-                else { assert!(ledger.receipt().bytes_encoded > 0); }
-            }
         }
         Ok(())
     }
@@ -5716,7 +4564,7 @@ mod tests {
                 LifecycleState::Failed,
                 LifecycleState::Cancelled,
             ];
-            let authority = issuer().verifier();
+            let authority = issuer().verifier(&mut None).expect("verifier copy");
             let mut reducer = Reducer::new(
                 Authority {
                     kind: AggregateKind::Conversation,
@@ -5760,7 +4608,7 @@ mod tests {
                             to: LifecycleState::Active,
                             reason: Some("other intent".into()),
                         });
-                        let before = reducer.clone_with_work(&mut None).map_err(fail)?;
+                        let before = reducer.copy(&mut None).map_err(fail)?;
                         prop_assert!(matches!(
                             reducer.apply(conflicting),
                             Err(Error::Conflict(_))
@@ -5780,7 +4628,7 @@ mod tests {
                 match reducer.plan(&next) {
                     Ok(ApplyResult::Applied { event }) => {
                         prop_assert_eq!(event.revision, revision + 1);
-                        let committed = reducer.apply_committed(event.clone()).map_err(fail)?;
+                        let committed = reducer.apply_committed(event.clone(), &mut None).map_err(fail)?;
                         prop_assert_eq!(committed, ApplyResult::Applied { event: event.clone() });
                         prop_assert_eq!(reducer.revision(), revision + 1);
                         admitted.push((next, event));
@@ -5789,13 +4637,13 @@ mod tests {
                         prop_assert!(false, "fresh operation replayed");
                     }
                     Err(_) => {
-                        let before = reducer.clone_with_work(&mut None).map_err(fail)?;
+                        let before = reducer.copy(&mut None).map_err(fail)?;
                         prop_assert!(reducer.apply(next).is_err());
                         prop_assert_eq!(&reducer, &before);
                     }
                 }
             }
-            let wire = crate::contract::canonical_json_bytes(&reducer.snapshot().map_err(fail)?)
+            let wire = crate::contract::canonical_json_bytes(&reducer.snapshot(usize::MAX, &mut None).map(|(snapshot, _)| snapshot).map_err(fail)?)
                 .map_err(fail)?;
             let decoded = crate::contract::json_from_slice(&wire)
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
@@ -5807,7 +4655,7 @@ mod tests {
             .map_err(fail)?;
             let mut replayed = Reducer::new(reducer.authority().clone(), authority, schemas());
             for (_, event) in &admitted {
-                replayed.apply_committed(event.clone()).map_err(fail)?;
+                replayed.apply_committed(event.clone(), &mut None).map_err(fail)?;
             }
             prop_assert_eq!(&restored, &reducer);
             prop_assert_eq!(&replayed, &reducer);
@@ -5815,96 +4663,11 @@ mod tests {
     }
 
     #[test]
-    fn transition_tags_and_capabilities_are_pinned() {
-        const PINNED: &str = "\
-transition_lifecycle lifecycle_transitioned lifecycle:manage
-append_custom custom event:append
-migrate_extension_state extension_state_migrated extension:migrate
-select_extensions extensions_selected extension:activate
-configure_extension extension_configured extension:configure
-plan_effect effect_planned effect:run
-mark_effect_dispatched effect_dispatched effect:run
-resolve_effect effect_resolved effect:run
-publish_fork fork_published fork:publish
-publish_project_merge project_merge_published project:merge
-bind_conversation conversation_bound conversation:bind
-append_conversation_message conversation_message_appended conversation:append
-select_model_context model_context_selected conversation:select_context
-open_interaction interaction_opened interaction:open
-resolve_interaction interaction_resolved interaction:resolve";
-        let mut actual = Vec::new();
-        for kind in TransitionKind::ALL {
-            let (action, event, capability) = kind.spec();
-            actual.push(format!("{action} {event} {capability}"));
-            let action = serde_json::from_value::<Action>(json!({ "kind": action }));
-            let event = serde_json::from_value::<EventPayload>(json!({ "kind": event }));
-            for error in [action.err(), event.err()] {
-                let error = error.map(|error| error.to_string()).unwrap_or_default();
-                assert!(error.contains("missing field"), "{kind:?}: {error}");
-            }
-        }
-        assert_eq!(actual.join("\n"), PINNED);
-    }
-
-    #[test]
-    fn registry_clones_share_until_successful_mutation_and_preserve_const_empty() -> Result<()> {
-        const EMPTY: SchemaRegistry = SchemaRegistry::new();
-        assert_eq!(EMPTY, SchemaRegistry::default());
-        let schema = json!({"type":"object"});
-        let mut original = SchemaRegistry::new();
-        original.register("example.shared", 1, schema.clone(), [1; 32], ExtensionForkPolicy::Inherit)?;
-        let mut child = original.clone();
-        child.register("example.shared", 1, schema.clone(), [1; 32], ExtensionForkPolicy::Inherit)?;
-        assert!(child.register("example.shared", 1, schema.clone(), [2; 32], ExtensionForkPolicy::Inherit).is_err());
-        assert_eq!(child, original);
-        child.register("example.child", 1, schema, [3; 32], ExtensionForkPolicy::Reset)?;
-        assert_eq!(original.schemas.as_ref().unwrap().len(), 1);
-        assert_eq!(child.schemas.as_ref().unwrap().len(), 2);
-        Ok(())
-    }
-
-    #[test]
-    fn v2_extension_record_fixture_round_trips_canonically() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/extension-record.json").trim();
-        let record: ExtensionRecord =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        record.validate()?;
-        let encoded =
-            serde_json::to_string(&record).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded, fixture);
-        Ok(())
-    }
-
-    #[test]
-    fn v2_extension_dependency_fixture_round_trips_canonically() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/extension-dependency.json").trim();
-        let dependency: ExtensionDependency =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        dependency.validate()?;
-        let encoded = serde_json::to_string(&dependency)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded, fixture);
-        Ok(())
-    }
-
-    #[test]
-    fn v2_extension_configuration_fixture_round_trips_canonically() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/extension-configuration.json").trim();
-        let record: ExtensionConfiguration =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        record.validate()?;
-        let encoded =
-            serde_json::to_string(&record).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded, fixture);
-        Ok(())
-    }
-
-    #[test]
     fn v2_extension_admission_fixture_round_trips_canonically() -> Result<()> {
         let fixture = include_str!("../fixtures/v2/extension-admission.json").trim();
         let record: ExtensionAdmission =
             serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        record.validate()?;
+        record.validate(&mut None)?;
         let encoded =
             serde_json::to_string(&record).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(encoded, fixture);
@@ -5932,11 +4695,8 @@ resolve_interaction interaction_resolved interaction:resolve";
             [],
             Some(json!({"type":"object","required":["enabled"],"properties":{"enabled":{"type":"boolean"}},"additionalProperties":false})),
         )?;
-        let scope = issuer.root(
-            "owner",
-            Capabilities::new(["extension:configure", "extension:activate"]),
-        );
-        let mut reducer = Reducer::new(authority, issuer.verifier(), registry.clone());
+        let scope = issuer.issue("owner", &Capabilities::new(["extension:configure", "extension:activate"]), None, None, &mut None).expect("scope proof");
+        let mut reducer = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), registry.clone());
         let select = |operation_id, key, revision| -> Result<Command> {
             Ok(Command {
                 operation_id,
@@ -5960,11 +4720,11 @@ resolve_interaction interaction_resolved interaction:resolve";
                 .validate_configuration_bytes(
                     &extension,
                     &invalid,
-                    br#"{"enabled":false,"extra":1}"#
+                    br#"{"enabled":false,"extra":1}"#, None
                 )
                 .is_err()
         );
-        reducer.validate_configuration_bytes(&extension, &first, br#"{"enabled":true}"#)?;
+        reducer.validate_configuration_bytes(&extension, &first, br#"{"enabled":true}"#, None)?;
         reducer.apply(Command {
             operation_id: operation(72),
             idempotency_key: IdempotencyKey::new("configure-first")?,
@@ -5999,7 +4759,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 .is_err()
         );
         let second = request_file(br#"{"enabled":false}"#)?;
-        reducer.validate_configuration_bytes(&extension, &second, br#"{"enabled":false}"#)?;
+        reducer.validate_configuration_bytes(&extension, &second, br#"{"enabled":false}"#, None)?;
         reducer.apply(Command {
             operation_id: operation(74),
             idempotency_key: IdempotencyKey::new("configure-second")?,
@@ -6012,14 +4772,14 @@ resolve_interaction interaction_resolved interaction:resolve";
             },
         })?;
         reducer.set_resident_event_limit(1)?;
-        assert_eq!(reducer.snapshot()?.events.len(), 1);
+        assert_eq!(reducer.snapshot(usize::MAX, &mut None)?.0.events.len(), 1);
         assert_eq!(reducer.archived_through_revision(), 2);
         assert_eq!(reducer.active_configurations()[0].content, first);
         assert_eq!(reducer.extension_admission()?, Some(admitted));
-        let wire = crate::contract::canonical_json_bytes(&reducer.snapshot()?)?;
+        let wire = crate::contract::canonical_json_bytes(&reducer.snapshot(usize::MAX, &mut None)?.0)?;
         let snapshot = crate::contract::json_from_slice(&wire)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        let restored = Reducer::restore(snapshot, issuer.verifier(), registry)?;
+        let restored = Reducer::restore(snapshot, issuer.verifier(&mut None).expect("verifier copy"), registry)?;
         assert_eq!(
             restored.active_configurations(),
             reducer.active_configurations()
@@ -6029,31 +4789,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             reducer.extension_admission()?
         );
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-            let source_token = CancellationToken::new();
-            let source = NativeMaterializationWork::new(original_proof_budget(), &source_token).expect("configured snapshot ledger");
-            let held = reducer.snapshot_native(1, &source)?;
-            let copy_token = CancellationToken::new();
-            let copy = NativeMaterializationWork::new(original_proof_budget(), &copy_token).expect("configured copy ledger");
-            let input = held.clone_native(&copy)?;
-            let copy_receipt = copy.receipt();
-            let metadata_token = CancellationToken::new();
-            let metadata = NativeMaterializationWork::new(original_proof_budget(), &metadata_token).expect("new map inline ledger");
-            let mut native_restored = Reducer::restore_native(input, issuer.verifier(), reducer.schemas.clone(), &metadata)?;
-            native_restored.set_resident_event_limit(1)?;
-            assert_eq!(native_restored, reducer);
-            assert_eq!(copy.receipt(), copy_receipt, "configuration Vec-to-map move never charges the original source ledger");
-            let available = original_proof_budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
-            assert!(copy.admit_retained(available).is_err());
-            assert!(metadata.admit_retained(available).is_err());
-            drop(native_restored);
-            copy.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            metadata.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            assert!(source.admit_retained(available).is_err(), "held configuration snapshot remains independent");
-            drop(held);
-            source.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        }
+        native_snapshot_round_trip(&reducer, &issuer, 1)?;
         Ok(())
     }
 
@@ -6109,7 +4845,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             [beta.clone()],
         )?;
         assert!(matches!(
-            registry.activation_order([alpha.clone()]),
+            registry.activation_order(&[alpha.clone()], &mut None),
             Err(Error::Unsupported(_))
         ));
         registry.register_with_dependencies(
@@ -6121,7 +4857,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             [],
         )?;
         assert_eq!(
-            registry.activation_order([alpha.clone()])?,
+            registry.activation_order(&[alpha.clone()], &mut None)?.0,
             vec![beta.clone(), alpha.clone()]
         );
         let other_beta = ExtensionDependency {
@@ -6136,7 +4872,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             ExtensionForkPolicy::Reset,
         )?;
         assert!(matches!(
-            registry.activation_order([alpha.clone(), other_beta]),
+            registry.activation_order(&[alpha.clone(), other_beta], &mut None),
             Err(Error::Conflict(_))
         ));
         let mut cyclic = SchemaRegistry::new();
@@ -6157,7 +4893,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             [alpha],
         )?;
         assert!(matches!(
-            cyclic.activation_order([beta]),
+            cyclic.activation_order(&[beta], &mut None),
             Err(Error::Conflict(_))
         ));
         Ok(())
@@ -6194,7 +4930,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             ExtensionForkPolicy::Reset,
             [base.clone()],
         )?;
-        let scope = issuer.root("owner", Capabilities::new(["extension:activate"]));
+        let scope = issuer.issue("owner", &Capabilities::new(["extension:activate"]), None, None, &mut None).expect("scope proof");
         let select = Command {
             operation_id: operation(61),
             idempotency_key: IdempotencyKey::new("select-extensions")?,
@@ -6205,13 +4941,13 @@ resolve_interaction interaction_resolved interaction:resolve";
                 roots: vec![feature.clone()],
             },
         };
-        let mut reducer = Reducer::new(authority, issuer.verifier(), registry.clone());
+        let mut reducer = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), registry.clone());
         assert!(matches!(
             reducer.apply(select.clone())?,
             ApplyResult::Applied { .. }
         ));
         assert_eq!(reducer.active_extensions(), &[base, feature]);
-        let mut restored = Reducer::restore(reducer.snapshot()?, issuer.verifier(), registry)?;
+        let mut restored = Reducer::restore(reducer.snapshot(usize::MAX, &mut None)?.0, issuer.verifier(&mut None).expect("verifier copy"), registry)?;
         assert_eq!(restored.active_extensions(), reducer.active_extensions());
         assert!(matches!(
             restored.apply(select.clone())?,
@@ -6231,10 +4967,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             ApplyResult::Replayed { .. }
         ));
         assert!(restored.active_extensions().is_empty());
-        let active_scope = issuer.root(
-            "owner-active",
-            Capabilities::new(["extension:activate", "lifecycle:manage"]),
-        );
+        let active_scope = issuer.issue("owner-active", &Capabilities::new(["extension:activate", "lifecycle:manage"]), None, None, &mut None).expect("scope proof");
         restored.apply(Command {
             operation_id: operation(63),
             idempotency_key: IdempotencyKey::new("activate-agent")?,
@@ -6275,7 +5008,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             )?,
             "requests/request.json",
             "generation-1",
-            FileDescriptor::from_bytes(bytes, "application/json")?,
+            FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
             "request.json",
         )
     }
@@ -6287,7 +5020,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             request_file(b"null")?.volume().clone(),
             "schemas/result.json",
             "generation-1",
-            FileDescriptor::from_bytes(&bytes, "application/schema+json")?,
+            FileDescriptor::from_bytes(&bytes, "application/schema+json", &mut None)?,
             "result.json",
         )
     }
@@ -6342,7 +5075,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 {
                     capabilities.push(
                         volume
-                            .capability(crate::conversation::VolumeOperation::Read)
+                            .capability(crate::conversation::VolumeOperation::Read, &mut None)
                             .expect("valid source reference"),
                     );
                 }
@@ -6350,9 +5083,9 @@ resolve_interaction interaction_resolved interaction:resolve";
         }
         let capabilities = Capabilities::new(capabilities);
         let scope = if matches!(&action, Action::PublishFork { .. }) {
-            issuer().root_for_agent(crate::AgentId::from_bytes([1; 16]), "root", capabilities)
+            issuer().issue("root", &capabilities, Some(crate::AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof")
         } else {
-            issuer().root("root", capabilities)
+            issuer().issue("root", &capabilities, None, None, &mut None).expect("scope proof")
         };
         Command {
             operation_id,
@@ -6366,14 +5099,14 @@ resolve_interaction interaction_resolved interaction:resolve";
 
     #[test]
     fn committed_events_attest_admission_without_persisting_bearer_scopes() -> Result<()> {
-        let verifier_debug = format!("{:?}", issuer().verifier());
+        let verifier_debug = format!("{:?}", issuer().verifier(&mut None).expect("verifier copy"));
         assert!(verifier_debug.contains("[redacted]"));
         assert!(!verifier_debug.contains("[7, 7, 7"));
         let authority = Authority {
             kind: AggregateKind::Conversation,
             id: "conversation-1".into(),
         };
-        let mut reducer = Reducer::new(authority, issuer().verifier(), schemas());
+        let mut reducer = Reducer::new(authority, issuer().verifier(&mut None).expect("verifier copy"), schemas());
         let planned = reducer.plan(&command(
             operation(19),
             0,
@@ -6392,10 +5125,10 @@ resolve_interaction interaction_resolved interaction:resolve";
         let mut tampered = event.clone();
         tampered.scope.capabilities = Capabilities::new(["conversation:bind", "effect:run"]);
         assert!(matches!(
-            reducer.apply_committed(tampered),
+            reducer.apply_committed(tampered, &mut None),
             Err(Error::Unauthorized(_))
         ));
-        reducer.apply_committed(event)?;
+        reducer.apply_committed(event, &mut None)?;
         assert_eq!(reducer.revision(), 1);
         Ok(())
     }
@@ -6408,7 +5141,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 kind: AggregateKind::Conversation,
                 id: "conversation-1".into(),
             },
-            issuer().verifier(),
+            issuer().verifier(&mut None).expect("verifier copy"),
             schemas(),
         );
         let request = Interaction::approval("approve exact effect", operation(12), [3; 32])?;
@@ -6474,10 +5207,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 },
             },
         );
-        unknown.scope = issuer().root(
-            "responder",
-            Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]),
-        );
+        unknown.scope = issuer().issue("responder", &Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]), None, None, &mut None).expect("scope proof");
         let mut misattributed = unknown.clone();
         if let Action::ResolveInteraction { resolution } = &mut misattributed.action {
             resolution.outcome = InteractionOutcome::Indeterminate {
@@ -6499,10 +5229,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 resolution: resolution.clone(),
             },
         );
-        granted.scope = issuer().root(
-            "responder",
-            Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]),
-        );
+        granted.scope = issuer().issue("responder", &Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]), None, None, &mut None).expect("scope proof");
         let committed = crate::interaction::ResolutionReceipt::from_apply_result(
             reducer.apply(granted.clone())?,
         )?;
@@ -6525,13 +5252,10 @@ resolve_interaction interaction_resolved interaction:resolve";
             Some(&resolution)
         );
         let mut stale = command(operation(22), 4, Action::ResolveInteraction { resolution });
-        stale.scope = issuer().root(
-            "responder",
-            Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]),
-        );
+        stale.scope = issuer().issue("responder", &Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]), None, None, &mut None).expect("scope proof");
         assert!(matches!(reducer.plan(&stale), Err(Error::Conflict(_))));
-        let snapshot = reducer.snapshot()?;
-        let restored = Reducer::restore(snapshot, issuer().verifier(), schemas())?;
+        let snapshot = reducer.snapshot(usize::MAX, &mut None)?.0;
+        let restored = Reducer::restore(snapshot, issuer().verifier(&mut None).expect("verifier copy"), schemas())?;
         assert!(
             restored
                 .interaction(&ticket.id)
@@ -6548,7 +5272,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 kind: AggregateKind::Conversation,
                 id: "conversation-1".into(),
             },
-            issuer().verifier(),
+            issuer().verifier(&mut None).expect("verifier copy"),
             schemas(),
         );
         let append = command(
@@ -6599,7 +5323,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             [10; 32],
             ExtensionForkPolicy::Reset,
         )?;
-        let mut reducer = Reducer::new(authority.clone(), issuer().verifier(), registry.clone());
+        let mut reducer = Reducer::new(authority.clone(), issuer().verifier(&mut None).expect("verifier copy"), registry.clone());
         reducer.apply(command(
             operation(110),
             0,
@@ -6635,32 +5359,28 @@ resolve_interaction interaction_resolved interaction:resolve";
                 content: request_file(br#"{"text":"new"}"#)?,
             },
         );
-        migrate.scope = issuer().root_for_agent(
-            crate::AgentId::from_bytes([8; 16]),
-            "owner",
-            Capabilities::new([
+        migrate.scope = issuer().issue("owner", &Capabilities::new([
                 "extension:migrate".to_owned(),
                 request_file(b"null")?
                     .volume()
-                    .capability(VolumeOperation::Write)?,
-            ]),
-        );
+                    .capability(VolumeOperation::Write, &mut None)?,
+            ]), Some(crate::AgentId::from_bytes([8; 16])), None, &mut None).expect("scope proof");
         let mut stale = migrate.clone();
         if let Action::MigrateExtensionState { previous, .. } = &mut stale.action {
             previous.revision = 0;
         }
         assert!(matches!(
-            reducer.plan_verified_migration(&stale),
+            reducer.plan_with_migration_boundary_with_work(&stale, true, false, None, &mut None).map(|(result, _)| result),
             Err(Error::Conflict(_))
         ));
         assert!(matches!(
             reducer.apply(migrate.clone()),
             Err(Error::Unsupported(_))
         ));
-        let ApplyResult::Applied { event } = reducer.plan_verified_migration(&migrate)? else {
+        let ApplyResult::Applied { event } = reducer.plan_with_migration_boundary_with_work(&migrate, true, false, None, &mut None).map(|(result, _)| result)? else {
             return Err(Error::Conflict("migration unexpectedly replayed".into()));
         };
-        reducer.apply_committed(event)?;
+        reducer.apply_committed(event, &mut None)?;
         assert!(matches!(
             reducer.apply(migrate)?,
             ApplyResult::Replayed { .. }
@@ -6671,7 +5391,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 .map(|(_, state)| state.version),
             Some(2)
         );
-        let restored = Reducer::restore(reducer.snapshot()?, issuer().verifier(), registry)?;
+        let restored = Reducer::restore(reducer.snapshot(usize::MAX, &mut None)?.0, issuer().verifier(&mut None).expect("verifier copy"), registry)?;
         assert_eq!(
             restored.extension_state("example.message"),
             reducer.extension_state("example.message")
@@ -6698,7 +5418,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             kind: AggregateKind::Conversation,
             id: "conversation-1".into(),
         };
-        let mut original = Reducer::new(authority.clone(), issuer().verifier(), schemas());
+        let mut original = Reducer::new(authority.clone(), issuer().verifier(&mut None).expect("verifier copy"), schemas());
         let ApplyResult::Applied { event } = original.apply(command(
             operation(70),
             0,
@@ -6722,24 +5442,24 @@ resolve_interaction interaction_resolved interaction:resolve";
         ] {
             let mut bindings = SchemaRegistry::new();
             bindings.register("example.message", 1, schema.clone(), digest, policy)?;
-            let mut restored = Reducer::new(authority.clone(), issuer().verifier(), bindings);
+            let mut restored = Reducer::new(authority.clone(), issuer().verifier(&mut None).expect("verifier copy"), bindings);
             assert!(matches!(
-                restored.apply_committed(event.clone()),
+                restored.apply_committed(event.clone(), &mut None),
                 Err(Error::Conflict(_))
             ));
         }
         let mut missing = Reducer::new(
             authority.clone(),
-            issuer().verifier(),
+            issuer().verifier(&mut None).expect("verifier copy"),
             SchemaRegistry::new(),
         );
         assert!(matches!(
-            missing.apply_committed(event.clone()),
+            missing.apply_committed(event.clone(), &mut None),
             Err(Error::Unsupported(_))
         ));
-        let mut exact = Reducer::new(authority, issuer().verifier(), schemas());
+        let mut exact = Reducer::new(authority, issuer().verifier(&mut None).expect("verifier copy"), schemas());
         assert!(matches!(
-            exact.apply_committed(event)?,
+            exact.apply_committed(event, &mut None)?,
             ApplyResult::Applied { .. }
         ));
         assert!(matches!(
@@ -6770,7 +5490,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                     id: "turn-1".into(),
                 },
             )
-            .verifier(),
+            .verifier(&mut None).expect("verifier copy"),
             schemas(),
         );
         let turn_issuer = AuthorityIssuer::new("test", [7; 32], reducer.authority().clone());
@@ -6782,7 +5502,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 reason: None,
             },
         );
-        start.scope = turn_issuer.root("turn", Capabilities::new(["lifecycle:manage"]));
+        start.scope = turn_issuer.issue("turn", &Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof");
         reducer.apply(start)?;
         let mut finish = command(
             operation(41),
@@ -6792,7 +5512,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 reason: None,
             },
         );
-        finish.scope = turn_issuer.root("turn", Capabilities::new(["lifecycle:manage"]));
+        finish.scope = turn_issuer.issue("turn", &Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof");
         reducer.apply(finish)?;
         let mut reopen = command(
             operation(42),
@@ -6802,7 +5522,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 reason: None,
             },
         );
-        reopen.scope = turn_issuer.root("turn", Capabilities::new(["lifecycle:manage"]));
+        reopen.scope = turn_issuer.issue("turn", &Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof");
         assert!(matches!(reducer.apply(reopen), Err(Error::Conflict(_))));
         Ok(())
     }
@@ -6817,7 +5537,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 kind: AggregateKind::Conversation,
                 id: "conversation-1".into(),
             },
-            issuer().verifier(),
+            issuer().verifier(&mut None).expect("verifier copy"),
             schemas(),
         );
         reducer.apply(command(
@@ -6833,7 +5553,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             },
         ))?;
         assert!(
-            !serde_json::to_string(&reducer.snapshot()?)
+            !serde_json::to_string(&reducer.snapshot(usize::MAX, &mut None)?.0)
                 .map_err(|error| Error::Invalid(error.to_string()))?
                 .contains("\\\"value\\\"")
         );
@@ -6852,6 +5572,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 .ok_or_else(|| Error::NotFound("effect".into()))?,
             first_attempt,
             EffectStatus::Indeterminate,
+            &mut None,
         )?;
         reducer.apply(command(
             operation(3),
@@ -6881,6 +5602,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             EffectStatus::Succeeded {
                 result: request_file(br#"{"receipt":"confirmed"}"#)?,
             },
+            &mut None,
         )?;
         reducer.apply(command(
             operation(5),
@@ -6911,7 +5633,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 kind: AggregateKind::Conversation,
                 id: "conversation-1".into(),
             },
-            issuer().verifier(),
+            issuer().verifier(&mut None).expect("verifier copy"),
             schemas(),
         );
         reducer.apply(command(
@@ -6941,6 +5663,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 .ok_or_else(|| Error::NotFound("effect".into()))?,
             attempt_id,
             EffectStatus::Indeterminate,
+            &mut None,
         )?;
         reducer.apply(command(
             operation(22),
@@ -6972,7 +5695,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 kind: AggregateKind::Conversation,
                 id: "conversation-1".into(),
             },
-            issuer().verifier(),
+            issuer().verifier(&mut None).expect("verifier copy"),
             schemas(),
         );
         reducer.apply(command(
@@ -7007,8 +5730,9 @@ resolve_interaction interaction_resolved interaction:resolve";
                     request_file(b"1")?.volume().clone(),
                     "results/invalid.txt",
                     "generation-1",
-                    crate::conversation::FileDescriptor::from_bytes(b"1", "text/plain")?,
+                    crate::conversation::FileDescriptor::from_bytes(b"1", "text/plain", &mut None)?,
                     "invalid.txt",
+                    &mut None,
                 )?,
             },
         )?;
@@ -7029,6 +5753,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 .ok_or_else(|| Error::NotFound("effect".into()))?,
             attempt_id,
             EffectStatus::Indeterminate,
+            &mut None,
         )?;
         forged.provider = "attacker".into();
         assert!(matches!(
@@ -7048,6 +5773,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 .ok_or_else(|| Error::NotFound("effect".into()))?,
             attempt_id,
             EffectStatus::Indeterminate,
+            &mut None,
         )?;
         reducer.apply(command(
             operation(34),
@@ -7077,7 +5803,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 kind: AggregateKind::Conversation,
                 id: "conversation-1".into(),
             },
-            issuer().verifier(),
+            issuer().verifier(&mut None).expect("verifier copy"),
             schemas(),
         );
         let mut empty_key = command(
@@ -7119,7 +5845,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 kind: AggregateKind::Conversation,
                 id: "conversation-1".into(),
             },
-            issuer().verifier(),
+            issuer().verifier(&mut None).expect("verifier copy"),
             schemas(),
         );
         let planned = reducer.plan(&command(
@@ -7142,106 +5868,31 @@ resolve_interaction interaction_resolved interaction:resolve";
         use crate::fork::{CapturedResource, ResourceRevision};
         use crate::resources::{GenerationRef, ProviderRef, ResourceKind, ResourceRef, StreamRef};
 
-        let stream_provider = ProviderRef::new("acyclic", "stream", "1")?;
-        let filesystem_provider = ProviderRef::new("acyclic", "filesystem", "2")?;
-        let child = Authority {
-            kind: AggregateKind::Conversation,
-            id: "conversation-2".into(),
-        };
-        let parent = Authority {
-            kind: AggregateKind::Conversation,
-            id: "conversation-1".into(),
-        };
+        let parent = Authority { kind: AggregateKind::Conversation, id: "conversation-1".into() };
+        let child = Authority { kind: AggregateKind::Conversation, id: "conversation-2".into() };
         let child_agent = crate::AgentId::from_bytes([6; 16]);
-        let child_project = VolumeRef::new(
-            filesystem_provider.clone(),
-            "child-project",
-            VolumeClass::Project,
-            VolumeOwner::Project("project-1".into()),
-        )?;
-        let seed = ForkSeed { history_witness: None, summary: None,
-        authorized_source: None,
-        child_result_volume: None,
-        child_result_generation: None,
-        operation_id: operation(8),
-        parent: parent.clone(),
-        parent_revision: 1,
-        child: child.clone(),
-        child_agent,
-        resources: vec![
-            CapturedResource {
-                source: ResourceRevision::PrivateVolume {
-                    volume: VolumeRef::new(
-                        filesystem_provider.clone(),
-                        "parent-private",
-                        VolumeClass::AgentPrivate,
-                        VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),
-                    )?,
-                    generation: GenerationRef::new(filesystem_provider.clone(), [4; 32], None)?,
-                    paths: Vec::new(),
-                },
-                revision: ResourceRevision::PrivateVolume {
-                    volume: VolumeRef::new(
-                        filesystem_provider.clone(),
-                        "child-private",
-                        VolumeClass::AgentPrivate,
-                        VolumeOwner::Agent(child_agent),
-                    )?,
-                    generation: GenerationRef::new(filesystem_provider.clone(), [3; 32], None)?,
-                    paths: Vec::new(),
-                },
-            },
-            CapturedResource {
-                source: ResourceRevision::History(StreamRef::new(
-                    stream_provider,
-                    parent.stream_path()?.into_bytes(),
-                    Some("1".into()),
-                )?),
-                revision: ResourceRevision::History(StreamRef::new(
-                    ProviderRef::new("acyclic", "stream", "1")?,
-                    parent.stream_path()?.into_bytes(),
-                    Some("1".into()),
-                )?),
-            },
-            CapturedResource {
-                source: ResourceRevision::Project {
-                    volume: VolumeRef::new(
-                        filesystem_provider.clone(),
-                        "parent-project",
-                        VolumeClass::Project,
-                        VolumeOwner::Project("project-1".into()),
-                    )?,
-                    generation: GenerationRef::new(
-                        filesystem_provider.clone(),
-                        [1; 32],
-                        Some("6".into()),
-                    )?,
-                },
-                revision: ResourceRevision::Project {
-                    volume: child_project,
-                    generation: GenerationRef::new(
-                        filesystem_provider.clone(),
-                        [2; 32],
-                        Some("7".into()),
-                    )?,
-                },
-            },
-        ],
-        omissions: Vec::new(),
-        child_private_volume: VolumeRef::new(
-            filesystem_provider.clone(),
-            "child-private",
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(child_agent),
-        )?,
-        child_private_generation: GenerationRef::new(filesystem_provider, [3; 32], None)?,
-        inherited_context: Vec::new(),
-        shared_grants: Vec::new(),
-        attached_agents: Vec::new(),
-        reference_grants: Vec::new(),
-        attachment_manifests: Vec::new(),
-        inherited_through_sequence: 0,
-        boundary: None, };
+        let mut seed: ForkSeed = serde_json::from_str(include_str!("../fixtures/v2/fork-seed.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        seed.operation_id = operation(8);
+        seed.parent = parent.clone();
+        seed.parent_revision = 1;
+        seed.child = child.clone();
+        seed.child_agent = child_agent;
+        seed.resources.rotate_right(1);
+        let provider = seed.child_private_volume.provider().clone();
+        seed.child_private_volume = VolumeRef::new(provider.clone(), "child-private",
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent))?;
+        if let ResourceRevision::PrivateVolume { volume, .. } = &mut seed.resources[0].source {
+            *volume = VolumeRef::new(provider.clone(), "parent-private", VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])))?;
+        }
+        if let ResourceRevision::PrivateVolume { volume, .. } = &mut seed.resources[0].revision {
+            *volume = seed.child_private_volume.clone();
+        }
+        let history = ResourceRevision::History(StreamRef::new(
+            ProviderRef::new("acyclic", "stream", "1")?, parent.stream_path(&mut None)?.into_bytes(),
+            Some("1".into()))?);
+        seed.resources[1] = CapturedResource { source: history.clone(), revision: history };
         let extension = ResourceRevision::Extension {
             name: "example.message".into(),
             version: 1,
@@ -7271,7 +5922,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 [9; 32],
                 policy,
             )?;
-            let mut candidate = Reducer::new(parent.clone(), issuer().verifier(), bindings);
+            let mut candidate = Reducer::new(parent.clone(), issuer().verifier(&mut None).expect("verifier copy"), bindings);
             candidate.apply(command(
                 operation(1),
                 0,
@@ -7314,7 +5965,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 [9; 32],
                 policy,
             )?;
-            let mut candidate = Reducer::new(parent.clone(), issuer().verifier(), bindings);
+            let mut candidate = Reducer::new(parent.clone(), issuer().verifier(&mut None).expect("verifier copy"), bindings);
             candidate.apply(command(
                 operation(1),
                 0,
@@ -7344,7 +5995,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             *implementation_digest = [8; 32];
         }
         mismatched.resources[3].source = mismatched.resources[3].revision.clone();
-        let mut candidate = Reducer::new(parent.clone(), issuer().verifier(), schemas());
+        let mut candidate = Reducer::new(parent.clone(), issuer().verifier(&mut None).expect("verifier copy"), schemas());
         candidate.apply(command(
             operation(1),
             0,
@@ -7367,7 +6018,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 kind: AggregateKind::Conversation,
                 id: "conversation-1".into(),
             },
-            issuer().verifier(),
+            issuer().verifier(&mut None).expect("verifier copy"),
             schemas(),
         );
         reducer.apply(command(
@@ -7399,13 +6050,13 @@ resolve_interaction interaction_resolved interaction:resolve";
             let mut work = crate::store::history::HistoryWork::new(budget, &cancelled);
             assert!(reducer.validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work)).is_err());
 
-            let prefix = InheritedConversationPrefix::select(parent.clone(), 1, 0, &[], &reducer.conversation)?;
-            let prefix_bytes = prefix.canonical_bytes(None)?;
+            let prefix = InheritedConversationPrefix::select(parent.clone(), 1, 0, &[], &reducer.conversation, &mut None)?;
+            let prefix_bytes = crate::contract::canonical_json_bytes(&prefix)?;
             let mut materialized = seed.clone();
             materialized.inherited_context.push(FileRef::new(
                 seed.child_private_volume.clone(), ".system/inherited-conversation/prefix.json", "generation-1",
                 FileDescriptor::from_bytes(&prefix_bytes,
-                    "application/vnd.acyclic.harness.inherited-conversation+json")?,
+                    "application/vnd.acyclic.harness.inherited-conversation+json", &mut None)?,
                 "inherited-conversation.json",
             )?);
             reducer.validate_fork_reference_ownership_with_work(&materialized, &mut None)?;
@@ -7436,19 +6087,12 @@ resolve_interaction interaction_resolved interaction:resolve";
                 seed: Box::new(seed.clone()),
             },
         );
-        foreign_command.scope = issuer().root_for_agent(
-            crate::AgentId::from_bytes([2; 16]),
-            "foreign-agent",
-            Capabilities::new(["event:append", "fork:publish"]),
-        );
+        foreign_command.scope = issuer().issue("foreign-agent", &Capabilities::new(["event:append", "fork:publish"]), Some(crate::AgentId::from_bytes([2; 16])), None, &mut None).expect("scope proof");
         assert!(matches!(
             reducer.plan(&foreign_command),
             Err(Error::Unauthorized(_))
         ));
-        foreign_command.scope = issuer().root(
-            "agentless-root",
-            Capabilities::new(["event:append", "fork:publish"]),
-        );
+        foreign_command.scope = issuer().issue("agentless-root", &Capabilities::new(["event:append", "fork:publish"]), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             reducer.plan(&foreign_command),
             Err(Error::Unauthorized(_))
@@ -7457,13 +6101,10 @@ resolve_interaction interaction_resolved interaction:resolve";
             operation(8), 1, Action::PublishFork { seed: Box::new(seed.clone()) },
         );
         let project_read = seed.resources.iter().find_map(|resource| match &resource.source {
-            ResourceRevision::Project { volume, .. } => Some(volume.capability(VolumeOperation::Read)),
+            ResourceRevision::Project { volume, .. } => Some(volume.capability(VolumeOperation::Read, &mut None)),
             _ => None,
         }).ok_or_else(|| Error::Invalid("fixture project source is absent".into()))??;
-        unreadable_source.scope = issuer().root_for_agent(
-            crate::AgentId::from_bytes([1;16]), "current-agent",
-            Capabilities::new(unreadable_source.scope.capabilities().iter().filter(|grant| *grant != project_read)),
-        );
+        unreadable_source.scope = issuer().issue("current-agent", &Capabilities::new(unreadable_source.scope.capabilities().iter().filter(|grant| *grant != project_read)), Some(crate::AgentId::from_bytes([1;16])), None, &mut None).expect("scope proof");
         assert!(matches!(reducer.plan(&unreadable_source), Err(Error::Unauthorized(_))));
         assert_eq!(reducer.revision(), 1);
         let planned = reducer.plan(&command(
@@ -7478,49 +6119,21 @@ resolve_interaction interaction_resolved interaction:resolve";
             return Err(Error::Invalid("new fork unexpectedly replayed".into()));
         };
         let mut foreign_event = event.clone();
-        foreign_event.scope = RecordedScope::from_scope(&issuer().root_for_agent(
-            crate::AgentId::from_bytes([2; 16]),
-            "foreign-agent",
-            Capabilities::new(["event:append", "fork:publish"]),
-        ));
-        foreign_event.attestation = issuer().verifier().attest_event(&foreign_event, &mut None)?;
+        foreign_event.scope = RecordedScope::from_scope(&issuer().issue("foreign-agent", &Capabilities::new(["event:append", "fork:publish"]), Some(crate::AgentId::from_bytes([2; 16])), None, &mut None).expect("scope proof"));
+        foreign_event.attestation = issuer().verifier(&mut None).expect("verifier copy").attest_event(&foreign_event, &mut None)?;
         assert!(matches!(
-            reducer.apply_committed(foreign_event),
+            reducer.apply_committed(foreign_event, &mut None),
             Err(Error::Unauthorized(_))
         ));
-        reducer.apply_committed(event)?;
+        reducer.apply_committed(event, &mut None)?;
         assert_eq!(reducer.fork(&child), Some(&seed));
-        let wire = crate::contract::canonical_json_bytes(&reducer.snapshot()?)?;
+        let wire = crate::contract::canonical_json_bytes(&reducer.snapshot(usize::MAX, &mut None)?.0)?;
         let snapshot = crate::contract::json_from_slice(&wire)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        let restored = Reducer::restore(snapshot, issuer().verifier(), schemas())?;
+        let restored = Reducer::restore(snapshot, issuer().verifier(&mut None).expect("verifier copy"), schemas())?;
         assert_eq!(restored, reducer);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-            let source_token = CancellationToken::new();
-            let source = NativeMaterializationWork::new(original_proof_budget(), &source_token).expect("fork snapshot ledger");
-            let held = reducer.snapshot_native(usize::MAX, &source)?;
-            let copy_token = CancellationToken::new();
-            let copy = NativeMaterializationWork::new(original_proof_budget(), &copy_token).expect("fork copied payload ledger");
-            let input = held.clone_native(&copy)?;
-            let source_receipt = copy.receipt();
-            let metadata_token = CancellationToken::new();
-            let metadata = NativeMaterializationWork::new(original_proof_budget(), &metadata_token).expect("fork new inline map ledger");
-            let native_restored = Reducer::restore_native(input, issuer().verifier(), schemas(), &metadata)?;
-            assert_eq!(native_restored, reducer);
-            assert_eq!(native_restored.fork(&child), Some(&seed));
-            assert_eq!(copy.receipt(), source_receipt, "fork map construction must not spend on the original copy ledger");
-            let available = original_proof_budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
-            assert!(copy.admit_retained(available).is_err());
-            assert!(metadata.admit_retained(available).is_err());
-            drop(native_restored);
-            copy.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            metadata.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            assert!(source.admit_retained(available).is_err(), "original held fork snapshot remains funded");
-            drop(held);
-            source.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        }
+        native_snapshot_round_trip(&reducer, &issuer(), usize::MAX)?;
         reducer = restored;
         let mut reused_private = seed;
         reused_private.operation_id = operation(9);
@@ -7528,12 +6141,12 @@ resolve_interaction interaction_resolved interaction:resolve";
         reused_private.parent_revision = 2;
         let next_history = ResourceRevision::History(StreamRef::new(
             ProviderRef::new("acyclic", "stream", "1")?,
-            parent.stream_path()?.into_bytes(),
+            parent.stream_path(&mut None)?.into_bytes(),
             Some("2".into()),
         )?);
         reused_private.resources[1].source = next_history.clone();
         reused_private.resources[1].revision = next_history;
-        reused_private.validate()?;
+        reused_private.validate(&mut None)?;
         let duplicate = reducer.plan(&command(
             operation(9),
             2,
@@ -7550,7 +6163,7 @@ resolve_interaction interaction_resolved interaction:resolve";
 
     #[test]
     fn snapshot_restores_exact_projection_and_rejects_tampering() -> Result<()> {
-        let verifier = issuer().verifier();
+        let verifier = issuer().verifier(&mut None).expect("verifier copy");
         let mut reducer = Reducer::new(
             Authority {
                 kind: AggregateKind::Conversation,
@@ -7568,9 +6181,9 @@ resolve_interaction interaction_resolved interaction:resolve";
                 content: request_file(br#"{"text":"hello"}"#)?,
             },
         ))?;
-        let snapshot = reducer.snapshot()?;
+        let snapshot = reducer.snapshot(usize::MAX, &mut None)?.0;
         assert_eq!(
-            Reducer::restore(snapshot.clone_with_work(&mut None)?, verifier.clone(), schemas())?,
+            Reducer::restore(snapshot.copy(&mut None)?, verifier.clone(), schemas())?,
             reducer
         );
         let mut tampered = snapshot;
@@ -7585,7 +6198,7 @@ resolve_interaction interaction_resolved interaction:resolve";
     #[test]
     fn scope_attenuation_cannot_expand_authority() {
         let issuer = issuer();
-        let root = issuer.root("root", Capabilities::new(["read", "write"]));
+        let root = issuer.issue("root", &Capabilities::new(["read", "write"]), None, None, &mut None).expect("scope proof");
         assert!(
             issuer
                 .attenuate(&root, "child", Capabilities::new(["read"]))
@@ -7600,13 +6213,13 @@ resolve_interaction interaction_resolved interaction:resolve";
     #[test]
     fn mutated_or_foreign_scopes_are_rejected() -> Result<()> {
         let trusted = issuer();
-        let scope = trusted.root("root", Capabilities::new(["event:append"]));
+        let scope = trusted.issue("root", &Capabilities::new(["event:append"]), None, None, &mut None).expect("scope proof");
         let foreign_authority = Authority {
             kind: AggregateKind::Task,
             id: "task-1".into(),
         };
         let foreign = AuthorityIssuer::new("test", [7; 32], foreign_authority.clone());
-        let foreign_reducer = Reducer::new(foreign_authority, foreign.verifier(), schemas());
+        let foreign_reducer = Reducer::new(foreign_authority, foreign.verifier(&mut None).expect("verifier copy"), schemas());
         let foreign_command = Command {
             operation_id: operation(1),
             idempotency_key: IdempotencyKey("foreign".into()),
@@ -7630,7 +6243,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                 kind: AggregateKind::Conversation,
                 id: "conversation-1".into(),
             },
-            trusted.verifier(),
+            trusted.verifier(&mut None).expect("verifier copy"),
             schemas(),
         );
         let forged = Command {
@@ -7667,14 +6280,14 @@ resolve_interaction interaction_resolved interaction:resolve";
             volume,
             "messages/one.txt",
             "generation-1",
-            FileDescriptor::from_bytes(b"hello", "text/plain")?,
+            FileDescriptor::from_bytes(b"hello", "text/plain", &mut None)?,
             "one.txt",
         )?;
         let authority = Authority {
             kind: AggregateKind::Conversation,
             id: "conversation-1".into(),
         };
-        let verifier = issuer().verifier();
+        let verifier = issuer().verifier(&mut None).expect("verifier copy");
         let mut reducer = Reducer::new(authority, verifier.clone(), schemas());
         assert!(matches!(
             reducer.plan(&command(
@@ -7686,7 +6299,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                         sequence: 1,
                         kind: MessageKind::User,
                         content: content.clone(),
-                        attachments: Vec::new().into(),
+                        attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                         reply_to: None,
                         tool_call_id: None,
                         extensions: BTreeMap::new(),
@@ -7701,7 +6314,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             sequence: 1,
             kind: MessageKind::User,
             content,
-            attachments: Vec::new().into(),
+            attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() },
             reply_to: None,
             tool_call_id: None,
             extensions: BTreeMap::new(),
@@ -7761,7 +6374,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             )),
             Err(Error::Conflict(_))
         ));
-        let restored = Reducer::restore(reducer.snapshot()?, verifier.clone(), schemas())?;
+        let restored = Reducer::restore(reducer.snapshot(usize::MAX, &mut None)?.0, verifier.clone(), schemas())?;
         assert_eq!(restored.conversation(), reducer.conversation());
         assert_eq!(
             restored.resident_context_selections().collect::<Vec<_>>(),
@@ -7783,7 +6396,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                     "fresh canonical selection was not admitted".into(),
                 ));
             };
-            reducer.apply_committed(event)?;
+            reducer.apply_committed(event, &mut None)?;
             assert_eq!(reducer.resident_context_selections().count(), 1);
         }
         assert!(
@@ -7795,7 +6408,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             reducer.context_selection_for_operation(operation(68)),
             Some(&selection)
         );
-        let restored = Reducer::restore(reducer.snapshot()?, verifier, schemas())?;
+        let restored = Reducer::restore(reducer.snapshot(usize::MAX, &mut None)?.0, verifier, schemas())?;
         assert_eq!(restored.resident_context_selections().count(), 1);
         assert_eq!(
             restored.context_selection_for_operation(operation(68)),

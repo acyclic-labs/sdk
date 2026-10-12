@@ -8,6 +8,7 @@ use super::{
 use crate::demand::{DemandSource, SourceNode, SourceNodeKind};
 use crate::kernel::FileKind;
 use crate::kernel::NamespacePath;
+use crate::lazy_workspace::LazyTreapWork;
 use crate::model::{CheckoutMode, GenerationSelector};
 use crate::native_capture::NativeViewBaseline;
 use crate::workspace::{Workspace, WorkspaceError, customer_path};
@@ -208,7 +209,7 @@ where
     ) -> Result<(), MountLifecycleError> {
         cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         if self.writable {
-            let head = self.workspace.head_with_native_work(&work, cancellation).await?;
+            let head = self.workspace.head(work, cancellation).await.map_err(|error| (error, None))?;
             if head.id() != self.expected_generation {
                 return Err(MountLifecycleError::Workspace(WorkspaceError::StaleGeneration));
             }
@@ -217,7 +218,7 @@ where
             &self.source_root, &self.selected_root, work, Some(self.source_identity),
         )?;
         if self.writable {
-            let head = self.workspace.head_with_native_work(&work, cancellation).await?;
+            let head = self.workspace.head(work, cancellation).await.map_err(|error| (error, None))?;
             if head.id() != self.expected_generation {
                 return Err(MountLifecycleError::Workspace(WorkspaceError::StaleGeneration));
             }
@@ -306,7 +307,7 @@ where
         cancellation: &crate::CancellationToken,
     ) -> Result<(), MountLifecycleError> {
         cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-        self.source.capture_host_with_identity_with_native_work(
+        self.source.capture_host(
             &self.source_root, paths, self.source_identity, scope,
             Some(Arc::clone(&self.baseline)), work,
         ).await?;
@@ -370,7 +371,7 @@ where
                     cancellation, Some(self.source.cancellation()),
                 )
                 .await?.generation_id();
-            let head = self.workspace.head_with_native_work(&work, cancellation).await?;
+            let head = self.workspace.head(work, cancellation).await.map_err(|error| (error, None))?;
             if head.id() != current { return Err(MountLifecycleError::Source(MountSourceError::Stale)); }
             self.capture_host_subtree_with_work(&MountPath::root(), work, cancellation).await?;
             Ok::<(), MountLifecycleError>(())
@@ -608,7 +609,7 @@ where
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async(crate::PublicationPermit::Unrestricted, None).expect("unmetered unit construction cannot fail")
+            .sync_async(crate::PublicationPermit::Unrestricted)
             .await
             .map_err(MountLifecycleError::Source)?;
         Ok(())
@@ -621,7 +622,7 @@ where
     ) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async(permit, None).expect("unmetered unit construction cannot fail")
+            .sync_async(permit)
             .await
             .map_err(MountLifecycleError::Source)
     }
@@ -755,10 +756,9 @@ where
         &self,
         native_work: &crate::NativeMaterializationWork,
     ) -> Result<super::OwnedNativeMountOriginalWorkScope, MountLifecycleError> {
-        let mut owner = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let session = owner.as_mut()
+        let owner = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = owner.as_ref()
             .ok_or(MountLifecycleError::Source(MountSourceError::Stale))?;
-        session.retain_measured_cleanup_owner();
         session.begin_original_work(native_work).map_err(MountLifecycleError::Native)
     }
 
@@ -822,7 +822,6 @@ where
     {
         let work = customer_native_work(budget, cancellation)
             .map_err(|(error, spent)| {
-                self.retain_failed_session();
                 (NativeMountPublicationFailure {
                     cause: E::from(MountLifecycleError::Native(error)), source_acknowledged: false,
                     accounting_failure: None,
@@ -866,7 +865,6 @@ where
         match result {
             Ok(publication) => self.revalidate_acknowledged_publication(native_work, publication),
             Err((cause, accounting_failure)) => {
-                self.retain_failed_session();
                 Err(NativeMountPublicationFailure {
                     cause, accounting_failure, source_acknowledged: acknowledged.is_some(), publication: acknowledged,
                 })
@@ -881,7 +879,6 @@ where
     ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where E: From<MountLifecycleError> {
         let result = with_live_session(&self.session, |session| session.revalidate_with_meter(native_work));
-        if result.is_err() { self.retain_failed_session(); }
         result.map(|()| publication).map_err(|cause| NativeMountPublicationFailure {
             cause: E::from(cause), accounting_failure: None, source_acknowledged: true, publication: Some(publication),
         })
@@ -910,7 +907,6 @@ where
     {
         let work = customer_native_work(budget, cancellation)
             .map_err(|(error, spent)| {
-                self.retain_failed_session();
                 (E::from(MountLifecycleError::Native(error)), spent)
             })?;
         let result = async {
@@ -921,7 +917,6 @@ where
                 cancellation, before_publication,
             ).await
         }.await;
-        if result.is_err() { self.retain_failed_session(); }
         result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
             .map_err(|error| (error, work.receipt()))
     }
@@ -980,7 +975,6 @@ where
                 Ok(snapshot)
             }.await;
             drop(plan_custody);
-            if result.is_err() { self.retain_failed_session(); }
             result
         }
     }
@@ -997,10 +991,7 @@ where
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<Option<crate::LazySnapshotRef>>, (NativeMountError, crate::WorkCounters)> {
-        let work = customer_native_work(budget, cancellation).map_err(|failure| {
-            self.retain_failed_session();
-            failure
-        })?;
+        let work = customer_native_work(budget, cancellation)?;
         let result = self.selected_import_snapshot_with_work(operation, &work, cancellation).await;
         result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
             .map_err(|error| (error, work.receipt()))
@@ -1025,7 +1016,6 @@ where
             self.source.selected_import_snapshot(operation, native_work, cancellation)
                 .await.map_err(NativeMountError::from)
         }.await;
-        if result.is_err() { self.retain_failed_session(); }
         result
     }
 
@@ -1081,7 +1071,6 @@ where
     ) -> Result<crate::OperationReceipt<crate::LazySnapshotRef>, (MountLifecycleError, crate::WorkCounters)> {
         let work = customer_native_work(budget, cancellation)
             .map_err(|(error, spent)| {
-                self.retain_failed_session();
                 (MountLifecycleError::Native(error), spent)
             })?;
         let result = self.snapshot_with_work(&work, cancellation).await;
@@ -1143,7 +1132,6 @@ where
                     .map_err(|cause| (MountLifecycleError::Source(cause), None))
             }
         }.await;
-        if result.is_err() { self.retain_failed_session(); }
         result
     }
 
@@ -1156,8 +1144,10 @@ where
         frozen: crate::LazySnapshotRef,
         native_work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountLifecycleError> {
-        self.source.lazy.validate_snapshot_with_native_work(
-            frozen, &native_work,
+        self.source.lazy.validate_snapshot(
+            frozen, &crate::lazy_workspace::LazyTreapWork::native_with_work(
+                native_work, native_work.cancellation(),
+            ).map_err(MountLifecycleError::Lazy)?,
         ).await.map_err(MountLifecycleError::Lazy)
     }
 
@@ -1224,8 +1214,6 @@ where
         let mut owner = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = (|| {
             let Some(session) = owner.as_mut() else { return Ok(()); };
-            // Mark finite cleanup custody before any callback admission can fail.
-            session.retain_measured_cleanup_owner();
             native_work.native_read_meter().with_original_leaf(|work| work.check())
                 .map_err(native_demand_lifecycle_error)?;
             session.stop_with_meter(native_work)
@@ -1255,7 +1243,6 @@ where
         let mut owner = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = (|| {
             if let Some(session) = owner.as_mut() {
-                session.retain_measured_cleanup_owner();
                 session.stop_with_cleanup_wait(wait).map_err(MountLifecycleError::Native)?;
                 if !session.cleanup_state().cleanup_complete {
                     return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
@@ -1290,13 +1277,6 @@ where
     pub fn unmount_blocking(&self) -> Result<(), MountLifecycleError> {
         self.sync_blocking()?;
         self.detach()
-    }
-
-    fn retain_failed_session(&self) {
-        let mut owner = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(session) = owner.as_mut() {
-            session.retain_measured_cleanup_owner();
-        }
     }
 
     fn detach(&self) -> Result<(), MountLifecycleError> {
@@ -1491,13 +1471,13 @@ where
         super::adapter::validate_native_source_io_binding(&original, native_original)?;
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, cancellation);
         if let Some(expected) = expected_generation {
-            let head = self.workspace().head_with_native_work(&original, cancellation)
-                .await.map_err(MountLifecycleError::from)?;
+            let head = self.workspace().head(&original, cancellation)
+                .await.map_err(|error| (error, None)).map_err(MountLifecycleError::from)?;
             if head.id() != expected {
                 return Err(MountLifecycleError::Workspace(WorkspaceError::StaleGeneration));
             }
         }
-        let probe = self.workspace().engine_checkout_with_native_work(
+        let probe = self.workspace().checkout(
             GenerationSelector::Head, CheckoutMode::read_only_pinned(),
             &original, cancellation,
         ).await.map_err(MountLifecycleError::Workspace)?;
@@ -1557,9 +1537,9 @@ where
             hasher.update(&node.version.0);
             let mut key = [0_u8; 16];
             key.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-            self.promote_exact_with_native_work(
+            self.promote_exact(
                 &root_text.0, expected_source, 0, IdempotencyKey::from_bytes(key),
-                &original, cancellation,
+                &LazyTreapWork::native_with_work(&original, cancellation).map_err(MountLifecycleError::Lazy)?,
             ).await.map_err(MountLifecycleError::Lazy)?;
         }
         drop(selected);
@@ -1570,7 +1550,7 @@ where
         } else {
             CheckoutMode::read_only_pinned()
         };
-        let checkout = self.workspace().engine_checkout_with_native_work(
+        let checkout = self.workspace().checkout(
             expected_generation.map_or(GenerationSelector::Head, GenerationSelector::Exact),
             mode, &original, cancellation,
         ).await.map_err(MountLifecycleError::Workspace)?;
@@ -1595,8 +1575,8 @@ where
         };
         let authored = authored.into_arc_meter(native_work)?;
         if let Some(expected) = expected_generation {
-            let head = self.workspace().head_with_native_work(&original, cancellation)
-                .await.map_err(MountLifecycleError::from)?;
+            let head = self.workspace().head(&original, cancellation)
+                .await.map_err(|error| (error, None)).map_err(MountLifecycleError::from)?;
             if head.id() != expected {
                 return Err(MountLifecycleError::Workspace(WorkspaceError::StaleGeneration));
             }
@@ -1698,13 +1678,13 @@ where
             let mut source = Arc::<LazyMountSource<A, O, D, S>>::new_uninit();
             // The real error-owner slot must exist before its source starts a
             // watcher, including for zero remaining-budget startup failures.
-            let prepared = super::prepare_native_mount_start_with_meter(native_work)?;
+            let prepared = super::prepare_native_mount_start(native_work).map_err(NativeMountError::from)?;
             let request = NativeMountRequest {
                 mount_id: MountId::new(), volume_id, destination: session_destination.0,
                 writable: options.writable,
             };
-            let initialized = match LazyMountSource::new_with_native_work(
-                lazy, authored, root_text, root_allocation, &mut source_allocation, native_work,
+            let initialized = match LazyMountSource::new(
+                lazy, authored, root_text, super::adapter::NativeDemandCarrier::Native(native_work), Some((root_allocation, &mut source_allocation)),
             ) {
                 Ok(source) => source,
                 Err(error) => return Err(MountLifecycleError::Native(
@@ -1716,10 +1696,10 @@ where
             // never published while uninitialized.
             #[allow(unsafe_code, reason = "initializes the real source payload before publishing its Arc")]
             let source = unsafe { source.assume_init() };
-            let session = prepared.start_with_native_work(
-                request, session_destination.1,
+            let session = prepared.start(
+                request,
                 Arc::clone(&source) as Arc<dyn super::MountFilesystem>,
-                native_work,
+                native_work, Some(session_destination.1),
             )?;
             // No fallible work follows acquisition of the live session owner.
             Ok(LazyMount {
@@ -2026,7 +2006,7 @@ where
                 let workspace = self.workspace();
                 let expected_generation = self.id();
                 if mount.writable
-                    && workspace.head_with_native_work(original, cancellation).await?.id() != expected_generation
+                    && workspace.head(original, cancellation).await.map_err(|error| (error, None))?.id() != expected_generation
                 {
                     return Err(MountLifecycleError::Workspace(WorkspaceError::StaleGeneration));
                 }
@@ -2035,7 +2015,7 @@ where
                 } else {
                     CheckoutMode::read_only_pinned()
                 };
-                let checkout = workspace.engine_checkout_with_native_work(
+                let checkout = workspace.checkout(
                     GenerationSelector::Exact(expected_generation), mode, original, cancellation,
                 ).await?;
                 let mut checkout = if mount.writable {
@@ -2051,18 +2031,18 @@ where
                         ).map_err(MountLifecycleError::Workspace)
                     },
                 )?;
-                if checkout.lookup_no_follow_with_native_work(&root.0, original, cancellation)
+                if checkout.lookup_no_follow(&root.0, original, cancellation)
                     .await.map_err(WorkspaceError::from)?.record
                     .is_none_or(|record| record.kind != FileKind::Directory)
                 {
                     return Err(MountLifecycleError::Workspace(WorkspaceError::NotDirectory));
                 }
                 if expected_root_identity.is_none() {
-                    let candidate = checkout.private_candidate_with_native_work(original, cancellation)
+                    let candidate = checkout.private_candidate(original, cancellation)
                         .map_err(WorkspaceError::from)?;
                     let reader = candidate.into_pinned_reader_with_native_work(original, cancellation)
                         .map_err(WorkspaceError::from)?;
-                    super::materialize_checkout_paths_with_mode_and_work(
+                    super::materialize_reader_paths(
                         &reader, std::slice::from_ref(&root.0), options,
                         super::MaterializeMode::ReconstructibleView, meter,
                     ).await.map_err(MountLifecycleError::Materialize)?;
@@ -2095,7 +2075,7 @@ where
                 if expected_root_identity.is_some() {
                     let capture = original.native_volume_work(capture_budget)?;
                     let capture_meter = capture.clone();
-                    source.capture_host_with_identity_with_native_work(
+                    source.capture_host(
                         &source_root.0, &[MountPath::root()], source_identity,
                         HostCaptureScope::Subtree, Some(Arc::clone(&baseline)), &capture_meter,
                     ).await?;
@@ -2110,7 +2090,7 @@ where
                     }
                 }
                 if mount.writable
-                    && workspace.head_with_native_work(original, cancellation).await?.id() != expected_generation
+                    && workspace.head(original, cancellation).await.map_err(|error| (error, None))?.id() != expected_generation
                 {
                     return Err(MountLifecycleError::Workspace(WorkspaceError::StaleGeneration));
                 }
@@ -2130,6 +2110,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lazy_workspace::LazyReadonlyNode;
     use crate::demand::native::NativeDemandSource;
     use crate::model::{FilesystemProfile, VolumeLimits};
     use crate::{Fs, MemoryLazyWorkspaceStore, PublicationPermit};
@@ -2524,9 +2505,7 @@ mod tests {
         let child = lazy.fork("selected-import-child", IdempotencyKey::new()).await?;
         child.workspace().write_text("/selected-import.txt", "selected SDK import").await?;
         let child_snapshot = child.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation).await?.value;
-        let plan = child.prepare_selected_import_measured(
-            child_snapshot, std::slice::from_ref(&imported_path), crate::WorkBudget::UNBOUNDED, &cancellation,
-        ).await?.value;
+        let plan = { let plan_cancellation = &cancellation; let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, plan_cancellation); let result = child.prepare_selected_import(child_snapshot, std::slice::from_ref(&imported_path), &accounting).await.map(|phase| match phase { LazyReadonlyNode::Portable(plan) => plan, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary plan uses ordinary funding") }); accounting.measured(result, crate::OperationFailure::new) }?.value;
         let actual = mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation)
             .await.map_err(|(error, _)| error)?;
         let imported_head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
@@ -2544,9 +2523,7 @@ mod tests {
         assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), imported_head);
         let selected_work = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let (plan, plan_custody) = child.prepare_selected_import_with_native_work(
-            child_snapshot, std::slice::from_ref(&imported_path), &selected_work,
-        ).await.map_err(|(error, _)| error)?;
+        let (plan, plan_custody) = async { let accounting = LazyTreapWork::native_with_work(&selected_work, (&selected_work).cancellation())?; child.prepare_selected_import(child_snapshot, std::slice::from_ref(&imported_path), &accounting).await }.await.map(|phase| match phase { LazyReadonlyNode::Native(owned) => owned.into_parts(), LazyReadonlyNode::Portable(_) => unreachable!("native plan retains native funding") }).map_err(LazyWorkspaceError::into_native_failure).map_err(|(error, _)| error)?;
         assert!(plan_custody.work().shares_ledger(&selected_work));
         assert!(plan_custody.bytes() >= plan.logical_owned_bytes());
         let selected_native = selected_work.clone();
@@ -2559,9 +2536,7 @@ mod tests {
         drop(unpolled);
         assert_eq!(selected_work.receipt(), before_unpolled);
         assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), imported_head);
-        let (plan, plan_custody) = child.prepare_selected_import_with_native_work(
-            child_snapshot, std::slice::from_ref(&imported_path), &selected_work,
-        ).await.map_err(|(error, _)| error)?;
+        let (plan, plan_custody) = async { let accounting = LazyTreapWork::native_with_work(&selected_work, (&selected_work).cancellation())?; child.prepare_selected_import(child_snapshot, std::slice::from_ref(&imported_path), &accounting).await }.await.map(|phase| match phase { LazyReadonlyNode::Native(owned) => owned.into_parts(), LazyReadonlyNode::Portable(_) => unreachable!("native plan retains native funding") }).map_err(LazyWorkspaceError::into_native_failure).map_err(|(error, _)| error)?;
         let foreign_native = foreign_work.clone();
         let before_foreign_import = foreign_work.receipt();
         assert!(matches!(
@@ -2576,9 +2551,7 @@ mod tests {
         ));
         assert_eq!(foreign_work.receipt(), before_foreign_import);
         assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), imported_head);
-        let (plan, plan_custody) = child.prepare_selected_import_with_native_work(
-            child_snapshot, std::slice::from_ref(&imported_path), &selected_work,
-        ).await.map_err(|(error, _)| error)?;
+        let (plan, plan_custody) = async { let accounting = LazyTreapWork::native_with_work(&selected_work, (&selected_work).cancellation())?; child.prepare_selected_import(child_snapshot, std::slice::from_ref(&imported_path), &accounting).await }.await.map(|phase| match phase { LazyReadonlyNode::Native(owned) => owned.into_parts(), LazyReadonlyNode::Portable(_) => unreachable!("native plan retains native funding") }).map_err(LazyWorkspaceError::into_native_failure).map_err(|(error, _)| error)?;
         let imported = mount.import_selected_work_guarded(
             actual.value, plan, plan_custody, operation,
             PublicationPermit::Unrestricted, &selected_native, &cancellation,

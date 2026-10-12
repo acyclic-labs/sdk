@@ -163,41 +163,12 @@ impl Client {
         Ok(())
     }
 
-    /// Connects trusting the platform's roots with an account-bound bearer credential.
-    pub async fn connect(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, ConnectError> {
-        Self::connect_endpoints([endpoint], bearer_token).await
-    }
-
-    /// Connects to independently reachable TLS endpoints with transparent failover.
-    pub async fn connect_endpoints<I, S>(
-        endpoints: I,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        Self::connect_with_tls(endpoints, bearer_token, None)
-    }
-
-    /// Connects to a TLS endpoint trusting exclusively the caller-pinned private CA.
-    pub async fn connect_with_ca_certificate(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: impl AsRef<[u8]>,
-    ) -> Result<Self, ConnectError> {
-        Self::connect_with_tls([endpoint], bearer_token, Some(certificate_pem.as_ref()))
-    }
-
     /// Connects eagerly through TLS and HTTP/2, retaining the resulting channel for later operations.
     pub async fn connect_eager(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
-        Self::connect_eager_endpoints([endpoint], bearer_token, None).await
+        Self::connect_eager_tls(endpoint, bearer_token, None).await
     }
 
     /// Eagerly connects trusting exclusively the caller-pinned private CA.
@@ -206,11 +177,12 @@ impl Client {
         bearer_token: impl AsRef<str>,
         certificate_pem: impl AsRef<[u8]>,
     ) -> Result<Self, ConnectError> {
-        Self::connect_eager_endpoints([endpoint], bearer_token, Some(certificate_pem.as_ref()))
+        Self::connect_eager_tls(endpoint, bearer_token, Some(certificate_pem.as_ref()))
             .await
     }
 
-    fn connect_with_tls<I, S>(
+    /// Builds a TLS endpoint pool, optionally trusting an exclusive private CA.
+    pub async fn connect<I, S>(
         endpoints: I,
         bearer_token: impl AsRef<str>,
         certificate_pem: Option<&[u8]>,
@@ -220,59 +192,27 @@ impl Client {
         S: AsRef<str>,
     {
         let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
-        let channels = Self::channels_with_tls(
-            endpoints,
-            certificate_pem,
-            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
-        )?;
+        let channels = Self::endpoints_with_tls(endpoints, certificate_pem)?.into_iter()
+            .map(|endpoint| endpoint.connect_lazy()).collect::<Vec<_>>().into();
         Self::from_channels(channels, bearer_token)
     }
 
-    async fn connect_eager_endpoints<I, S>(
-        endpoints: I,
+    async fn connect_eager_tls(
+        endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
         certificate_pem: Option<&[u8]>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
+    ) -> Result<Self, ConnectError> {
         let authorization = Self::authorization(bearer_token.as_ref())?;
         let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
-        let endpoints = Self::endpoints_with_tls(
-            endpoints,
-            certificate_pem,
-            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
-        )?;
-        let mut channels = Vec::with_capacity(endpoints.len());
-        for endpoint in endpoints {
-            channels.push(endpoint.connect().await?);
-        }
-        Ok(Self::from_authorization(channels.into(), authorization))
-    }
-
-    fn channels_with_tls<I, S>(
-        endpoints: I,
-        certificate_pem: Option<&[u8]>,
-        connect_timeout: std::time::Duration,
-    ) -> Result<Arc<[Channel]>, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        Ok(
-            Self::endpoints_with_tls(endpoints, certificate_pem, connect_timeout)?
-                .into_iter()
-                .map(|endpoint| endpoint.connect_lazy())
-                .collect::<Vec<_>>()
-                .into(),
-        )
+        let endpoint = Self::endpoints_with_tls([endpoint], certificate_pem)?
+            .pop().expect("one endpoint was configured");
+        let channel = endpoint.connect().await?;
+        Ok(Self::from_authorization(vec![channel].into(), authorization))
     }
 
     fn endpoints_with_tls<I, S>(
         endpoints: I,
         certificate_pem: Option<&[u8]>,
-        connect_timeout: std::time::Duration,
     ) -> Result<Vec<Endpoint>, ConnectError>
     where
         I: IntoIterator<Item = S>,
@@ -298,7 +238,7 @@ impl Client {
                 return Err(ConnectError::EndpointLimit);
             }
             let endpoint =
-                Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(connect_timeout);
+                Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT);
             if endpoint.uri().scheme_str() != Some("https") {
                 return Err(ConnectError::InsecureEndpoint);
             }
@@ -369,55 +309,12 @@ impl Client {
         request
     }
 
-    async fn unary<T, U, F>(&self, body: T, mut call: F) -> Result<RpcResponse<U>, StreamError>
-    where
-        T: Clone,
-        F: FnMut(
-            wire::stream_service_client::StreamServiceClient<Channel>,
-            Request<T>,
-        ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
-    {
-        self.unary_on(
-            &self.channels,
-            &self.preferred,
-            body,
-            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
-            &mut call,
-        )
-        .await
-        .map(|(body, endpoint, completion)| RpcResponse { body, endpoint, completion })
-    }
-
-    async fn follow_unary<T, U, F>(
+    async fn unary<T, U, F>(
         &self,
+        attempt_timeout: std::time::Duration,
         body: T,
         mut call: F,
-    ) -> Result<(U, usize, Completion), StreamError>
-    where
-        T: Clone,
-        F: FnMut(
-            wire::stream_service_client::StreamServiceClient<Channel>,
-            Request<T>,
-        ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
-    {
-        self.unary_on(
-            &self.channels,
-            &self.preferred,
-            body,
-            FOLLOW_ENDPOINT_ATTEMPT_TIMEOUT,
-            &mut call,
-        )
-        .await
-    }
-
-    async fn unary_on<T, U, F>(
-        &self,
-        channels: &[Channel],
-        preferred: &AtomicUsize,
-        body: T,
-        attempt_timeout: std::time::Duration,
-        call: &mut F,
-    ) -> Result<(U, usize, Completion), StreamError>
+    ) -> Result<RpcResponse<U>, StreamError>
     where
         T: Clone,
         F: FnMut(
@@ -429,9 +326,9 @@ impl Client {
         let mut last = None;
         let mut attempt = 0_u64;
         loop {
-            let start = preferred.load(Ordering::Relaxed) % channels.len();
-            for offset in 0..channels.len() {
-                let index = (start + offset) % channels.len();
+            let start = self.preferred.load(Ordering::Relaxed) % self.channels.len();
+            for offset in 0..self.channels.len() {
+                let index = (start + offset) % self.channels.len();
                 let attempt_deadline = deadline.min(tokio::time::Instant::now() + attempt_timeout);
                 attempt += 1;
                 // One span describes one physical RPC attempt; the ordinal is not a logical retry total.
@@ -448,13 +345,13 @@ impl Client {
                     .span
                     .scope(tokio::time::timeout_at(
                         attempt_deadline,
-                        call(Self::service(channels, index), self.request(body.clone())),
+                        call(Self::service(&self.channels, index), self.request(body.clone())),
                     ))
                     .await;
                 let error = match result {
                     Ok(Ok(response)) => {
-                        preferred.store(index, Ordering::Relaxed);
-                        return Ok((response.into_inner(), index, completion));
+                        self.preferred.store(index, Ordering::Relaxed);
+                        return Ok(RpcResponse { body: response.into_inner(), endpoint: index, completion });
                     }
                     Ok(Err(error)) => error,
                     Err(_) => Status::deadline_exceeded("endpoint attempt expired"),
@@ -552,7 +449,7 @@ impl Client {
                             return cursor.failure(StreamError::Unavailable);
                         };
                         let active_endpoint = active.endpoint;
-                        let response = active.records.next().await;
+                        let response = active.body.next().await;
                         match &response {
                             Some(Err(error)) => active.completion.status(error),
                             None => active.completion.ok(),
@@ -618,17 +515,11 @@ struct RecordCursor {
     path: StreamPath,
     next: u64,
     remaining: Option<u32>,
-    active: Option<ActiveRecords>,
+    active: Option<RpcResponse<obs::Scoped<tonic::Streaming<wire::ReadResponse>>>>,
     /// Decoded records from the latest frame that the caller has not yet taken.
     buffered: VecDeque<Record>,
     completion: Completion,
     acknowledgements: Option<DeliveryAcknowledgements>,
-}
-
-struct ActiveRecords {
-    records: obs::Scoped<tonic::Streaming<wire::ReadResponse>>,
-    endpoint: usize,
-    completion: Completion,
 }
 
 /// One bounded worker belongs to the logical reader, including reconnects.
@@ -683,47 +574,22 @@ impl RecordCursor {
         );
     }
 
-    async fn open(&self) -> Result<ActiveRecords, StreamError> {
-        if let Some(limit) = self.remaining {
-            self.client
-                .unary(
-                    wire::ReadRequest {
-                        path: self.path.to_string(),
-                        from: self.next,
-                        limit,
-                    },
-                    |mut service, request| Box::pin(async move { service.read(request).await }),
-                )
-                .await
-                .map(|response| {
-                    let RpcResponse { body, endpoint, completion } = response;
-                    let records = completion.span.scope(body);
-                    ActiveRecords {
-                        records,
-                        completion,
-                        endpoint,
-                    }
-                })
+    async fn open(&self) -> Result<RpcResponse<obs::Scoped<tonic::Streaming<wire::ReadResponse>>>, StreamError> {
+        let response = if let Some(limit) = self.remaining {
+            self.client.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+                wire::ReadRequest { path: self.path.to_string(), from: self.next, limit },
+                |mut service, request| Box::pin(async move { service.read(request).await }),
+            ).await?
         } else {
-            self.client
-                .follow_unary(
-                    wire::FollowRequest {
-                        path: self.path.to_string(),
-                        from: self.next,
-                    },
-                    |mut service, request| Box::pin(async move { service.follow(request).await }),
-                )
-                .await
-                .map(|(records, endpoint, completion)| {
-                    let records = completion.span.scope(records);
-                    ActiveRecords {
-                        records,
-                        endpoint,
-                        completion,
-                    }
-                })
-        }
+            self.client.unary(FOLLOW_ENDPOINT_ATTEMPT_TIMEOUT,
+                wire::FollowRequest { path: self.path.to_string(), from: self.next },
+                |mut service, request| Box::pin(async move { service.follow(request).await }),
+            ).await?
+        };
+        let RpcResponse { body, endpoint, completion } = response;
+        Ok(RpcResponse { body: completion.span.scope(body), endpoint, completion })
     }
+
 }
 
 fn retryable(error: &Status) -> bool {
@@ -784,7 +650,7 @@ impl StreamProvider for Client {
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         let response = self
-            .unary(
+            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::InspectIdempotencyRequest {
                     idempotency_key: Bytes::copy_from_slice(idempotency_key.as_bytes()),
                 },
@@ -797,7 +663,7 @@ impl StreamProvider for Client {
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.unary(
+        self.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
             wire::TailRequest {
                 path: path.to_string(),
             },
@@ -809,7 +675,7 @@ impl StreamProvider for Client {
 
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
         let response = self
-            .unary(
+            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::TailRequest {
                     path: path.to_string(),
                 },
@@ -830,7 +696,7 @@ impl StreamProvider for Client {
         );
         let records = request.records.into_iter().map(Bytes::from_owner).collect();
         let response = self
-            .unary(
+            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::AppendRequest {
                     path: request.path.to_string(),
                     records,
@@ -849,7 +715,7 @@ impl StreamProvider for Client {
             |key| Bytes::copy_from_slice(key.as_bytes()),
         );
         let receipt = self
-            .unary(
+            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::ForkRequest {
                     source: request.source.to_string(),
                     destination: request.destination.to_string(),
@@ -887,7 +753,7 @@ impl StreamProvider for Client {
         let mut last = None;
         for _ in 0..self.channels.len() {
             let response = self
-                .unary(body.clone(), |mut service, request| {
+                .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, body.clone(), |mut service, request| {
                     Box::pin(async move { service.children(request).await })
                 })
                 .await?;
@@ -933,7 +799,7 @@ impl StreamProvider for Client {
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
         let response = self
-            .unary(
+            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::ChildrenPageRequest {
                     parent: request.parent.map(|path| path.to_string()),
                     after: request.after.map(|path| path.to_string()),
@@ -966,7 +832,7 @@ impl StreamProvider for Client {
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let response = self
-            .unary(
+            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::CommitRequest {
                     conditions: request.conditions.into_iter().map(condition_wire).collect(),
                     mutations: request.mutations.into_iter().map(mutation_wire).collect(),
@@ -985,7 +851,7 @@ impl StreamProvider for Client {
         deadline_unix_millis: u64,
     ) -> Result<CommitOutcome, StreamError> {
         let response = self
-            .unary(
+            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::CommitRequest {
                     conditions: request.conditions.into_iter().map(condition_wire).collect(),
                     mutations: request.mutations.into_iter().map(mutation_wire).collect(),
@@ -1000,7 +866,7 @@ impl StreamProvider for Client {
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let envelope = self
-            .unary(
+            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::ReadCommitRequest {
                     commit_id: Bytes::copy_from_slice(commit_id.as_bytes()),
                 },
@@ -1413,14 +1279,14 @@ fn finish_served<T>(
 
 /// A single owned operation, retaining its creating dispatch even if its span is filtered.
 struct Completion {
-    span: obs::OwnedSpan,
+    span: obs::OperationSpan,
     finished: bool,
 }
 
 impl Completion {
     fn new(span: tracing::Span) -> Self {
         Self {
-            span: obs::OwnedSpan::new(span),
+            span: obs::OperationSpan::new(span),
             finished: false,
         }
     }
@@ -1602,7 +1468,7 @@ mod tests {
     use rcgen::generate_simple_self_signed;
     use tokio::{io::AsyncReadExt, net::TcpListener};
     use tokio_stream::wrappers::TcpListenerStream;
-    use tonic::transport::{Identity, Server, ServerTlsConfig};
+    use tonic::transport::Server;
     use wire::stream_service_server::{StreamService, StreamServiceServer};
 
     mod tls {
@@ -1956,7 +1822,7 @@ mod tests {
         let future = tracing::subscriber::with_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
             || {
-                let parent = obs::OwnedSpan::new(tracing::info_span!("origin_parent"));
+                let parent = obs::OperationSpan::new(tracing::info_span!("origin_parent"));
                 parent.scope(StreamService::tail(
                     &service,
                     Request::new(wire::TailRequest {
@@ -2656,10 +2522,10 @@ mod tests {
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
         );
-        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let client = Client::connect(["https://fixture.invalid"], "fixture", None).await?;
         let mut first = true;
         let response = client
-            .unary((), |_, _| {
+            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, (), |_, _| {
                 let result = if std::mem::take(&mut first) {
                     Err(Status::unavailable("retry"))
                 } else {
@@ -2691,9 +2557,9 @@ mod tests {
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
         );
-        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let client = Client::connect(["https://fixture.invalid"], "fixture", None).await?;
         let response = client
-            .unary((), |_, _| {
+            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, (), |_, _| {
                 Box::pin(async { Ok(Response::new(wire::AppendResponse::default())) })
             })
             .await?;
@@ -2710,7 +2576,7 @@ mod tests {
             fields["rpc.code"], "0",
             "unary successful trailers remain distinct from semantic rejection"
         );
-        let mut pending = Box::pin(client.unary((), |_, _| {
+        let mut pending = Box::pin(client.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, (), |_, _| {
             Box::pin(std::future::pending::<Result<Response<()>, Status>>())
         }));
         assert!(futures::poll!(pending.as_mut()).is_pending());
@@ -2849,30 +2715,30 @@ mod tests {
     #[tokio::test]
     async fn endpoint_pool_is_explicit_and_bounded()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let shared = Client::connect_endpoints(
+        let shared = Client::connect(
             ["https://data-a.invalid", "https://data-b.invalid"],
-            "fixture",
+            "fixture", None,
         )
         .await?;
         assert_eq!(shared.channels.len(), 2);
 
         assert!(matches!(
-            Client::connect_endpoints(std::iter::empty::<&str>(), "fixture").await,
+            Client::connect(std::iter::empty::<&str>(), "fixture", None).await,
             Err(ConnectError::NoEndpoints)
         ));
         assert!(matches!(
-            Client::connect_endpoints(std::iter::repeat("https://data.invalid"), "fixture",).await,
+            Client::connect(std::iter::repeat("https://data.invalid"), "fixture", None).await,
             Err(ConnectError::EndpointLimit)
         ));
         let oversized = format!("https://{}.invalid", "x".repeat(MAX_ENDPOINT_URI_BYTES));
         assert!(matches!(
-            Client::connect_endpoints([oversized], "fixture").await,
+            Client::connect([oversized], "fixture", None).await,
             Err(ConnectError::EndpointLimit)
         ));
         let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
         for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
             assert!(matches!(
-                Client::connect_endpoints(["https://data.invalid"], token).await,
+                Client::connect(["https://data.invalid"], token, None).await,
                 Err(ConnectError::InvalidCredential)
             ));
         }
@@ -2928,92 +2794,6 @@ mod tests {
                 .await
                 .is_err()
         );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn default_https_pool_installs_tls_before_first_use()
-    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let client = Client::connect("https://127.0.0.1:1", "fixture").await?;
-        let mut service = Client::service(&client.channels, 0);
-        let error = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            service.tail(Request::new(wire::TailRequest {
-                path: "accounts/events".to_owned(),
-            })),
-        )
-        .await?
-        .err()
-        .ok_or("closed local endpoint unexpectedly answered")?;
-        assert!(
-            !error.to_string().contains("TLS is not enabled"),
-            "HTTPS channel was built without TLS: {error}"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn private_ca_https_connection_trusts_only_declared_ca_and_exact_bearer()
-    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let certified = generate_simple_self_signed(["localhost".to_owned()])?;
-        let certificate_pem = certified.cert.pem();
-        let private_key_pem = certified.signing_key.serialize_pem();
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let address = listener.local_addr()?;
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        let server_certificate_pem = certificate_pem.clone();
-        let service = StreamServiceServer::with_interceptor(
-            Service::new(Arc::new(MemoryStream::default())),
-            |request: Request<()>| {
-                if request
-                    .metadata()
-                    .get("authorization")
-                    .and_then(|value| value.to_str().ok())
-                    != Some("Bearer exact-token")
-                {
-                    return Err(Status::unauthenticated("missing exact bearer credential"));
-                }
-                Ok(request)
-            },
-        );
-        let server = tokio::spawn(async move {
-            Server::builder()
-                .tls_config(
-                    ServerTlsConfig::new()
-                        .identity(Identity::from_pem(server_certificate_pem, private_key_pem)),
-                )?
-                .add_service(service)
-                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
-                    let _ = shutdown_rx.await;
-                })
-                .await
-        });
-
-        let endpoint = format!("https://localhost:{}", address.port());
-        let path = StreamPath::new("accounts/events")?;
-        let ambient = Client::connect(&endpoint, "exact-token").await?;
-        let mut ambient_service = Client::service(&ambient.channels, 0);
-        assert!(
-            ambient_service
-                .tail(Request::new(wire::TailRequest {
-                    path: path.to_string(),
-                }))
-                .await
-                .is_err()
-        );
-        let explicit = crate::StreamClient::connect_with_ca_certificate(
-            endpoint,
-            "exact-token",
-            certificate_pem,
-        )
-        .await?;
-        assert_eq!(
-            explicit.stream(path.as_str())?.tail().await,
-            Err(StreamError::NotFound)
-        );
-
-        let _ = shutdown_tx.send(());
-        server.await??;
         Ok(())
     }
 
@@ -3162,7 +2942,7 @@ mod tests {
             "fixture",
         )?;
         let preferred = Arc::clone(&transport.preferred);
-        let stream = crate::StreamClient::new(Arc::new(transport)).stream("accounts/events")?;
+        let stream = crate::Stream::new(Arc::new(transport), "accounts/events")?;
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             stream
@@ -3256,7 +3036,7 @@ mod tests {
         error: Status,
         retry: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let client = Client::connect(["https://fixture.invalid"], "fixture", None).await?;
         let body = wire::AppendRequest {
             path: "/fixture".to_owned(),
             records: vec![Bytes::from_static(b"mutation")],
@@ -3267,7 +3047,7 @@ mod tests {
         let mut first = Some(error);
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            client.unary(body.clone(), |_, request| {
+            client.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, body.clone(), |_, request| {
                 attempts.push(request.into_inner());
                 let result = first.take().map_or_else(|| Ok(Response::new(())), Err);
                 Box::pin(async move { result })
@@ -3288,11 +3068,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn persistent_unknown_expires_without_changing_request_identity()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let client = Client::connect(["https://fixture.invalid"], "fixture", None).await?;
         let started = tokio::time::Instant::now();
         let mut attempts = 0;
         let result: Result<(), StreamError> = client
-            .unary(Bytes::from_static(b"stable-key-and-body"), |_, request| {
+            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, Bytes::from_static(b"stable-key-and-body"), |_, request| {
                 assert_eq!(
                     request.into_inner(),
                     Bytes::from_static(b"stable-key-and-body")

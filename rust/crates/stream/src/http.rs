@@ -77,23 +77,14 @@ impl HttpStream {
         })
     }
     async fn request(&self, route: &'static str, bytes: Vec<u8>) -> Result<Value, StreamError> {
-        let mut observation = HttpObservation {
-            span: obs::OwnedSpan::new(tracing::info_span!(
-                "acyclic.stream.http.call",
-                route,
-                http.status = Empty,
-                bytes = Empty,
-                outcome = Empty,
-                error.kind = Empty
-            )),
-            finished: false,
-        };
-        let result = observation
-            .span
-            .scope(self.request_inner(route, bytes, &observation.span))
-            .await;
-        observation.finished = true;
-        obs::finish(&observation.span, result)
+        let span = obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.stream.http.call", route, http.status = Empty, bytes = Empty,
+            outcome = Empty, error.kind = Empty,
+        ));
+        let mut cancellation = obs::Cancellation(Some(span.clone()));
+        let result = span.scope(self.request_inner(route, bytes, &span)).await;
+        drop(cancellation.0.take());
+        obs::finish(&span, result)
     }
 
     async fn request_inner(
@@ -306,7 +297,7 @@ impl HttpStream {
                             return Ok(record);
                         }
                         observation.span.record("phase", "read");
-                        let poll = obs::OwnedSpan::new(tracing::trace_span!(
+                        let poll = obs::OperationSpan::new(tracing::trace_span!(
                             "acyclic.stream.http.follow.poll"
                         ));
                         queued = poll
@@ -323,7 +314,7 @@ impl HttpStream {
                         observation.span.record("queued", queued.len());
                         if queued.is_empty() {
                             observation.span.record("phase", "sleep");
-                            let sleep = obs::OwnedSpan::new(tracing::debug_span!(
+                            let sleep = obs::OperationSpan::new(tracing::debug_span!(
                                 "acyclic.stream.http.follow.sleep",
                                 delay_ms = 250_u64
                             ));
@@ -341,7 +332,7 @@ impl HttpStream {
                 )))
             },
         );
-        Ok(context.scope_mode(follow, !context.is_disabled()).boxed())
+        Ok(obs::Scoped::with_context(follow, (!context.is_disabled()).then_some(context)).boxed())
     }
     async fn commit_request(
         &self,
@@ -526,26 +517,14 @@ impl StreamProvider for HttpStream {
         Ok(envelope)
     }
 }
-struct HttpObservation {
-    span: obs::OwnedSpan,
-    finished: bool,
-}
-impl Drop for HttpObservation {
-    fn drop(&mut self) {
-        if !self.finished {
-            obs::failed(&self.span, "cancelled");
-        }
-    }
-}
-
 struct FollowObservation {
-    span: obs::OwnedSpan,
+    span: obs::OperationSpan,
     terminal: bool,
 }
 impl FollowObservation {
     fn new(from: u64) -> Self {
-        Self {
-            span: obs::OwnedSpan::new_with_filtered_context(
+        let mut observation = Self {
+            span: obs::OperationSpan::new(
                 tracing::info_span!(
                     "acyclic.stream.http.follow",
                     rev = from,
@@ -555,10 +534,11 @@ impl FollowObservation {
                     outcome = Empty,
                     error.kind = Empty
                 ),
-                false,
             ),
             terminal: false,
-        }
+        };
+        observation.span.caller = None;
+        observation
     }
     fn failed(&mut self, error: &StreamError) {
         self.span.record("terminal", "error");

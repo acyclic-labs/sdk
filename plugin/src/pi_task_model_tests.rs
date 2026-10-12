@@ -1,15 +1,8 @@
 
 use super::*;
 use acyclic_harness::workflow::{MachineCheckpoint, MachineRegistry, MachineTransition};
-use std::collections::BTreeSet;
 
 const DEPTH: usize = 8;
-
-fn registry(work: &acyclic_fs::NativeMaterializationWork) -> MachineRegistry {
-    let mut registry = MachineRegistry::default();
-    registry.register(PiTaskMachine::new(work).unwrap()).unwrap();
-    registry
-}
 
 fn inputs(command: &WorkflowCommand) -> Vec<Value> {
     let completion =
@@ -18,6 +11,15 @@ fn inputs(command: &WorkflowCommand) -> Vec<Value> {
         command.operation_id,
         Outcome::Succeeded(command.payload.clone()),
     );
+    let alternative = FileRef::new(
+        command.payload.volume().clone(),
+        "different-result.json",
+        "different",
+        acyclic_harness::conversation::FileDescriptor::from_bytes(b"[]", "application/json")
+            .unwrap(),
+        "different-result.json",
+    )
+    .unwrap();
     vec![
         Value::Null,
         json!({}),
@@ -27,7 +29,7 @@ fn inputs(command: &WorkflowCommand) -> Vec<Value> {
         success,
         completion(
             command.operation_id,
-            Outcome::Succeeded(alternative_result(command)),
+            Outcome::Succeeded(alternative),
         ),
         completion(
             OperationId::from_bytes([99; 16]),
@@ -49,25 +51,12 @@ fn inputs(command: &WorkflowCommand) -> Vec<Value> {
     ]
 }
 
-fn alternative_result(command: &WorkflowCommand) -> FileRef {
-    // A second valid provider result must never replace the first settlement.
-    FileRef::new(
-        command.payload.volume().clone(),
-        "different-result.json",
-        "different",
-        acyclic_harness::conversation::FileDescriptor::from_bytes(b"[]", "application/json")
-            .unwrap(),
-        "different-result.json",
-    )
-    .unwrap()
-}
-
 fn replay_step(
+    registry: &MachineRegistry,
     checkpoint: &MachineCheckpoint,
     input: &Value,
 ) -> acyclic_harness::Result<(MachineCheckpoint, MachineTransition, acyclic_fs::NativeAllocation)> {
     let original = work();
-    let registry = registry(&original);
     let mut guarded = crate::pi_root_provider::guarded_pi_value(input, NATIVE_METADATA_MAXIMUM, &original)?;
     let mut before = registry.step_with_native_work(checkpoint, guarded.0, &original);
     if let Ok(first) = &mut before { first.2.absorb(&mut guarded.1).unwrap(); }
@@ -98,22 +87,21 @@ fn explore(execution: PiTaskExecution, command: &WorkflowCommand) {
             .unwrap(), &original,
         )
         .unwrap();
+    let mut registry = MachineRegistry::default();
+    registry.register(machine.clone(), &mut None).unwrap();
     let mut frontier = vec![(MachineCheckpoint {
             machine: machine.identity().clone(),
             revision: 0,
             state: state.0,
         }, 0, state.1)];
-    let mut visited = BTreeSet::new();
     let mut settled = 0;
     for _ in 0..DEPTH {
         let mut next = Vec::new();
         for (checkpoint, emitted, _custody) in frontier {
-            let key = serde_json::to_string(&(&checkpoint, emitted)).unwrap();
-            if !visited.insert(key) { continue; }
             let pinned = checkpoint.state.get("allocation").or_else(|| checkpoint.state.get("result"));
             settled += usize::from(pinned.is_some());
             for input in inputs(command) {
-                if let Ok((advanced, transition, custody)) = replay_step(&checkpoint, &input) {
+                if let Ok((advanced, transition, custody)) = replay_step(&registry, &checkpoint, &input) {
                     let emitted = emitted + transition.commands.len();
                     assert!(emitted <= 1);
                     assert!(transition.commands.iter().all(|actual| actual == command));
@@ -121,7 +109,7 @@ fn explore(execution: PiTaskExecution, command: &WorkflowCommand) {
                     if pinned.is_some() { assert_eq!(pinned, next_pinned); }
                     if next_pinned.is_some() { assert_eq!(emitted, 1); }
                     assert_eq!(advanced.revision, checkpoint.revision + 1);
-                    registry(custody.work()).validate_checkpoint_with_native_work(&advanced, custody.work()).unwrap();
+                    registry.validate_checkpoint_with_native_work(&advanced, custody.work()).unwrap();
                     drop(transition);
                     next.push((advanced, emitted, custody));
                 }
