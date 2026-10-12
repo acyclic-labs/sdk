@@ -80,7 +80,9 @@ contains one JSON result or error; device approval instructions on stderr are
 also JSON. Identity results never include access or refresh tokens.
 
 The credential file defaults to `~/.acyclic/identity.json`. Override it with
-`ACYCLIC_IDENTITY_FILE` or `--credentials PATH`. It is bound to its API origin,
+`ACYCLIC_IDENTITY_FILE` or `--credentials PATH`. Filenames ending in `.lock` or
+`.next` are reserved for credential sidecars. Existing Windows short filenames
+resolve to the same lock as their long name. It is bound to its API origin,
 written atomically, and locked across identity operations so two processes
 cannot reuse a rotating refresh token. Unix files have mode 0600; on Windows,
 use a private user directory with its inherited ACL. `whoami` and `orgs`

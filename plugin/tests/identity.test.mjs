@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { link, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { once } from 'node:events';
+import { promisify } from 'node:util';
 
 const binary = process.env.ACYCLIC_TEST_BINARY;
 assert.ok(binary, 'set ACYCLIC_TEST_BINARY to the built native acyclic binary');
@@ -177,3 +178,105 @@ test('credential hard links reject both Windows and Unix paths before refreshing
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+test('credential sidecar names cannot replace another store or its held lock', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'acyclic-identity-sidecars-'));
+  const credentials = join(directory, 'session');
+  let consume, release, requests = 0, child;
+  const consumed = new Promise(resolve => { consume = resolve; });
+  const released = new Promise(resolve => { release = resolve; });
+  const server = createServer(async (request, response) => {
+    for await (const _ of request) { /* drain */ }
+    requests++;
+    consume();
+    await released;
+    response.end(JSON.stringify({ access_token: 'rotated-access', refresh_token: 'rotated-refresh',
+      token_type: 'Bearer', expires_in: 900 }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const endpoint = `http://127.0.0.1:${server.address().port}`;
+  const args = ['--json', '--endpoint', endpoint];
+  try {
+    const saved = JSON.stringify({ endpoint, session: {
+      access_token: 'access', refresh_token: 'refresh', expires_at: 0 } });
+    await writeFile(credentials, saved);
+    // A rejected sidecar store must leave even pre-existing contents untouched.
+    const other = join(directory, 'other.next');
+    await writeFile(other, saved);
+    const refused = await run(['login', ...args, '--credentials', other]);
+    assert.equal(refused.code, 1);
+    assert.equal(JSON.parse(refused.stdout).error, 'configuration_error');
+    assert.equal(await readFile(other, 'utf8'), saved);
+    child = spawn(binary, ['refresh', ...args, '--credentials', credentials],
+      { stdio: 'ignore', timeout: 15_000 });
+    const closed = once(child, 'close');
+    await consumed;
+    for (const suffix of ['.lock', '.next', '.LOCK', '.NeXt']) {
+      const result = await run(['login', ...args, '--credentials', credentials + suffix]);
+      assert.equal(result.code, 1);
+      assert.equal(JSON.parse(result.stdout).error, 'configuration_error');
+    }
+    const busy = await run(['refresh', ...args, '--credentials', credentials]);
+    assert.equal(JSON.parse(busy.stdout).error, 'credentials_busy');
+    assert.equal(requests, 1, 'sidecar logins must not contact Global or replace the held lock');
+    release();
+    assert.equal((await closed)[0], 0);
+    assert.equal(JSON.parse(await readFile(credentials, 'utf8')).session.refresh_token, 'rotated-refresh');
+  } finally {
+    release();
+    child?.kill();
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Windows short-name credentials share the long-name refresh lock',
+  { skip: process.platform !== 'win32', timeout: 20_000 }, async t => {
+    const directory = await mkdtemp(join(tmpdir(), 'acyclic-shortname-'));
+    const credentials = join(directory, 'identity-credentials-long-name.json');
+    let consume, release, requests = 0, child;
+    const consumed = new Promise(resolve => { consume = resolve; });
+    const released = new Promise(resolve => { release = resolve; });
+    const server = createServer(async (request, response) => {
+      for await (const _ of request) { /* drain */ }
+      requests++;
+      consume();
+      await released;
+      response.end(JSON.stringify({ access_token: 'rotated', refresh_token: 'rotated-refresh',
+        token_type: 'Bearer', expires_in: 900 }));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const endpoint = `http://127.0.0.1:${server.address().port}`;
+    const args = ['--json', '--endpoint', endpoint];
+    try {
+      await writeFile(credentials, JSON.stringify({ endpoint, session: {
+        access_token: 'access', refresh_token: 'refresh', expires_at: 0 } }));
+      const { stdout } = await promisify(execFile)('cmd.exe', ['/d', '/c',
+        'for %I in ("%ACYCLIC_TEST_CREDENTIALS%") do @echo %~sI'],
+        { env: { ...process.env, ACYCLIC_TEST_CREDENTIALS: credentials } });
+      const alias = stdout.trim();
+      if (!/[~][0-9]/.test(alias.split(/[\\/]/).at(-1))) {
+        t.skip('NTFS 8.3 filenames are disabled on this test volume');
+        return;
+      }
+      assert.deepEqual(await readFile(alias), await readFile(credentials));
+      child = spawn(binary, ['refresh', ...args, '--credentials', alias],
+        { stdio: 'ignore', timeout: 15_000 });
+      const closed = once(child, 'close');
+      await consumed;
+      const busy = await run(['refresh', ...args, '--credentials', credentials]);
+      assert.equal(JSON.parse(busy.stdout).error, 'credentials_busy');
+      assert.equal(requests, 1, 'long and short names must never dispatch the same refresh twice');
+      release();
+      assert.equal((await closed)[0], 0);
+      assert.equal(JSON.parse(await readFile(credentials, 'utf8')).session.refresh_token, 'rotated-refresh');
+    } finally {
+      release();
+      child?.kill();
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+      await rm(directory, { recursive: true, force: true });
+    }
+  });

@@ -114,6 +114,31 @@ impl Store {
                 .ok_or_else(|| Error::new("configuration_error", "credentials need a filename"))?,
         );
         reject_alias(&path)?;
+        let path = match fs::canonicalize(&path) {
+            Ok(path) => path,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => path,
+            Err(error) => return Err(error.into()),
+        };
+        let name = path
+            .file_name()
+            .ok_or_else(|| Error::new("configuration_error", "credentials need a filename"))?
+            .to_string_lossy();
+        if [".lock", ".next"]
+            .iter()
+            .any(|suffix| name.to_ascii_lowercase().ends_with(suffix))
+        {
+            return Err(Error::new(
+                "configuration_error",
+                "credential filenames ending in .lock or .next are reserved for sidecars",
+            ));
+        }
+        #[cfg(windows)]
+        if name.ends_with([' ', '.']) {
+            return Err(Error::new(
+                "configuration_error",
+                "credential filenames must not end in a space or dot",
+            ));
+        }
         let lock = private_file(&sidecar(&path, ".lock"), false)?;
         lock.try_lock_exclusive().map_err(|_| {
             Error::new(

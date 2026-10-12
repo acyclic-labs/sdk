@@ -479,43 +479,37 @@ async fn newly_refreshed_access_is_not_refreshed_again_on_unauthorized() {
 }
 
 #[test]
-fn credential_extensions_do_not_alias_their_sidecars() {
+fn sidecar_names_cannot_be_opened_as_independent_credential_stores() {
     let directory = tempfile::tempdir().expect("directory");
-    for name in ["identity.lock", "identity.next", "identity.json"] {
-        let path = directory.path().join(name);
-        let store = Store::open(&path).expect("store");
-        assert!(
-            !path.exists(),
-            "opening a store must not create credentials"
-        );
-        store
-            .write("https://example.test", session("access", "refresh", 900))
-            .expect("write");
+    let path = directory.path().join("session");
+    let store = Store::open(&path).expect("store");
+    for name in [
+        "session.lock",
+        "session.next",
+        "session.LOCK",
+        "session.NeXt",
+    ] {
+        let sidecar = directory.path().join(name);
         assert_eq!(
-            store
-                .read("https://example.test")
-                .expect("read")
-                .refresh_token,
-            "refresh"
+            Store::open(&sidecar).err().expect("reserved sidecar").code,
+            "configuration_error"
         );
-        assert_eq!(
-            Store::open(&path).err().expect("locked").code,
-            "credentials_busy"
-        );
-        store
-            .write(
-                "https://example.test",
-                session("next-access", "next-refresh", 900),
-            )
-            .expect("replace");
-        assert_eq!(
-            store
-                .read("https://example.test")
-                .expect("read")
-                .refresh_token,
-            "next-refresh"
-        );
+        assert!(!super::sidecar(&sidecar, ".lock").exists());
     }
+    store
+        .write("https://example.test", session("access", "refresh", 900))
+        .expect("write");
+    assert_eq!(
+        Store::open(&path).err().expect("same lock").code,
+        "credentials_busy"
+    );
+    assert_eq!(
+        store
+            .read("https://example.test")
+            .expect("saved")
+            .refresh_token,
+        "refresh"
+    );
 }
 
 #[cfg(unix)]
