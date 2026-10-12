@@ -2658,7 +2658,7 @@ mod tests {
         acyclic_native_runtime::initialize_native_io_services()?;
         crate::initialize_native_mount_services()?;
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("native-carrier-admission").await?;
+        let workspace = fs.create_workspace("native-carrier-admission", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.create_directory("/selected-é").await?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -2742,7 +2742,7 @@ mod tests {
         acyclic_native_runtime::initialize_native_io_services()?;
         crate::initialize_native_mount_services()?;
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("pinned-native-view").await?;
+        let workspace = fs.create_workspace("pinned-native-view", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/file.txt", "original").await?;
         let admitted = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/file.txt", "concurrent").await?;

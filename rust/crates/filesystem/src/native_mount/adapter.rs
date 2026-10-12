@@ -3156,13 +3156,13 @@ impl<A, O> SharedCheckout<A, O> {
             return Err(MountSourceError::Stale);
         }
         let prepared = if let Some(original) = original_native.as_ref() {
-            state.checkout.prepare_candidate_adoption_with_native_work(
+            state.checkout.prepare_candidate_adoption(
                 &candidate.base, &candidate.checkout, original, cancellation,
             ).map_err(MountSourceError::Filesystem)?
         } else {
             carrier.with_work(|work| {
             let prior_live = work.live_allocation_bytes();
-            let result = state.checkout.prepare_candidate_adoption_measured(
+            let result = state.checkout.prepare_candidate_adoption(
                 &candidate.base, &candidate.checkout,
                 work.remaining().map_err(mount_demand_error)?, cancellation,
             );
@@ -11283,13 +11283,14 @@ impl<A, O> CheckoutMountSource<A, O> {
         }
         let checkout = self.checkout.read_current_state().await;
         let data = if let Some(work) = native_work.as_ref() {
-            checkout.proof_data_snapshot_with_native_work(work, cancellation)
+            checkout.proof_data_snapshot(Some(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation)))
                 .map_err(MountSourceError::Filesystem)?
         } else {
             let mut work = meter.lock();
-            let data = checkout.proof_data_snapshot(
+            let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
                 work.remaining().map_err(mount_demand_error)?, cancellation,
             );
+            let data = crate::facade::measured(checkout.proof_data_snapshot(Some(&mut accounting)), &accounting);
             mount_accept(&mut work, data, |error| engine_error(error))?
         };
         Ok(Some(data.total_bytes().map_err(MountSourceError::Work)?))

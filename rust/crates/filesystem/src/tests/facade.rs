@@ -20,7 +20,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-identity-candidate").await?;
+    let workspace = fs.create_workspace("original-identity-candidate", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/source", "actual source bytes").await?;
     let cancellation = CancellationToken::new();
     let mut checkout = workspace.checkout(
@@ -92,14 +92,14 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
 async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("candidate-adoption-seal").await?;
+    let workspace = fs.create_workspace("candidate-adoption-seal", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
     let mut live = workspace.checkout(
         GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let base = live.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value;
     let mut candidate = base.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value;
-    let prepared = live.prepare_candidate_adoption_measured(
+    let prepared = live.prepare_candidate_adoption(
         &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
     )?;
     assert_eq!(prepared.work.allocation_operations, 0, "identical proof is only shared");
@@ -108,17 +108,17 @@ async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_s
     assert!(!live.adopt_prepared_candidate(
         &base, candidate.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value, prepared.value.ok_or("shared proof rejected")?,
     ));
-    let prepared = live.prepare_candidate_adoption_measured(
+    let prepared = live.prepare_candidate_adoption(
         &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
     )?.value.ok_or("reader observations rejected")?;
     candidate.lookup_no_follow(&path("later-candidate")?, WorkBudget::UNBOUNDED, &cancellation).await?;
     assert!(!live.adopt_prepared_candidate(&base, candidate.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value, prepared));
-    let prepared = live.prepare_candidate_adoption_measured(
+    let prepared = live.prepare_candidate_adoption(
         &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
     )?.value.ok_or("compatible candidate rejected")?;
     live.live_operation_id = Some(OperationId::from_bytes([209; 16]));
     assert!(!live.adopt_prepared_candidate(&base, candidate.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value, prepared));
-    assert!(live.prepare_candidate_adoption_measured(
+    assert!(live.prepare_candidate_adoption(
         &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
     )?.value.is_none());
     assert!(!live.admits_candidate(&base, &candidate));
@@ -216,8 +216,8 @@ mod heterogeneous_mount {
             Objects::Local(local),
             EmbeddedCapabilities::MEMORY,
         );
-        let root = memory.create_workspace("root").await?;
-        let scratch = disk.create_workspace("scratch").await?;
+        let root = memory.create_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let scratch = disk.create_workspace("scratch", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         root.write_text("/file", "memory").await?;
         scratch.write_text("/file", "disk").await?;
         let mut view = crate::MountedView::builder()
@@ -352,7 +352,7 @@ async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed
         },
         EmbeddedCapabilities::MEMORY,
     );
-    let workspace = fs.create_workspace("retention-proof").await?;
+    let workspace = fs.create_workspace("retention-proof", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let crate::TransactionCommit::Committed(generation) = workspace
         .write("/payload", bytes::Bytes::from(vec![7_u8; 128 * 1_024]))
         .await?
@@ -4421,7 +4421,7 @@ fn original_authored_creates(
 async fn original_authored_transaction_keeps_true_ids_and_original_result_custody()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-authored-transaction").await?;
+    let workspace = fs.create_workspace("original-authored-transaction", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/source", "transaction source").await?;
     let cancellation = CancellationToken::new();
     let mut checkout = workspace.checkout(
@@ -10389,7 +10389,7 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::workspace::WorkspaceError;
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("selected-fork-invalid-paths").await?;
+    let workspace = fs.create_workspace("selected-fork-invalid-paths", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "body").await?;
     let source = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
@@ -10427,7 +10427,7 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::workspace::{ForkOptions, WorkspaceError};
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("selected-fork-closure-controls").await?;
+    let workspace = fs.create_workspace("selected-fork-closure-controls", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_dir_all("/tree/nested").await?;
     transaction.write_text("/tree/nested/file", "linked body").await?;
@@ -10515,7 +10515,7 @@ fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefi
         },
         EmbeddedCapabilities::MEMORY,
     );
-    let workspace = poll_immediate(fs.create_workspace("selected-fork-verification-gates"))?;
+    let workspace = poll_immediate(fs.create_workspace("selected-fork-verification-gates", WorkBudget::UNBOUNDED, &CancellationToken::new())).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     poll_immediate(workspace.write_text("/file", "body"))?;
     let source = poll_immediate(async { workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })?;
     let child = poll_immediate(workspace.fork(
@@ -10558,7 +10558,7 @@ fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefi
 async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-content-stream").await?;
+    let workspace = fs.create_workspace("original-content-stream", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/source", "authenticated source bytes").await?;
     workspace.write_text("/destination", "old destination").await?;
     let cancellation = CancellationToken::new();
@@ -10579,7 +10579,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
     let reader = checkout.pinned_reader()?;
-    let bytes = reader.read_record_range_with_native_work(
+    let bytes = reader.read_record_range(
         source, ByteRange { offset: 0, length: 26 }, &original, &cancellation,
     ).await?.bytes;
     assert_eq!(bytes.as_ref(), b"authenticated source bytes");
@@ -10590,7 +10590,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         destination.file_id, &original, &cancellation,
     ).await?;
     assert_eq!(actual.file_id, destination.file_id);
-    let content = reader.read_record_range_with_native_work(
+    let content = reader.read_record_range(
         actual, ByteRange { offset: 0, length: 26 }, &original, &cancellation,
     ).await?;
     assert_eq!(content.bytes.as_ref(), b"sourceticated source bytes");
@@ -10635,7 +10635,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
 async fn original_detached_content_stream_keeps_atomic_metadata_transition()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-detached-content").await?;
+    let workspace = fs.create_workspace("original-detached-content", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/source", "real detached stream").await?;
     workspace.write_text("/destination", "before").await?;
     let cancellation = CancellationToken::new();
@@ -10651,7 +10651,7 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
     let reader = checkout.pinned_reader()?;
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
-    let source = reader.read_record_range_with_native_work(
+    let source = reader.read_record_range(
         source, ByteRange { offset: 0, length: 20 }, &original, &cancellation,
     ).await?;
     let metadata = FileMetadata {
@@ -10664,7 +10664,7 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
         &original, &cancellation,
     ).await?;
     assert_eq!(detached.record.file_id, destination.file_id);
-    assert_eq!(reader.read_record_range_with_native_work(
+    assert_eq!(reader.read_record_range(
         detached.record, ByteRange { offset: 0, length: 20 }, &original, &cancellation,
     ).await?.bytes.as_ref(), b"real detached stream");
     let before = detached.record;

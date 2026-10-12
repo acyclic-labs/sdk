@@ -2079,14 +2079,14 @@ where
                 .host
                 .generation(&target_workspace, &receipt.result_generation)
                 .await?;
-            if witness.source_workspace() != source_workspace.id().volume_id()
-                || witness.target_workspace() != target_workspace.id().volume_id()
-                || witness.source_generation() != source_generation.id()
-                || witness.expected_target() != expected.id()
-                || witness.result_generation() != result.id()
-                || witness.operation_id().into_bytes().as_slice()
+            if witness.source_workspace != source_workspace.id().volume_id()
+                || witness.target_workspace != target_workspace.id().volume_id()
+                || witness.source_generation != source_generation.id()
+                || witness.expected_target != expected.id()
+                || witness.result_generation != result.id()
+                || witness.operation_id.into_bytes().as_slice()
                     != receipt.provider_operation_id.as_slice()
-                || witness.history() != JoinHistory::Merge
+                || witness.history != JoinHistory::Merge
                 || !target_workspace
                     .verify_join_commit(&witness)
                     .await
@@ -3507,8 +3507,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let name = volume.storage_name()?;
         self.filesystem
-            .create_workspace(&name)
-            .await
+            .create_workspace(&name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(map_error)?;
         self.resolve(&workspace_ref(self.provider.clone(), &name)?)
             .await
@@ -4698,8 +4698,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let name = std::str::from_utf8(reference.as_resource().key())
             .map_err(|_| Error::Invalid("workspace reference key must be UTF-8".into()))?;
         self.filesystem
-            .open_workspace(name)
-            .await
+            .open_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(map_error)
     }
 
@@ -4930,8 +4930,8 @@ mod tests {
     async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Result<()> {
         let filesystem = Fs::memory();
         let workspace = filesystem
-            .create_workspace("adapter-test")
-            .await
+            .create_workspace("adapter-test", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(map_error)?;
         let expected = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?;
         let provider = ProviderRef::new("example", "filesystem", "1")?;

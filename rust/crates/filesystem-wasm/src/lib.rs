@@ -3516,13 +3516,13 @@ mod bindings {
         pub async fn create_workspace(&self, name: String) -> Result<BrowserWorkspace, JsValue> {
             let engine = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => BrowserWorkspaceEngine::IndexedDb(
-                    fs.create_workspace(name).await.map_err(js_error)?,
+                    fs.create_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?,
                 ),
                 BrowserEngine::IndexedDbOpfs(fs) => BrowserWorkspaceEngine::IndexedDbOpfs(
-                    fs.create_workspace(name).await.map_err(js_error)?,
+                    fs.create_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?,
                 ),
                 BrowserEngine::Memory(fs) => BrowserWorkspaceEngine::Memory(
-                    fs.create_workspace(name).await.map_err(js_error)?,
+                    fs.create_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?,
                 ),
             };
             Ok(BrowserWorkspace { engine })
@@ -3537,13 +3537,13 @@ mod bindings {
         pub async fn open_workspace(&self, name: String) -> Result<BrowserWorkspace, JsValue> {
             let engine = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => BrowserWorkspaceEngine::IndexedDb(
-                    fs.open_workspace(name).await.map_err(js_error)?,
+                    fs.open_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?,
                 ),
                 BrowserEngine::IndexedDbOpfs(fs) => BrowserWorkspaceEngine::IndexedDbOpfs(
-                    fs.open_workspace(name).await.map_err(js_error)?,
+                    fs.open_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?,
                 ),
                 BrowserEngine::Memory(fs) => {
-                    BrowserWorkspaceEngine::Memory(fs.open_workspace(name).await.map_err(js_error)?)
+                    BrowserWorkspaceEngine::Memory(fs.open_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?)
                 }
             };
             Ok(BrowserWorkspace { engine })
@@ -7832,7 +7832,7 @@ mod bindings {
         #[wasm_bindgen_test(async)]
         async fn named_workspace_round_trips_binary_data_and_exact_forks() -> Result<(), JsValue> {
             let fs = test_browser_fs()?;
-            let workspace = fs.create_workspace("main".to_owned()).await?;
+            let workspace = fs.create_workspace("main".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let payload = vec![0, 255, 1, 0, 128];
             // Match separately awaited JavaScript calls without one giant debug
             // test poll frame consuming half of WebAssembly's default stack.
@@ -7843,7 +7843,7 @@ mod bindings {
         #[wasm_bindgen_test(async)]
         async fn workspace_fork_retains_independent_binary_data() -> Result<(), JsValue> {
             let fs = test_browser_fs()?;
-            let workspace = fs.create_workspace("main".to_owned()).await?;
+            let workspace = fs.create_workspace("main".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let payload = vec![0, 255, 1, 0, 128];
             workspace
                 .write("/binary".to_owned(), payload.clone())
@@ -7854,7 +7854,7 @@ mod bindings {
         #[wasm_bindgen_test(async)]
         async fn workspace_fork_preserves_post_transaction_tree() -> Result<(), JsValue> {
             let fs = test_browser_fs()?;
-            let workspace = fs.create_workspace("main".to_owned()).await?;
+            let workspace = fs.create_workspace("main".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let payload = vec![0, 255, 1, 0, 128];
             Box::pin(build_transaction_tree(&workspace, &payload)).await?;
             Box::pin(verify_transaction_tree_fork(&workspace, &payload)).await
@@ -7864,7 +7864,7 @@ mod bindings {
         async fn transaction_results_preserve_commits_and_conflicting_rebases()
         -> Result<(), JsValue> {
             let fs = test_browser_fs()?;
-            let workspace = fs.create_workspace("transactions".to_owned()).await?;
+            let workspace = fs.create_workspace("transactions".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             workspace.write("/file".to_owned(), vec![1]).await?;
             let mut winner = workspace.begin_transaction(Some(vec![31; 16])).await?;
             let mut loser = workspace.begin_transaction(Some(vec![32; 16])).await?;
