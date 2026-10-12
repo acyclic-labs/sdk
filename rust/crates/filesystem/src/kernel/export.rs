@@ -58,11 +58,6 @@ pub enum GenerationExportManifestError {
 }
 
 /// Encodes one complete manifest using a serializer-independent binary format.
-///
-/// # Errors
-///
-/// Rejects invalid volume semantics, mismatched identities, absent roots,
-/// excessive counts, duplicate objects, and non-canonical object ordering.
 pub fn encode_generation_export_manifest(
     manifest: &GenerationExportManifest,
 ) -> Result<Vec<u8>, GenerationExportManifestError> {
@@ -86,23 +81,18 @@ pub fn encode_generation_export_manifest(
 }
 
 /// Decodes one bounded canonical complete manifest.
-///
-/// # Errors
-///
-/// Rejects excessive bytes/items before allocation, malformed fields, invalid
-/// configuration, identity mismatch, missing root, duplicates, and disorder.
 pub fn decode_generation_export_manifest(
     bytes: &[u8],
     maximum_bytes: u64,
     maximum_objects: u64,
 ) -> Result<GenerationExportManifest, GenerationExportManifestError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_bytes)?;
-    let volume_id = VolumeId::from_bytes(decoder.fixed()?);
-    let config = decode_config(&mut decoder)?.validate()?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_bytes, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let volume_id = VolumeId::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
+    let config = decode_config(&mut decoder, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?.validate()?;
     let generation_root = decode_object_id(&mut decoder)?;
-    let generation_id = GenerationId::new(Digest::from_bytes(decoder.fixed()?));
-    let file_count = decoder.u64()?;
-    let count = decoder.u32()?;
+    let generation_id = GenerationId::new(Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?));
+    let file_count = decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     let admitted = maximum_objects.min(config.limits.maximum_objects_per_generation);
     if u64::from(count) > admitted {
         return Err(GenerationExportManifestError::TooManyObjects);
@@ -130,11 +120,6 @@ pub fn decode_generation_export_manifest(
 }
 
 /// Validates one decoded or caller-constructed manifest without backend work.
-///
-/// # Errors
-///
-/// Rejects invalid semantics, identities, bounds, closure ordering, or a
-/// missing generation root.
 pub fn validate_generation_export_manifest(
     manifest: &GenerationExportManifest,
     maximum_objects: u64,
@@ -180,12 +165,12 @@ fn encode_object_id(encoder: &mut Encoder, object: ObjectId) {
 }
 
 fn decode_object_id(decoder: &mut Decoder<'_>) -> Result<ObjectId, CanonicalDecodeError> {
-    let tag = decoder.u8()?;
+    let tag = decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     let kind = ObjectKind::from_canonical_tag(tag)
         .map_err(|_| CanonicalDecodeError::UnknownTag { field: "object kind", tag })?;
     Ok(ObjectId {
         kind,
-        digest: Digest::from_bytes(decoder.fixed()?),
+        digest: Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
     })
 }
 

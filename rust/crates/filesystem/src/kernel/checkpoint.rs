@@ -39,18 +39,6 @@ pub struct CheckpointReceipt {
 pub type CheckpointFailure = OperationFailure<CheckpointError>;
 
 /// Constructs an unpublished checkpoint or merge generation.
-///
-/// The volume and root-file identity come only from authenticated parent roots.
-/// An unchanged single-parent checkpoint reuses the base generation without a
-/// write. A merge parent must be distinct and belong to the same volume with the
-/// same root identity. Authority publication and complete closure proof remain
-/// separate, mandatory operations.
-///
-/// # Errors
-///
-/// Rejects wrong object classes before backend work, malformed/missing parents,
-/// cross-volume/root merges, duplicate parents, storage failures, and work
-/// outside the admitted budget.
 pub fn build_checkpoint<S: ObjectStore>(
     store: &S,
     request: CheckpointRequest,
@@ -92,15 +80,6 @@ pub fn build_checkpoint<S: ObjectStore>(
 }
 
 /// Asynchronously constructs an unpublished checkpoint or merge generation.
-///
-/// This is the nonblocking execution surface for browser and remote stores;
-/// it preserves the same validation, no-op reuse, canonical encoding, and
-/// exact work receipts as [`build_checkpoint`].
-///
-/// # Errors
-///
-/// Returns the same typed failures as [`build_checkpoint`], including
-/// cancellation from the asynchronous object boundary.
 pub async fn build_checkpoint_async<S: crate::async_storage::AsyncObjectStore>(
     store: &S,
     request: CheckpointRequest,
@@ -139,7 +118,6 @@ fn checkpoint_error(error: crate::FsError) -> CheckpointError {
     }
 }
 
-/// Constructs a checkpoint using the same original native invocation.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn build_checkpoint_with_native_work<S: crate::AsyncObjectStore>(
     store: &S,
@@ -172,9 +150,6 @@ async fn checkpoint_parent<S: crate::AsyncObjectStore>(
         .map_err(|failure| failure.error.into())
 }
 
-/// Canonical asynchronous checkpoint engine for ordinary and original-native
-/// callers. Native parent and encoded buffers retain explicit paid guards;
-/// allocation, encoding, hashing and object-store callbacks run unlocked.
 pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>(
     store: &S, request: CheckpointRequest, limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
@@ -216,9 +191,7 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
                 file_table: request.file_table, parents: parents.0,
                 required_features: base.0.continuation_features(),
             }, parents.1);
-            let mut encoded = super::generation::encode_generation_root_with_accounting(
-                &root.0, accounting, cancellation,
-            )?;
+            let mut encoded = crate::kernel::codec::encode_owned(accounting, |observe, _reserve| { cancellation.check()?; super::generation::encode_generation_root(&root.0, observe, crate::FsError::EncodedAllocationFailed) })?;
             drop(root);
             let guard = match &mut encoded.1 {
                 super::allocation::KernelOwnedAllocation::NativeOriginal(guard) => guard,
@@ -333,7 +306,7 @@ fn encode_checkpoint(
         required_features: base.continuation_features(),
     };
     let encoded =
-        encode_generation_root(&root).map_err(|error| OperationFailure::new(error.into(), work))?;
+        encode_generation_root(&root, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).map_err(|error| OperationFailure::new(error.into(), work))?;
     let object = ObjectId {
         kind: ObjectKind::GenerationRoot,
         digest: object_digest(ObjectKind::GenerationRoot, &encoded),
@@ -377,7 +350,7 @@ fn read_root<S: ObjectStore>(
     let combined = work
         .checked_add(receipt.work)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let root = decode_generation_root(&receipt.value, limits)
+    let root = decode_generation_root(&receipt.value, limits, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))
         .map_err(|error| OperationFailure::new(error.into(), combined))?;
     Ok((root, combined))
 }
@@ -405,7 +378,7 @@ async fn read_root_async<S: crate::async_storage::AsyncObjectStore>(
     let combined = work
         .checked_add(receipt.work)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let root = decode_generation_root(&receipt.value.bytes, limits)
+    let root = decode_generation_root(&receipt.value.bytes, limits, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))
         .map_err(|error| OperationFailure::new(error.into(), combined))?;
     Ok((root, combined))
 }

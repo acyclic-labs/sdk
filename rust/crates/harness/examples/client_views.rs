@@ -325,7 +325,7 @@ pub fn trace() {
         "host",
         Capabilities::new(["conversation:bind", "conversation:append"]),
     );
-    let mut reducer = Reducer::new(authority.clone(), issuer.verifier(), SchemaRegistry::new());
+    let mut reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     let command = |id, revision, action| Command {
         operation_id: op(id),
         idempotency_key: IdempotencyKey(format!("{id}")),
@@ -535,7 +535,7 @@ pub fn trace() {
         orchestration: Orchestration::Leaf,
         state: file("state.json", b"{}"),
     };
-    scheduler.apply(scheduler.declare(spec).unwrap()).unwrap();
+    scheduler.apply(&(scheduler.declare(spec).unwrap()), &mut None).unwrap();
     let queue = snapshot(
         20,
         task_authority.clone(),
@@ -570,10 +570,10 @@ pub fn trace() {
         admitted: ResourceRequest::default(),
     };
     scheduler
-        .apply(SchedulerEvent::Admitted {
+        .apply(&(SchedulerEvent::Admitted {
             operation_id: op(20),
             reservation,
-        })
+        }), &mut None)
         .unwrap();
     let state = scheduler.operation(op(20)).unwrap();
     assert_eq!(state.phase, OperationPhase::Admitted);

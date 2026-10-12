@@ -728,9 +728,9 @@ fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     let native_view = ObjectStore::read_with_native_work(&*store, id, 4, &reader, &cancellation)?;
     assert_eq!(reader.receipt().allocation_operations, reader_before.allocation_operations);
     assert_eq!(work.live_allocation_bytes(), body_live);
-    assert_eq!(native_view.read().bytes.as_ptr(), view.bytes.as_ptr());
+    assert_eq!(native_view.bytes.as_ptr(), view.bytes.as_ptr());
     let alias_before = work.receipt();
-    let alias = native_view.read().bytes.clone();
+    let alias = native_view.bytes.clone();
     assert_eq!(work.receipt(), alias_before);
     assert_eq!(alias.as_ptr(), view.bytes.as_ptr());
     // A duplicate ordinary input leaves the original resident carrier intact.
@@ -809,7 +809,7 @@ fn original_first_record_is_atomic_exact_and_ordinary_byte_compatible()
     assert_eq!(created.allocation_operations, 4); // Root, history vector, two real map growth attempts.
     let state = NativeMaterializationWork::accounting_state_bytes();
     let retained = (size_of::<(AuthorityId, AuthorityState)>()
-        + size_of::<DurableCommit>() + size_of::<(OperationId, MemoryOperationIndex)>()) as u64;
+        + size_of::<DurableCommit>() + size_of::<(OperationId, (usize, KernelOwnedAllocation))>()) as u64;
     assert_eq!(created.peak_allocation_bytes, state + retained);
     let ordinary_receipt = immediate_mutation_ready(AsyncAuthorityStore::create_authority_with_first_record(
         &ordinary, id, proposed.clone(), native_authority_budget(), &cancellation,

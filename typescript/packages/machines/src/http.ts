@@ -6,7 +6,7 @@ import type {
 } from "../generated/wasm/acyclic_machines_wasm.js";
 import { operationId } from "./index.js";
 import { asPublic, u64Number, usageOut } from "./simulator.js";
-import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "./observe.js";
+import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
 
 export interface HttpMachinesOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver }
 

@@ -321,7 +321,7 @@ fn watch_ancestors<W: SourceDemandReadWork>(
             work.release(old_bytes)?;
             temporary -= old_bytes;
             let read = WorkCounters { source_bytes_read: bytes, ..WorkCounters::default() };
-            work.preflight(read)?;
+            work.admit(read)?;
             work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
             // SAFETY: the stack C path and the complete writable buffer live through readlink; a full buffer is retried, never truncated.
             let length = unsafe {
@@ -347,7 +347,7 @@ fn watch_ancestors<W: SourceDemandReadWork>(
             cleanup.reserve_record(work)?;
             let name_bytes = name.len() as u64;
             let copy = WorkCounters { bytes_copied: name_bytes, ..WorkCounters::default() };
-            work.preflight(copy)?;
+            work.admit(copy)?;
             let next_temporary = temporary.checked_add(name_bytes).ok_or(WorkError::Overflow)?;
             work.allocate(name_bytes)?;
             temporary = next_temporary;
@@ -364,7 +364,7 @@ fn watch_ancestors<W: SourceDemandReadWork>(
                     .checked_mul(std::mem::size_of::<(i32, std::ffi::OsString)>() as u64)
                     .ok_or(WorkError::Overflow)?;
                 let copied = WorkCounters { bytes_copied: old_bytes, ..WorkCounters::default() };
-                work.preflight(copied)?;
+                work.admit(copied)?;
                 let next_retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
                 work.allocate(bytes)?;
                 *retained = next_retained;
@@ -379,7 +379,7 @@ fn watch_ancestors<W: SourceDemandReadWork>(
             let length = parent_bytes.checked_add(1).ok_or(WorkError::Overflow)?;
             let bytes = length as u64;
             let copy = WorkCounters { bytes_copied: parent_bytes as u64, ..WorkCounters::default() };
-            work.preflight(copy)?;
+            work.admit(copy)?;
             let next_temporary = temporary.checked_add(bytes).ok_or(WorkError::Overflow)?;
             work.allocate(bytes)?;
             temporary = next_temporary;
@@ -469,7 +469,7 @@ impl PlatformWatch {
     ) -> Result<Self, DemandError> {
         let mut cleanup = StartupCleanup::reserve(work)?;
         let prepared = (|| {
-            work.preflight(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
+            work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
             let failure = delivery.prepare_startup_failure(work)?;
             let ownership = SourcePayloadOwnership::new(work)?;
             Ok::<_, DemandError>((failure, ownership))
@@ -490,7 +490,7 @@ impl PlatformWatch {
         let control_bytes = arc_control_bytes::<Shared>();
         let mut control_transferred = false;
         let result = (|| {
-            work.preflight(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
+            work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
             work.allocate(control_bytes)?;
             retained = control_bytes;
             shared = Some(Arc::new(Shared {
@@ -1417,11 +1417,11 @@ impl Shared {
                 if reading.cursor == reading.filled {
                     let maximum = (work.remaining()?.source_bytes_read.min(reading.buffer.len() as u64)) as usize;
                     if maximum < EVENT_HEADER_BYTES {
-                        work.preflight(WorkCounters {
+                        work.admit(WorkCounters {
                             source_bytes_read: EVENT_HEADER_BYTES as u64, ..WorkCounters::default()
                         })?;
                     }
-                    work.preflight(WorkCounters {
+                    work.admit(WorkCounters {
                         source_bytes_read: maximum as u64, ..WorkCounters::default()
                     })?;
                     work.charge(WorkCounters {
@@ -1672,7 +1672,7 @@ mod admission_tests {
 
     fn watcher(root: &Path) -> io::Result<PlatformWatch> {
         PlatformWatch::start(
-            &crate::native_host::HostRoot::open(root)?,
+            &crate::native_host::HostRoot::open(root, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?,
             Arc::new(Delivery::new(Arc::new(Ignored))),
         )
     }
@@ -1682,7 +1682,7 @@ mod admission_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         std::fs::create_dir_all(root.path().join("a/b"))?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let watch = watcher(root.path())?;
         assert!(watch.admit(Path::new("a/b")));
         let descriptors = [watch.shared.inotify.load(Ordering::Acquire), watch.shared.wake.load(Ordering::Acquire),
@@ -1787,7 +1787,7 @@ mod admission_tests {
     fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget {
@@ -1865,7 +1865,7 @@ mod admission_tests {
     fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget {
                 backend_read_operations: 128, backend_write_operations: 128,
@@ -1949,7 +1949,7 @@ mod admission_tests {
             }
         }
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget {
@@ -2026,7 +2026,7 @@ mod admission_tests {
             }
         }
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget {
@@ -2109,7 +2109,7 @@ mod admission_tests {
             }
         }
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget {
                 backend_read_operations: 128, backend_write_operations: 128,

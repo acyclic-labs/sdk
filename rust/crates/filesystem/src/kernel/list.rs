@@ -17,22 +17,13 @@ pub struct DirectoryPage {
     pub entries: Vec<TreeEntry>,
     /// Whether at least one additional entry exists.
     pub has_more: bool,
-    /// Exact unvisited successor object, when the authenticated traversal
-    /// exposed one without widening the requested listing.
+    /// Exact unvisited successor object, when the authenticated traversal exposed one without widening the requested listing.
     pub next_residency: Option<ResidencyHint>,
     /// Exact backend, traversal, copy, and logical-allocation work.
     pub work: WorkCounters,
 }
 
 /// Returns one bounded ordered directory page and an exact continuation fact.
-///
-/// The shared persistent-tree paginator reads only the cursor frontier and
-/// enough successors to prove `maximum_entries + 1`.
-///
-/// # Errors
-///
-/// Fails closed on invalid bounds, malformed routing, cycles, storage failure,
-/// or work outside the admitted budget.
 pub fn list_tree_entries<S: crate::ImmediateObjectStore>(
     store: &S,
     root: ObjectId,
@@ -54,11 +45,6 @@ pub fn list_tree_entries<S: crate::ImmediateObjectStore>(
 }
 
 /// Asynchronously executes the same cursor machine as [`list_tree_entries`].
-///
-/// # Errors
-///
-/// Returns the same typed failures, including cancellation before every
-/// backend boundary.
 pub async fn list_tree_entries_async<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -98,32 +84,6 @@ pub(crate) async fn list_tree_entries_async_with_custody<S: AsyncObjectStore>(
     .map_err(map_failure)
 }
 
-pub(crate) async fn list_tree_entries_at_or_after_async_with_custody<S: AsyncObjectStore>(
-    store: &S,
-    root: ObjectId,
-    at: &LogicalName,
-    maximum_entries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    data_custody: Option<&super::ProofDataCustody>,
-) -> Result<DirectoryPage, DirectoryReadFailure> {
-    persistent_pagination::paginate_async_at_or_after::<S, TreeFormat>(
-        store,
-        root,
-        at,
-        maximum_entries,
-        limits,
-        budget,
-        cancellation,
-        data_custody,
-    )
-    .await
-    .map(to_page)
-    .map_err(map_failure)
-}
-
-/// Executes the canonical cursor machine with actual original-owned results.
 pub(crate) fn list_tree_entries_async_with_accounting<'a, 'accounting, S: AsyncObjectStore>(
     store: &'a S, root: ObjectId, after: Option<&'a LogicalName>, maximum_entries: u32,
     limits: DecodeLimits, accounting: &'a mut super::allocation::KernelAccounting<'accounting>,

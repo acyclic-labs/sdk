@@ -4,7 +4,7 @@ use crate::kernel::{
     FileKind, FileMetadata, FileRecord, LogicalName, MetadataField, NameEncoding, NamespacePath,
 };
 use crate::model::FilesystemProfile;
-use crate::native_host::{HostDataRange, HostRoot, HostStat, allocated_data_ranges_with_work};
+use crate::native_host::{HostDataRange, HostRoot, HostStat, allocated_data_ranges};
 use crate::native_host::NativeHostWork as _;
 use crate::demand::{
     DemandError,
@@ -19,7 +19,7 @@ use crate::{
 
 /// Returns the stable identity of a no-follow, capability-held capture root.
 pub fn capture_root_identity(path: &Path) -> Result<NativeRootIdentity, CaptureError> {
-    HostRoot::open(path).map(|root| root.identity()).map_err(|_| CaptureError::InvalidOptions)
+    HostRoot::open(path, &mut crate::native_host::ordinary_work()).map(|root| root.identity()).map_err(|_| CaptureError::InvalidOptions)
 }
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -110,7 +110,7 @@ mod native_view_baseline_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"body")?;
-        let root = HostRoot::open(directory.path())?;
+        let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let identity = root.identity();
         let baseline = NativeViewBaseline::new(identity);
         let snapshot = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("file"))?)?;
@@ -861,7 +861,7 @@ async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: AsyncObjectSt
                 return Err(CaptureError::InvalidOptions);
             }
             let mut receipt = CaptureReceipt::default();
-            let candidate = checkout.private_candidate_with_native_work(&meter.native, &cancellation).map_err(CaptureError::Kernel)?;
+            let candidate = checkout.private_candidate(&meter.native, &cancellation).map_err(CaptureError::Kernel)?;
             (receipt, candidate, unique)
         };
         let observed = observe_unique_paths(unique, &source_root, &cancellation, meter)?;
@@ -1078,8 +1078,8 @@ fn native_device_control_in_scope(
     file: &impl std::os::windows::io::AsRawHandle,
     code: u32, input: &[u8], output: &mut [u8], scope: &CaptureWorkScope,
 ) -> Result<usize, DemandError> {
-    acyclic_native_runtime::device_control_in_place_measured(
-        file, code, input, output, scope.native.runtime_meter(),
+    acyclic_native_runtime::device_control_in_place(
+        file, code, input, output, Some((scope.native.runtime_meter(), acyclic_native_runtime::NativeOperationKind::Read)),
     ).map_err(|error| scope.native.native_read_meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error)))
 }
@@ -1183,12 +1183,12 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let worker = meter.native.clone();
         let capture = std::sync::Arc::clone(meter.custody.as_ref().expect("capture scope is live"));
         let task_meter = meter.native.runtime_meter_owner();
-        let task = acyclic_native_runtime::run_blocking_io_measured(move || {
+        let task = acyclic_native_runtime::run_blocking_io(move || {
             let _capture = capture;
             let worker = CaptureWorkScope { native: worker, custody: None };
             let host_work = &worker;
             let result = (|| {
-                let source_root = HostRoot::open_with_work(&source_path, &mut host_work.source())
+                let source_root = HostRoot::open(&source_path, &mut host_work.source())
                     .map_err(capture_demand_error)?;
                 if source_root.identity() != expected_identity {
                     return Err(CaptureError::RootChanged);
@@ -1221,7 +1221,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     Err(failure)
                 }
             }
-        }, task_meter);
+        }, Some((task_meter, false)));
         let result = match task {
             Ok(task) => task.await.map_err(native_demand_error),
             Err(error) => Err(native_demand_error(error)),
@@ -1878,7 +1878,7 @@ fn namespace_component_wide<W: crate::native_host::NativeHostWork>(
 
 fn capture_stat(root: &HostRoot, path: &CaptureHostPath, meter: &CaptureWorkScope) -> Result<HostStat, DemandError> {
     #[cfg(unix)]
-    { root.stat_with_work(path, &mut meter.source()) }
+    { root.stat(path, &mut meter.source()) }
     #[cfg(windows)]
     { root.stat_wide_with_work(path, &mut meter.source()) }
 }
@@ -1914,7 +1914,7 @@ fn collect_host_walk_measured(
     while let Some((host_parent, volume_parent)) = pending.pop() {
         meter.source().check().map_err(capture_demand_error)?;
         #[cfg(unix)]
-        let (mut reader, reader_allocation) = root.read_dir_stats_with_work(&host_parent, &mut meter.source()).map_err(capture_demand_error)?;
+        let (mut reader, reader_allocation) = root.read_dir_stats(&host_parent, &mut meter.source()).map_err(capture_demand_error)?;
         #[cfg(windows)]
         let (mut reader, reader_allocation) = root.read_dir_stats_wide_with_work(&host_parent, &mut meter.source()).map_err(capture_demand_error)?;
         loop {
@@ -2147,7 +2147,7 @@ mod host_observation_tests {
         }
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"body")?;
-        let source_root = HostRoot::open(directory.path())?;
+        let source_root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let native = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
         let scope = CaptureWorkScope::new(&native)?;
@@ -2164,11 +2164,11 @@ mod host_observation_tests {
         let outside = tempfile::tempdir()?;
         std::fs::write(outside.path().join("private"), b"outside")?;
         symlink(outside.path(), directory.path().join("alias"))?;
-        let source_root = HostRoot::open(directory.path())?;
-        assert!(source_root.open_dir_held(Path::new("alias")).is_err());
+        let source_root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        assert!(source_root.open_dir_held(Path::new("alias"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error).is_err());
         assert!(
             source_root
-                .symlink_metadata_held(Path::new("alias/private"))
+                .stat(Path::new("alias/private"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)
                 .is_err()
         );
         Ok(())
@@ -2949,7 +2949,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                         None
                     } else {
                         let source = capture_sdk(
-                            |native| checkout.lookup_no_follow_with_native_work(&from, native, &cancellation),
+                            |native| checkout.lookup_no_follow(&from, native, &cancellation),
                             meter, &cancellation,
                         ).await?;
                         source.record
@@ -3046,7 +3046,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                     ) }?
                 {
                     let prior = capture_sdk(
-                        |native| checkout.lookup_no_follow_with_native_work(&prior_path, native, &cancellation),
+                        |native| checkout.lookup_no_follow(&prior_path, native, &cancellation),
                         meter, &cancellation,
                     ).await?;
                     record = prior.record;
@@ -3210,7 +3210,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                 .await?;
         } else {
             // Compile binding changes before final-state mutations on one atomic candidate.
-            let mut candidate = checkout.private_candidate_with_native_work(&meter.native, &cancellation).map_err(CaptureError::Kernel)?;
+            let mut candidate = checkout.private_candidate(&meter.native, &cancellation).map_err(CaptureError::Kernel)?;
             let final_state = { let count = mutations.len() - namespace_boundary;
                 let bytes = count.checked_mul(std::mem::size_of::<AuthoredMutation>())
                     .ok_or(CaptureError::Work(WorkError::Overflow))? as u64;
@@ -3478,7 +3478,7 @@ async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObjectStore>(ch
             None
         } else {
             let lookup = capture_sdk(
-                |native| checkout.lookup_no_follow_with_native_work(&path, native, cancellation),
+                |native| checkout.lookup_no_follow(&path, native, cancellation),
                 meter, cancellation,
             ).await?;
             lookup.record
@@ -3647,7 +3647,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(che
     meter,
 )?;
         let lookup = capture_sdk(
-            |native| checkout.lookup_no_follow_with_native_work(&volume_path, native, cancellation),
+            |native| checkout.lookup_no_follow(&volume_path, native, cancellation),
             meter, cancellation,
         ).await?;
         if lookup
@@ -3704,7 +3704,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(checkou
         CurrentRecord::Lookup => {
             let lookup_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
             let lookup = capture_sdk(
-                |native| checkout.lookup_no_follow_with_native_work(&path, native, &lookup_cancellation),
+                |native| checkout.lookup_no_follow(&path, native, &lookup_cancellation),
                 meter, &lookup_cancellation,
             ).await?;
             lookup.record
@@ -3797,7 +3797,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(checkou
             }) {
                 let lookup_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
                 let prior = capture_sdk(
-                    |native| checkout.read_metadata_by_id_with_native_work(record.file_id, native, &lookup_cancellation),
+                    |native| checkout.read_metadata_by_id(record.file_id, native, &lookup_cancellation),
                     meter, &lookup_cancellation,
                 ).await?;
                 prior_metadata = Some(prior);
@@ -4243,8 +4243,8 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
         }
         ensure_same_host_node(snapshot, &metadata)?;
         let logical_bytes = metadata.len();
-        let ranges = allocated_data_ranges_with_work(
-            &file, logical_bytes, maximum_extent_spans, &mut meter.source(),
+        let ranges = allocated_data_ranges(
+            &file, 0, logical_bytes, maximum_extent_spans, &mut meter.source(),
             |work| work.original_arc().lock().remaining(),
             #[cfg(windows)]
             |file, code, input, output, _work| {
@@ -4440,7 +4440,7 @@ fn ensure_current_host_node(source_root: &HostRoot,
 #[cfg(test)]
 fn test_host_stat(root: &HostRoot, path: &Path) -> Result<HostStat, CaptureError> {
     let mut meter = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-    root.stat_with_work(path, &mut meter).map_err(capture_demand_error)
+    root.stat(path, &mut meter).map_err(capture_demand_error)
 }
 
 #[cfg(test)]
@@ -4472,11 +4472,11 @@ mod host_file_race_tests {
         let replacement = temporary.path().join("replacement");
         std::fs::write(&current, b"first")?;
         std::fs::write(&replacement, b"other")?;
-        let root = HostRoot::open(temporary.path())?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
         std::fs::rename(&current, temporary.path().join("displaced"))?;
         std::fs::rename(&replacement, &current)?;
-        let opened = root.open_file(Path::new("current"))?;
+        let opened = root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         assert!(matches!(
             ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?),
             Err(CaptureError::StaleVersion)
@@ -4489,9 +4489,9 @@ mod host_file_race_tests {
         let temporary = tempfile::tempdir()?;
         let current = temporary.path().join("current");
         std::fs::write(&current, b"first")?;
-        let root = HostRoot::open(temporary.path())?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
-        let opened = root.open_file(Path::new("current"))?;
+        let opened = root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?)?;
         std::fs::write(&current, b"changed body")?;
         assert!(matches!(
@@ -4509,9 +4509,9 @@ mod host_file_race_tests {
         let current = temporary.path().join("current");
         std::fs::write(&current, b"first")?;
         std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o644))?;
-        let root = HostRoot::open(temporary.path())?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
-        let opened = root.open_file(Path::new("current"))?;
+        let opened = root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?)?;
         std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o600))?;
         assert!(matches!(
@@ -4526,7 +4526,7 @@ mod host_file_race_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("current"), b"first")?;
-        let root = HostRoot::open(temporary.path())?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new("current"))?;
         let mut expected = HostSnapshot::from_metadata(&metadata)?;
         expected.metadata.created_ns = MetadataField::Value(123);
@@ -4543,7 +4543,7 @@ mod host_file_race_tests {
     fn rejects_an_observable_creation_time_change() -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("current"), b"first")?;
-        let root = HostRoot::open(temporary.path())?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new("current"))?;
         let mut expected = HostSnapshot::from_metadata(&metadata)?;
         expected.metadata.created_ns = MetadataField::Value(123);
@@ -4564,7 +4564,7 @@ mod host_file_race_tests {
         let replacement = temporary.path().join("replacement");
         std::fs::create_dir(&current)?;
         std::fs::create_dir(&replacement)?;
-        let root = HostRoot::open(temporary.path())?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
         std::fs::rename(&current, temporary.path().join("displaced"))?;
         std::fs::rename(&replacement, &current)?;
@@ -4666,7 +4666,7 @@ async fn settled_sparse_ranges(native: &std::sync::Arc<acyclic_native_runtime::N
                 let runtime = capture_runtime_meter_owner(&meter.native,
                     meter.custody.as_ref().expect("capture scope is live"))
                     .map_err(CaptureError::NativeKernel)?;
-                let value = reader.read_exact_measured(wanted as usize, runtime)
+                let value = reader.read(wanted as usize, runtime, true)
                     .await.map_err(|error| {
                         let cause = if let Some(cause) = meter.native.native_read_meter().take_native_io_failure() {
                             capture_demand_error(cause)
@@ -4769,7 +4769,7 @@ fn native_positional_file(
     file: std::fs::File,
 ) -> std::io::Result<acyclic_native_runtime::NativeFile> {
     // SAFETY: a positional handle is opened overlapped; this fresh file object is attached to no port, and this sole duplicate carries all of its I/O.
-    unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file) }
+    unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, None).map_err(|(error, _)| error) }
 }
 
 /// The native file a handle from [`HostRoot::open_file_positional`] reads through.
@@ -4777,7 +4777,7 @@ fn native_positional_file(
 fn native_positional_file(
     file: std::fs::File,
 ) -> std::io::Result<acyclic_native_runtime::NativeFile> {
-    acyclic_native_runtime::NativeFile::from_file(file)
+    acyclic_native_runtime::NativeFile::from_file(file, None).map_err(|(error, _)| error)
 }
 
 struct NativeRangeSource {
@@ -4793,10 +4793,10 @@ fn native_positional_file_measured(
     let meter = scope.native.runtime_meter_owner();
     #[cfg(windows)]
     let result = unsafe {
-        acyclic_native_runtime::NativeFile::from_overlapped_file_measured_owned_unchecked(file, meter)
+        acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
     };
     #[cfg(not(windows))]
-    let result = acyclic_native_runtime::NativeFile::from_file_measured_owned(file, meter);
+    let result = acyclic_native_runtime::NativeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)));
     result.map_err(|(error, file)| {
         // This is an ordinary std file, not an explicit SDK close operation. Retire its physical handle before projecting the original failure.
         drop(file);
@@ -4840,7 +4840,7 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
             ..WorkCounters::UNCHARGED })?;
         let copy = original.reserve_copy(maximum as u64)?;
         let runtime = capture_runtime_meter_owner(original, &self.capture_custody)?;
-        let result = reader.read_exact_measured(maximum, runtime).await
+        let result = reader.read(maximum, runtime, true).await
             .map_err(|error| {
                 original.native_read_meter().take_native_io_failure()
                     .map(crate::materializer::native_materialization_work_error)
@@ -4956,14 +4956,14 @@ mod native_range_tests {
             scope.custody.as_ref().expect("live scope"))?;
         let (started, start) = std::sync::mpsc::channel();
         let (resume, resumed) = std::sync::mpsc::channel();
-        let operation = native.control_bounded_async(move |file, meter| {
+        let operation = native.control_async(move |file, meter| { let meter = meter.expect("metered control");
             started.send(()).map_err(std::io::Error::other)?;
             resumed.recv().map_err(std::io::Error::other)?;
             let mut data = [0; 3];
             assert_eq!(acyclic_native_runtime::read_declared_source_bytes(file, 0, &mut data, meter)?, 3);
             assert_eq!(&data, b"abc");
             Ok(())
-        }, meter)?;
+        }, Some(meter))?;
         let operation = tokio::spawn(operation);
         tokio::task::yield_now().await;
         start.recv_timeout(std::time::Duration::from_secs(10))?;
@@ -5038,7 +5038,7 @@ fn validate_path_count(
 
 fn open_source_root(options: &CaptureOptions, meter: &CaptureWorkScope)
     -> Result<HostRoot, CaptureError> {
-    let root = HostRoot::open_with_work(&options.source_root, &mut meter.source())
+    let root = HostRoot::open(&options.source_root, &mut meter.source())
         .map_err(capture_demand_error)?;
     if root.identity() != options.expected_root_identity {
         return Err(CaptureError::RootChanged);
@@ -5116,7 +5116,7 @@ mod windows_sparse_tests {
         reported: Vec<HostDataRange>,
         maximum_ranges: u32,
     ) -> std::io::Result<Vec<(u64, u64)>> {
-        let root = HostRoot::open(directory)?;
+        let root = HostRoot::open(directory, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let file = root.open_file_positional(Path::new(name))?;
         let metadata = test_host_stat(&root, Path::new(name)).map_err(std::io::Error::other)?;
         let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
@@ -5201,7 +5201,7 @@ mod windows_sparse_tests {
         );
 
         // Every byte read is charged, and the scan stops at the budget or once cancelled.
-        let root = HostRoot::open(directory.path())?;
+        let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let file = root.open_file_positional(Path::new("sparse.bin"))?;
         let metadata = test_host_stat(&root, Path::new("sparse.bin")).map_err(std::io::Error::other)?;
         let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
@@ -5342,7 +5342,7 @@ fn read_link_bytes(root: &HostRoot, path: &CaptureHostPath, meter: &CaptureWorkS
     #[cfg(unix)]
     {
         // The returned byte buffer keeps the driver's existing capture claim.
-        let (bytes, _allocation) = root.read_link_with_work(path, maximum, &mut meter.source()).map_err(capture_demand_error)?;
+        let (bytes, _allocation) = root.read_link(path, maximum, &mut meter.source()).map_err(capture_demand_error)?;
         Ok(bytes)
     }
     #[cfg(windows)]

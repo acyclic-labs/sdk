@@ -53,20 +53,18 @@ export class ScheduledTransport<Event> implements Transport<Event> {
     }
     // Transfer cleanup ownership only after the cancellation-safe handoff.
     owned = undefined;
-    let closed = false;
     let closing: Promise<void> | undefined;
     return {
       [Symbol.asyncIterator]: () => connection[Symbol.asyncIterator](),
       send: async command => {
-        if (closed) return Promise.reject(new Error("connection closed; operation outcome may be indeterminate"));
+        if (closing !== undefined) return Promise.reject(new Error("connection closed; operation outcome may be indeterminate"));
         return this.scheduler.schedule(this.reservations.send(command), () => connection.send(command), controller.signal);
       },
       close: () => {
         if (closing !== undefined) return closing;
-        closed = true;
+        closing = Promise.resolve().then(() => connection.close());
         signal?.removeEventListener("abort", cancel);
         controller.abort();
-        closing = Promise.resolve().then(() => connection.close());
         return closing;
       },
     };

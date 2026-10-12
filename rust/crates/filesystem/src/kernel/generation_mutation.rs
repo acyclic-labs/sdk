@@ -1,6 +1,4 @@
-//! One-volume generation transaction composition over sparse persistent kernels.
-//! Ordinary and original-native transactions share this sparse engine. Producers
-//! run outside Root loans and keep explicit preadmitted custody for actual data.
+//! One-volume generation transaction composition over sparse persistent kernels. Ordinary and original-native transactions share this sparse engine. Producers run outside Root loans and keep explicit preadmitted custody for actual data.
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 #[cfg(all(test, feature = "memory"))]
@@ -154,18 +152,6 @@ struct InitialLookups {
 }
 
 /// Applies one ordered namespace, metadata, and content batch to a generation.
-///
-/// All path preconditions are evaluated against a sparse candidate view. The
-/// executor performs one borrowed-path lookup, groups edits by stable parent
-/// directory identity, rewrites every touched directory once, and then rewrites
-/// the global file table once. It never publishes authority state; callers feed
-/// the returned root into checkpoint and publication.
-///
-/// # Errors
-///
-/// Rejects malformed or contradictory candidate state before publication and
-/// retains exact work plus safe orphan-write evidence on storage,
-/// cancellation, allocation, or semantic failure.
 pub async fn apply_generation_mutations_async<S: AsyncObjectStore>(
     store: &S,
     generation: &GenerationRoot,
@@ -201,9 +187,6 @@ pub(crate) async fn apply_generation_mutations_retaining_async<S: AsyncObjectSto
         .map_err(|error| OperationFailure::new(generation_error(error), accounting.spent()))
 }
 
-/// Runs the canonical transaction on the original invocation. Incoming
-/// operations keep their caller-owned custody; the returned guard owns only
-/// the actual newly produced generation-root heap.
 pub(crate) async fn apply_generation_mutations_retaining_with_accounting<S: AsyncObjectStore>(
     store: &S,
     generation: &GenerationRoot,
@@ -243,7 +226,6 @@ pub(crate) async fn apply_generation_mutations_retaining_with_accounting<S: Asyn
     Ok((GenerationMutationReceipt { root, work: accounting.spent() }, operations, allocation))
 }
 
-/// Field order destroys the concrete data before releasing its physical guard.
 struct Owned<T> {
     value: T,
     allocation: KernelOwnedAllocation,
@@ -308,8 +290,6 @@ enum RegularAction {
 }
 
 impl Owned<TransactionState> {
-    /// SDK state callbacks execute outside Root loans; each allocation carries
-    /// its explicit paid guard from preadmission through physical destruction.
     fn leaf<T>(
         &mut self, accounting: &mut KernelAccounting<'_>,
         operation: impl FnOnce(&mut TransactionState, &mut MutationLeaf<'_, '_>) -> Result<T, crate::FsError>,
@@ -450,7 +430,6 @@ fn release_allocation(
     accounting.release_owned(&mut allocation, bytes).map_err(accounting_error)
 }
 
-
 fn generation_error(error: crate::FsError) -> GenerationMutationError {
     match error {
         crate::FsError::Mutation(error) => error,
@@ -473,11 +452,6 @@ fn generation_error(error: crate::FsError) -> GenerationMutationError {
 }
 
 /// Synchronous adapter over [`apply_generation_mutations_async`].
-///
-/// # Errors
-///
-/// Returns the same bounded failures, plus a typed rejection if a nominally
-/// synchronous object store unexpectedly suspends.
 pub fn apply_generation_mutations<S: crate::ImmediateObjectStore>(
     store: &S,
     generation: &GenerationRoot,
@@ -877,8 +851,6 @@ impl TransactionState {
         })
     }
 
-    /// Executes only known-owned synchronous work. Storage actions leave the
-    /// original allocation lock before entering any lower asynchronous engine.
     fn prepare(
         &mut self, leaf: &mut MutationLeaf<'_, '_>, plan: &MutationPlan, ordinal: usize, operation: &Mutation,
     ) -> Result<Option<RegularAction>, crate::FsError> {
@@ -1031,10 +1003,6 @@ impl TransactionState {
         Ok(())
     }
 
-    /// Restores one path from an immutable generation without flattening the
-    /// live hard-link graph. Directory payloads are retained when the
-    /// destination is already a directory: Git-shaped history tracks the
-    /// children individually and must not erase live ignored descendants.
     fn restore(
         &mut self, leaf: &mut MutationLeaf<'_, '_>,
         plan: &MutationPlan,
@@ -1530,8 +1498,6 @@ impl TransactionState {
     }
 }
 
-/// Clones an existing root without changing its lineage/features. Both merge
-/// inputs and the generation candidate use this one preadmitted parent leaf.
 pub(crate) fn clone_generation_root_with_accounting(
     root: &GenerationRoot, accounting: &mut KernelAccounting<'_>,
 ) -> Result<(GenerationRoot, KernelOwnedAllocation), crate::FsError> {
@@ -1650,7 +1616,6 @@ fn find_path_state(
         .ok()
 }
 
-
 fn logical_vec_bytes<T>(values: &Vec<T>) -> Result<u64, crate::FsError> {
     values
         .capacity()
@@ -1658,8 +1623,6 @@ fn logical_vec_bytes<T>(values: &Vec<T>) -> Result<u64, crate::FsError> {
         .map(usize_to_u64)
         .ok_or_else(|| WorkError::Overflow.into())
 }
-
-
 
 #[cfg(all(test, feature = "memory"))]
 fn allocation_failure(error: AllocationError) -> crate::FsError {

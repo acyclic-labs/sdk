@@ -1,11 +1,4 @@
 //! Marks every object a set of roots reaches, for a collection.
-//!
-//! Unlike a closure proof, marking authenticates nothing beyond decoding: it
-//! only has to find every reachable object, once. Generations share most of
-//! their pages, so a page already marked is not read again, and content
-//! chunks are marked by identity without being read.
-//! Read buffers remain in the canonical carrier while marking decodes them,
-//! preserving provider allocation custody through the last borrowed view.
 
 use std::collections::HashSet;
 
@@ -20,7 +13,6 @@ use crate::foundation::GenerationId;
 use crate::performance::WorkBudget;
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
 
-/// Accumulates the objects a collection keeps.
 pub(crate) struct Marker<'a, S> {
     store: &'a S,
     limits: DecodeLimits,
@@ -30,8 +22,7 @@ pub(crate) struct Marker<'a, S> {
     generations: std::collections::HashMap<GenerationId, Vec<GenerationId>>,
 }
 
-/// A marking failure: an object a root reaches is missing or undecodable,
-/// so nothing may be swept.
+/// A marking failure: an object a root reaches is missing or undecodable, so nothing may be swept.
 #[derive(Debug, thiserror::Error)]
 pub enum MarkError {
     /// Storage failed or an object is missing.
@@ -57,20 +48,15 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         }
     }
 
-    /// Decodes what is marked next under `limits`, those of its volume.
     pub(crate) fn set_limits(&mut self, limits: DecodeLimits) {
         self.limits = limits;
     }
 
-    /// Keeps `objects` without walking them.
     #[cfg(feature = "s3-http")]
     pub(crate) fn keep(&mut self, objects: impl IntoIterator<Item = ObjectId>) {
         self.marked.extend(objects);
     }
 
-    /// Marks the root object of every generation a fully marked one names as
-    /// an ancestor, which lineage walks read, without their closures. A root
-    /// already gone ends its branch: nothing can restore it.
     pub(crate) async fn lineage_roots(&mut self) -> Result<(), MarkError> {
         let mut pending = self
             .generations
@@ -92,12 +78,10 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         Ok(())
     }
 
-    /// Everything marked so far.
     pub(crate) const fn marked(&self) -> &HashSet<ObjectId> {
         &self.marked
     }
 
-    /// Reads `object` unless it is already marked, marking it.
     async fn visit(&mut self, object: ObjectId) -> Result<Option<acyclic_stream::OwnedBytes>, MarkError> {
         if !self.marked.insert(object) {
             return Ok(None);
@@ -118,7 +102,6 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         Ok(Some(read.value.bytes))
     }
 
-    /// Marks the complete closure of one generation; returns its parents.
     pub(crate) async fn generation(
         &mut self,
         generation: GenerationId,
@@ -132,8 +115,6 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         Ok(root.parents)
     }
 
-    /// Marks only the root object of one generation, which lineage walks
-    /// read; returns its parents.
     pub(crate) async fn generation_root(
         &mut self,
         generation: GenerationId,
@@ -153,18 +134,16 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             )
             .await
             .map_err(|failure| MarkError::Storage(failure.error))?;
-        decode(decode_generation_root(&read.value.bytes, self.limits))
+        decode(decode_generation_root(&read.value.bytes, self.limits, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))
     }
 
-    /// Marks everything a root reaches, whether or not it is stored, such
-    /// as a checkout's working tree.
     pub(crate) async fn working(&mut self, root: &GenerationRoot) -> Result<(), MarkError> {
         let mut pending = vec![root.file_table];
         while let Some(page) = pending.pop() {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            match decode(decode_file_table_page(&bytes, self.limits))? {
+            match decode(decode_file_table_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))? {
                 FileTablePage::Leaf(records) => {
                     for record in records {
                         self.record(&record).await?;
@@ -178,7 +157,6 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         Ok(())
     }
 
-    /// Marks every object one file record reaches.
     pub(crate) async fn record(&mut self, record: &FileRecord) -> Result<(), MarkError> {
         self.metadata(record.metadata).await?;
         match record.payload {
@@ -198,7 +176,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         let Some(bytes) = self.visit(metadata).await? else {
             return Ok(());
         };
-        let metadata = decode(decode_file_metadata(&bytes, self.limits))?;
+        let metadata = decode(decode_file_metadata(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))?;
         if let MetadataField::Value(attributes) = metadata.named_attributes {
             self.attributes(attributes).await?;
         }
@@ -216,7 +194,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            if let TreePage::Internal(children) = decode(decode_tree_page(&bytes, self.limits))? {
+            if let TreePage::Internal(children) = decode(decode_tree_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))? {
                 pending.extend(children.into_iter().map(|child| child.page));
             }
         }
@@ -229,7 +207,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            match decode(decode_extent_page(&bytes, self.limits))? {
+            match decode(decode_extent_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))? {
                 ExtentPage::Leaf(extents) => {
                     for extent in extents {
                         if let ExtentKind::Content { object, .. } = extent.kind {
@@ -251,7 +229,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            match decode(decode_blob_page(&bytes, self.limits))?.node {
+            match decode(decode_blob_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))?.node {
                 BlobNode::Internal(children) => {
                     pending.extend(children.into_iter().map(|child| child.page));
                 }
@@ -270,7 +248,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            match decode(decode_attribute_page(&bytes, self.limits))? {
+            match decode(decode_attribute_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))? {
                 AttributePage::Leaf(entries) => {
                     for entry in entries {
                         self.blob(entry.value).await?;

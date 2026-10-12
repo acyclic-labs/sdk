@@ -1,6 +1,6 @@
 //! Builtin events enter only after the shared service caller Scope verifier.
 use super::*;
-use crate::pi_builtin::{PiBuiltinHost, PiBuiltinIo, PiBuiltinRequest, MAXIMUM_BUILTIN_BYTES, PI_BUILTIN_COMMAND_KIND};
+use crate::pi_builtin::{PiBuiltinIo, PiBuiltinRequest, MAXIMUM_BUILTIN_BYTES, PI_BUILTIN_COMMAND_KIND};
 use acyclic_harness::Result as RootResult;
 use crate::pi_builtin::{invalid, native_error};
 
@@ -18,8 +18,8 @@ impl PiSession {
         request.validate()?;
         let (value, custody) = if caller == owner.policy().root_task {
             request.require_root_source_read(owner.policy().root_task)?;
-            let host = PiBuiltinHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-                &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), work.clone())?;
+            let host = crate::pi_selected_host::PiControlHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+                &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), &work)?;
             let (payload, _payload_custody) = pi_root_provider::guarded_pi_value(&request,
                 MAXIMUM_BUILTIN_BYTES * 2, &work)?;
             let operation = request.operation(owner.policy().root_task, &work)?;
@@ -35,7 +35,7 @@ impl PiSession {
                 kind, payload: reference,
             };
             pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
-                self.stream.clone(), &self.resources, &self.state, work.clone()).with_builtin_controls(&host).control_command_with_native_work(command).await?
+                self.stream.clone(), &self.resources, &self.state, work.clone()).with_controls(&host).control_command_with_native_work(command).await?
         } else { self.native_child_builtin_command(owner, &native, &request, &work).await? };
         let binding = self.binding(caller)?;
         #[derive(Serialize)]

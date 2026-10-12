@@ -47,7 +47,6 @@ export interface FileRef<Class extends VolumeClass = VolumeClass, Family extends
   readonly display_name: string;
 }
 
-export type ContentRef<Class extends VolumeClass = VolumeClass, Family extends string = string> = FileRef<Class, Family>;
 
 export type TaskOutcomeRecord =
   | Readonly<{ kind: "succeeded"; result: FileRef }>
@@ -88,7 +87,7 @@ interface ConversationMessageBase {
   readonly id: ConversationMessageId;
   /** Exact Rust u64 position; never round-tripped through a JavaScript number. */
   readonly sequence: bigint;
-  readonly content: ContentRef;
+  readonly content: FileRef;
   readonly attachments: ReferencedAttachments;
   readonly extensions: Readonly<Record<string, FileRef>>;
 }

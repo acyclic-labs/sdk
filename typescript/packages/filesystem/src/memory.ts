@@ -4,7 +4,7 @@ import { openMemoryFsWith } from "./memory-options.js";
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
 export { CrossVolumeError, MountedView } from "./mounted.js";
-export { performanceObserver } from "./observe.js";
+export { performanceObserver } from "@acyclic-labs/actors/observe";
 export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
 export { DEFAULT_MEMORY_FS_OPTIONS } from "./memory-options.js";
 

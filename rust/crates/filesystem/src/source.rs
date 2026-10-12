@@ -558,7 +558,7 @@ async fn conflict_head_reuses_checkout_base<A: AsyncAuthorityStore, O: AsyncObje
             "conflicting volume head does not match durable history".to_owned(),
         ));
     }
-    let published = decode_published_generation(&record.payload, 4096).map_err(engine)?;
+    let published = decode_published_generation(&record.payload, 4096, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map_err(engine)?;
     if published.volume_id != workspace.volume.id() {
         return Err(SourceError::Engine(
             "conflicting volume publication belongs to another volume".to_owned(),
@@ -1057,7 +1057,7 @@ async fn published_generation_for_key<A: AsyncAuthorityStore, O: AsyncObjectStor
     let Some(commit) = receipt.value else {
         return Ok(None);
     };
-    let published = decode_published_generation(&commit.payload, 4096).map_err(engine)?;
+    let published = decode_published_generation(&commit.payload, 4096, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map_err(engine)?;
     if published.volume_id != session.workspace.volume.id() {
         return Err(SourceError::IdempotencyConflict);
     }

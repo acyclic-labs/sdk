@@ -1,6 +1,4 @@
-//! Bounded atomic mutation contracts and shared-prefix execution plans.
-//! Ordinary and original-native callers use the same flat planner; producers
-//! execute outside Root loans with explicit custody for the paid path index.
+//! Bounded atomic mutation contracts and shared-prefix execution plans. Ordinary and original-native callers use the same flat planner; producers execute outside Root loans with explicit custody for the paid path index.
 
 use super::{FileRecord, MetadataField, NamespacePath};
 use crate::foundation::{FileId, usize_to_u64};
@@ -21,14 +19,11 @@ pub enum Mutation {
         /// Complete immutable initial record.
         record: FileRecord,
     },
-    /// Restores one exact immutable record at a path while preserving any
-    /// additional live hard-link bindings to the same identity. Unlike
-    /// `Create`, the identity may already exist in the candidate generation.
+    /// Restores one exact immutable record at a path while preserving any additional live hard-link bindings to the same identity.
     Restore {
         /// Namespace path to restore.
         path: NamespacePath,
-        /// Exact source record. Its link count is adapted to the live binding
-        /// topology; all other representable facts are restored verbatim.
+        /// Exact source record. Its link count is adapted to the live binding topology; all other representable facts are restored verbatim.
         record: FileRecord,
     },
     /// Removes one namespace binding.
@@ -148,8 +143,7 @@ pub enum Mutation {
 /// One ordered mutation of an existing path-independent file record.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileMutation {
-    /// Replaces one authenticated file record without changing its live bindings.
-    /// The current identity and link count remain authoritative.
+    /// Replaces one authenticated file record without changing its live bindings. The current identity and link count remain authoritative.
     ReplaceRecord {
         /// Complete replacement record for the same file identity and kind.
         record: FileRecord,
@@ -350,11 +344,6 @@ pub struct MutationPlan {
 
 impl MutationPlan {
     /// Compiles an ordered batch once before any immutable page is written.
-    ///
-    /// # Errors
-    ///
-    /// Rejects empty/excessive batches, invalid roots/object classes/ranges,
-    /// index overflow, and work outside the admitted budget.
     pub fn compile(
         operations: Vec<Mutation>,
         limits: VolumeLimits,
@@ -367,8 +356,6 @@ impl MutationPlan {
             .map_err(|error| OperationFailure::new(plan_error(error), accounting.spent()))
     }
 
-    /// Compiles the same flat plan on the caller's original ledger. Operation
-    /// storage remains in its incoming custody; only the new path index is owned.
     pub(crate) fn compile_with_accounting(
         operations: Vec<Mutation>,
         limits: VolumeLimits,
@@ -464,9 +451,6 @@ impl MutationPlan {
     }
 
     /// Borrowed operation endpoints in canonical path order.
-    ///
-    /// Repeated paths are retained because operation ordering remains semantic;
-    /// consumers can group adjacent equal paths without cloning names.
     #[must_use]
     pub fn ordered_paths(&self) -> impl ExactSizeIterator<Item = &NamespacePath> {
         self.ordered_paths
@@ -475,10 +459,6 @@ impl MutationPlan {
     }
 
     /// Canonically ordered endpoints with their operation and endpoint indices.
-    ///
-    /// Endpoint zero is the sole or source path; endpoint one is a distinct
-    /// destination. The executor uses these stable indices to restore semantic
-    /// operation order after one shared borrowed-path lookup.
     #[must_use]
     pub fn ordered_operation_paths(
         &self,
