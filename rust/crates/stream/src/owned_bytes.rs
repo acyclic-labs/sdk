@@ -66,7 +66,8 @@ impl OwnedBytes {
         let mut original_guard = Some(original_guard);
         Self::from_vec_with_guard_in_place(&mut data, &mut original_guard, meter)
             .map_err(|error| PreparedOwnedBytesFailure {
-                data, error: PreparedOwnedBytesError::Admission(error), original_guard,
+                data, error: PreparedOwnedBytesError::Admission(error),
+                original_guard: original_guard.expect("rejected promotion retains its guard"),
             })
     }
 
@@ -218,7 +219,7 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
         let maximum_len = data.len();
         if data.capacity() != maximum_len {
             return Err(PreparedOwnedBytesFailure {
-                data, original_guard: Some(original_guard), error: PreparedOwnedBytesError::NotFullyInitialized,
+                data, original_guard, error: PreparedOwnedBytesError::NotFullyInitialized,
             });
         }
         let metadata = ReadAllocation::new(&meter, std::mem::size_of::<GuardBundle<G>>())
@@ -227,7 +228,7 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
             Ok(metadata) => Ok(Self {
                 guard: Arc::new(GuardBundle { data, _metadata: metadata, _original_guard: original_guard }),
             }),
-            Err(error) => Err(PreparedOwnedBytesFailure { data, original_guard: Some(original_guard), error }),
+            Err(error) => Err(PreparedOwnedBytesFailure { data, original_guard, error }),
         }
     }
 
@@ -278,7 +279,7 @@ pub enum PreparedOwnedBytesError {
 pub struct PreparedOwnedBytesFailure<G> {
     data: Vec<u8>,
     error: PreparedOwnedBytesError,
-    original_guard: Option<G>,
+    original_guard: G,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

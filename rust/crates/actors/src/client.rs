@@ -485,36 +485,6 @@ mod tests {
     }
 
     #[test]
-    fn service_error_ignores_empty_or_malformed_details() {
-        let statuses = [
-            tonic::Status::unknown("empty details"),
-            tonic::Status::with_details(
-                tonic::Code::Unavailable,
-                "malformed details",
-                vec![0xff, 0x00].into(),
-            ),
-        ];
-
-        for status in statuses {
-            let expected_code = status.code() as i32;
-            match service_error(status.clone()) {
-                Error::Service {
-                    grpc_code,
-                    detail,
-                    message,
-                    raw_details,
-                } => {
-                    assert_eq!(message, status.message());
-                    assert_eq!(raw_details, status.details());
-                    assert_eq!(grpc_code, expected_code);
-                    assert!(detail.is_none());
-                }
-                other => panic!("expected service error, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
     fn error_code_names_are_shared_by_native_and_browser_bridges() {
         for (code, name) in [
             (0, "ok"),

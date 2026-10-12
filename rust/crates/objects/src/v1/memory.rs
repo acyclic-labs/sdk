@@ -696,7 +696,7 @@ fn get_selected_locked<'a>(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn clone_native_text(
+pub(super) fn clone_native_text(
     value: &str,
     meter: &Arc<dyn NativeReadMeter>,
     retained: &mut ReadAllocation,

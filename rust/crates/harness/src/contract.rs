@@ -64,7 +64,7 @@ pub(crate) fn next_revision(revision: u64) -> Result<u64> {
 
 mod json;
 pub(crate) use json::{
-    admit_json, admit_json_value_shape, lexical_json_diagnostic_bytes,
+    admit_json, lexical_json_diagnostic_bytes,
     json_owned_value_shape_bounded,
     json_typed_value_decode_owned_bytes, json_value_virtual_owned_bytes,
     owned_logical_bytes,
@@ -73,7 +73,6 @@ mod event_json;
 pub(crate) use event_json::{
     audited_serde_diagnostic_bytes, event_payload_json_admission,
     json_decode_owned_bytes,
-    audited_preparation_diagnostic_bytes,
 };
 pub use event_json::{json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes};
 mod snapshot_json;
@@ -92,13 +91,15 @@ pub use json::{
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use json::{
     validate_json_byte_bound_native_trusted,
-    canonical_json_bytes_identity_native_trusted,
     canonical_json_value_into_prepaid_native_trusted,
 };
 
 /// Sorted-key JSON encoding for durable identities and Rust/WASM output.
 pub(crate) fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
-    json::encode(value, JsonBounds::IDENTITY, None, &mut |_| Ok(()))
+    let mut value =
+        serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
+    value.sort_all_objects();
+    serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
 /// Checks encoded JSON size without admitting owned-tree or serde heap storage.
@@ -1316,7 +1317,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An actual SDK workspace publication failure, including its original prefix.
-    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeWorkspacePublication {
         /// The original publication cause and any physical cleanup ownership.
@@ -1418,8 +1419,9 @@ impl Error {
             Self::NativeStageUncertain { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeView { .. } | Self::NativePublication { .. }
-            | Self::NativeWorkspacePublication { .. }
             | Self::NativeTimeout { .. } => ErrorCode::Storage,
+            #[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+            Self::NativeWorkspacePublication { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeWork { cause, .. } => native_work_error_code(cause),
         }
@@ -1449,18 +1451,24 @@ impl From<acyclic_fs::NativeTreeMaterializationError> for Error {
 }
 
 /// Moves the complete filesystem cause and its intrinsic custody without formatting.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl From<acyclic_fs::FsError> for Error {
     fn from(source: acyclic_fs::FsError) -> Self {
-        Self::NativeFilesystem { source, custody: None }
+        #[cfg(not(target_arch = "wasm32"))]
+        { Self::NativeFilesystem { source, custody: None } }
+        #[cfg(target_arch = "wasm32")]
+        { crate::filesystem::map_error(acyclic_fs::WorkspaceError::Filesystem(source)) }
     }
 }
 
 /// Moves the complete workspace cause and its intrinsic custody without formatting.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl From<acyclic_fs::WorkspaceError> for Error {
     fn from(source: acyclic_fs::WorkspaceError) -> Self {
-        Self::NativeWorkspace { source, custody: None }
+        #[cfg(not(target_arch = "wasm32"))]
+        { Self::NativeWorkspace { source, custody: None } }
+        #[cfg(target_arch = "wasm32")]
+        { crate::filesystem::map_error(source) }
     }
 }
 
@@ -1473,10 +1481,13 @@ impl From<acyclic_fs::DrivenJoinError> for Error {
 }
 
 /// Moves the complete lazy-source failure and its intrinsic custody without formatting.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl From<acyclic_fs::LazyWorkspaceError> for Error {
     fn from(source: acyclic_fs::LazyWorkspaceError) -> Self {
-        Self::NativeSource { source, custody: None }
+        #[cfg(not(target_arch = "wasm32"))]
+        { Self::NativeSource { source, custody: None } }
+        #[cfg(target_arch = "wasm32")]
+        { Self::Storage(source.to_string()) }
     }
 }
 

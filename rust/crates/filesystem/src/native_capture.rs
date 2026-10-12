@@ -28,24 +28,17 @@ use thiserror::Error;
 pub(crate) const MAX_NATIVE_EXACT_CAPTURE_PATHS: usize = 65_536;
 
 /// A native view may have host-generated timestamps that are not SDK metadata.
+#[derive(Clone, Copy)]
 pub(crate) struct NativeViewBaseline {
     root_identity: NativeRootIdentity,
     read_only: bool,
-    _allocation: crate::NativeAllocation,
 }
 
 impl NativeViewBaseline {
-    /// Creates the actual shared baseline control on the original invocation.
+    /// Records the identity and access mode of the materialized view.
     #[cfg(any(feature = "native-mount", all(test, unix)))]
-    pub(crate) fn new(
-        root_identity: NativeRootIdentity,
-        read_only: bool,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<std::sync::Arc<Self>, crate::NativeTreeMaterializationError> {
-        let allocation = work.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
-        Ok(std::sync::Arc::new(Self {
-            root_identity, read_only, _allocation: allocation,
-        }))
+    pub(crate) const fn new(root_identity: NativeRootIdentity, read_only: bool) -> Self {
+        Self { root_identity, read_only }
     }
     fn restore_canonical_stamps(
         &self,
@@ -103,9 +96,7 @@ mod native_view_baseline_tests {
         std::fs::write(directory.path().join("file"), b"body")?;
         let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let identity = root.identity();
-        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .map_err(|(error, _)| error)?;
-        let baseline = NativeViewBaseline::new(identity, false, &work)?;
+        let baseline = NativeViewBaseline::new(identity, false);
         let snapshot = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("file"))?)?;
         let prior = FileMetadata {
             changed_ns: MetadataField::Value(-123),
@@ -1998,11 +1989,12 @@ fn order_host_checkout_union(
     let checkout_bytes = checkout_paths.storage_bytes();
     for (path, ()) in checkout_paths.entries {
         capture_charge(meter, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-        if observed.contains_key_measured(&path, meter)? {
-            capture_drop_path(path, meter)?;
-        } else {
-            if observed.len() >= maximum { return Err(CaptureError::InvalidOptions); }
-            observed.insert_measured(path, None, meter)?;
+        match observed.position_measured(&path, meter)? {
+            Ok(_) => capture_drop_path(path, meter)?,
+            Err(index) => {
+                if observed.len() >= maximum { return Err(CaptureError::InvalidOptions); }
+                observed.insert_at(index, path, None, meter)?;
+            }
         }
     }
     meter.source().release(checkout_bytes).map_err(capture_demand_error)?;
@@ -2150,12 +2142,13 @@ fn append_scanned_path(
     maximum: usize,
     meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
-    if paths.contains_key_measured(&path, meter)? {
-        return capture_drop_path(path, meter);
-    }
+    let index = match paths.position_measured(&path, meter)? {
+        Ok(_) => return capture_drop_path(path, meter),
+        Err(index) => index,
+    };
     if paths.len() >= maximum { return Err(CaptureError::InvalidOptions); }
     capture_charge(meter, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-    paths.insert_measured(path, (), meter).map(|_| ())
+    paths.insert_at(index, path, (), meter)
 }
 
 fn capture_drop_path(path: NamespacePath, meter: &CaptureWorkScope) -> Result<(), CaptureError> {
@@ -4346,12 +4339,12 @@ mod windows_name_tests {
         };
         let valid = LogicalName::new(
             NameEncoding::PosixBytes,
-            "uni-é中.txt".as_bytes().to_vec(),
+            "uni-Ã©ä¸­.txt".as_bytes().to_vec(),
             255,
         )?;
         assert_eq!(
             host_path(valid)?,
-            std::ffi::OsString::from("uni-é中.txt")
+            std::ffi::OsString::from("uni-Ã©ä¸­.txt")
         );
 
         let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?;
@@ -4373,7 +4366,7 @@ mod windows_name_tests {
             maximum_component_bytes: 510,
             ..crate::model::VolumeLimits::default()
         };
-        let host = std::path::Path::new("src/ünïcøde/日本語.rs");
+        let host = std::path::Path::new("src/Ã¼nÃ¯cÃ¸de/æ—¥æœ¬èªž.rs");
         let namespace = host_path_to_namespace(host, FilesystemProfile::Windows, limits)?;
         assert_eq!(namespace_to_host_path(&namespace)?, host);
         Ok(())
