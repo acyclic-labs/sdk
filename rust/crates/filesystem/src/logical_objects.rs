@@ -3,7 +3,7 @@ use crate::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
-    ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult,
+    ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult,
     ObjectStoreError, ObjectWrite, object_digest,
 };
 use acyclic_objects::v1::{Error, Object, ObjectsProvider, wire};
@@ -178,15 +178,6 @@ fn native_completed_read_bytes(error: &acyclic_objects::v1::NativeObjectsError) 
         error.secondary_object.as_ref().map_or(0, |value| value.body().len() as u64),
         error.transport_chunk.as_ref().map_or(0, |bytes| bytes.len() as u64),
     ].into_iter().try_fold(0_u64, |total, bytes| total.checked_add(bytes).ok_or(WorkError::Overflow))
-}
-
-fn completed_read_bytes(result: &Result<Object, ObjectStoreError>) -> Result<u64, WorkError> {
-    match result {
-        Ok(value) => Ok(value.body().len() as u64),
-        #[cfg(not(target_arch = "wasm32"))]
-        Err(ObjectStoreError::NativeObjects(error)) => native_completed_read_bytes(error),
-        Err(_) => Ok(0),
-    }
 }
 
 fn read_retention(bytes: &OwnedBytes, accounting: &KernelAccounting<'_>) -> ObjectReadRetention {
@@ -412,7 +403,12 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                 result
             }
         };
-        let observed = completed_read_bytes(&result)?;
+        let observed = match &result {
+            Ok(value) => value.body().len() as u64,
+            #[cfg(not(target_arch = "wasm32"))]
+            Err(ObjectStoreError::NativeObjects(error)) => native_completed_read_bytes(error)?,
+            Err(_) => 0,
+        };
         let read_completion = accounting.record_completed(WorkCounters {
             object_bytes_read: observed, ..WorkCounters::UNCHARGED
         });
@@ -787,7 +783,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
     ) -> ObjectResult<()> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.put_accounted(object_id, bytes, false, &mut accounting).await {
-            Ok(()) => Ok(ObjectReceipt { value: (), work: accounting.spent() }),
+            Ok(()) => Ok(crate::OperationReceipt { value: (), work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
@@ -799,7 +795,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         let (object_id, bytes) = object.into_parts();
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.put_accounted(object_id, bytes, true, &mut accounting).await {
-            Ok(()) => Ok(ObjectReceipt { value: (), work: accounting.spent() }),
+            Ok(()) => Ok(crate::OperationReceipt { value: (), work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
@@ -812,7 +808,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
     ) -> ObjectResult<()> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.put_many_accounted(writes, &mut accounting).await {
-            Ok(()) => Ok(ObjectReceipt { value: (), work: accounting.spent() }),
+            Ok(()) => Ok(crate::OperationReceipt { value: (), work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
@@ -877,7 +873,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
     ) -> ObjectResult<ObjectRead> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.read_accounted(object_id, maximum_bytes, &mut accounting).await {
-            Ok((value, _custody)) => Ok(ObjectReceipt { value, work: accounting.spent() }),
+            Ok((value, _custody)) => Ok(crate::OperationReceipt { value, work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
@@ -907,7 +903,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
     ) -> ObjectResult<Vec<ObjectRead>> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.read_many_accounted(requests, &mut accounting).await {
-            Ok((value, _custody)) => Ok(ObjectReceipt { value, work: accounting.spent() }),
+            Ok((value, _custody)) => Ok(crate::OperationReceipt { value, work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
@@ -933,9 +929,9 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         &self, object_id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> ObjectResult<bool> {
         match self.read(object_id, budget.object_bytes_read, budget, cancellation).await {
-            Ok(receipt) => Ok(ObjectReceipt { value: true, work: receipt.work }),
+            Ok(receipt) => Ok(crate::OperationReceipt { value: true, work: receipt.work }),
             Err(failure) if matches!(failure.error, ObjectStoreError::Missing) =>
-                Ok(ObjectReceipt { value: false, work: *failure.work }),
+                Ok(crate::OperationReceipt { value: false, work: *failure.work }),
             Err(failure) => Err(failure),
         }
     }
@@ -965,14 +961,8 @@ fn read_request(
         &mut custody, bucket_bytes, bucket.name.capacity() as u64);
     copied?;
     reconciled?;
-    let mut family_storage = [0_u8; 3];
-    let mut family = std::io::Cursor::new(family_storage.as_mut_slice());
-    std::io::Write::write_fmt(&mut family, format_args!("{}", object_id.kind.canonical_tag()))
-        .map_err(ObjectStoreError::Io)?;
-    let family_bytes = family.position() as usize;
-    let family = std::str::from_utf8(&family.get_ref()[..family_bytes])
-        .map_err(|_| ObjectStoreError::Corrupt)?;
-    let key_bytes = "fs/v1/".len() + family.len() + "/".len() + 64;
+    let family = object_id.kind.canonical_tag();
+    let key_bytes = "fs/v1/".len() + family.ilog10() as usize + 1 + "/".len() + 64;
     let key_copy = WorkCounters { bytes_copied: key_bytes as u64, ..WorkCounters::UNCHARGED };
     accounting.admit(key_copy)?;
     let mut key_custody = accounting.claim_owned(key_bytes as u64, 1)?;

@@ -438,12 +438,12 @@ where
                 #[cfg(not(target_arch = "wasm32"))]
                 let ready = if let Some(io) = io {
                     let work = io.original_native_work().ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native timer requires original work" })?;
-                    self.runtime.task_host().poll_timer_with_native_work(task, clone_fence(&fence, Some(io))?, command.operation_id, input.deadline_unix_ms, work).await?
+                    self.runtime.task_host().poll_timer(task, &fence, command.operation_id, input.deadline_unix_ms, Some(work)).await?
                 } else {
-                    self.runtime.task_host().poll_timer(task, fence.clone(), command.operation_id, input.deadline_unix_ms).await?
+                    self.runtime.task_host().poll_timer(task, &fence, command.operation_id, input.deadline_unix_ms, None).await?
                 };
                 #[cfg(target_arch = "wasm32")]
-                let ready = self.runtime.task_host().poll_timer(task, fence.clone(), command.operation_id, input.deadline_unix_ms).await?;
+                let ready = self.runtime.task_host().poll_timer(task, &fence, command.operation_id, input.deadline_unix_ms, None).await?;
                 if ready { ready(Outcome::Succeeded(Value::Null), io) }
                 else { Ok(TaskCommandProgress::Pending) }
             }
@@ -1065,7 +1065,7 @@ where
             let empty = records.0.is_empty();
             drop(records);
             if empty {
-                match tool_context.authorize_tool_pending_with_native_work(definition, &invocation, work).await {
+                match tool_context.authorize_tool(definition, &invocation, work).await {
                     Ok(Some(_)) => return Ok(TaskCommandProgress::Pending),
                     Ok(None) => {}
                     Err(error) if error.is_native_failure() => return Err(error),
@@ -1299,7 +1299,7 @@ where
         if journal.replay(operation, 0, 1).await?.is_empty() {
             let invocation = tool_invocation(&context, operation, &definition, input.arguments.clone(), None)?;
             match context
-                .authorize_tool_pending(&definition, &invocation)
+                .authorize_tool(&definition, &invocation)
                 .await
             {
                 Ok(Some(_)) => return Ok(TaskCommandProgress::Pending),

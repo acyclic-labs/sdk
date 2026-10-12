@@ -207,7 +207,7 @@ impl VolumeRef {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             inspect_native_metadata(native, 0)?;
-            provider.validate_with_native_work(native)?;
+            provider.validate(&mut Some(&mut crate::store::native_work_io(native)?))?;
         }
         if let Some(reason) = provider.validation_error() {
             return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, reason));
@@ -882,7 +882,7 @@ pub const MAX_PRIVATE_DIRECTORY_PAGE: usize = u32::MAX as usize;
 impl PrivateDirectoryPage {
     /// Rejects malformed, duplicate, or out-of-order names independently of the concrete Filesystem page implementation.
     pub fn validate(&self) -> Result<()> {
-        self.generation.validate()?;
+        self.generation.validate(&mut None)?;
         if self.entries.len() as u64 > MAX_PRIVATE_DIRECTORY_PAGE as u64 {
             return Err(Error::Invalid(
                 "private directory page exceeds protocol limit".into(),
@@ -1684,18 +1684,16 @@ struct NativeConversationCustody {
     digests: Option<acyclic_fs::NativeAllocation>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     archive: Option<acyclic_fs::NativeAllocation>,
+    // The index drops before these tickets; their vector drops before its buffer owner.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    indexes: BTreeMap<Uuid, (acyclic_fs::NativeAllocation, acyclic_fs::NativeAllocation)>,
+    indexes: Vec<acyclic_fs::NativeAllocation>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    index_buffer: Option<acyclic_fs::NativeAllocation>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     cache_carrier: Option<acyclic_fs::NativeAllocation>,
 }
 
 const INDEX_ROW_BYTES: usize = std::mem::size_of::<(Uuid, (Option<usize>, Option<usize>))>();
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-const INDEX_METADATA_BYTES: u64 = (11 * (std::mem::size_of::<Uuid>()
-        + std::mem::size_of::<(acyclic_fs::NativeAllocation, acyclic_fs::NativeAllocation)>())
-        + 12 * std::mem::size_of::<usize>()) as u64;
 
 impl std::fmt::Debug for NativeConversationCustody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1706,13 +1704,6 @@ impl PartialEq for NativeConversationCustody {
     fn eq(&self, _: &Self) -> bool { true }
 }
 impl Eq for NativeConversationCustody {}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-impl Drop for NativeConversationCustody {
-    fn drop(&mut self) {
-        while let Some((_, index)) = self.indexes.pop_first() { drop(index); }
-    }
-}
 
 
 fn conversation_error(work: &Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1889,22 +1880,18 @@ fn adopt_existing_buffer<T>(
 
 impl NativeConversationCustody {
     fn retain_index(
-        &mut self, id: Uuid,
+        &mut self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<u64> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
-            if self.indexes.contains_key(&id) { return Ok(0); }
-            let bytes = INDEX_ROW_BYTES as u64 + INDEX_METADATA_BYTES;
+            grow_conversation_buffer(&mut self.indexes, &mut Some(&mut *io), &mut self.index_buffer)?;
+            let bytes = INDEX_ROW_BYTES as u64;
             io.admit_allocation(bytes)?;
             io.retain_owned(bytes)?;
-            let mut allocation = io.take_native_custody(bytes)?;
-            let source = allocation.split_off(INDEX_ROW_BYTES as u64)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            self.indexes.insert(id, (source, allocation));
+            self.indexes.push(io.take_native_custody(bytes)?);
             return Ok(0);
         }
-        let _ = id;
         if let Some(io) = work.as_deref_mut() {
             let bytes = INDEX_ROW_BYTES as u64;
             io.admit_owned(bytes)?;
@@ -1964,7 +1951,7 @@ impl ConversationState {
                 return Err(conversation_error(cache.work(), crate::wire::ErrorCode::Invalid,
                     "conversation order or identity is invalid"));
             }
-            let retained = state.native_custody.retain_index(message.id, cache.work())?;
+            let retained = state.native_custody.retain_index(cache.work())?;
             cache.adopt(retained)?;
             state.by_id.insert(message.id, (Some(position), None));
             previous = message.sequence;
@@ -1981,7 +1968,7 @@ impl ConversationState {
             }
             if let Some(parent) = turn_outcome_parent(message)
                 && !state.by_id.contains_key(&parent) {
-                let retained = state.native_custody.retain_index(parent, cache.work())?;
+                let retained = state.native_custody.retain_index(cache.work())?;
                 cache.adopt(retained)?;
             }
             settle_turn(&mut state.pending_user, &mut state.by_id, message, position);
@@ -2040,6 +2027,7 @@ impl ConversationState {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if (self.native_custody.messages.is_some() || self.native_custody.digests.is_some()
             || self.native_custody.archive.is_some()
+            || self.native_custody.index_buffer.is_some()
             || self.native_custody.cache_carrier.is_some() || !self.native_custody.indexes.is_empty())
             && !work.as_deref().is_some_and(|io| io.original_native_work().is_some())
         {
@@ -2085,14 +2073,12 @@ impl ConversationState {
             bytes += conversation_buffer_bytes::<[u8; 32]>(self.prefix_digests.capacity())
                 .map_err(|reason| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason })?;
         }
-        for id in self.by_id.keys() {
-            if !self.native_custody.indexes.contains_key(id) {
-                bytes = bytes.checked_add(INDEX_ROW_BYTES as u64)
-                    .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                        reason: "conversation cache transfer overflows" })?;
-            }
-        }
-        Ok(bytes)
+        self.by_id.len().checked_sub(self.native_custody.indexes.len())
+            .and_then(|rows| rows.checked_mul(INDEX_ROW_BYTES))
+            .and_then(|rows| u64::try_from(rows).ok())
+            .and_then(|rows| bytes.checked_add(rows))
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "conversation cache transfer overflows" })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2112,18 +2098,16 @@ impl ConversationState {
             self.native_custody.digests = Some(carrier.split_off(bytes)
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?);
         }
-        for id in self.by_id.keys() {
-            if self.native_custody.indexes.contains_key(id) { continue; }
+        for _ in self.native_custody.indexes.len()..self.by_id.len() {
             let io = work.as_deref_mut().filter(|io| io.original_native_work().is_some())
                 .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "cache metadata requires original native work" })?;
-            let bytes = INDEX_METADATA_BYTES;
-            io.admit_allocation(bytes)?;
-            io.retain_owned(bytes)?;
-            let metadata = io.take_native_custody(bytes)?;
+            io.check_cancellation()?;
+            grow_conversation_buffer(&mut self.native_custody.indexes, &mut Some(&mut *io),
+                &mut self.native_custody.index_buffer)?;
             let source = carrier.split_off(INDEX_ROW_BYTES as u64)
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            self.native_custody.indexes.insert(*id, (source, metadata));
+            self.native_custody.indexes.push(source);
         }
         assert_eq!(carrier.bytes(), 0, "cache source transfer inventory must match");
         Ok(())
@@ -2160,8 +2144,8 @@ impl ConversationState {
             &mut state.native_custody.digests,
         )?;
         cache.adopt(retained)?;
-        for id in self.by_id.keys() {
-            let retained = state.native_custody.retain_index(*id, cache.work())?;
+        for _ in 0..self.by_id.len() {
+            let retained = state.native_custody.retain_index(cache.work())?;
             cache.adopt(retained)?;
         }
         for message in &self.messages {
@@ -2496,11 +2480,9 @@ impl ConversationState {
                 io.retain_owned(bytes)?;
                 self.native_custody.archive = Some(io.take_native_custody(bytes)?);
             }
-            if self.native_custody.indexes.len() != self.by_id.len() {
-                let mut native: Option<&mut dyn crate::store::history::HistoryIo> = Some(io);
-                for id in self.by_id.keys() {
-                    self.native_custody.retain_index(*id, &mut native)?;
-                }
+            let mut native: Option<&mut dyn crate::store::history::HistoryIo> = Some(io);
+            for _ in self.native_custody.indexes.len()..self.by_id.len() {
+                self.native_custody.retain_index(&mut native)?;
             }
         }
         let _ = work;
@@ -2530,8 +2512,10 @@ impl ConversationState {
             &mut self.native_custody.digests,
         )?;
         cache.adopt(retained)?;
-        let retained = self.native_custody.retain_index(message.id, cache.work())?;
-        cache.adopt(retained)?;
+        if !self.by_id.contains_key(&message.id) {
+            let retained = self.native_custody.retain_index(cache.work())?;
+            cache.adopt(retained)?;
+        }
         self.by_id.entry(message.id).or_default().0 = Some(self.messages.len());
         if message.kind == MessageKind::User {
             self.pending_user = Some(message.id);
@@ -3339,7 +3323,7 @@ mod tests {
     fn file(agent: AgentId, path: &str) -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("acyclic", "filesystem", "2")?,
+                ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "scratch".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent),
@@ -3523,8 +3507,8 @@ mod tests {
             }
         }
         let owner = VolumeOwner::Agent(AgentId::from_bytes([1; 16]));
-        let manifest_provider = ProviderRef::new("test", "filesystem", "a")?;
-        let member_provider = ProviderRef::new("test", "filesystem", "b")?;
+        let manifest_provider = ProviderRef::new("test".into(), "filesystem".into(), "a".into(), &mut None)?;
+        let member_provider = ProviderRef::new("test".into(), "filesystem".into(), "b".into(), &mut None)?;
         let member = FileRef::new(
             VolumeRef::new(
                 member_provider.clone(),

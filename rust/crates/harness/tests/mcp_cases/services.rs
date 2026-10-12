@@ -252,7 +252,7 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
     for granted in [false, true] {
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let (disk, issuer, signed) = journal(root.path(), true).await?;
-        let provider = ProviderRef::new("mcp-fault", "filesystem", "2")?;
+        let provider = ProviderRef::new("mcp-fault".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(root.path().join("fs"))).await.map_err(|error| Error::Storage(error.to_string()))?, provider.clone())?);
         let volume = VolumeRef::new(provider, "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(acyclic_harness::AgentId::from_bytes([41;16])))?;
         let mut grants = vec!["model:generate".into(), "context:build".into(), "interaction:route".into()];

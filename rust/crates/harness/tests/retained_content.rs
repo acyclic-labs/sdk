@@ -19,7 +19,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
     let directory =
         tempfile::tempdir().map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     let options = LocalOptions::new(directory.path());
-    let provider = ProviderRef::new("retention-test", "filesystem", "2")?;
+    let provider = ProviderRef::new("retention-test".into(), "filesystem".into(), "2".into(), &mut None)?;
     let agent = AgentId::from_bytes([31; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
