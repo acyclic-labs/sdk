@@ -2876,7 +2876,7 @@ mod shared_watch_capture_tests {
 
     struct ReenteringObjects {
         inner: crate::memory::MemoryObjectStore,
-        meter: Arc<Mutex<Option<Arc<NativeDemandReadMeter>>>>,
+        meter: Arc<Mutex<Option<Arc<crate::demand::NativeDemandReadMeter>>>>,
         calls: Arc<AtomicUsize>,
     }
 
@@ -4594,7 +4594,7 @@ mod windows_sparse_tests {
         maximum_ranges: u32,
     ) -> std::io::Result<Vec<(u64, u64)>> {
         let root = HostRoot::open(directory, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let file = root.open_file_positional(Path::new(name))?;
+        let file = root.open_file_positional_with_work(Path::new(name), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new(name)).map_err(std::io::Error::other)?;
         let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
         let cancellation = CancellationToken::new();
@@ -4679,7 +4679,7 @@ mod windows_sparse_tests {
 
         // Every byte read is charged, and the scan stops at the budget or once cancelled.
         let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let file = root.open_file_positional(Path::new("sparse.bin"))?;
+        let file = root.open_file_positional_with_work(Path::new("sparse.bin"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new("sparse.bin")).map_err(std::io::Error::other)?;
         let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
         let scan = |budget: WorkBudget, cancellation: CancellationToken| {

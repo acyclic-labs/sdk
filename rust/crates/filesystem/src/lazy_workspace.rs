@@ -14823,9 +14823,7 @@ mod tests {
         let child = fs.open_workspace("bind-child", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("same created project");
         let denied = root.open_related(child.clone()).await.err().expect("Prepared is not ready");
         assert!(matches!(denied.semantic_error(), LazyWorkspaceError::Concurrent));
-        let wrong_operation = root.bind_prepared_fork_measured(
-            frozen, child.clone(), created.id(), IdempotencyKey::from_bytes([0xd3; 16]).operation_id(), budget, &token,
-        ).await.err().expect("wrong original operation");
+        let wrong_operation = { let cancellation = &token; let meter = LazyTreapWork::new(budget, cancellation); let result = root.bind_prepared_fork(frozen, child.clone(), created.id(), IdempotencyKey::from_bytes([0xd3; 16]).operation_id(), &meter).await; meter.measured(result, OperationFailure::new) }.err().expect("wrong original operation");
         assert!(matches!(wrong_operation.error.semantic_error(), LazyWorkspaceError::Concurrent));
         assert_ne!(*wrong_operation.work, WorkCounters::UNCHARGED);
         let mut wrong_config = config;
@@ -14837,14 +14835,10 @@ mod tests {
         child.write_text("/advance", "later head").await.expect("advance before bind");
         let later = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("later head").id();
         assert_ne!(later, created.id());
-        let wrong_seed = root.bind_prepared_fork_measured(
-            frozen, child.clone(), later, key.operation_id(), budget, &token,
-        ).await.err().expect("current head cannot replace original seed");
+        let wrong_seed = { let cancellation = &token; let meter = LazyTreapWork::new(budget, cancellation); let result = root.bind_prepared_fork(frozen, child.clone(), later, key.operation_id(), &meter).await; meter.measured(result, OperationFailure::new) }.err().expect("current head cannot replace original seed");
         assert!(matches!(wrong_seed.error.semantic_error(), LazyWorkspaceError::Concurrent));
         wrong_seed.work.verify(budget).expect("finite rejected seed prefix");
-        let bound = root.bind_prepared_fork_measured(
-            frozen, child.clone(), created.id(), key.operation_id(), budget, &token,
-        ).await.expect("bind same created project");
+        let bound = { let cancellation = &token; let meter = LazyTreapWork::new(budget, cancellation); let result = root.bind_prepared_fork(frozen, child.clone(), created.id(), key.operation_id(), &meter).await; meter.measured(result, OperationFailure::new) }.expect("bind same created project");
         bound.work.verify(budget).expect("finite bind");
         assert_eq!(bound.value.0.workspace().id(), child.id());
         assert_eq!(bound.value.0.workspace().head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unchanged current head").id(), later);
@@ -14872,9 +14866,7 @@ mod tests {
         ).expect("original hash-denied scope");
         denied.charge(WorkCounters { items_examined: 3, ..WorkCounters::UNCHARGED })
             .expect("real caller prefix");
-        let failure = root.prepare_fork_snapshot_with_native_work(
-            "native-bind-child", frozen, key.operation_id(), &denied, &token,
-        ).await.err().expect("no fresh ledger may bypass hash denial");
+        let failure = async { let original = &denied; let cancellation = &token; let meter = LazyTreapWork::native_with_work(original, cancellation)?; root.prepare_fork_snapshot("native-bind-child", frozen, key.operation_id(), &meter).await }.await.err().expect("no fresh ledger may bypass hash denial");
         assert!(matches!(failure.semantic_error(), LazyWorkspaceError::NativeWork(_)
             | LazyWorkspaceError::NativeWorkspaceCause(_)));
         assert_eq!(denied.receipt().bytes_hashed, 0);
@@ -14884,9 +14876,7 @@ mod tests {
             .expect("original admitted invocation");
         original.charge(WorkCounters { items_examined: 7, ..WorkCounters::UNCHARGED })
             .expect("retained caller prefix");
-        let prepared = root.prepare_fork_snapshot_with_native_work(
-            "native-bind-child", frozen, key.operation_id(), &original, &token,
-        ).await.expect("same journal preparation");
+        let prepared = async { let original = &original; let cancellation = &token; let meter = LazyTreapWork::native_with_work(original, cancellation)?; root.prepare_fork_snapshot("native-bind-child", frozen, key.operation_id(), &meter).await }.await.expect("same journal preparation");
         assert_eq!(prepared, frozen);
         let created = fs.create_workspace_with_operation_with_native_work(
             "native-bind-child", root.workspace().volume.config(), key.operation_id(), &original, &token,
@@ -14896,14 +14886,10 @@ mod tests {
         child.write_text("/advance", "later head").await.expect("advance before binding");
         let later = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("current child head").id();
         assert_ne!(later, created.id());
-        let failure = root.bind_prepared_fork_with_native_work(
-            frozen, child.clone(), later, key.operation_id(), &original, &token,
-        ).await.err().expect("current head is not the original creation witness");
+        let failure = async { let original = &original; let cancellation = &token; let meter = LazyTreapWork::native_with_work(original, cancellation)?; root.bind_prepared_fork(frozen, child.clone(), later, key.operation_id(), &meter).await }.await.err().expect("current head is not the original creation witness");
         assert!(matches!(failure.semantic_error(), LazyWorkspaceError::Concurrent));
         let before = original.receipt();
-        let (bound, snapshot) = root.bind_prepared_fork_with_native_work(
-            frozen, child, created.id(), key.operation_id(), &original, &token,
-        ).await.expect("same original creation binds");
+        let (bound, snapshot) = async { let original = &original; let cancellation = &token; let meter = LazyTreapWork::native_with_work(original, cancellation)?; root.bind_prepared_fork(frozen, child, created.id(), key.operation_id(), &meter).await }.await.expect("same original creation binds");
         assert_eq!(snapshot.authored_generation, created.id());
         assert_eq!(snapshot.source, frozen.source);
         assert_eq!(snapshot.overlay, frozen.overlay);

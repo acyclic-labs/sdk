@@ -1030,7 +1030,7 @@ mod native_cache {
             &self, requests: &[ObjectReadRequest], work: &NativeMaterializationWork, token: &CancellationToken,
         ) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
             let source = self.inner.read_many_with_native_work(requests, work, token).await?;
-            let (values, allocation) = source.into_parts();
+            let (values, allocation) = source;
             let mut buffer = BatchBuffer {
                 values, allocation: Some(KernelOwnedAllocation::NativeOriginal(allocation)),
             };

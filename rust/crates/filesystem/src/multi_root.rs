@@ -478,7 +478,7 @@ where
         conflict: &'static str,
     ) -> Result<PublicationReservation, WorkspaceMultiRootPublisherError<R::Error>> {
         let authority_head = target
-            .authority()
+            .volume.fs.authority()
             .head(
                 target.authority_id(),
                 WorkBudget::UNBOUNDED,
@@ -488,7 +488,7 @@ where
             .map_err(|failure| WorkspaceError::engine(failure.error))?
             .value;
         match target
-            .authority()
+            .volume.fs.authority()
             .reserve_publication(
                 target.authority_id(),
                 authority_head,
@@ -521,7 +521,7 @@ where
             )
             .await?;
         target
-            .authority()
+            .volume.fs.authority()
             .release_publication(
                 reservation,
                 WorkBudget::UNBOUNDED,
@@ -753,7 +753,7 @@ where
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
         let authority_head = target
-            .authority()
+            .volume.fs.authority()
             .head(
                 target.authority_id(),
                 WorkBudget::UNBOUNDED,
@@ -763,7 +763,7 @@ where
             .map_err(|failure| WorkspaceError::engine(failure.error))?
             .value;
         let reservation = match target
-            .authority()
+            .volume.fs.authority()
             .reserve_publication(
                 target.authority_id(),
                 authority_head,
@@ -801,7 +801,7 @@ where
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
         target
-            .authority()
+            .volume.fs.authority()
             .release_publication(
                 decoded.reservation,
                 WorkBudget::UNBOUNDED,
@@ -877,7 +877,7 @@ where
             )
             .await;
         let release = target
-            .authority()
+            .volume.fs.authority()
             .release_publication(
                 reservation,
                 WorkBudget::UNBOUNDED,
@@ -965,7 +965,7 @@ where
             )
             .await;
         let release = target
-            .authority()
+            .volume.fs.authority()
             .release_publication(
                 reservation,
                 WorkBudget::UNBOUNDED,
@@ -1114,7 +1114,7 @@ where
             if let Some(generation) = target.operation_generation(publisher_key(operation_id, root_id, b"publish"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             {
                 target
-                    .authority()
+                    .volume.fs.authority()
                     .release_publication(
                         decoded.reservation,
                         WorkBudget::UNBOUNDED,
@@ -1162,7 +1162,7 @@ where
             MultiRootPublishRoot::Published(_) | MultiRootPublishRoot::AlreadyPublished(_)
         ) {
             target
-                .authority()
+                .volume.fs.authority()
                 .release_publication(
                     decoded.reservation,
                     WorkBudget::UNBOUNDED,
