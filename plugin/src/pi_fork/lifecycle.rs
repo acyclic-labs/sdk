@@ -367,13 +367,15 @@ impl<'a> PiForkCoordinator<'a> {
                     reason: "Pi created project generation has a different identity shape",
                 })?;
         let (workspace, native_lazy) = source
-            .bind_prepared_fork_with_native_work(
+            .bind_prepared_fork(
                 plan.frozen,
                 project,
                 GenerationId::new(Digest::from_bytes(generation)),
                 plan.project_creation,
-                work,
-                cancel,
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: cancel,
+                },
             )
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
@@ -451,7 +453,10 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?;
         let workspace = workspace
-            .into_arc_with_native_work(work)
+            .into_arc(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work,
+                cancellation: work.cancellation(),
+            })
             .map_err(crate::pi_fork_host::native_lazy_error)?;
         let mut prepared = PreparedPiFork {
             binding: binding.0,

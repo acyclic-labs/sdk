@@ -220,12 +220,14 @@ impl<'a> PiForkCoordinator<'a> {
                 (value, io.into_custody()?)
             };
             let prepared = source
-                .prepare_fork_snapshot_with_native_work(
+                .prepare_fork_snapshot(
                     &name.0,
                     plan.frozen,
                     plan.project_creation,
-                    work,
-                    cancel,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work,
+                        cancellation: cancel,
+                    },
                 )
                 .await
                 .map_err(crate::pi_fork_host::native_lazy_error)?;
