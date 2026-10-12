@@ -29,7 +29,7 @@ fn arguments(session: &PiSession, fixture: &Fixture) -> Value {
     let operations = pi_fork::PiForkOperations::new(original, &crate::pi_fork::tests::work()).unwrap();
     let key = fixture.root_request.binding.project_volumes.keys().next().unwrap();
     let paths = pi_native::planned_native_paths(&fixture.resources, "fork-root",
-        acyclic_harness::runtime::task_id_for_admission(operations.child), Some(key), &crate::pi_fork::tests::work()).unwrap().0;
+        acyclic_harness::runtime::task_id_for_admission(operations.child), key, &crate::pi_fork::tests::work()).unwrap().0;
     let cut = fixture.commit.launch.source.clone();
     let native_session_id = uuid::Uuid::new_v4().to_string();
     let session_bytes = format!("{}\n", json!({"type":"session","version":3,"id":native_session_id,

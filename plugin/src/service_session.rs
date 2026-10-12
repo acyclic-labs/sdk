@@ -635,7 +635,7 @@ impl PiSession {
             Some(_) => return Err(RootError::Invalid("Pi root selector must be its retained identity".to_owned())),
         };
         let paths = pi_native::planned_native_paths(
-            &self.resources, &self.state.root_session_id, task, Some(key), work,
+            &self.resources, &self.state.root_session_id, task, key, work,
         )?;
         let paths = &paths.0;
         #[derive(Serialize)]
@@ -652,7 +652,7 @@ impl PiSession {
         pi_root_provider::guarded_pi_value(&Preparation {
             operation: &sdk_operation, state: "preparing",
             child: Child { id: &alias, task, cwd: &paths.cwd,
-                session_file: &paths.session_file, session_directory: &paths.session_directory },
+                session_file: &paths.session_file, session_directory: paths.session_file.parent().expect("planned session file has a scratch parent") },
             source: Source { task: source_task },
         }, MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8, work)
     }

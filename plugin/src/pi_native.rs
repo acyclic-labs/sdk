@@ -39,35 +39,25 @@ pub(crate) const PI_NATIVE_VERSION: &str = "1.1.0";
 pub(crate) struct PiNativePaths {
     pub(crate) cwd: PathBuf,
     pub(crate) session_file: PathBuf,
-    pub(crate) session_directory: PathBuf,
     pub(crate) view_root: PathBuf,
-    pub(crate) operation_root: PathBuf,
 }
 
 
 pub(crate) fn planned_native_paths(
     resources: &super::ServiceResources, root_session: &str, task: acyclic_harness::TaskId,
-    root_key: Option<&str>, work: &NativeMaterializationWork,
+    root_key: &str, work: &NativeMaterializationWork,
 ) -> Result<(PiNativePaths, acyclic_fs::NativeAllocation)> {
     work.remaining().map_err(native_error)?;
-    let route = root_key.map(|key| native_root_route(key, work)).transpose()?;
+    let route = native_root_route(root_key, work)?;
     let task = native_task_directory(resources, root_session, task, work)?;
     let mut view = work.join_path(&task.0, Path::new("view")).map_err(native_error)?;
-    let mut session = work.join_path(&view.0, Path::new("scratch")).map_err(native_error)?;
-    let mut cwd = match &route {
-        Some(route) => work.join_path(&view.0, Path::new(&route.0)).map_err(native_error)?,
-        None => {
-            let (path, custody) = work.copy_path(&session.0).map_err(native_error)?;
-            (path, custody)
-        }
-    };
+    let session = work.join_path(&view.0, Path::new("scratch")).map_err(native_error)?;
+    let mut cwd = work.join_path(&view.0, Path::new(&route.0)).map_err(native_error)?;
     let mut session_file = work.join_path(&session.0, Path::new("session.jsonl")).map_err(native_error)?;
-    let mut operation = work.join_path(&task.0, Path::new("preparation")).map_err(native_error)?;
     let custody = work.retain_owned(std::mem::size_of::<PiNativePaths>() as u64).map_err(native_error)?;
     let mut planned = (PiNativePaths { cwd: cwd.0, session_file: session_file.0,
-        session_directory: session.0, view_root: view.0, operation_root: operation.0 }, custody);
-    for incoming in [&mut cwd.1, &mut session_file.1, &mut session.1,
-        &mut view.1, &mut operation.1]
+        view_root: view.0 }, custody);
+    for incoming in [&mut cwd.1, &mut session_file.1, &mut view.1]
     {
         planned.1.absorb(incoming).map_err(native_error)?;
     }
@@ -106,13 +96,10 @@ fn native_task_directory(
     work.charge(WorkCounters { bytes_hashed: root_session.len() as u64 + 16, ..WorkCounters::default() }).map_err(native_error)?;
     let session_hash = blake3::hash(root_session.as_bytes()).to_hex();
     let task_hash = blake3::hash(&task.into_bytes()).to_hex();
-    let sessions = work.join_path(&resources.data, Path::new("sessions")).map_err(native_error)?;
-    let service = work.join_path(&sessions.0, Path::new(session_hash.as_str())).map_err(native_error)?;
-    drop(sessions);
-    let agents = work.join_path(&service.0, Path::new("agents")).map_err(native_error)?;
-    drop(service);
-    let task = work.join_path(&agents.0, Path::new(task_hash.as_str())).map_err(native_error)?;
-    Ok(task)
+    let separator = std::path::MAIN_SEPARATOR;
+    let relative = work.display(&format_args!(
+        "sessions{separator}{session_hash}{separator}agents{separator}{task_hash}")).map_err(native_error)?;
+    work.join_path(&resources.data, Path::new(&relative.0)).map_err(native_error)
 }
 
 pub(crate) fn native_view_options(

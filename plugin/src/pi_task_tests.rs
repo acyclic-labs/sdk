@@ -880,7 +880,7 @@ fn actual_preparing_session(
         fork_key: plan.original.into_bytes(),
         roots: BTreeMap::new(),
         mount_path: crate::pi_native::planned_native_paths(&fixture.resources,
-            &state.root_session_id, plan.commit.child.task_id, paths.keys().next().map(String::as_str), &crate::pi_fork::tests::work())
+            &state.root_session_id, plan.commit.child.task_id, paths.keys().next().expect("retained project has a root key"), &crate::pi_fork::tests::work())
             .unwrap().0.view_root,
         lifecycle: crate::PendingSpawnLifecycle::Preparing,
     });

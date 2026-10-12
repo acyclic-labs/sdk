@@ -23,7 +23,7 @@ async fn created_native_catalog_requires_original_alias_operation_uuid_and_creat
         })]),
         mount_path: pi_native::planned_native_paths(&fixture.resources,
             &fixture.root_request.binding.native_session_id, prepared.binding.task_id,
-            Some(key), &crate::pi_fork::tests::work()).unwrap().0.view_root,
+            key, &crate::pi_fork::tests::work()).unwrap().0.view_root,
         lifecycle: RouteLifecycle::Active,
     };
     validate_created_native_route(&route, fixture.journal.task_id(), &plan).unwrap();

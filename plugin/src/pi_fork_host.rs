@@ -231,7 +231,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let mut root = [0; 16];
         hex::decode_to_slice(root_key, &mut root).map_err(|_| invalid("Pi pending root identity is not canonical"))?;
         let paths = crate::pi_native::planned_native_paths(self.resources,
-            &self.retained.root_session_id, plan.commit.child.task_id, Some(root_key), work)?;
+            &self.retained.root_session_id, plan.commit.child.task_id, root_key, work)?;
         if paths.0.cwd != plan.commit.launch.invocation.cwd || paths.0.session_file != plan.commit.launch.invocation.session_file {
             return Err(unauthorized("Pi SDK retained native paths differ from its original planned namespace"));
         }
@@ -345,7 +345,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             let mut root = [0; 16];
             hex::decode_to_slice(root_key, &mut root).map_err(|_| invalid("Pi pending root identity is not canonical"))?;
             let paths = crate::pi_native::planned_native_paths(self.resources, &self.retained.root_session_id,
-                plan.commit.child.task_id, Some(root_key), work)?;
+                plan.commit.child.task_id, root_key, work)?;
             let workspace = plan.commit.child.project_volumes.values().next().ok_or_else(|| invalid("Pi child project missing"))?
                 .storage_name_with_native_work(work)?;
             if !same_identity(binding, &plan.commit.child) || saved.tool_use_id != plan.commit.sdk_operation
