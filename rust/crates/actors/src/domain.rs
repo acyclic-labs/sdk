@@ -16,20 +16,17 @@ mod formal_proofs;
 #[ts(type = "string & { readonly __brand: unique symbol }")]
 pub struct ActorId(String);
 
-
 /// An exact, non-zero SHA-256 digest as used by the existing Actor validators.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, TS)]
 #[ts(export_to = "actors/CodeSha256.ts")]
 #[ts(type = "import(\"../../readonly.js\").ReadonlyBytes & { readonly __brand: unique symbol; readonly __length: 32 }")]
 pub struct CodeSha256([u8; 32]);
 
-
 /// A strictly positive unsigned 64-bit value.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
 #[ts(export_to = "actors/PositiveU64.ts")]
 #[ts(type = "bigint & { readonly __brand: unique symbol }")]
 pub struct PositiveU64(NonZeroU64);
-
 
 /// Failure while constructing a semantic value from customer or wire input.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, thiserror::Error)]
@@ -184,8 +181,6 @@ impl From<&CodeSha256> for Vec<u8> {
     }
 }
 
-
-
 impl From<CodeSha256> for Vec<u8> {
     fn from(value: CodeSha256) -> Self {
         value.0.to_vec()
@@ -237,8 +232,6 @@ pub struct Binding {
     resource: String,
 }
 
-
-
 impl Binding {
     /// Constructs a binding while applying the same non-empty admission rule
     pub fn new(name: String, capability: String, resource: String) -> Result<Self, DomainError> {
@@ -283,8 +276,6 @@ impl Binding {
 
 }
 
-
-
 /// Positive limits admitted by the canonical create/update validators.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
@@ -300,8 +291,6 @@ pub struct ActorLimits {
     #[wire(tag = 3, uint64)]
     checkpoint_bytes: PositiveU64,
 }
-
-
 
 impl ActorLimits {
     /// Constructs positive limits using the canonical admission predicate.
@@ -400,7 +389,6 @@ pub mod subscription_start {
         }
     }
 
-
     /// The semantic oneof for [`super::SubscriptionStart`].
     #[acyclic_contract_derive::oneof(error = DomainError, file = ActorsFile)]
     #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
@@ -453,10 +441,6 @@ impl SubscriptionStart {
     }
 }
 
-
-
-
-
 /// A subscription admitted by `validate_create` or `validate_add_subscription`.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = SubscriptionSpec::validate_from_proto)]
 
@@ -474,8 +458,6 @@ pub struct SubscriptionSpec {
     #[wire(tag = 4)]
     placement_anchor: bool,
 }
-
-
 
 impl SubscriptionSpec {
     /// Constructs a subscription using the same start and presence rules as
@@ -537,8 +519,6 @@ impl SubscriptionSpec {
 
 }
 
-
-
 /// Known subscription states. Unknown protobuf integers are rejected rather
 #[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownSubscriptionState)]
 
@@ -553,7 +533,6 @@ pub enum SubscriptionState {
     /// The subscription is paused.
     Paused = 2,
 }
-
 
 /// Known Actor states. Unknown protobuf integers remain observable errors.
 #[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownActorState)]
@@ -603,7 +582,6 @@ pub enum ErrorCode {
     DependencyUnavailable = 10,
 }
 
-
 /// A service error with a typed known code and lossless message.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, name = "Error")]
 
@@ -637,12 +615,6 @@ impl ServiceError {
         &self.message
     }
 }
-
-
-
-
-
-
 
 /// Lossless semantic view of a subscription observation.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
@@ -711,10 +683,6 @@ impl SubscriptionObservation {
     pub fn failed_cursor(&self) -> Option<u64> { self.failed_cursor }
 }
 
-
-
-
-
 /// Lossless semantic view of a server Actor observation.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
@@ -770,10 +738,6 @@ impl ActorObservation {
     #[must_use]
     pub fn configuration_revision(&self) -> u64 { self.configuration_revision }
 }
-
-
-
-
 
 macro_rules! actor_response_type {
     ($name:ident, $wire:ident) => {
@@ -877,10 +841,6 @@ impl CreateActorRequest {
     pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
 
-
-
-
-
 /// Update request after the canonical admission validator has run.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = UpdateActorRequest::validate_from_proto)]
 
@@ -953,10 +913,6 @@ impl UpdateActorRequest {
     pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
 
-
-
-
-
 /// Inspect currently has no additional wire validator; only the semantic
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
@@ -977,10 +933,6 @@ impl InspectActorRequest {
     #[must_use]
     pub fn actor_id(&self) -> &ActorId { &self.actor_id }
 }
-
-
-
-
 
 /// Add subscription request after the canonical admission validator has run.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = AddSubscriptionRequest::validate_from_proto)]
@@ -1030,10 +982,6 @@ impl AddSubscriptionRequest {
     pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
 
-
-
-
-
 /// Removal has no canonical validator yet, so subscription and idempotency
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
@@ -1070,10 +1018,6 @@ impl RemoveSubscriptionRequest {
     #[must_use]
     pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
-
-
-
-
 
 /// Resume has no canonical validator yet; the wire strings stay unbranded.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
@@ -1112,10 +1056,6 @@ impl ResumeSubscriptionRequest {
     pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
 
-
-
-
-
 /// Checkpoint has no canonical validator yet; only the Actor identity rule is
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
@@ -1146,10 +1086,6 @@ impl CheckpointActorRequest {
     #[must_use]
     pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
-
-
-
-
 
 /// Deletion request. The canonical validator requires an Actor identity and a
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = DeleteActorRequest::validate_from_proto)]
@@ -1188,10 +1124,6 @@ impl DeleteActorRequest {
     pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
 
-
-
-
-
 /// Empty deletion acknowledgement. After it, every operation on the deleted
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
@@ -1199,10 +1131,6 @@ impl DeleteActorRequest {
 #[ts(export_to = "actors/DeleteActorResponse.ts")]
 #[ts(type = "Record<never, never>")]
 pub struct DeleteActorResponse {}
-
-
-
-
 
 /// Typed invocation request. Method, URL, headers, and body preserve the
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
@@ -1258,10 +1186,6 @@ impl InvokeActorRequest {
     #[must_use]
     pub fn headers(&self) -> &[Header] { &self.headers }
 }
-
-
-
-
 
 /// Typed invocation response with byte-preserving body and headers.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]

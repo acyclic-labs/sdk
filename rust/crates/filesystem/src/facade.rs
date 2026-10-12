@@ -31,7 +31,7 @@ use crate::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializati
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use crate::kernel::decode_retention_created;
 use crate::kernel::{
-    AsyncBlobSource, AttributeEntry, AttributeListError, AttributeListing, AttributeLookupError,
+    AsyncBlobSource, AttributeEntry, AttributeListing, AttributeLookupError,
     AttributeMutation, AttributeMutationError, AttributeName, AttributePage, AuthenticatedGenerationProbe,
     AuthenticatedProbeError, BlobBuildError, BlobBuildOptions, BlobReadError, CanonicalDecodeError,
     CheckoutDependencies, CheckpointError, CheckpointRequest, ClosureError, ClosureLimits, DecodeLimits,
@@ -2518,7 +2518,7 @@ pub enum FsError {
     AttributeLookup(#[from] AttributeLookupError),
     /// Authenticated named-attribute pagination failed.
     #[error(transparent)]
-    AttributeList(#[from] AttributeListError),
+    AttributeList(DirectoryReadError),
     /// Sparse named-attribute path-copy failed.
     #[error(transparent)]
     AttributeMutation(#[from] AttributeMutationError),
@@ -12462,6 +12462,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         result.map(|(mut lookup, allocation)| { lookup.work = accounting.spent(); (lookup, allocation) })
     }
 
+    /// Resolves a bounded path batch on the original native invocation.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn lookup_batch_no_follow_with_native_work(
         &mut self, paths: &[NamespacePath], work: &crate::NativeMaterializationWork,
@@ -12617,6 +12618,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         result.map(|(mut page, allocation)| { page.work = accounting.spent(); (page, allocation) })
     }
 
+    /// Lists one directory page on the original native invocation.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn list_directory_with_native_work(
         &mut self, path: &NamespacePath, after: Option<&LogicalName>, maximum_entries: u32,
@@ -12687,6 +12689,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         result
     }
 
+    /// Lists one directory page and child records on the original native invocation.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn list_directory_records_with_native_work(
         &mut self, path: &NamespacePath, after: Option<&LogicalName>, maximum_entries: u32,

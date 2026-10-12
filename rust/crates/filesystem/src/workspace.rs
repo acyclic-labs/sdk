@@ -5428,7 +5428,6 @@ pub(crate) fn workspace_bounded_error(
     bounded!(crate::kernel::FileRangeReadError; [Extent, Blob, Context]; [Cancelled]);
     bounded!(crate::kernel::DirectoryReadError; [Storage]; [Cancelled]);
     bounded!(crate::kernel::AttributeLookupError; [Storage]; [Cancelled]);
-    bounded!(crate::kernel::AttributeListError; [Storage]; [Cancelled]);
     bounded!(crate::kernel::AttributeMutationError; [Storage]; []);
     bounded!(crate::kernel::AuthenticatedProbeError;
         [Storage, FileRecord, Tree, Directory, Extent, Blob]; [Cancelled]);
