@@ -1582,8 +1582,10 @@ mod tests {
                     VolumeClass::Project, VolumeOwner::Project("created-project".into()), &mut None)?,
                 _ => request.role = RootBootstrapContentRole::Scratch,
             }
-            let denied = creator.verify_root_bootstrap_with_native_work(context, &request, &work);
-            assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+            {
+                let denied = creator.verify_root_bootstrap_with_native_work(context, &request, &work);
+                assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+            }
 
             drop(request);
             drop(request_custody);
