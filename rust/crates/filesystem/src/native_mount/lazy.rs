@@ -7925,9 +7925,9 @@ mod tests {
             assert!(removals.records.contains_key(&old_b));
         }
         view.sync_async().await?;
-        assert_eq!(lazy.read_range("/a", 0, 5).await?.as_ref(), b"new-a");
+        assert_eq!(lazy.read_range("/a", 0, 5, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(), b"new-a");
         assert!(matches!(
-            lazy.lookup("/b").await,
+            lazy.lookup("/b", &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|(value, _)| value),
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)
         ));
         Ok(())
@@ -8200,7 +8200,7 @@ mod tests {
             IdempotencyKey::from_bytes(operation.into_bytes()),
         crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_some());
         assert!((async { let cancellation = &crate::CancellationToken::new(); let mut accounting = crate :: kernel::KernelAccounting::standalone (crate::WorkBudget::UNBOUNDED, cancellation , ); let result = view.lazy.mount_removal_publication(& mut accounting).await; crate::facade:: measured(result, &accounting ) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_none());
-        assert!(matches!(view.lazy.lookup("/source-only").await,
+        assert!(matches!(view.lazy.lookup("/source-only", &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|(value, _)| value),
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)));
         assert_eq!(open.read_range(0, 8)?.as_ref(), b"detached");
         Ok(())
@@ -8255,11 +8255,11 @@ mod tests {
         ).await.expect_err("retain the exact unpublished candidate");
         assert!(matches!(failure.error, MountSourceError::Work(_)));
         assert_eq!(failure.work.authority_records_appended, 0);
-        let mut prepared = store.load_lazy_workspace(view.lazy.workspace().id()).await?
+        let mut prepared = store.load_lazy_workspace(view.lazy.workspace().id(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await?
             .ok_or("missing actual prepared binding")?;
         let recovered = (async { let mut accounting = crate :: kernel::KernelAccounting::standalone (crate::WorkBudget::UNBOUNDED, &cancellation , ); let result = view.lazy.finish_mount_removals(& mut accounting).await; crate::facade:: measured(result, &accounting ) }).await?;
         assert!(!recovered.value);
-        let current = store.load_lazy_workspace(view.lazy.workspace().id()).await?
+        let current = store.load_lazy_workspace(view.lazy.workspace().id(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await?
             .ok_or("missing recovered binding")?;
         assert!(current.pending_remove.is_none());
         prepared.revision = current.revision + 1;
@@ -8474,9 +8474,9 @@ mod tests {
                     budget: crate::WorkBudget::UNBOUNDED,
                     cancellation: &crate::CancellationToken::new(),
                 }, ).await?;
-            assert!(matches!(reopened.lookup("/a").await,
+            assert!(matches!(reopened.lookup("/a", &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|(value, _)| value),
                 Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)));
-            assert_eq!(reopened.read_range("/b", 0, 7).await?.as_ref(), b"updated");
+            assert_eq!(reopened.read_range("/b", 0, 7, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(), b"updated");
         }
         Ok(())
     }
@@ -8606,14 +8606,14 @@ mod tests {
         view.flush(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, view.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)?;
         assert!(
             matches!(
-                lazy.lookup("/written").await,
+                lazy.lookup("/written", &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|(value, _)| value),
                 Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)
             ),
             "a native fsync under manual publication publishes nothing"
         );
         view.sync_async().await?;
         assert_eq!(
-            lazy.read_range("/written", 0, 7).await?.as_ref(),
+            lazy.read_range("/written", 0, 7, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(),
             b"fsynced"
         );
         Ok(())
@@ -8692,15 +8692,15 @@ mod tests {
         assert_eq!(view.read_range(&c, 0, 6)?.as_ref(), b"source");
         assert_eq!(view.read_range(&d, 0, 6)?.as_ref(), b"update");
         view.sync_async().await?;
-        assert_eq!(lazy.read_range("/c", 0, 6).await?.as_ref(), b"source");
-        assert_eq!(lazy.read_range("/d", 0, 6).await?.as_ref(), b"update");
+        assert_eq!(lazy.read_range("/c", 0, 6, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(), b"source");
+        assert_eq!(lazy.read_range("/d", 0, 6, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(), b"update");
         old.write_range(0, Bytes::from_static(b"second!"))?;
         view.sync_async().await?;
-        assert_eq!(lazy.read_range("/c", 0, 6).await?.as_ref(), b"source");
-        assert_eq!(lazy.read_range("/d", 0, 7).await?.as_ref(), b"second!");
+        assert_eq!(lazy.read_range("/c", 0, 6, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(), b"source");
+        assert_eq!(lazy.read_range("/d", 0, 7, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(), b"second!");
         view.allocate_range(&d, 0, 1, MountRangeAllocation::PunchHole)?;
         view.sync_async().await?;
-        assert_eq!(lazy.read_range("/d", 0, 7).await?.as_ref(), b"\0econd!");
+        assert_eq!(lazy.read_range("/d", 0, 7, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(), b"\0econd!");
         let current = view.open_file(&c)?;
         let current_id = current.lookup()?.node.file_id;
         crate::native_mount::adapter::boundary(view.authored.cancellation(), |work| view.remove(&c, Some(current_id), work))?;
@@ -8714,7 +8714,7 @@ mod tests {
         external.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         view.sync_async().await?;
         assert!(matches!(
-            lazy.lookup("/c").await,
+            lazy.lookup("/c", &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|(value, _)| value),
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)
         ));
         Ok(())
@@ -9143,10 +9143,10 @@ mod tests {
                 assert_eq!(view.authored.read_range(&b, 0, 6)?.as_ref(), first);
             }
             assert!(matches!(
-                lazy.lookup("/a").await,
+                lazy.lookup("/a", &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|(value, _)| value),
                 Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)
             ));
-            assert_eq!(lazy.read_range("/b", 0, 6).await?.as_ref(), first);
+            assert_eq!(lazy.read_range("/b", 0, 6, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(), first);
             open.write_range(0, Bytes::from_static(b"second!"))?;
             assert_eq!(view.lookup(&b)?.expect("alias").node.logical_bytes, 7);
             assert_eq!(view.read_range(&b, 0, 7)?.as_ref(), b"second!");
@@ -9169,11 +9169,11 @@ mod tests {
             );
             if write_before_unlink {
                 assert!(matches!(
-                    lazy.lookup("/b").await,
+                    lazy.lookup("/b", &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|(value, _)| value),
                     Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)
                 ));
             } else {
-                assert_eq!(lazy.read_range("/b", 0, 7).await?.as_ref(), b"second!");
+                assert_eq!(lazy.read_range("/b", 0, 7, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(), b"second!");
                 assert_eq!(view.open_file(&b)?.read_range(0, 7)?.as_ref(), b"second!");
             }
         }
@@ -10006,7 +10006,7 @@ mod tests {
             )?);
             let view = { CallbackRuntime::create()?; let cancellation = authored.cancellation().clone(); let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation); LazyMountSource::new(Arc::clone(&lazy), authored, "/".to_owned(), super::super::adapter::NativeDemandCarrier::Borrowed(&mut work), None) }?;
             let basis = lazy.snapshot(& mut crate :: kernel::KernelAccounting::standalone (WorkBudget::UNBOUNDED, &CancellationToken::new())).await?;
-            let before = store.load_lazy_workspace(lazy.workspace().id()).await?
+            let before = store.load_lazy_workspace(lazy.workspace().id(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await?
                 .ok_or("missing original companion")?;
             let caller = crate::CancellationToken::new();
             let original = native_control_work(finite_content_budget(), &caller)?;
@@ -10027,7 +10027,7 @@ mod tests {
             assert_eq!(work.durability_operations, 0);
             assert_eq!(work.object_bytes_written, 0);
             assert_eq!(work.page_writes, 0);
-            let after = store.load_lazy_workspace(lazy.workspace().id()).await?
+            let after = store.load_lazy_workspace(lazy.workspace().id(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await?
                 .ok_or("missing readonly companion")?;
             assert_eq!((after.revision, after.source, after.overlay, after.shadows),
                 (before.revision, before.source, before.overlay, before.shadows));
@@ -10045,7 +10045,7 @@ mod tests {
             let stopped_snapshot = view.publication_snapshot(super::super::adapter::NativeDemandCarrier::Native(&native), &caller).await
                 .expect_err("pending directories, detached writes and changed source epochs are not readonly checkpoints");
             assert!(matches!(stopped_snapshot, (MountSourceError::Stale, None)));
-            let unchanged = store.load_lazy_workspace(lazy.workspace().id()).await?
+            let unchanged = store.load_lazy_workspace(lazy.workspace().id(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await?
                 .ok_or("companion disappeared after readonly rejection")?;
             assert_eq!((unchanged.revision, unchanged.source, unchanged.overlay, unchanged.shadows),
                 (before.revision, before.source, before.overlay, before.shadows),

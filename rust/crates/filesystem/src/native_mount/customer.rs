@@ -2204,9 +2204,9 @@ mod tests {
         assert_eq!(work.receipt().source_bytes_read, 0);
         assert_eq!(work.receipt().materializations, 0);
         assert!(work.receipt().backend_read_operations > 0);
-        assert!(matches!(lazy.lookup("/selected").await?, LazyLookup::Authored { .. }));
-        assert!(matches!(lazy.lookup("/selected/cold.txt").await?, LazyLookup::Source { .. } ));
-        assert!(matches!(lazy.lookup("/unselected/cold.txt").await?, LazyLookup::Source { .. } ));
+        assert!(matches!(lazy.lookup("/selected", &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|(value, _)| value)?, LazyLookup::Authored { .. }));
+        assert!(matches!(lazy.lookup("/selected/cold.txt", &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|(value, _)| value)?, LazyLookup::Source { .. } ));
+        assert!(matches!(lazy.lookup("/unselected/cold.txt", &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|(value, _)| value)?, LazyLookup::Source { .. } ));
         let pinned = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         let denied_budget = crate::WorkBudget {
             backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED
@@ -2469,7 +2469,7 @@ mod tests {
         assert_eq!(published.workspace_id(), lazy.workspace().id());
         assert_eq!(published.volume_config(), lazy.workspace().volume_config());
         assert!(original.receipt().items_examined > 0);
-        assert_eq!(lazy.read_range("/authored.txt", 0, 32).await?.as_ref(), b"native edit");
+        assert_eq!(lazy.read_range("/authored.txt", 0, 32, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(), b"native edit");
         std::fs::write(destination.path().join("authored.txt"), b"late source acknowledgement")?;
         let publication_cancellation = crate::CancellationToken::new();
         let publication_work = customer_native_work(crate::WorkBudget::UNBOUNDED, &publication_cancellation)
@@ -2493,7 +2493,7 @@ mod tests {
             qualified_ack. lazy_snapshot ( &mut crate::kernel::KernelAccounting::native (&publication_work, &publication_cancellation) ) ?,
             Some(acknowledged),
         );
-        assert_eq!(lazy.read_range("/authored.txt", 0, 32).await?.as_ref(), b"late source acknowledgement");
+        assert_eq!(lazy.read_range("/authored.txt", 0, 32, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(), b"late source acknowledgement");
         let acknowledged_prefix = publication_work.receipt();
         publication_cancellation.cancel();
         let late_driver = mount.revalidate_acknowledged_publication::<MountLifecycleError>(
@@ -2600,8 +2600,8 @@ mod tests {
             .await.map_err(|(error, _)| error)?;
         repeated.work.verify(completed.work)?;
         assert_eq!(repeated.value, completed.value);
-        assert_eq!(lazy.read_range("/selected-import.txt", 0, 32).await?.as_ref(), b"selected SDK import");
-        assert_eq!(lazy.read_range("/source.txt", 0, 32).await?.as_ref(), b"source");
+        assert_eq!(lazy.read_range("/selected-import.txt", 0, 32, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(), b"selected SDK import");
+        assert_eq!(lazy.read_range("/source.txt", 0, 32, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.map(|chunk| chunk.bytes)?.as_ref(), b"source");
         let no_detach = crate::WorkBudget {
             backend_write_operations: 0, ..crate::WorkBudget::UNBOUNDED
         };
@@ -3072,9 +3072,9 @@ mod tests {
                 .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .is_err()
         );
-        lazy.write("/later.txt", bytes::Bytes::from_static(b"later"))
+        lazy.write("/later.txt", (bytes::Bytes::from_static(b"later")).into(), crate::IdempotencyKey::new(), crate::PublicationPermit::Unrestricted, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
             .await?;
-        lazy.write("/hot/conflict.txt", bytes::Bytes::from_static(b"parent"))
+        lazy.write("/hot/conflict.txt", (bytes::Bytes::from_static(b"parent")).into(), crate::IdempotencyKey::new(), crate::PublicationPermit::Unrestricted, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
             .await?;
         std::fs::write(working.join("hot/conflict.txt"), b"child")?;
         working_set.capture_host_subtree(&MountPath::root()).await?;
