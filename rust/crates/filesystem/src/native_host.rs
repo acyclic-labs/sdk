@@ -133,7 +133,7 @@ impl PreparedMaterializationRecord {
         #[cfg(unix)]
         sync_held_descriptor_once(&self._parent)?;
         #[cfg(windows)]
-        sync_held_descriptor_once(&self._parent_sync)?;
+        sync_held_descriptor_once(&self.parent_sync)?;
         Ok(())
     }
 }
