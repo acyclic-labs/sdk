@@ -296,7 +296,9 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         let state = store.inner.load_lazy_workspace(workspace.id()).await?
             .ok_or("retry did not publish the companion binding")?;
         assert_eq!(state.source, reference);
-        let snapshot = lazy.snapshot().await?;
+        let snapshot = lazy.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
+            WorkBudget::UNBOUNDED, &cancellation,
+        )).await?;
         assert_eq!(snapshot.workspace_id, original.workspace_id());
         assert_eq!(snapshot.authored_generation, head);
         assert_eq!(snapshot.source, reference);
@@ -329,7 +331,9 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     ).await?;
     created.work.verify(budget)?;
     let (lazy, original) = created.value;
-    let initial = lazy.snapshot().await?;
+    let initial = lazy.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
+        WorkBudget::UNBOUNDED, &cancellation,
+    )).await?;
     assert_eq!(initial.authored_generation, original.id());
     assert_eq!(initial.workspace_id, original.workspace_id());
     assert_eq!(initial.source, reference);
@@ -339,13 +343,15 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     let head = lazy.workspace().head().await?.id();
     assert_ne!(head, original_id);
     let advanced = source.invalidate();
-    let rebound = lazy.rebind_source_measured(budget, &cancellation).await?;
+    let rebind_work = acyclic_fs::lazy_workspace::LazyTreapWork::new(budget, &cancellation);
+    let result = lazy.rebind_source(&rebind_work).await;
+    let rebound = rebind_work.measured(result, |error, work| error.with_prior_work(work))?;
     rebound.work.verify(budget)?;
-    assert_eq!(rebound.value.source, advanced);
+    assert_eq!(rebound.value.as_state().source, advanced);
     assert_eq!(advanced.identity, reference.identity);
     assert_eq!(advanced.epoch, reference.epoch + 1);
-    assert_eq!(rebound.value.overlay, initial.overlay);
-    assert_eq!(rebound.value.shadows, initial.shadows);
+    assert_eq!(rebound.value.as_state().overlay, initial.overlay);
+    assert_eq!(rebound.value.as_state().shadows, initial.shadows);
     drop(original);
     drop(lazy);
     drop(source);
