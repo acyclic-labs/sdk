@@ -1008,7 +1008,7 @@ impl NativeWatchHeldRoot {
             cleanup
         };
         let root = self.root.take().expect("the held directory remains owned until close admission");
-        let ((), recorded) = cleanup.attempt_recorded(|| drop(root));
+        let ((), recorded) = cleanup.attempt(|| drop(root));
         drop(superseded_cleanup);
         recorded?;
         Ok(true)
@@ -1020,7 +1020,7 @@ impl Drop for NativeWatchHeldRoot {
         if let Some(root) = self.root.take() {
             if let Some(cleanup) = self.cleanup.take() {
                 // This exact original close was reserved before opening. The primitive releases the meter before physical close.
-                let _ = cleanup.attempt_recorded(|| drop(root));
+                let _ = cleanup.attempt(|| drop(root));
             } else {
                 drop(root);
             }

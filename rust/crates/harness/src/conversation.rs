@@ -354,12 +354,14 @@ pub struct ContentGrant {
 }
 
 impl ContentGrant {
-    /// Constructs read authority only from the sealed kernel proof.
-    pub(crate) fn from_verified_project_source(
-        proof: &crate::source_authorization::VerifiedProjectSourceRead<'_>,
+    /// Constructs read authority from authenticated project-source authorization.
+    pub(crate) fn from_project_source(
+        authorization: &crate::source_authorization::ProjectSourceAuthorization,
+        verifier: &AuthorityVerifier,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        Ok(Self { volume: proof.project().copy(work)?, operation: VolumeOperation::Read,
+        authorization.verify_scope_with_work(verifier, work)?;
+        Ok(Self { volume: authorization.project.copy(work)?, operation: VolumeOperation::Read,
             exact_file: None, directory_prefix: Some(String::new()) })
     }
 
