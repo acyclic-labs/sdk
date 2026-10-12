@@ -110,7 +110,7 @@ impl MachineRegistry {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let identity = machine.identity();
         identity.validate(work)?;
-        crate::contract::compile_json_schema_with_work(machine.state_schema(), "machine state", work)?;
+        crate::contract::compile_json_schema(machine.state_schema(), "machine state", work)?;
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let key = (crate::core::copy_text(&identity.name, &mut quota)?, crate::core::copy_text(&identity.version, &mut quota)?, identity.digest);
         if self.0.contains_key(&key) {
@@ -163,7 +163,7 @@ impl MachineRegistry {
     /// Validates the pinned checkpoint schema.
     pub(crate) fn validate_checkpoint(&self, checkpoint: &MachineCheckpoint, io: Option<&PreparationIo>) -> Result<()> {
         let machine = self.machine(&checkpoint.machine, cfg!(all(feature = "filesystem", not(target_arch = "wasm32"))) && io.is_some())?;
-        crate::contract::validate_json_schema_value(machine.state_schema(), &checkpoint.state, "machine state", io)
+        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(machine.state_schema(), &checkpoint.state, "machine state", work))
     }
 
     /// Validates the checkpoint on its original ledger.
@@ -185,7 +185,7 @@ impl MachineRegistry {
             let (state, custody) = machine.initialize_with_native_work(input, work)?;
             let retained = custody.bytes();
             io.absorb_native_custody(custody)?;
-            crate::contract::validate_json_schema_value(machine.state_schema(), &state, "machine state", Some(&io))?;
+            crate::executor::with_history_io(Some(&io), |work| crate::contract::validate_json_schema_value(machine.state_schema(), &state, "machine state", work))?;
             Ok((state, retained))
         })();
         let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
@@ -212,7 +212,7 @@ impl MachineRegistry {
     pub(super) fn step_with_io(&self, checkpoint: &MachineCheckpoint, input: Cow<'_, Value>, io: Option<&PreparationIo>)
         -> Result<(MachineCheckpoint, MachineTransition, u64, u64)> {
         let machine = self.machine(&checkpoint.machine, cfg!(all(feature = "filesystem", not(target_arch = "wasm32"))) && io.is_some())?;
-        crate::contract::validate_json_schema_value(machine.state_schema(), &checkpoint.state, "machine state", io)?;
+        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(machine.state_schema(), &checkpoint.state, "machine state", work))?;
         #[allow(unused_mut)]
         let mut transition_retained = 0;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -226,7 +226,7 @@ impl MachineRegistry {
         } else { machine.transition(&checkpoint.state, &input)? };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let transition = machine.transition(&checkpoint.state, &input)?;
-        crate::contract::validate_json_schema_value(machine.state_schema(), &transition.state, "machine state", io)?;
+        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(machine.state_schema(), &transition.state, "machine state", work))?;
         validate_commands(&transition.commands, io)?;
         let before = workflow_owned_bytes(io)?;
         let next = MachineCheckpoint { machine: workflow_copy_identity(&checkpoint.machine, io)?, revision: next_revision(checkpoint.revision, io)?,

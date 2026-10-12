@@ -559,7 +559,7 @@ impl Scheduler {
                 return Err(diagnostic(work, Invalid, "placement labels are invalid"));
             }
         }
-        crate::contract::compile_json_schema_with_work(&spec.entrypoint.result_schema, "entrypoint result", work)?;
+        crate::contract::compile_json_schema(&spec.entrypoint.result_schema, "entrypoint result", work)?;
         if self.operations.contains_key(&spec.operation_id) {
             return Err(diagnostic(work, Conflict, "operation identity already exists"));
         }

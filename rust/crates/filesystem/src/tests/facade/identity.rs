@@ -75,7 +75,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
     assert!(
         candidate
             .root
-            .same_original_scope(original.native_read_meter())
+            .same_original_scope((&original.state))
     );
     assert_eq!(candidate.base_file_table, checkout.root.file_table);
     assert_eq!(

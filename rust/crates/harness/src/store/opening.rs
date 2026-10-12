@@ -177,7 +177,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .checked_add(bytes)
                 .filter(|total| *total <= maximum_bytes)
                 .ok_or_else(|| Error::Invalid("projection suffix exceeds byte allowance".into()))?;
-            let (cloned, clone_owned) = crate::core::native_event_clone_with_custody(&event, work)?;
+            let (cloned, clone_owned) = crate::wire_codec::CodecQuota::produce(work, |quota| crate::core::copy_event(&event, quota))?;
             drop(reducer.apply_committed(cloned, work)?);
             if let Some(work) = work.as_deref_mut() {
                 work.release_owned(clone_owned)?;

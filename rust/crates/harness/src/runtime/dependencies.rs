@@ -77,8 +77,8 @@ pub(super) fn visit_task_dependency(
     native_startup::item(io, std::mem::size_of::<((String, String), u8)>())?;
     marks.insert(
         (
-            native_startup::text(&key.0, io)?,
-            native_startup::text(&key.1, io)?,
+            native_startup::text(&entry.identity().name, io)?,
+            native_startup::text(&entry.identity().version, io)?,
         ),
         1,
     );
@@ -232,20 +232,20 @@ pub(super) fn validate_task_dependencies(
     io: StartupIo<'_>,
 ) -> Result<()> {
     let mut task_requirements = BTreeMap::new();
-    for (key, entry) in &tasks.0 {
+    for entry in &tasks.0 {
         native_startup::item(
             io,
             std::mem::size_of::<((String, String), BTreeSet<String>)>(),
         )?;
         let mut requirements = BTreeSet::new();
-        for requirement in entry.workflow_definition.requirements() {
+        for requirement in entry.requirements() {
             native_startup::item(io, std::mem::size_of::<String>())?;
             requirements.insert(native_startup::text(requirement, io)?);
         }
         task_requirements.insert(
             (
-                native_startup::text(&key.0, io)?,
-                native_startup::text(&key.1, io)?,
+                native_startup::text(&entry.identity().name, io)?,
+                native_startup::text(&entry.identity().version, io)?,
             ),
             requirements,
         );

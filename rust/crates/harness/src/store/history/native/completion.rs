@@ -18,7 +18,7 @@ impl AcceptedCompletionIo {
         reservation: NativeWorkReservation,
         custody: NativeAllocation,
     ) -> Result<Self> {
-        if !reservation.matches_work(original) || !custody.matches_work(original) {
+        if !reservation.matches_work(original) || !custody.work().shares_allocation_context(original) {
             return Err(Error::NativeWork {
                 cause: NativeTreeMaterializationError::InvalidLayout,
                 custody: Some(custody),
@@ -118,7 +118,7 @@ impl HistoryIo for AcceptedCompletionIo {
         true
     }
     fn absorb_native_custody(&mut self, mut incoming: NativeAllocation) -> Result<()> {
-        if !incoming.matches_work(&self.original) {
+        if !incoming.work().shares_allocation_context(&self.original) {
             return Err(Error::NativeWork {
                 cause: NativeTreeMaterializationError::InvalidLayout,
                 custody: Some(incoming),

@@ -23,8 +23,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Err(Error::Invalid("effect read bounds must be positive".into()));
         }
         if let Some(state) = self.reducer.effect(effect) {
-            crate::contract::validate_trusted_json_byte_bound(state, limits.maximum_bytes, work)?;
-            return crate::core::native_effect_clone_with_custody(state, work).map(Some);
+            crate::contract::json_byte_length(state, limits.maximum_bytes, work).map(|_| ())?;
+            return crate::wire_codec::CodecQuota::produce(work, |quota| crate::core::copy_effect(state, quota)).map(Some);
         }
         let reader = HistoryReader::new(
             &self.client,
@@ -173,7 +173,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             )
             .await?;
             let (cloned, returned_owned) =
-                crate::core::native_event_clone_with_custody(&event, owned.work())?;
+                crate::wire_codec::CodecQuota::produce(owned.work(), |quota| crate::core::copy_event(&event, quota))?;
             owned.adopt(returned_owned)?;
             let result = self.reducer.apply_committed(cloned, owned.work())?;
             if indexed {

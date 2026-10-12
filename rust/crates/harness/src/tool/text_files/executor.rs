@@ -19,10 +19,7 @@ impl TextTool {
         invocation: &ToolInvocation,
     ) -> Result<FileRef> {
         ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
-        crate::contract::validate_json_byte_bound(
-            &invocation.arguments,
-            scope.limits().file_bytes,
-        )?;
+        crate::contract::json_byte_length(&invocation.arguments, scope.limits().file_bytes, &mut None).map(|_| ())?;
         let result_bound = self.maximum_result_bytes.min(scope.limits().file_bytes);
         let file = match self.kind {
             TextKind::Read(options) => {
@@ -111,7 +108,7 @@ impl TextTool {
                         &mut super::edit::AlgorithmWork::ordinary(),
                     )?,
                 };
-                crate::contract::validate_json_byte_bound(&value, maximum)?;
+                crate::contract::json_byte_length(&value, maximum, &mut None).map(|_| ())?;
                 serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?
             }
             TextKind::Search(options) => {
@@ -127,7 +124,7 @@ impl TextTool {
                     query: input.query,
                     matches,
                 };
-                crate::contract::validate_json_byte_bound(&value, maximum)?;
+                crate::contract::json_byte_length(&value, maximum, &mut None).map(|_| ())?;
                 serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?
             }
         };

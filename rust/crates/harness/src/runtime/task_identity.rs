@@ -130,7 +130,7 @@ pub(crate) fn validate_task_schemas(
             "resumable task output schema cannot accept every value",
         ),
     ] {
-        crate::contract::compile_json_schema_with_work(schema, label, work)?;
+        crate::contract::compile_json_schema(schema, label, work)?;
         if resumable
             && (schema == &Value::Bool(true)
                 || schema.as_object().is_some_and(serde_json::Map::is_empty))
@@ -236,17 +236,5 @@ pub(super) fn task_copy_machine(
         name: crate::core::copy_text(&source.name, quota)?,
         version: crate::core::copy_text(&source.version, quota)?,
         digest: source.digest,
-    })
-}
-
-pub(super) fn task_copy_key(
-    source: &(String, String),
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<(String, String)> {
-    task_copy_with_io(io, |quota| {
-        Ok((
-            crate::core::copy_text(&source.0, quota)?,
-            crate::core::copy_text(&source.1, quota)?,
-        ))
     })
 }

@@ -111,16 +111,13 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         "2".into(),
         &mut None,
     )?;
-    let verifier = Arc::new(CompositeForkVerifier::new(
+    let verifier = CompositeForkVerifier::new(
         &[
-            Arc::new(FilesystemForkVerifier::new(
-                fixture.filesystem.clone(),
-                65_536,
-            )?),
-            Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+            FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536, None, None)?,
+            StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
         ],
         &mut None,
-    )?);
+    )?;
     let mut original = StreamAggregate::open(
         &fixture.stream,
         created.seed.parent.clone(),

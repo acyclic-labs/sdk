@@ -325,42 +325,12 @@ impl<I, O> TaskDefinition<I, O> {
         O: 'static,
     {
         let native = task_original_work(io)?;
-        let registered = if io.is_some() {
-            context
-                .harness
-                .tasks
-                .0
-                .iter()
-                .find(|((name, version), _)| {
-                    name == &self.identity.name && version == &self.identity.version
-                })
-                .filter(|(_, entry)| {
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    {
-                        entry.native_custody.is_some()
-                    }
-                    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                    {
-                        let _ = entry;
-                        true
-                    }
-                })
-                .and_then(|(_, entry)| task_definition_arc::<I, O>(entry))
-                .ok_or_else(|| {
-                    task_workflow_error(
-                        native,
-                        crate::wire::ErrorCode::Conflict,
-                        "task definition is not the registered version",
-                    )
-                })?
-        } else {
-            context.harness.tasks.get_version::<I, O>(
-                &self.identity.name,
-                &self.identity.version,
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                None,
-            )?
-        };
+        let registered = context.harness.tasks.get_version::<I, O>(
+            &self.identity.name,
+            &self.identity.version,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native,
+        )?;
         if !Arc::ptr_eq(&registered, self) {
             return Err(task_workflow_error(
                 native,

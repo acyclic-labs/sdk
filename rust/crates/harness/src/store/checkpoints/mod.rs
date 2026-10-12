@@ -214,7 +214,8 @@ pub(super) async fn supplied<P: StreamProvider>(
         .ok()
         .filter(|count| *count <= limits.maximum_events)
         .ok_or_else(|| Error::Invalid("snapshot cache exceeds event allowance".into()))?;
-    let consumed_bytes = crate::contract::json_byte_length(&snapshot, limits.maximum_bytes)?;
+    let consumed_bytes =
+        crate::contract::json_byte_length(&snapshot, limits.maximum_bytes, &mut None)?;
     Ok(LoadedProjection {
         snapshot: Some(snapshot),
         through_revision: projection_cut(

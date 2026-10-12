@@ -1824,10 +1824,10 @@ where
     assert!(!admitted.request().messages.iter().any(|message| matches!(&message.content, ModelContent::Text(text) if text.starts_with("old history"))));
     let prefix = journal.stage(OperationId::new(), "fork/media-prefix".into(),
         ModelPrefix::select(&admitted, None)?.canonical_bytes()?.to_vec(), ModelPrefix::MEDIA_TYPE).await?;
-    let forks = Arc::new(acyclic_harness::fork::CompositeForkVerifier::new(&[
+    let forks = acyclic_harness::fork::CompositeForkVerifier::new(&[
         acyclic_harness::filesystem::FilesystemForkVerifier::new(host.clone(), 65_536, None, None)?,
-        Arc::new(acyclic_harness::fork::StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-    ], &mut None)?);
+        acyclic_harness::fork::StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+    ], &mut None)?;
     let mut aggregate = StreamAggregate::open(
         &stream,
         parent.clone(),

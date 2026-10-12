@@ -427,7 +427,7 @@ impl TaskAdmissionRecord {
             }
         }
         validate_task_schemas(&self.input_schema, &self.output_schema, true, quota.work())?;
-        crate::contract::validate_json_schema_value_with_work(
+        crate::contract::validate_json_schema_value(
             &self.input_schema,
             &self.input,
             "task input",

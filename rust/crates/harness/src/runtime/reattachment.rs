@@ -28,10 +28,8 @@ impl AgentHarness {
         let identity = admission.task.clone();
         let registered = self
             .tasks
-            .0
-            .get(&(identity.name.clone(), identity.version.clone()))
-            .ok_or_else(|| Error::Conflict("reconciled task is not registered".into()))?;
-        if *registered.workflow_definition.identity() != identity || registered.machine.is_none() {
+            .find(&identity.name, &identity.version, &mut None)?;
+        if *registered.identity() != identity || registered.machine().is_none() {
             return Err(Error::Conflict(
                 "reconciled task implementation changed".into(),
             ));
@@ -281,28 +279,24 @@ impl AgentHarness {
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "native workflow journal has no original admitted identity",
                 })?;
-            let entry = self
-                .tasks
-                .0
-                .iter()
-                .find_map(|((name, version), entry)| {
-                    (name == &identity.name
-                        && version == &identity.version
-                        && entry.machine.as_ref() == Some(identity))
-                    .then_some(entry)
-                })
-                .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "original native task definition is unavailable",
-                })?;
-            if entry.native_custody.is_none() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "registered task metadata lacks native custody",
-                });
-            }
-            let definition = &entry.workflow_definition;
-            definition.require_native_identity(work)?;
+            let io = crate::executor::PreparationIo::from_native_work(work)?;
+            let definition = crate::executor::with_history_io(Some(&io), |observer| {
+                let definition = self
+                    .tasks
+                    .find(&identity.name, &identity.version, observer)?;
+                if definition
+                    .machine()
+                    .map(|machine| machine.identity_with_native_work(work))
+                    .transpose()?
+                    != Some(identity)
+                {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Conflict,
+                        reason: "original native task definition changed",
+                    });
+                }
+                Ok(definition)
+            })?;
             Some(definition)
         } else {
             None
@@ -340,32 +334,17 @@ impl AgentHarness {
         );
         self.validate_observed_admission(&retained.0, io.as_ref())
             .await?;
-        let entry = if io.is_some() {
-            self.tasks.0.iter().find_map(|((name, version), entry)| {
-                (name == &retained.0.task.name && version == &retained.0.task.version)
-                    .then_some(entry)
-            })
-        } else {
-            self.tasks.0.get(&(
-                retained.0.task.name.clone(),
-                retained.0.task.version.clone(),
-            ))
-        }
-        .ok_or_else(|| {
-            task_workflow_error(
-                native,
-                crate::wire::ErrorCode::NotFound,
-                "admitted task definition",
-            )
+        let definition = crate::executor::with_history_io(io.as_ref(), |observer| {
+            self.tasks
+                .find(&retained.0.task.name, &retained.0.task.version, observer)
         })?;
-        if entry.machine.is_none() {
+        if definition.machine().is_none() {
             return Err(task_workflow_error(
                 native,
                 crate::wire::ErrorCode::Unsupported,
                 "live tasks have no resumable workflow",
             ));
         }
-        let definition = &entry.workflow_definition;
 
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(context) = context {

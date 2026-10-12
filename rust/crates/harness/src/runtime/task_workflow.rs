@@ -5,7 +5,7 @@ pub(super) fn validate_task_transition(
     transition: &MachineTransition,
 ) -> Result<()> {
     if let MachineStatus::Completed { value } = &transition.status {
-        validate_value(output_schema, value, "task output", None)?;
+        crate::contract::validate_json_schema_value(output_schema, value, "task output", &mut None)?;
     }
     Ok(())
 }
@@ -183,7 +183,7 @@ pub(super) async fn validate_latest_task_transition(
         let latest = native_task_open_value(transition, custody, work)?;
         if let Some(transition) = &latest.0 {
             if let MachineStatus::Completed { value } = &transition.status {
-                crate::contract::validate_json_schema_value(schema, value, "task output", io)?;
+                crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(schema, value, "task output", work))?;
             }
         }
         return Ok(());
@@ -341,12 +341,10 @@ impl ResumableTaskSession {
         let check = |transition: &MachineTransition| {
             if io.is_some() {
                 if let MachineStatus::Completed { value } = &transition.status {
-                    crate::contract::validate_json_schema_value(
+                    crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(
                         output_schema,
                         value,
-                        "task output",
-                        io,
-                    )?;
+                        "task output", work))?;
                 }
                 Ok(())
             } else {

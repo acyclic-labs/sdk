@@ -51,7 +51,7 @@ impl AgentHarness {
                             work,
                         )?
                         .await?;
-                    if !resumed.1.matches_work(work) {
+                    if !resumed.1.work().shares_allocation_context(work) {
                         return Err(task_workflow_error(
                             native,
                             crate::wire::ErrorCode::Unauthorized,

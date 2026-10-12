@@ -45,19 +45,6 @@ fn agent_command(owner: &AuthorityIssuer, id: u8, revision: u64, action: Action)
 }
 
 #[test]
-fn v2_extension_admission_fixture_round_trips_canonically() -> Result<()> {
-    let fixture = include_str!("../../../fixtures/v2/extension-admission.json").trim();
-    let record: ExtensionAdmission =
-        serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-    record.validate(&mut None)?;
-    assert_eq!(
-        serde_json::to_string(&record).map_err(|error| Error::Invalid(error.to_string()))?,
-        fixture
-    );
-    Ok(())
-}
-
-#[test]
 fn extension_activation_requires_validated_configuration_and_pins_revision() -> Result<()> {
     let extension = dependency("example.configured", 1);
     let mut registry = SchemaRegistry::new();

@@ -96,11 +96,11 @@ impl AgentHarness {
             ));
         };
         let extension_leases = self.retain_task_extensions(definition, &scope)?;
-        validate_value(
+        crate::contract::validate_json_schema_value(
             &definition.input_schema,
             &serde_json::to_value(&input).map_err(|error| Error::Invalid(error.to_string()))?,
             "task input",
-            None,
+            &mut None,
         )?;
         let handler = Arc::clone(handler);
         let output_schema = definition.output_schema.clone();
@@ -143,12 +143,12 @@ impl AgentHarness {
                     None => run.await?,
                 };
                 drop(extension_leases);
-                validate_value(
+                crate::contract::validate_json_schema_value(
                     &output_schema,
                     &serde_json::to_value(&output)
                         .map_err(|error| Error::Invalid(error.to_string()))?,
                     "task output",
-                    None,
+                    &mut None,
                 )?;
                 Ok(output)
             })

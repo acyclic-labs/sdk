@@ -2,7 +2,7 @@ use super::{
     CallbackGate, PostOperationFailures, flush_callback_gate, record_post_operation_failure,
     reject_stale_projection, source_hresult,
 };
-use crate::kernel::FileMetadata;
+use crate::kernel::{FileMetadata, KernelAccounting};
 use crate::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
     VolumeConfig,
@@ -40,7 +40,9 @@ pub(super) async fn windows_checkout_source()
     let cancellation = CancellationToken::new();
     let volume = fs
         .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-        .await?;
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
     let checkout = volume
         .checkout(
             GenerationSelector::Head,
@@ -52,7 +54,9 @@ pub(super) async fn windows_checkout_source()
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
-        .await?;
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
     Ok(Arc::new(CheckoutMountSource::new(
         Arc::new(SharedCheckout::new(checkout)),
         config,
@@ -126,12 +130,14 @@ pub(super) async fn writes_only_promised_content(
     std::fs::write(source_root.join("changed.txt"), b"before")?;
     std::fs::write(source_root.join("stable.txt"), b"stable")?;
     let demand = windows_demand_source(&source_root, work.cancellation()).await?;
-    let lazy = crate::LazyWorkspace::attach_with_config(
+    let (lazy, _) = crate::LazyWorkspace::attach(
         &Fs::memory(),
         "pinned-projfs",
         Arc::new(demand),
         crate::MemoryLazyWorkspaceStore::default(),
         VolumeConfig::native(Lifecycle::Ephemeral),
+        crate::OperationId::new(),
+        &mut KernelAccounting::native(&work, work.cancellation()),
     )
     .await?;
     let destination = root.path().join("mount");

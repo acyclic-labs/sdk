@@ -50,7 +50,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::Unauthorized("project source invocation is cancelled".into()));
         }
         self.verify(false, &mut None).await?;
-        let snapshot_bytes = crate::contract::json_byte_length(&snapshot, maximum_bytes)?;
+        let snapshot_bytes = crate::contract::json_byte_length(&snapshot, maximum_bytes, &mut None)?;
         snapshot.project.validate(&mut None)?;
         snapshot.generation.validate(&mut None)?;
         if snapshot.project.class() != crate::conversation::VolumeClass::Project
@@ -167,9 +167,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "project source selection has another namespace or provider" });
             }
-            let snapshot_bytes = crate::contract::count_trusted_json_bytes_with_work(
-                snapshot, maximum_bytes, &mut observer,
-            )?;
+            let snapshot_bytes = crate::contract::json_byte_length(snapshot, maximum_bytes, &mut observer)?;
             let mut budget = SourceBudget { work: maximum_work, bytes: maximum_bytes };
             budget.charge(1, snapshot_bytes, &mut Some(&mut crate::store::HistoryWork::new(
                     crate::filesystem::PreparationIo::from_native_work(work)?,

@@ -55,12 +55,7 @@ impl ContextAttribute {
         observe_value(&self.value, work)
     }
     pub(super) fn validate_schema(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
-        crate::contract::validate_trusted_json_byte_bound(self, u64::MAX, work)?;
-        crate::contract::validate_json_schema_value_with_work(
-            &self.schema,
-            &self.value,
-            "context attribute",
-            work,
-        )
+        crate::contract::json_byte_length(self, u64::MAX, work).map(|_| ())?;
+        crate::contract::validate_json_schema_value(&self.schema, &self.value, "context attribute", work)
     }
 }

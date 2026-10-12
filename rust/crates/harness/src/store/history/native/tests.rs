@@ -35,7 +35,7 @@ fn native_string_copy_and_vector_growth_denials_preserve_actual_prefix() {
 
     let mut bytes = Vec::new();
     assert!(matches!(
-        io.reserve_bytes(&mut bytes, 16),
+        crate::store::history::reserve(&mut bytes, 16, &mut io),
         Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
                 counter: "allocation_operations",
@@ -286,7 +286,7 @@ fn accepted_completion_spends_owned_credit_after_cancellation_without_aliasing()
         16,
         "virtual cleanup must not release the real pool"
     );
-    assert!(pool.matches_work(&work));
+    assert!(pool.work().shares_allocation_context(&work));
     drop(ordinary);
     drop(pool);
 }
@@ -382,7 +382,7 @@ fn accepted_completion_rejects_foreign_tokens_and_preserves_foreign_guard() {
     else {
         panic!("rejection preserves the genuine typed guard");
     };
-    assert!(pool.matches_work(&work));
+    assert!(pool.work().shares_allocation_context(&work));
     assert_eq!(pool.bytes(), 16);
     assert_eq!(work.receipt(), prefix);
     drop(pool);
@@ -401,7 +401,7 @@ fn accepted_completion_rejects_foreign_tokens_and_preserves_foreign_guard() {
     else {
         panic!("foreign guard must not be retired or adopted");
     };
-    assert!(pool.matches_work(&foreign));
+    assert!(pool.work().shares_allocation_context(&foreign));
     assert_eq!(pool.bytes(), 16);
     drop(pool);
 
@@ -423,7 +423,7 @@ fn accepted_completion_rejects_foreign_tokens_and_preserves_foreign_guard() {
     else {
         panic!("foreign custody remains with its real source");
     };
-    assert!(guard.matches_work(&foreign));
+    assert!(guard.work().shares_allocation_context(&foreign));
 
     drop(guard);
 }
@@ -496,7 +496,7 @@ fn accepted_preheld_sdk_guard_transfers_without_new_admission_or_counter_aliases
     let sdk_guard = io
         .take_native_custody(16)
         .expect("transfer genuine SDK DTO custody");
-    assert!(sdk_guard.matches_work(&work));
+    assert!(sdk_guard.work().shares_allocation_context(&work));
     assert_eq!(sdk_guard.bytes(), sdk_bytes.capacity() as u64);
 
     io.release_owned(8).expect("virtual request retirement");
@@ -504,7 +504,7 @@ fn accepted_preheld_sdk_guard_transfers_without_new_admission_or_counter_aliases
     drop(sdk_guard);
     let pool = io.into_custody();
     assert_eq!(pool.bytes(), 32);
-    assert!(pool.matches_work(&work));
+    assert!(pool.work().shares_allocation_context(&work));
     drop(pool);
 }
 
@@ -563,7 +563,7 @@ fn accepted_sdk_guard_overprefix_keeps_source_guard_and_never_widens_closed_pool
     else {
         panic!("oversized DTO retains its real source guard and static typed bound");
     };
-    assert!(guard.matches_work(&work));
+    assert!(guard.work().shares_allocation_context(&work));
     assert_eq!(guard.bytes(), 16);
     drop(guard);
     io.absorb_native_custody(bounded_guard)
@@ -727,7 +727,7 @@ fn accepted_virtual_release_keeps_actual_buffer_claim_until_genuine_guard_transf
         .take_native_custody(16)
         .expect("transfer original real pool claim");
 
-    assert!(dto_guard.matches_work(&work));
+    assert!(dto_guard.work().shares_allocation_context(&work));
     assert_eq!(dto_guard.bytes(), 16);
     assert_eq!(
         work.receipt(),
