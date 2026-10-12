@@ -62,7 +62,6 @@ impl<'a> PiForkCoordinator<'a> {
             .await?;
         return actual
             .1
-            .context()
             .read_file_with_native_work(reference, work)
             .await;
     }
