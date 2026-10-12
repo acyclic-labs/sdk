@@ -152,15 +152,15 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
     };
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let workspace = fs.create_workspace("ntfs-metadata-view", WorkBudget::UNBOUNDED, &cancellation).await?.value;
-    let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &cancellation).await?.value;
-    transaction.create_directory("/tree", WorkBudget::UNBOUNDED, &cancellation).await?;
-    transaction.write("/tree/file", OwnedBytes::from_static(b"payload"), WorkBudget::UNBOUNDED, &cancellation).await?;
-    transaction.hard_link("/tree/file", "/tree/alias", WorkBudget::UNBOUNDED, &cancellation).await?;
-    transaction.create_symbolic_link("/tree/link", OwnedBytes::from(component("file")), WorkBudget::UNBOUNDED, &cancellation).await?;
-    transaction.set_metadata("/tree/file", metadata(ARCHIVE | HIDDEN), WorkBudget::UNBOUNDED, &cancellation).await?;
-    transaction.set_metadata("/tree", metadata(DIRECTORY | HIDDEN), WorkBudget::UNBOUNDED, &cancellation).await?;
-    transaction.set_metadata(
+    let workspace = Box::pin(fs.create_workspace("ntfs-metadata-view", WorkBudget::UNBOUNDED, &cancellation)).await?.value;
+    let mut transaction = Box::pin(workspace.begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &cancellation)).await?.value;
+    Box::pin(transaction.create_directory("/tree", WorkBudget::UNBOUNDED, &cancellation)).await?;
+    Box::pin(transaction.write("/tree/file", OwnedBytes::from_static(b"payload"), WorkBudget::UNBOUNDED, &cancellation)).await?;
+    Box::pin(transaction.hard_link("/tree/file", "/tree/alias", WorkBudget::UNBOUNDED, &cancellation)).await?;
+    Box::pin(transaction.create_symbolic_link("/tree/link", OwnedBytes::from(component("file")), WorkBudget::UNBOUNDED, &cancellation)).await?;
+    Box::pin(transaction.set_metadata("/tree/file", metadata(ARCHIVE | HIDDEN), WorkBudget::UNBOUNDED, &cancellation)).await?;
+    Box::pin(transaction.set_metadata("/tree", metadata(DIRECTORY | HIDDEN), WorkBudget::UNBOUNDED, &cancellation)).await?;
+    Box::pin(transaction.set_metadata(
         "/tree/link",
         FileMetadata {
             created_ns: MetadataField::Value(FIXED_NS),
@@ -169,7 +169,7 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
             changed_ns: MetadataField::Value(FIXED_NS + 300),
             ..FileMetadata::default()
         }, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?;
+    )).await?;
     let TransactionCommit::Committed(generation) = Box::pin(transaction.commit(
         None, PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation,
         |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) },
