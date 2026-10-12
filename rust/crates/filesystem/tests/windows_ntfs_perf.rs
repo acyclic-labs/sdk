@@ -177,12 +177,12 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
         return Err("metadata fixture did not commit".into());
     };
     let destination = tempfile::tempdir()?;
-    generation.materialize(
+    Box::pin(generation.materialize(
         std::iter::once("/tree"),
         &MaterializeOptions::native(destination.path()),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await?;
+    )).await?;
     for (relative, attributes) in [
         ("tree", DIRECTORY | HIDDEN),
         ("tree/file", ARCHIVE | HIDDEN),
