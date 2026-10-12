@@ -1,26 +1,13 @@
 use super::*;
 
-pub(crate) fn flush_session_callbacks(
+pub(crate) fn with_session_work(
     session: &Mutex<Option<NativeMountSession>>,
+    operation: fn(&NativeMountSession, &NativeMaterializationWork) -> Result<(), NativeMountError>,
 ) -> Result<(), MountLifecycleError> {
     with_live_session(session, |session| {
-        session.flush_callbacks(
-            &crate::NativeMaterializationWork::new(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .map_err(|(error, _)| NativeMountError::from(error))?,
-        )
-    })
-}
-
-/// Waits until the kernel caches nothing a change to the source superseded.
-pub(crate) fn revalidate_session(
-    session: &Mutex<Option<NativeMountSession>>,
-) -> Result<(), MountLifecycleError> {
-    with_live_session(session, |session| {
-        session.revalidate(
-            &crate::NativeMaterializationWork::new(
+        operation(
+            session,
+            &NativeMaterializationWork::new(
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
             )
@@ -76,6 +63,12 @@ pub enum MountLifecycleError {
         /// Distinct namespace cleanup failure.
         cleanup_failure: Option<NativeMountError>,
     },
+}
+
+impl From<crate::FsError> for MountLifecycleError {
+    fn from(error: crate::FsError) -> Self {
+        Self::Source(error.into())
+    }
 }
 
 /// SDK source retained after its view-dependent physical work has retired.

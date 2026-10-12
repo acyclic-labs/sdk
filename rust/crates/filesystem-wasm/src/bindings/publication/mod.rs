@@ -147,11 +147,7 @@ impl BrowserCheckout {
         let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
         let maximum_attempts = wasm_u32(&maximum_attempts)?;
 
-        let authored = decode_authored_transactions(
-            operations,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let authored = decode_authored_transactions(operations, self.engine.volume_config())?;
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
         let cancellation = CancellationToken::default();
         let receipt = self

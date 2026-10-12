@@ -21,7 +21,6 @@ pub(super) struct NativeStat {
     pub(super) device: u64,
     pub(super) block_size: u32,
     pub(super) flags: u32,
-    /// NFS change attribute: see [`ChangeLabels`].
     pub(super) change: u64,
 }
 

@@ -167,7 +167,7 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
         Ok(value) => value,
         Err(error) => {
             #[cfg(not(target_arch = "wasm32"))]
-            if native.is_some() { return Err(Error::NativeDecode { code: Invalid, source: error, custody: native }); }
+            if native.is_some() { return Err(Error::NativeJson { code: Invalid, source: error, custody: native }); }
             let message = error.to_string();
             additional.take().expect("ordinary conversion ownership").into_retained();
             return Err(Error::Invalid(message));
@@ -176,7 +176,10 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
     let retained = value.logical_owned_bytes()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(mut custody) = native.take() {
-        if let Err(cause) = custody.substitute(retained) {
+        if let Err(cause) = custody.bytes().checked_sub(retained)
+            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))
+            .and_then(|bytes| custody.release(bytes))
+        {
             drop(value);
             return Err(Error::NativeWork { cause, custody: Some(custody) });
         }

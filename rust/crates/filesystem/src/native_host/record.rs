@@ -1,19 +1,25 @@
 use super::*;
 
+// Namespace record names already fit its 96-byte ASCII key/suffix buffer.
+const RECORD_NAME_BYTES: usize = 97;
+#[cfg(windows)]
+const RECORD_PACKET_WORDS: usize = (std::mem::offset_of!(
+    windows::Wdk::Storage::FileSystem::FILE_RENAME_INFORMATION,
+    FileName
+) + 2 * (RECORD_NAME_BYTES - 1))
+    .div_ceil(8);
+
 pub(crate) struct PreparedMaterializationRecord {
     file: File,
-    #[cfg(unix)]
     parent: Dir,
     #[cfg(unix)]
-    temporary_name: NativeOwned<Vec<u8>>,
+    names: [[u8; RECORD_NAME_BYTES]; 2],
     #[cfg(unix)]
-    current_name: NativeOwned<Vec<u8>>,
+    lengths: [usize; 2],
     #[cfg(windows)]
-    rename_packet: NativeOwned<Vec<u64>>,
+    packet: [u64; RECORD_PACKET_WORDS],
     #[cfg(windows)]
-    rename_length: u32,
-    #[cfg(windows)]
-    parent_sync: File,
+    packet_length: u32,
     credit: NativeWorkReservation,
     cleanup: Option<NativeCleanupWrite>,
 }
@@ -26,43 +32,85 @@ impl PreparedMaterializationRecord {
         work: &NativeMaterializationWork,
         maximum_bytes: usize,
     ) -> Result<Self, NativeTreeMaterializationError> {
-        use crate::materializer::NativeTreeMaterializationError as E;
+        use NativeTreeMaterializationError as E;
         require_leaf(current)?;
         require_leaf(temporary)?;
         if current == temporary {
             return Err(E::InvalidLayout);
         }
-        let parent =
-            open_root_directory(parent_path, &mut &*work).map(|(directory, _)| directory)?;
+        let mut names = [[0; RECORD_NAME_BYTES]; 2];
+        let mut lengths = [0; 2];
+        for (index, path) in [temporary, current].into_iter().enumerate() {
+            let bytes = path.as_os_str().as_encoded_bytes();
+            if bytes.len() >= RECORD_NAME_BYTES {
+                return Err(E::InvalidLayout);
+            }
+            for byte in bytes {
+                work.charge(ITEM)?;
+                if !byte.is_ascii() || *byte == 0 {
+                    return Err(E::InvalidLayout);
+                }
+            }
+            #[cfg(unix)]
+            work.admit(copy_work(bytes.len() as u64))?;
+            names[index][..bytes.len()].copy_from_slice(bytes);
+            #[cfg(unix)]
+            work.record_admitted(copy_work(bytes.len() as u64))?;
+            lengths[index] = bytes.len() + 1;
+        }
+        let (parent, _) = open_root_directory(parent_path, &mut &*work)?;
         if entry_identity(&parent, current, &mut &*work)?.is_none() {
             return Err(io::Error::from(io::ErrorKind::NotFound).into());
         }
         match remove_leaf(&parent, temporary, false, &mut &*work) {
-            Ok(()) => {}
-            Err(E::Io(error)) if error.kind() == io::ErrorKind::NotFound => {}
+            Ok(()) => (),
+            Err(E::Io(error)) if error.kind() == io::ErrorKind::NotFound => (),
             Err(error) => return Err(error),
         }
-        #[cfg(unix)]
-        let temporary_name = prepared_materialization_name(temporary, work)?;
-        #[cfg(unix)]
-        let current_name = prepared_materialization_name(current, work)?;
         #[cfg(windows)]
-        let parent_sync = {
+        let parent = {
             use windows::Wdk::Storage::FileSystem::{
                 FILE_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT,
             };
             use windows::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
-            open_windows_held(
+            Dir::from_std_file(open_windows_held(
                 &parent,
                 Path::new("."),
                 FILE_GENERIC_READ | FILE_GENERIC_WRITE,
                 FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
                 &mut &*work,
-            )?
+            )?)
         };
         #[cfg(windows)]
-        let (rename_packet, rename_length) =
-            prepared_materialization_rename_packet(&parent_sync, current, work)?;
+        let (packet, packet_length) = {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows::Wdk::Storage::FileSystem::FILE_RENAME_INFORMATION;
+            let mut packet = [0u64; RECORD_PACKET_WORDS];
+            let offset = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
+            let units = lengths[1] - 1;
+            let encoding = WorkCounters {
+                bytes_encoded: (units * 2) as u64,
+                ..WorkCounters::UNCHARGED
+            };
+            work.admit(encoding)?;
+            // SAFETY: aligned fixed storage covers the header and this admitted ASCII tail.
+            unsafe {
+                let information = packet.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+                (*information).Anonymous.ReplaceIfExists = true;
+                (*information).RootDirectory =
+                    windows::Win32::Foundation::HANDLE(parent.as_raw_handle());
+                (*information).FileNameLength = (units * 2) as u32;
+                let tail = std::slice::from_raw_parts_mut(
+                    information.cast::<u8>().add(offset).cast::<u16>(),
+                    units,
+                );
+                for (output, byte) in tail.iter_mut().zip(&names[1]) {
+                    *output = u16::from(*byte);
+                }
+            }
+            work.record_admitted(encoding)?;
+            (packet, (offset + units * 2) as u32)
+        };
         let credit = work.reserve_work(WorkCounters {
             backend_write_operations: (maximum_bytes as u64)
                 .checked_add(1)
@@ -75,8 +123,8 @@ impl PreparedMaterializationRecord {
         #[cfg(unix)]
         let file = open_unix(
             parent.as_raw_fd(),
-            std::ffi::CStr::from_bytes_with_nul(&temporary_name.data)
-                .expect("prepared temporary leaf is terminated"),
+            std::ffi::CStr::from_bytes_with_nul(&names[0][..lengths[0]])
+                .map_err(|_| E::InvalidLayout)?,
             libc::O_RDWR
                 | libc::O_CREAT
                 | libc::O_EXCL
@@ -86,44 +134,59 @@ impl PreparedMaterializationRecord {
             &mut &*work,
         )?;
         #[cfg(windows)]
-        let file = with_wide_path(temporary, &mut &*work, |name, work| {
-            create_windows_wide_at(&parent, name, false, false, false, true, work)
-        })?;
+        let file = {
+            let units = lengths[0] - 1;
+            let encoding = WorkCounters {
+                bytes_encoded: (units * 2) as u64,
+                ..WorkCounters::UNCHARGED
+            };
+            work.admit(encoding)?;
+            let mut wide = [0u16; RECORD_NAME_BYTES];
+            for (output, byte) in wide.iter_mut().zip(&names[0][..units]) {
+                *output = u16::from(*byte);
+            }
+            work.record_admitted(encoding)?;
+            create_windows_wide_at(
+                &parent,
+                &wide[..units],
+                false,
+                false,
+                false,
+                true,
+                &mut &*work,
+            )?
+        };
         let prepared = Self {
             file,
-            #[cfg(unix)]
             parent,
-            #[cfg(unix)]
-            temporary_name,
-            #[cfg(unix)]
-            current_name,
-            #[cfg(windows)]
-            rename_packet,
-            #[cfg(windows)]
-            rename_length,
-            #[cfg(windows)]
-            parent_sync,
             credit,
             cleanup: Some(cleanup),
+            #[cfg(unix)]
+            names,
+            #[cfg(unix)]
+            lengths,
+            #[cfg(windows)]
+            packet,
+            #[cfg(windows)]
+            packet_length,
         };
         #[cfg(windows)]
         keep_windows_created_file(&prepared.file, &mut &*work)?;
         work.admit(WorkCounters::UNCHARGED)?;
         Ok(prepared)
     }
+
     pub(crate) fn complete(mut self, bytes: &[u8]) -> Result<(), NativeTreeMaterializationError> {
-        use crate::materializer::NativeTreeMaterializationError as E;
         use std::io::Write as _;
         if bytes.len() as u64 > self.credit.remaining_work().object_bytes_written {
-            return Err(E::InvalidLayout);
+            return Err(NativeTreeMaterializationError::InvalidLayout);
         }
-        let file = &mut self.file;
-        let mut offset = 0;
-        while offset < bytes.len() {
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
             self.credit.record_completed(WRITE)?;
-            let count = file.write(&bytes[offset..]).map_err(E::Io)?;
-            if count > bytes.len() - offset {
-                return Err(E::InvalidLayout);
+            let count = self.file.write(remaining)?;
+            if count > remaining.len() {
+                return Err(NativeTreeMaterializationError::InvalidLayout);
             }
             self.credit.record_completed(WorkCounters {
                 object_bytes_written: count as u64,
@@ -132,29 +195,35 @@ impl PreparedMaterializationRecord {
             if count == 0 {
                 return Err(io::Error::from(io::ErrorKind::WriteZero).into());
             }
-            offset += count;
+            remaining = &remaining[count..];
         }
         self.credit.record_completed(WorkCounters {
             durability_operations: 1,
             ..WorkCounters::UNCHARGED
         })?;
-        sync_held_descriptor_once(file)?;
+        sync_held_descriptor_once(&self.file)?;
         self.credit.record_completed(WRITE)?;
         #[cfg(unix)]
         {
-            // SAFETY: this retained name was validated/terminated at prepare.
-            let temporary =
-                unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.temporary_name.data) };
-            // SAFETY: preparation validated and terminated these owned names; borrowing them performs no late scan, encoding or allocation.
-            let current =
-                unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.current_name.data) };
+            // SAFETY: prepare validated and terminated both fixed names.
+            let temporary = unsafe {
+                std::ffi::CStr::from_bytes_with_nul_unchecked(&self.names[0][..self.lengths[0]])
+            };
+            let current = unsafe {
+                std::ffi::CStr::from_bytes_with_nul_unchecked(&self.names[1][..self.lengths[1]])
+            };
             rename_unix_names_once(&self.parent, temporary, &self.parent, current, true)?;
         }
         #[cfg(windows)]
-        windows_name_packet_once(
-            file,
-            &self.rename_packet.data,
-            self.rename_length,
+        // SAFETY: prepare initialized the entire packet and bounded its length.
+        windows_set_information(
+            &self.file,
+            unsafe {
+                std::slice::from_raw_parts(
+                    (&self.packet).as_ptr().cast::<u8>(),
+                    self.packet_length as usize,
+                )
+            },
             windows::Wdk::Storage::FileSystem::FileRenameInformation,
         )?;
         drop(self.cleanup.take());
@@ -162,10 +231,7 @@ impl PreparedMaterializationRecord {
             durability_operations: 1,
             ..WorkCounters::UNCHARGED
         })?;
-        #[cfg(unix)]
         sync_held_descriptor_once(&self.parent)?;
-        #[cfg(windows)]
-        sync_held_descriptor_once(&self.parent_sync)?;
         Ok(())
     }
 }
@@ -177,10 +243,10 @@ impl Drop for PreparedMaterializationRecord {
         };
         #[cfg(unix)]
         let _ = cleanup.attempt(|| {
-            // SAFETY: preparation validated and terminated this retained name.
-            let name =
-                unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.temporary_name.data) };
-            // SAFETY: the exact held parent and prepared name remain alive; no cancelled allocator/path traversal can gate this cleanup.
+            // SAFETY: exact held parent and prepared terminated name remain live.
+            let name = unsafe {
+                std::ffi::CStr::from_bytes_with_nul_unchecked(&self.names[0][..self.lengths[0]])
+            };
             if unsafe { libc::unlinkat(self.parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
                 Ok(())
             } else {
@@ -189,77 +255,15 @@ impl Drop for PreparedMaterializationRecord {
         });
         #[cfg(windows)]
         let _ = cleanup.attempt(|| {
-            use windows::Wdk::Storage::FileSystem::{
-                FILE_DISPOSITION_INFORMATION, FileDispositionInformation,
-            };
             windows_set_information(
                 &self.file,
-                &FILE_DISPOSITION_INFORMATION { DeleteFile: true },
-                FileDispositionInformation,
+                &windows::Wdk::Storage::FileSystem::FILE_DISPOSITION_INFORMATION {
+                    DeleteFile: true,
+                },
+                windows::Wdk::Storage::FileSystem::FileDispositionInformation,
             )
         });
     }
-}
-
-#[cfg(unix)]
-pub(super) fn prepared_materialization_name(
-    leaf: &Path,
-    work: &NativeMaterializationWork,
-) -> Result<NativeOwned<Vec<u8>>, NativeTreeMaterializationError> {
-    use std::os::unix::ffi::OsStrExt as _;
-    let bytes = leaf.as_os_str().as_bytes();
-    for byte in bytes {
-        work.charge(ITEM)?;
-        if *byte == 0 {
-            return Err(NativeTreeMaterializationError::InvalidLayout);
-        }
-    }
-    let copy = WorkCounters {
-        bytes_copied: bytes.len() as u64,
-        ..WorkCounters::UNCHARGED
-    };
-    work.admit(copy)?;
-    let mut name = native_buffer::<u8>(
-        bytes
-            .len()
-            .checked_add(1)
-            .ok_or(crate::WorkError::Overflow)?,
-        work,
-    )?;
-    name.data.extend_from_slice(bytes);
-    name.data.push(0);
-    work.record_admitted(copy)?;
-    Ok(name)
-}
-
-#[cfg(windows)]
-pub(super) fn prepared_materialization_rename_packet(
-    parent: &File,
-    leaf: &Path,
-    work: &NativeMaterializationWork,
-) -> Result<(NativeOwned<Vec<u64>>, u32), NativeTreeMaterializationError> {
-    use std::os::windows::ffi::OsStrExt as _;
-    let units = wide_units(leaf.as_os_str(), &mut &*work)?;
-    let encoded = WorkCounters {
-        bytes_encoded: (units as u64)
-            .checked_mul(2)
-            .ok_or(crate::WorkError::Overflow)?,
-        ..WorkCounters::UNCHARGED
-    };
-    work.admit(encoded)?;
-    let (data, allocation, length) = windows_name_packet(
-        parent,
-        leaf.as_os_str().encode_wide(),
-        units,
-        true,
-        &mut &*work,
-    )?;
-    let packet = NativeOwned {
-        data,
-        _allocation: allocation,
-    };
-    work.record_admitted(encoded)?;
-    Ok((packet, length))
 }
 
 #[cfg(windows)]
@@ -336,33 +340,6 @@ pub(super) fn rename_unix_names_once(
         Ok(())
     } else {
         Err(io::Error::last_os_error())
-    }
-}
-
-#[cfg(windows)]
-pub(super) fn windows_name_packet_once(
-    file: &File,
-    buffer: &[u64],
-    length: u32,
-    class: windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS,
-) -> io::Result<()> {
-    use std::os::windows::io::AsRawHandle as _;
-    use windows::Wdk::Storage::FileSystem::NtSetInformationFile;
-    let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
-    // SAFETY: the held DELETE-capable file and complete aligned prebuilt packet remain alive; the parent handle stored in the packet is pinned.
-    let status = unsafe {
-        NtSetInformationFile(
-            windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
-            &raw mut block,
-            buffer.as_ptr().cast(),
-            length,
-            class,
-        )
-    };
-    if status.is_err() {
-        Err(status_error(status))
-    } else {
-        Ok(())
     }
 }
 

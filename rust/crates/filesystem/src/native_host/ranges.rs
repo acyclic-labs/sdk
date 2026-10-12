@@ -111,10 +111,7 @@ pub(crate) fn allocated_data_ranges<W: SourceDemandReadWork>(
                 replacement
                     .try_reserve_exact(capacity)
                     .map_err(|_| DemandError::InvalidRequest)?;
-                let copied = WorkCounters {
-                    bytes_copied: (ranges.len() * element) as u64,
-                    ..WorkCounters::UNCHARGED
-                };
+                let copied = copy_work((ranges.len() * element) as u64);
                 work.admit(copied)?;
                 work.record(copied)?;
                 replacement.append(&mut ranges);

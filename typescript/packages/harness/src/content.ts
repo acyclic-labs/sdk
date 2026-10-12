@@ -6,8 +6,6 @@ import { type WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 export interface ContentBindings {
   /** Exact native-contract validation before reading or publishing a ref. */
   readonly validate: (file: FileRef, limits: Limits) => void;
-  /** Native digest and length check for bytes returned by the owner. */
-  readonly verify: (file: FileRef, bytes: Uint8Array) => void;
   readonly read: (file: FileRef) => Promise<Uint8Array>;
   readonly fileReadCapability: (file: FileRef) => string;
   readonly volumeReadCapability: (volume: VolumeRef) => string;
@@ -31,7 +29,7 @@ export interface PrivateDirectoryBindings {
     expectedGeneration: ResourceRef<"generation"> | null): Promise<Readonly<{ file: FileRef; bytes: Uint8Array }>>;
 }
 export type ContentReader = Pick<ContentBindings,
-  "validate" | "verify" | "read" | "fileReadCapability" | "volumeReadCapability" | "directoryReadCapability" | "directory">;
+  "validate" | "read" | "fileReadCapability" | "volumeReadCapability" | "directoryReadCapability" | "directory">;
 export interface ContentMountResolver {
   mount(volume: VolumeRef): ContentReader & Readonly<{
     requireFileRead(file: FileRef): void;
@@ -42,7 +40,6 @@ export interface ContentMountResolver {
 function pinContentReader(source: ContentReader): ContentReader {
   return Object.freeze({
     validate: source.validate.bind(source),
-    verify: source.verify.bind(source),
     read: source.read.bind(source),
     fileReadCapability: source.fileReadCapability.bind(source),
     volumeReadCapability: source.volumeReadCapability.bind(source),
@@ -107,7 +104,6 @@ export function composeContentBindings(contracts: NativeContracts, sources: read
   };
   return Object.freeze({
     validate: (file: FileRef, limits: Limits) => owner(file.volume, file).validate(file, limits),
-    verify: (file: FileRef, bytes: Uint8Array) => owner(file.volume, file).verify(file, bytes),
     read: async (file: FileRef) => owner(file.volume, file).read(file),
     fileReadCapability: (file: FileRef) => owner(file.volume, file).fileReadCapability(file),
     volumeReadCapability: (volume: VolumeRef) => owner(volume).volumeReadCapability(volume),

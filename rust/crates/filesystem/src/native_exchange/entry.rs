@@ -1,72 +1,18 @@
 use super::*;
 use crate::native_host::NativeHostWork;
 
-/// Exchanges entries under the caller's original work and cancellation.
-pub fn exchange_native_entries(
-    left: &Path,
-    right: &Path,
-    work: &crate::NativeMaterializationWork,
-) -> Result<(), NativeExchangeError> {
-    if left == right {
-        return Err(NativeExchangeError::InvalidLayout);
-    }
-    let mut work = work;
-    let left_parent = crate::native_host::open_root_directory(
-        left.parent().ok_or(NativeExchangeError::InvalidLayout)?,
-        &mut work,
-    )
-    .map(|(directory, _)| directory)?;
-    let right_parent = crate::native_host::open_root_directory(
-        right.parent().ok_or(NativeExchangeError::InvalidLayout)?,
-        &mut work,
-    )
-    .map(|(directory, _)| directory)?;
-    exchange_native_entries_held(
-        &left_parent,
-        Path::new(left.file_name().ok_or(NativeExchangeError::InvalidLayout)?),
-        &right_parent,
-        Path::new(
-            right
-                .file_name()
-                .ok_or(NativeExchangeError::InvalidLayout)?,
-        ),
-        &mut work,
-    )
-    .map_err(Into::into)
-}
-
-/// Recovers the original physical entries named by a durable witness.
-pub fn recover_native_entry_exchange(
-    live: &Path,
-    work: &crate::NativeMaterializationWork,
-) -> Result<(), NativeExchangeError> {
-    let mut work = work;
-    let parent = crate::native_host::open_root_directory(
-        live.parent().ok_or(NativeExchangeError::InvalidLayout)?,
-        &mut work,
-    )
-    .map(|(directory, _)| directory)?;
-    recover_native_entry_exchange_held(
-        &parent,
-        Path::new(live.file_name().ok_or(NativeExchangeError::InvalidLayout)?),
-        &mut work,
-    )
-    .map_err(Into::into)
-}
-
 pub(super) fn attempted<W: NativeHostWork, T>(
     work: &mut W,
     delta: crate::WorkCounters,
     operation: impl FnOnce() -> std::io::Result<T>,
 ) -> Result<T, W::Error> {
     work.admit(delta)?;
-    // The noncancellable fixed charge immediately precedes the actual call;
-    // cancellation arriving during it cannot erase the attempted operation.
+    // Charge the attempt immediately before the syscall.
     work.record(delta)?;
     operation().map_err(Into::into)
 }
 /// Exchanges entries through their original held parents and the existing scratch/witness protocol.
-pub(crate) fn exchange_native_entries_held<W: NativeHostWork>(
+pub(crate) fn exchange_native_entries<W: NativeHostWork>(
     left: &cap_std::fs::Dir,
     left_name: &Path,
     right: &cap_std::fs::Dir,
@@ -164,7 +110,7 @@ pub(super) fn exchange_kernel_held<W: NativeHostWork>(
     })
 }
 /// Recovers only the physical preimages named by the surviving entry witness.
-pub(crate) fn recover_native_entry_exchange_held<W: NativeHostWork>(
+pub(crate) fn recover_native_entry_exchange<W: NativeHostWork>(
     parent: &cap_std::fs::Dir,
     name: &Path,
     work: &mut W,
@@ -175,24 +121,27 @@ where
     validate_leaf(name).map_err(W::Error::from)?;
     #[cfg(windows)]
     {
-        with_service_name(name, ".acyclic-exchange", work, |scratch_name, work| {
-            with_service_name(
-                name,
-                ".acyclic-exchange-witness",
-                work,
-                |witness_name, work| {
-                    if crate::native_host::entry_identity(parent, witness_name, work)?.is_none() {
-                        if crate::native_host::entry_identity(parent, scratch_name, work)?.is_some()
-                        {
-                            return Err(NativeExchangeError::IncompatibleJournal.into());
-                        }
-                        return Ok(());
+        let scratch = service_name(name, ".acyclic-exchange", work)?;
+        let scratch_name = scratch.0.as_path();
+        let result = (|| {
+            let witness = service_name(name, ".acyclic-exchange-witness", work)?;
+            let witness_name = witness.0.as_path();
+            let result = (|| {
+                if crate::native_host::entry_identity(parent, witness_name, work)?.is_none() {
+                    if crate::native_host::entry_identity(parent, scratch_name, work)?.is_some() {
+                        return Err(NativeExchangeError::IncompatibleJournal.into());
                     }
-                    recover_entry_held(parent, name, scratch_name, witness_name, None, work)
-                        .map(|_| ())
-                },
-            )
-        })
+                    return Ok(());
+                }
+                recover_entry_held(parent, name, scratch_name, witness_name, None, work).map(|_| ())
+            })();
+            drop(witness.0);
+            work.release(witness.1)?;
+            result
+        })();
+        drop(scratch.0);
+        work.release(scratch.1)?;
+        result
     }
     #[cfg(unix)]
     {

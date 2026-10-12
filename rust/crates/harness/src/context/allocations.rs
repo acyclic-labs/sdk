@@ -21,7 +21,8 @@ pub(super) fn context_contract_native<T: Serialize>(
         })?;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(0, private_labels)?;
     let diagnostic = work.claim(diagnostic_bytes, 0, acyclic_fs::WorkCounters::default())?;
-    let mut io = crate::store::history::native_work_io(work)?;
+    let mut io =
+        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
     let encoded = (|| {
         crate::contract::validate_json_byte_bound_native_trusted(
             value,
@@ -37,12 +38,12 @@ pub(super) fn context_contract_native<T: Serialize>(
         )
     })();
     match encoded {
-        Ok(value) => Ok((value, io.into_custody())),
-        Err(crate::Error::NativeEncode {
+        Ok(value) => Ok((value, io.into_custody()?)),
+        Err(crate::Error::NativeJson {
             code,
             source,
             custody: None,
-        }) => Err(crate::Error::NativeEncode {
+        }) => Err(crate::Error::NativeJson {
             code,
             source,
             custody: Some(diagnostic),
@@ -67,7 +68,7 @@ pub(super) fn reserve_context_vec_native<T>(
             code: crate::wire::ErrorCode::Invalid,
             reason: "context vector capacity overflows",
         })?;
-    guard.resize_retained(bytes as u64)?;
+    guard.resize(bytes as u64)?;
     let copied = values
         .len()
         .checked_mul(std::mem::size_of::<T>())

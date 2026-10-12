@@ -100,7 +100,6 @@ impl<A, O> Checkout<A, O> {
         let Self {
             volume: _,
             generation_root,
-            base_file_table,
             base_root,
             root,
             authority_head,
@@ -114,7 +113,6 @@ impl<A, O> Checkout<A, O> {
             mode,
         } = self;
         *generation_root == base.generation_root
-            && *base_file_table == base.base_file_table
             && *base_root == base.base_root
             && *root == base.root
             && *authority_head == base.authority_head
@@ -492,7 +490,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Self {
             volume: self.volume.clone(),
             generation_root: self.generation_root,
-            base_file_table: self.base_file_table,
             base_root,
             root,
             authority_head: self.authority_head,

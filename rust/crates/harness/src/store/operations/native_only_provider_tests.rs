@@ -239,7 +239,7 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     .await
     .expect_err("real raw locator reaches the original guarded wire decoder");
     assert!(
-        matches!(&error, Error::NativeDecode { custody: Some(custody), .. }
+        matches!(&error, Error::NativeJson { custody: Some(custody), .. }
             if native.shares_ledger(custody.work()))
     );
     assert_eq!(native.receipt().authority_bytes_read, 2);

@@ -11,7 +11,7 @@ use acyclic_harness::{
     distributed::{WorkPull, Worker},
     filesystem::FilesystemHost,
     runtime::{TaskSpawner as _, TaskStateProvider},
-    scheduler::ResourceSnapshot,
+    scheduler::ResourceRequest,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::{collections::BTreeMap, path::Path};
@@ -87,7 +87,7 @@ async fn open(
     path: &Path,
     binding: &PiTaskBinding,
 ) -> acyclic_harness::Result<(
-    PiTaskRuntime<LocalStream>,
+    PiTaskRuntime,
     acyclic_fs::NativeMaterializationWork,
 )> {
     let work = work();
@@ -111,7 +111,7 @@ async fn fixture(
     binding: &PiTaskBinding,
 ) -> (
     tempfile::TempDir,
-    PiTaskRuntime<LocalStream>,
+    PiTaskRuntime,
     acyclic_fs::NativeMaterializationWork,
 ) {
     let directory = tempfile::tempdir().unwrap();

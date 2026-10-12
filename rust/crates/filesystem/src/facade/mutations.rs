@@ -16,104 +16,66 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            let (first_record, second_record) =
-                if let Some([first_path, second_path]) = operation.paths() {
-                    let first = crate::kernel::observe_path_async_with_accounting(
+            let mut records = [None; 2];
+            if let Some(paths) = operation.paths() {
+                for (index, path) in paths.into_iter().enumerate() {
+                    if index == 1 && path == paths[0] {
+                        records[1] = records[0];
+                        continue;
+                    }
+                    let observed = crate::kernel::observe_path_async_with_accounting(
                         &self.volume.fs.inner.objects,
                         &self.base_root,
-                        first_path,
+                        path,
                         self.volume.config,
                         accounting,
                         cancellation,
                         None,
                         false,
                     )
-                    .await?;
-                    let first = first.into_parts();
-                    let first_record = first.0.lookup.record;
-                    let bytes = Self::mutation_dependency_bytes(&first.0.dependencies, accounting)?;
+                    .await?
+                    .into_parts();
+                    records[index] = observed.0.lookup.record;
+                    let bytes =
+                        Self::mutation_dependency_bytes(&observed.0.dependencies, accounting)?;
                     Self::append_mutation_dependencies(
                         &mut dependencies,
-                        Owned::new(first.0.dependencies, first.1, bytes),
+                        Owned::new(observed.0.dependencies, observed.1, bytes),
                         accounting,
                     )?;
-                    let second_record = if second_path == first_path {
-                        first_record
-                    } else {
-                        let second = crate::kernel::observe_path_async_with_accounting(
-                            &self.volume.fs.inner.objects,
-                            &self.base_root,
-                            second_path,
-                            self.volume.config,
-                            accounting,
-                            cancellation,
-                            None,
-                            false,
-                        )
-                        .await?;
-                        let second = second.into_parts();
-                        let second_record = second.0.lookup.record;
-                        let bytes =
-                            Self::mutation_dependency_bytes(&second.0.dependencies, accounting)?;
-                        Self::append_mutation_dependencies(
-                            &mut dependencies,
-                            Owned::new(second.0.dependencies, second.1, bytes),
-                            accounting,
-                        )?;
-                        second_record
-                    };
-                    (first_record, second_record)
-                } else {
-                    let (first_id, second_id) = match operation {
-                        Mutation::File { file_id, .. } => (Some(*file_id), None),
-                        Mutation::CloneFileRange {
-                            source_file_id,
-                            destination_file_id,
-                            ..
-                        } => (Some(*source_file_id), Some(*destination_file_id)),
-                        _ => (None, None),
-                    };
-                    let first = if let Some(file_id) = first_id {
-                        let record = crate::kernel::lookup_file_record_async_with_accounting(
-                            &self.volume.fs.inner.objects,
-                            self.base_root.file_table,
-                            file_id,
-                            DecodeLimits::for_volume(self.volume.config),
-                            accounting,
-                            cancellation,
-                            None,
-                        )
-                        .await?;
-                        record.0
-                    } else {
-                        None
-                    };
-                    let second = if second_id == first_id {
-                        first
-                    } else if let Some(file_id) = second_id {
-                        let record = crate::kernel::lookup_file_record_async_with_accounting(
-                            &self.volume.fs.inner.objects,
-                            self.base_root.file_table,
-                            file_id,
-                            DecodeLimits::for_volume(self.volume.config),
-                            accounting,
-                            cancellation,
-                            None,
-                        )
-                        .await?;
-                        record.0
-                    } else {
-                        None
-                    };
-                    (first, second)
+                }
+            } else {
+                let ids = match operation {
+                    Mutation::File { file_id, .. } => [Some(*file_id), None],
+                    Mutation::CloneFileRange {
+                        source_file_id,
+                        destination_file_id,
+                        ..
+                    } => [Some(*source_file_id), Some(*destination_file_id)],
+                    _ => [None, None],
                 };
-            for region in super::mutation_regions::exact_mutation_regions(
-                operation,
-                first_record,
-                second_record,
-            )
-            .into_iter()
-            .flatten()
+                for (index, id) in ids.into_iter().enumerate() {
+                    if index == 1 && id == ids[0] {
+                        records[1] = records[0];
+                    } else if let Some(id) = id {
+                        records[index] = lookup_file_record_async_with_accounting(
+                            &self.volume.fs.inner.objects,
+                            self.base_root.file_table,
+                            id,
+                            DecodeLimits::for_volume(self.volume.config),
+                            accounting,
+                            cancellation,
+                            None,
+                        )
+                        .await?
+                        .0;
+                    }
+                }
+            }
+            for region in
+                super::mutation_regions::exact_mutation_regions(operation, records[0], records[1])
+                    .into_iter()
+                    .flatten()
             {
                 exact_regions.ensure_for_push(usize::MAX, accounting)?;
                 accounting.charge(WorkCounters {
@@ -477,7 +439,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .transpose()?
             }
         };
-        if working.0.file_table == self.base_file_table {
+        if working.0.file_table == self.base_root.file_table {
             prepared_dependencies.clear_mutations();
             drop(staged.0);
             accounting.release_owned(&mut staged.1, staged_names)?;

@@ -17,7 +17,7 @@ fn typescript_export_includes_error_roots_with_esm_imports() {
     ));
     let _ = std::fs::remove_dir_all(&output);
 
-    export_typescript(&output).expect("Actors TypeScript export should succeed");
+    export::export_typescript(&output).expect("Actors TypeScript export should succeed");
 
     let service_error =
         std::fs::read_to_string(output.join("actors/ServiceError.ts")).expect("ServiceError");
@@ -37,7 +37,7 @@ fn typescript_export_includes_error_roots_with_esm_imports() {
 
 #[test]
 fn typescript_export_names_follow_nested_ts_rs_metadata() {
-    let names = typescript_export_names(&Config::default());
+    let names = export::typescript_export_names(&Config::default());
 
     assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
     for name in [

@@ -23,14 +23,14 @@ fn dependency_bytes(length: usize, capacity: usize) -> Result<usize, Error> {
 
 /// Demand-scoped client kernel. Construction grants no authority and starts no work.
 pub struct Client<D: Domain> {
-    pub(in crate::client) domain: D,
+    domain: D,
     adapter: u128,
-    limits: Limits,
+    pub(in crate::client) limits: Limits,
     namespace: u128,
     sequence: u64,
     now: u64,
     facts: BTreeMap<D::Key, Record<D>>,
-    pub(in crate::client) branches: BTreeMap<BranchId, ClientHypothesis<D>>,
+    branches: BTreeMap<BranchId, ClientHypothesis<D>>,
     by_key: BTreeMap<D::Key, BTreeSet<BranchId>>,
     by_operation: BTreeMap<D::Operation, BranchId>,
     dependents: BTreeMap<BranchId, BTreeSet<BranchId>>,

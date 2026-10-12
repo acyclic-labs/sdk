@@ -72,14 +72,14 @@ impl SchemaRegistry {
             }
         }
         let binding = ExtensionBinding {
-            schema_digest: crate::contract::canonical_json_digest(&schema)?,
+            schema_digest: crate::contract::canonical_json_digest(&schema, u64::MAX, &mut None)?,
             schema,
             implementation_digest,
             fork_policy,
             dependencies: required,
             configuration_schema_digest: configuration_schema
                 .as_ref()
-                .map(crate::contract::canonical_json_digest)
+                .map(|value| crate::contract::canonical_json_digest(value, u64::MAX, &mut None))
                 .transpose()?,
             configuration_schema,
         };

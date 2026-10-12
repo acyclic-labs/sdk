@@ -179,7 +179,7 @@ impl ToolDefinition {
     /// Immutable approval identity for the exact model-visible definition.
     pub fn digest(&self) -> Result<[u8; 32]> {
         self.validate(&mut None)?;
-        crate::contract::canonical_json_digest(self)
+        crate::contract::canonical_json_digest(self, u64::MAX, &mut None)
     }
 }
 

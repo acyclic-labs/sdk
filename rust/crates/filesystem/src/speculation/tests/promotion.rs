@@ -58,7 +58,7 @@ impl AsyncObjectStore for UnderreportedOwnedStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             let mut receipt = {

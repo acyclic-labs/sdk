@@ -49,7 +49,7 @@ async fn concurrent_session_claims_cannot_overspend_after_reopen() -> Result<()>
             &mut first,
             &Worker {
                 id: format!("worker-{index}"),
-                available: ResourceSnapshot::default(),
+                available: ResourceRequest::default(),
                 labels: BTreeMap::new(),
             },
             &format!("budget-start-{index}"),
@@ -223,11 +223,7 @@ async fn root_declaration_and_shared_limits_are_atomic() -> Result<()> {
         limits
     );
     let lease = recovered
-        .pull(&Worker {
-            id: "atomic-worker".into(),
-            available: ResourceSnapshot::default(),
-            labels: BTreeMap::new(),
-        })
+        .pull(&worker("atomic-worker"))
         .await?
         .ok_or_else(|| Error::NotFound("atomic root lease".into()))?;
     assert_eq!(lease.operation.operation_id, root);

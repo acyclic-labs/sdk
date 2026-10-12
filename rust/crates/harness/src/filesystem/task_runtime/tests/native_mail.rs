@@ -103,7 +103,7 @@ impl MailFixture {
                 .task_host()
                 .pull_work(&Worker {
                     id: "native-mail-control".into(),
-                    available: ResourceSnapshot::default(),
+                    available: ResourceRequest::default(),
                     labels: BTreeMap::new(),
                 })
                 .await?
@@ -372,7 +372,7 @@ async fn native_mail_sdk_cursor_rejects_actual_hostile_version_and_recipient_rec
         assert!(matches!(
             host.inbox_with_native_work(recipient, index as u64, 1, &original)
                 .await,
-            Err(Error::NativeDecode { .. })
+            Err(Error::NativeJson { .. })
                 | Err(Error::NativeDiagnostic { .. })
                 | Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Storage,
