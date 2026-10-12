@@ -1319,21 +1319,21 @@ pub fn decode_attachment_manifest(
             }
         };
         let actual = (std::mem::size_of::<Vec<Attachment>>() as u64)
-            .checked_add(manifest_owned_bytes(&decoded, decoded.capacity())?)
+            .checked_add(manifest_owned_bytes(&decoded.0, decoded.0.capacity())?)
             .ok_or_else(|| io.invalid("manifest ownership overflow"))?;
-        decoded.substitute_owned(actual)?;
+        decoded.1.substitute(actual)?;
         let encoded_hold;
-        let encoded = io.encode(&decoded.value, io.remaining()?.bytes_encoded, false)?;
+        let encoded = io.encode(&decoded.0, io.remaining()?.bytes_encoded, false)?;
         encoded_hold = io.guard_bytes(&encoded)?;
         if encoded.as_ref() != bytes {
             return Err(io.invalid("attachment manifest is not canonical or complete"));
         }
         drop(encoded);
         drop(encoded_hold);
-        if item_count.is_some_and(|count| decoded.len() != count as usize) {
+        if item_count.is_some_and(|count| decoded.0.len() != count as usize) {
             return Err(io.invalid("attachment manifest count is incomplete"));
         }
-        return Ok(decoded.into_retained());
+        return Ok(crate::filesystem::retain_decoded(decoded));
     }
     let items: Vec<Attachment> = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("attachment manifest is invalid: {error}")))?;

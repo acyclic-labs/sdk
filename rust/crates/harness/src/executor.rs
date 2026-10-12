@@ -3474,7 +3474,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
     #[cfg(feature = "filesystem")]
     if let Some(io) = io.filter(|io| !stock_is_native(Some(io))) {
         let bytes = (view.messages().len() * std::mem::size_of::<uuid::Uuid>()) as u64;
-        io.claim(bytes)?;
+        io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
     }
     let mut message_ids = if stock_is_native(io) {
@@ -3840,14 +3840,14 @@ pub(crate) async fn load_json<'a, T: PreparationRecord>(
         {
             let parsed = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
             let _canonical_hold;
-            let canonical = io.encode(&parsed.value, bytes.len() as u64, true)?;
+            let canonical = io.encode(&parsed.0, bytes.len() as u64, true)?;
             _canonical_hold = io.guard_bytes(&canonical)?;
             if canonical.as_ref() != bytes.as_ref() {
                 return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,
                     "execution journal JSON is not canonical"));
             }
         }
-        let (value, hold) = io.decode_preparation::<T>(&bytes, crate::wire::ErrorCode::Storage)?.into_parts();
+        let (value, hold) = io.decode_preparation::<T>(&bytes, crate::wire::ErrorCode::Storage)?;
         return Ok(LoadedPreparation { value, hold: Some(hold), marker: std::marker::PhantomData });
     }
     Ok(LoadedPreparation {

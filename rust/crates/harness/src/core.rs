@@ -1773,7 +1773,7 @@ impl SchemaRegistry {
             #[cfg(feature = "filesystem")]
             Some(io) => {
                 decoded = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
-                &decoded.value
+                &decoded.0
             }
             _ => {
                 value = crate::contract::json_from_slice(bytes).map_err(|error| {

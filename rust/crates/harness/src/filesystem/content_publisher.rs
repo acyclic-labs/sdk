@@ -235,7 +235,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
 pub(super) fn once_key(operation: OperationId, io: Option<&PreparationIo>) -> Result<IdempotencyKey> {
     let length = "filesystem-single-file:".len() + 36;
     if let Some(io) = io {
-        io.claim(length as u64)?;
+        io.retain_owned(length as u64)?;
         io.preflight(acyclic_fs::WorkCounters { bytes_encoded: length as u64, bytes_copied: length as u64, items_examined: 1, ..Default::default() })?;
         io.allocation_attempt(length as u64)?;
     }
@@ -252,7 +252,7 @@ pub(super) fn once_key(operation: OperationId, io: Option<&PreparationIo>) -> Re
 fn replacement_key(operation: OperationId, path: &str, io: Option<&PreparationIo>) -> Result<IdempotencyKey> {
     let length = "filesystem-replacement:".len() + 36 + 1 + 64;
     if let Some(io) = io {
-        io.claim(length as u64)?;
+        io.retain_owned(length as u64)?;
         io.preflight(acyclic_fs::WorkCounters {
             bytes_hashed: path.len() as u64, bytes_encoded: length as u64,
             bytes_copied: length as u64, items_examined: 1, ..Default::default()

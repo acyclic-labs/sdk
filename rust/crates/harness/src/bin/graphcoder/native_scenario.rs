@@ -193,7 +193,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let mut machines = MachineRegistry::default();
     machines.register(stock)?;
     machines.register(preparation)?;
-    let creator = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), issuer.clone())?);
+    let creator = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
     let runtime = Runtime::open_with_creation_providers(
         stream.clone(), files.clone(), private.clone(), issuer.verifier(&mut None).expect("verifier copy"), owner.scope.clone(),
         RuntimeScope::new(owner.scope.capabilities().clone(), limits)?.with_run_limits(run_limits)?,

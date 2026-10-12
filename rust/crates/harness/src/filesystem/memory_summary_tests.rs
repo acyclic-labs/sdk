@@ -155,7 +155,7 @@ async fn sealed_summary_preparation(
     )?.with_session_limits(crate::scheduler::SessionLimits {
         active_tasks: 4, total_tasks: 4, depth: 2, model_steps: 4,
     })?.with_resource_creation_providers(vec![Arc::new(
-        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), issuer)?)])?);
+        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?)])?);
     let admission = |operation_id, parent, input| TaskAdmissionRecord {
         resource_proofs: Vec::new(), operation_id, task: identity.clone(), machine: machine.clone(),
         input, input_schema: schema.clone(), output_schema: schema.clone(), parent,
@@ -175,13 +175,13 @@ async fn sealed_summary_preparation(
     host.start_task(&root_lease).await?;
     let prep_op = OperationId::new();
     let prep_task = crate::TaskId::from_bytes(prep_op.into_bytes());
-    let child = admission(OperationId::new(), Some(root), serde_json::json!({}))
-        .with_resource_proofs(preparer.creation_proofs(fork, prep_task, None)?)?;
+    let (resources, proofs) = preparer.creation_allocations(fork, prep_task, None)?;
+    let child = admission(OperationId::new(), Some(root), serde_json::json!({})).with_resource_proofs(proofs)?;
     let command_payload = payloads.stage(fork.operation_id, "summary-fork-request",
         &crate::contract::canonical_json_bytes(fork)?).await?;
     let request = crate::resource_preparation::ResourcePreparationRequest {
         provider: storage.volume.provider().clone(), child,
-        resources: preparer.creation_resources(fork, None)?, creation_grant: "fork:publish".into(),
+        resources, creation_grant: "fork:publish".into(),
         maximum_resources: 2, maximum_work, maximum_bytes,
         payload: serde_json::to_value(fork).map_err(|error| Error::Invalid(error.to_string()))?,
         command: Some(crate::workflow::WorkflowCommand {

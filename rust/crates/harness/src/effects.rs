@@ -205,7 +205,7 @@ pub(crate) fn validate_effect_schema_bytes_with_work(
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
         let schema = decode.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
         drop(crate::contract::compile_json_schema(
-            &schema, "effect result", Some(&decode))?);
+            &schema.0, "effect result", Some(&decode))?);
         return Ok(());
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -236,7 +236,7 @@ pub(crate) fn validate_effect_result_bytes_with_work(
         let schema = decode.decode_preparation::<Value>(schema_bytes, crate::wire::ErrorCode::Storage)?;
         // Preserve schema admission before result parsing/allocation, as in the original validate_schema_bytes + validate_result_bytes sequence.
         drop(crate::contract::compile_json_schema(
-            &schema, "effect result", Some(&decode))?);
+            &schema.0, "effect result", Some(&decode))?);
         if result.descriptor().media_type() != "application/json" {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -246,7 +246,7 @@ pub(crate) fn validate_effect_result_bytes_with_work(
         result.descriptor().verify(bytes, work)?;
         let value = decode.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
         return crate::contract::validate_json_schema_value(
-            &schema, &value, "effect result", Some(&decode));
+            &schema.0, &value.0, "effect result", Some(&decode));
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     Err(Error::Unsupported("native effect result validation is unavailable".into()))

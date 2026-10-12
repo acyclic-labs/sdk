@@ -503,13 +503,13 @@ impl CreationFixture {
         });
         #[cfg(not(target_arch = "wasm32"))]
         let fs_creator = if let Some(work) = bootstrap {
-            FilesystemResourceCreationProvider::new_with_native_work(filesystem.clone(), &issuer, work)?
+            FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, Some(work))?
                 .into_native_shared(work)?
         } else {
-            Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), issuer.clone())?)
+            Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?)
         };
         #[cfg(target_arch = "wasm32")]
-        let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), issuer.clone())?);
+        let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
         let host = Arc::new(CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, payloads.clone()).await?, stream,
             payloads, reader, authority, signed, issuer.verifier(&mut None).expect("verifier copy"), root_scope.clone(),
@@ -882,11 +882,12 @@ impl CreationFixture {
                 result.capability(VolumeOperation::Read)?, result.capability(VolumeOperation::Write)?,
             ].iter().map(String::as_str)));
         }
-        child = child.with_resource_proofs(preparer.creation_proofs(&fork, TaskId::from_bytes([83; 16]), None)?)?;
+        let (resources, proofs) = preparer.creation_allocations(&fork, TaskId::from_bytes([83; 16]), None)?;
+        child = child.with_resource_proofs(proofs)?;
         let request = ResourcePreparationRequest {
             command: None, source_checkpoint: None,
             provider: self.filesystem_provider.clone(), child,
-            resources: preparer.creation_resources(&fork, None)?, creation_grant: "fork:publish".into(),
+            resources, creation_grant: "fork:publish".into(),
             maximum_resources: if with_result {3} else {2}, maximum_work: 16_384, maximum_bytes: 16 * 1_024 * 1_024,
             payload: serde_json::to_value(&fork).map_err(|e| Error::Invalid(e.to_string()))?,
             input_files: Vec::new(), read_authorization: fork.authorized_source.clone(),
