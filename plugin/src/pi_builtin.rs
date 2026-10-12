@@ -1,6 +1,5 @@
 //! Pi builtin IO is mediated by the original task owner, not by its cwd.
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{Error, OperationId, Result, TaskId};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
@@ -933,7 +932,7 @@ pub(crate) async fn authorize_owner(
         ));
     }
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await
 }
 

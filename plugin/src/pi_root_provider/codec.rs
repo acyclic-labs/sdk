@@ -165,7 +165,7 @@ pub(crate) fn native_buffer_codec_charge(
             Ok(())
         }
         JsonCodecCharge::Release { .. } => unreachable!(),
-        charge => acyclic_harness::store::native_work_io(work)?.codec_charge(charge),
+        charge => acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?).codec_charge(charge),
     }
 }
 

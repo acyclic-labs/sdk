@@ -104,7 +104,6 @@ impl RecordValue {
 pub(super) struct LogBuffer {
     pub(super) bytes: Vec<u8>,
     pub(super) allocation: Option<crate::materializer::NativeAllocation>,
-    pub(super) failure: Option<LocalCoreStateStoreError>,
 }
 
 impl Write for LogBuffer {
@@ -125,15 +124,9 @@ impl Write for LogBuffer {
                 })?;
             }
             self.bytes.extend_from_slice(bytes);
-            Ok::<_, LocalCoreStateStoreError>(bytes.len())
+            Ok::<_, crate::NativeTreeMaterializationError>(bytes.len())
         })();
-        match result {
-            Ok(count) => Ok(count),
-            Err(error) => {
-                self.failure = Some(error);
-                Err(std::io::ErrorKind::Other.into())
-            }
-        }
+        result.map_err(std::io::Error::other)
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())

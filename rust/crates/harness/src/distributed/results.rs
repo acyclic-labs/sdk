@@ -30,7 +30,11 @@ impl ReducerRegistry {
         entrypoint: EntrypointRef,
         reducer: fn(&[(String, serde_json::Value)]) -> Result<crate::Outcome<serde_json::Value>>,
     ) -> Result<()> {
-        crate::contract::compile_json_schema(&entrypoint.result_schema, "reducer result", &mut None)?;
+        crate::contract::compile_json_schema(
+            &entrypoint.result_schema,
+            "reducer result",
+            &mut None,
+        )?;
         if self.get(&entrypoint).is_some() {
             return Err(Error::Conflict("reducer is already registered".into()));
         }
@@ -166,7 +170,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     ) -> Result<(serde_json::Value, u64)> {
         reference.validate(work)?;
         if reference.descriptor().media_type() != "application/json" {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Invalid,
                 "scheduler result must be a JSON file",
@@ -212,7 +216,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         };
         custody.adopt(canonical_bytes)?;
         if canonical.as_slice() != bytes.as_ref() {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 custody.work(),
                 wire::ErrorCode::Invalid,
                 "scheduler result is not canonical JSON",

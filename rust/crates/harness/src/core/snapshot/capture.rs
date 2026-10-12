@@ -79,8 +79,11 @@ impl Reducer {
             return Err(Error::Invalid("snapshot must retain its head event".into()));
         }
         let bytes = if work.is_some() {
-            self.projection
-                .owned_bytes(&self.authority, self.events.iter(), self.events.capacity())?
+            self.projection.owned_bytes(
+                &self.authority,
+                self.events.iter(),
+                self.events.capacity(),
+            )?
         } else {
             0
         };

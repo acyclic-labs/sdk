@@ -15,7 +15,6 @@ use acyclic_stream::{CommitMutation, CommitRequest};
 
 use serde::{Deserialize, Serialize};
 
-use crate::distributed::{SdkCallError, sdk_error, sdk_source};
 
 mod codec;
 pub(crate) use codec::*;
