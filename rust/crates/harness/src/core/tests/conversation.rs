@@ -135,33 +135,14 @@ fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
 
 #[test]
 fn conversation_binding_and_messages_replay_through_snapshot() -> Result<()> {
-    use crate::conversation::{MessageKind, ReferencedAttachments, VolumeClass};
-    use crate::resources::ProviderRef;
-    let agent = AgentId::from_bytes([9; 16]);
-    let volume = VolumeRef::new(
-        ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?,
-        "agent-9".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
-        &mut None,
-    )?;
-    let message = ConversationMessage {
-        id: uuid::Uuid::from_bytes([1; 16]),
-        sequence: 1,
-        kind: MessageKind::User,
-        content: FileRef::new(
-            volume,
-            "messages/one.txt".into(),
-            "generation-1".into(),
-            FileDescriptor::from_bytes(b"hello", "text/plain", &mut None)?,
-            "one.txt".into(),
-            &mut None,
-        )?,
-        attachments: ReferencedAttachments::Inline { items: Vec::new() },
-        reply_to: None,
-        tool_call_id: None,
-        extensions: BTreeMap::new(),
+    let message: ConversationMessage = serde_json::from_slice(include_bytes!(
+        "../../../fixtures/v2/conversation-message.json"
+    ))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    let VolumeOwner::Agent(agent) = message.content.volume().owner() else {
+        panic!("agent-owned fixture")
     };
+    let agent = *agent;
     let verifier = issuer().verifier(&mut None).expect("verifier copy");
     let mut reducer = reducer_fixture();
     let append = |id, revision| {

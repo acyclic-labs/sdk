@@ -392,7 +392,7 @@ pub(super) fn open_windows_held<W: NativeHostWork>(
         require_leaf(path)?;
     }
     with_wide_path(path, work, |path, work| {
-        open_windows_wide_at(directory, path, access, options, work, W::invalid_request)?
+        open_windows_wide_at(directory, path, access, options, work)?
             .map(cap_std::fs::File::into_std)
             .ok_or_else(|| {
                 status_error(windows::Win32::Foundation::NTSTATUS(

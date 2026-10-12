@@ -216,10 +216,11 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
         Err(Error::Unauthorized(_))
     ));
     let wrong_generation = crate::resources::GenerationRef::new(
-        ProviderRef::new("wrong".into(), "filesystem".into(), "2".into(), &mut None)?,
-        old_generation.as_resource().key().to_vec(),
+        &ProviderRef::new("wrong".into(), "filesystem".into(), "2".into(), &mut None)?,
+        old_generation.as_resource().key(),
         None,
-    )?;
+        None,
+    )?.0;
     assert!(
         owner
             .list(&project, "src", "src", &wrong_generation, None, 1)
@@ -524,13 +525,13 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     )?;
     let stream_provider =
         ProviderRef::new("restore".into(), "stream".into(), "2".into(), &mut None)?;
-    let forks = Arc::new(CompositeForkVerifier::new(
+    let forks = CompositeForkVerifier::new(
         &[
             FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536, None, None)?,
-            Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+            StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
         ],
         &mut None,
-    )?);
+    )?;
     let mut history = StreamAggregate::open(
         &fixture.stream,
         authority.clone(),

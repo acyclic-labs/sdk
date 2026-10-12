@@ -1,5 +1,14 @@
 use super::*;
 
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+fn prepared_read_fixture() -> io::Result<(tempfile::TempDir, NativeFile)> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("prepared-read");
+    std::fs::write(&path, b"abc")?;
+    let file = bounded_write_file(&path, false)?;
+    Ok((directory, file))
+}
+
 #[test]
 fn ownership_release_barrier_waits_for_the_final_clone() {
     let anchor = OwnershipAnchor::new(());
@@ -166,11 +175,7 @@ fn denied_file_import_returns_original_handle_without_fabricated_io() -> io::Res
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 #[test]
 fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io::Result<()> {
-    initialize_native_io_services()?;
-    let temporary = tempfile::tempdir()?;
-    let path = temporary.path().join("prepared-prefix");
-    std::fs::write(&path, b"abc")?;
-    let file = bounded_write_file(&path, false)?;
+    let (_directory, file) = prepared_read_fixture()?;
     for (offset, expected) in [(0, 3), (3, 0)] {
         let meter = Arc::new(ReadBudgetMeter::new(8, 8));
         let storage = vec![0x55; 8];
@@ -188,11 +193,7 @@ fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io:
         assert!(file.health.tail.lock().unwrap().is_none());
         let weak = Arc::downgrade(&meter);
         drop(meter);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while weak.upgrade().is_some() && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert!(weak.upgrade().is_none());
+        wait_until(|| weak.upgrade().is_none());
         drop(storage);
     }
     Ok(())
@@ -201,11 +202,7 @@ fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io:
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 #[test]
 fn prepared_read_exact_eof_and_late_cancel_preserve_physical_work() -> io::Result<()> {
-    initialize_native_io_services()?;
-    let temporary = tempfile::tempdir()?;
-    let path = temporary.path().join("prepared-refusal");
-    std::fs::write(&path, b"abc")?;
-    let file = bounded_write_file(&path, false)?;
+    let (_directory, file) = prepared_read_fixture()?;
     for (prepared, late_cancel) in [(true, false), (true, true), (false, true)] {
         let mut limits = ReadBudgetMeter::new(8, 8);
         limits.cancel_after_read = late_cancel;
@@ -230,11 +227,7 @@ fn prepared_read_exact_eof_and_late_cancel_preserve_physical_work() -> io::Resul
             }
         );
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while meter.memory.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+        wait_until(|| meter.memory.load(Ordering::Acquire) == 0);
     }
     Ok(())
 }
@@ -242,11 +235,7 @@ fn prepared_read_exact_eof_and_late_cancel_preserve_physical_work() -> io::Resul
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 #[test]
 fn prepared_read_panic_preserves_original_payload_and_actual_work() -> io::Result<()> {
-    initialize_native_io_services()?;
-    let temporary = tempfile::tempdir()?;
-    let path = temporary.path().join("prepared-panic");
-    std::fs::write(&path, b"abc")?;
-    let file = bounded_write_file(&path, false)?;
+    let (_directory, file) = prepared_read_fixture()?;
     let mut limits = ReadBudgetMeter::new(8, 3);
     limits.panic_after_read = true;
     let meter = Arc::new(limits);
@@ -263,11 +252,7 @@ fn prepared_read_panic_preserves_original_payload_and_actual_work() -> io::Resul
     assert_eq!(meter.read.load(Ordering::Acquire), 3);
     drop(payload);
     drop(read);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while meter.memory.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+    wait_until(|| meter.memory.load(Ordering::Acquire) == 0);
     assert!(file.health.tail.lock().unwrap().is_none());
     Ok(())
 }

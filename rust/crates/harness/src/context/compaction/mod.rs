@@ -1,233 +1,101 @@
 //! Primitive threshold compaction using provider-owned token accounting.
 
-use super::{CompactionRetention, Context, ModelContextCapacity, ModelTokenCount};
+use super::{CompactionRetention, Context, ContextSummary, ModelContextCapacity, ModelTokenCount};
 use crate::{Error, Result, model::ModelContentPart};
 use serde::{Deserialize, Serialize};
 
-mod policy;
-pub use policy::*;
+/// Ordinary configurable threshold compaction; no model-family heuristic.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct ThresholdCompaction {
+    /// Input headroom retained for each response.
+    pub response_reserve_tokens: u32,
+    /// Minimum recent suffix token budget retained alongside mandatory content.
+    pub recent_tokens: u32,
+    /// Consumer-selected roles and media that remain verbatim.
+    pub retention: CompactionRetention,
+}
+
+impl Default for ThresholdCompaction {
+    fn default() -> Self {
+        Self {
+            response_reserve_tokens: 16_384,
+            recent_tokens: 20_000,
+            retention: CompactionRetention::default(),
+        }
+    }
+}
+
+impl ThresholdCompaction {
+    /// Validates the defaults or replacement against the actual selected capacity.
+    pub fn validate(
+        &self,
+        capacity: ModelContextCapacity,
+        output_tokens: Option<u32>,
+    ) -> Result<u32> {
+        capacity.validate()?;
+        self.retention.validate(None)?;
+        let required = u64::from(self.response_reserve_tokens) + u64::from(self.recent_tokens);
+        let output =
+            output_tokens.unwrap_or(capacity.output_tokens.min(self.response_reserve_tokens));
+        if self.response_reserve_tokens == 0
+            || self.recent_tokens == 0
+            || required >= u64::from(capacity.context_tokens)
+            || output == 0
+            || output > capacity.output_tokens
+            || output > self.response_reserve_tokens
+        {
+            return Err(Error::Invalid(
+                "compaction budgets exceed selected model capacity".into(),
+            ));
+        }
+        Ok(output)
+    }
+
+    /// Tests input pressure against the validated response reserve.
+    pub fn needs_compaction(
+        &self,
+        capacity: ModelContextCapacity,
+        input_tokens: u64,
+    ) -> Result<bool> {
+        self.validate(capacity, None)?;
+        Ok(input_tokens > u64::from(capacity.context_tokens - self.response_reserve_tokens))
+    }
+}
+
+/// Selects automatic threshold compaction or the installed context pipeline.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(
+    deny_unknown_fields,
+    tag = "kind",
+    content = "config",
+    rename_all = "snake_case"
+)]
+pub enum CompactionPolicy {
+    /// Preserve the installed context pipeline without automatic summarization.
+    Disabled,
+    /// Perform admitted threshold compaction under the selected model's capacities.
+    Threshold(ThresholdCompaction),
+}
+
+impl Default for CompactionPolicy {
+    fn default() -> Self {
+        Self::Threshold(ThresholdCompaction::default())
+    }
+}
+
+mod selection;
+pub(crate) use selection::compact_context;
+pub(super) use selection::mandatory_flags;
+use selection::{compaction_error, compaction_step};
 mod copying;
-pub(crate) use copying::{
-    clone_context, clone_context_prefix, clone_messages, clone_metadata, reserve_vector,
-};
-use copying::{quota_vector, retire_vector};
+pub(crate) use copying::{clone_context, clone_messages, clone_metadata};
+mod allocation;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-mod native;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use native::clone_retention_native;
+pub(crate) use allocation::clone_retention_native;
+pub(crate) use allocation::reserve_vector;
+use allocation::{quota_vector, retire_vector};
 #[cfg(test)]
 mod tests;
-
-pub(super) fn mandatory_flags<'a>(
-    context: &'a Context,
-    covered: usize,
-    retention: &super::CompactionRetention,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<(Vec<bool>, Vec<(&'a str, usize)>)> {
-    let parts = context
-        .messages
-        .iter()
-        .try_fold(0_usize, |count, message| {
-            count.checked_add(message.content.parts().len())
-        })
-        .ok_or_else(|| compaction_error(quota.work(), "context part count overflows"))?;
-    let mut pending = quota_vector::<(&str, usize)>(parts, quota)?;
-    let mut edges = quota_vector::<(usize, usize)>(parts, quota)?;
-    let mut selected = quota_vector::<bool>(context.messages.len(), quota)?;
-    for (position, message) in context.messages.iter().enumerate() {
-        compaction_step(quota)?;
-        selected.push(
-            context.current_input_index.map(|index| index as usize) == Some(position)
-                || position + 1 == context.messages.len()
-                || position >= covered
-                || retention.roles.contains(&message.role)
-                || (retention.native_media && message.content.contains_native_media()),
-        );
-        for part in message.content.parts() {
-            compaction_step(quota)?;
-            match part {
-                ModelContentPart::ToolCall { call_id, .. } => {
-                    if let Some(prior) = pending.iter_mut().find(|(id, _)| *id == call_id) {
-                        prior.1 = position;
-                    } else {
-                        pending.push((call_id, position));
-                    }
-                }
-                ModelContentPart::ToolResult { call_id, .. } => {
-                    if let Some(prior) = pending.iter().position(|(id, _)| *id == call_id) {
-                        let (_, call) = pending.swap_remove(prior);
-                        edges.push((call, position));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    loop {
-        let mut changed = false;
-        for &(call, response) in &edges {
-            compaction_step(quota)?;
-            if selected[call] || selected[response] {
-                changed |= !selected[call] || !selected[response];
-                selected[call] = true;
-                selected[response] = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    retire_vector(edges, quota)?;
-    pending.clear();
-    Ok((selected, pending))
-}
-
-pub(crate) fn compact_context(
-    context: &Context,
-    maximum: usize,
-    summary: &super::ContextSummary,
-    retention: &super::CompactionRetention,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<(Context, u64)> {
-    use crate::model::{ModelContent, ModelMessage, ModelRole};
-    if maximum < 2 {
-        return Err(compaction_error(
-            work,
-            "compaction must retain the current input and summary",
-        ));
-    }
-    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-    let mut result = Context::default();
-    let made = (|| {
-        let (mut selected, mut pending) = mandatory_flags(
-            context,
-            summary.source_messages as usize,
-            retention,
-            &mut quota,
-        )?;
-        let mut count = selected.iter().filter(|value| **value).count();
-        if count >= maximum {
-            return Err(compaction_error(
-                quota.work(),
-                "mandatory context exceeds compaction message budget",
-            ));
-        }
-        for selected in selected.iter_mut().rev() {
-            if count + 1 == maximum {
-                break;
-            }
-            if !*selected {
-                *selected = true;
-                count += 1;
-            }
-        }
-        result.messages = quota_vector::<ModelMessage>(count + 1, &mut quota)?;
-        let file = if quota.work().is_some() {
-            summary.output.clone_in_quota(&mut quota)?
-        } else {
-            summary.output.clone()
-        };
-        result.messages.push(ModelMessage {
-            role: ModelRole::Assistant,
-            content: ModelContent::Part(ModelContentPart::File {
-                file,
-                policy: crate::model::FileProjectionPolicy::BoundedFull,
-            }),
-        });
-        for (position, message) in context.messages.iter().enumerate() {
-            if !selected[position] {
-                continue;
-            }
-            for part in message.content.parts() {
-                compaction_step(&mut quota)?;
-                match part {
-                    ModelContentPart::ToolCall { call_id, .. } => {
-                        if !pending.iter().any(|(id, _)| *id == call_id) {
-                            pending.push((call_id, position));
-                        }
-                    }
-                    ModelContentPart::ToolResult { call_id, .. } => {
-                        let prior = pending
-                            .iter()
-                            .position(|(id, _)| *id == call_id)
-                            .ok_or_else(|| {
-                                compaction_error(
-                                    quota.work(),
-                                    "compaction boundary splits a tool exchange",
-                                )
-                            })?;
-                        pending.swap_remove(prior);
-                    }
-                    _ => {}
-                }
-            }
-            if context.current_input_index.map(|index| index as usize) == Some(position) {
-                result.current_input_index =
-                    Some(u32::try_from(result.messages.len()).map_err(|_| {
-                        compaction_error(quota.work(), "current input index exceeds portable count")
-                    })?);
-            }
-            let slot = std::mem::size_of::<ModelMessage>() as u64;
-            if let Some(io) = quota.work().as_deref() {
-                io.admit_copy(slot)?;
-            }
-            let (content, claim) = crate::model::clone_content(&message.content, quota.work())?;
-            quota.adopt(claim)?;
-            if let Some(io) = quota.work().as_deref_mut() {
-                io.copy_bytes(slot)?;
-            }
-            result.messages.push(ModelMessage {
-                role: message.role,
-                content,
-            });
-        }
-        if !pending.is_empty() {
-            return Err(compaction_error(
-                quota.work(),
-                "compaction boundary splits a tool exchange",
-            ));
-        }
-        retire_vector(pending, &mut quota)?;
-        retire_vector(selected, &mut quota)?;
-        let (metadata, claim) = clone_metadata(&context.metadata, quota.work())?;
-        result.metadata = metadata;
-        quota.adopt(claim)?;
-        Ok(())
-    })();
-    if let Err(error) = made {
-        drop(result);
-        return Err(error);
-    }
-    let claim = if quota.work().is_some() {
-        quota.retained()
-    } else {
-        0
-    };
-    quota.transfer();
-    Ok((result, claim))
-}
-
-fn compaction_step(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {
-    if let Some(io) = quota.work().as_deref_mut() {
-        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-    }
-    Ok(())
-}
-
-fn compaction_error(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
-    reason: &'static str,
-) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work
-        .as_deref()
-        .is_some_and(|io| io.original_native_work().is_some())
-    {
-        return crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason,
-        };
-    }
-    let _ = work;
-    Error::Invalid(reason.into())
-}

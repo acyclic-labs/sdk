@@ -40,8 +40,6 @@ pub struct Evidence {
     pub records: Vec<(String, String, String)>,
     /// Closed operation names in retirement order.
     pub closes: Vec<String>,
-    /// Parent of the last observed event.
-    pub event_parent: Option<String>,
     /// Event parents and debug fields.
     pub events: Vec<(Option<String>, Vec<(String, String, String)>)>,
 }
@@ -118,7 +116,6 @@ where
         let mut fields = Vec::new();
         event.record(&mut DebugFields(&mut fields, event.metadata().target()));
         let mut evidence = self.0.lock().unwrap();
-        evidence.event_parent = parent.clone();
         evidence.events.push((parent, fields));
     }
     fn on_close(&self, id: tracing::Id, _: Context<'_, S>) {

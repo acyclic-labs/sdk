@@ -65,7 +65,6 @@ pub(super) fn open_windows_link<W: NativeHostWork>(
         FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
         work,
-        &invalid_request,
     )?
     .ok_or_else(invalid_request)
 }

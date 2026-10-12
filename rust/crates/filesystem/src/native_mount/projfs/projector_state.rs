@@ -155,7 +155,7 @@ impl ViewObserver for Projector {
 }
 
 pub(super) enum Replaced {
-    Rewritten(Box<WrittenEntry>),
+    Rewritten(WrittenEntry),
     Released,
     Busy,
 }

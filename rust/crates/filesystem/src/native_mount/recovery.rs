@@ -26,11 +26,9 @@ impl NativeMountCleanupState<'_> {
     }
 }
 
-/// Borrowed actual recovery custody, not a physical root-presence probe.
+/// Actual recovery resources and completed driver actions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeMountRecoveryCleanupState<'a> {
-    /// Original destination.
-    pub destination: &'a Path,
+pub struct NativeMountRecoveryCleanupState {
     /// Identity queried from the actual original held fence file.
     pub fence_identity: crate::NativeRootIdentity,
     /// Original destination fence remains owned.
@@ -82,16 +80,6 @@ pub(super) struct NativeRecoveryState {
     pub(super) retirement_error: Option<NativeMountError>,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct NativeRecoverySnapshot {
-    pub(super) fence_identity: crate::NativeRootIdentity,
-    pub(super) destination_fence_retained: bool,
-    pub(super) controls_pending: bool,
-    pub(super) namespace_detach_confirmed: bool,
-    pub(super) destination_removed: bool,
-    pub(super) measured_cleanup_failed: bool,
-}
-
 pub(super) enum NativeRecoveryCommand {
     Action {
         remove_destination: bool,
@@ -103,7 +91,7 @@ pub(super) enum NativeRecoveryCommand {
 pub(super) struct NativeRecoveryMailbox {
     pub(super) command: Option<NativeRecoveryCommand>,
     pub(super) reply: Option<Result<bool, NativeMountError>>,
-    pub(super) snapshot: Option<NativeRecoverySnapshot>,
+    pub(super) snapshot: Option<NativeMountRecoveryCleanupState>,
     // Actual state DATA has dropped; this is not a std thread-join proof.
     pub(super) state_retired: bool,
 }
@@ -234,25 +222,15 @@ impl NativeMountRecoveryOwner {
         Ok(owner)
     }
 
-    /// Borrows the real original identity, evidence, and retained resources.
+    /// Returns the original identity and actual recovery state.
     #[must_use]
-    pub fn cleanup_state(&self) -> NativeMountRecoveryCleanupState<'_> {
-        let state = self
-            .shared
+    pub fn cleanup_state(&self) -> NativeMountRecoveryCleanupState {
+        self.shared
             .mailbox
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .snapshot
-            .expect("only an actually acquired owner is published");
-        NativeMountRecoveryCleanupState {
-            destination: &self.shared.destination,
-            fence_identity: state.fence_identity,
-            destination_fence_retained: state.destination_fence_retained,
-            controls_pending: state.controls_pending,
-            namespace_detach_confirmed: state.namespace_detach_confirmed,
-            destination_removed: state.destination_removed,
-            measured_cleanup_failed: state.measured_cleanup_failed,
-        }
+            .expect("only an actually acquired owner is published")
     }
     /// Recovers through the same engine with an explicit unbounded allowance.
     pub fn recover(&mut self) -> Result<bool, NativeMountError> {
@@ -394,8 +372,11 @@ impl NativeRecoveryState {
         result
     }
 
-    pub(super) fn snapshot(&self, identity: crate::NativeRootIdentity) -> NativeRecoverySnapshot {
-        NativeRecoverySnapshot {
+    pub(super) fn snapshot(
+        &self,
+        identity: crate::NativeRootIdentity,
+    ) -> NativeMountRecoveryCleanupState {
+        NativeMountRecoveryCleanupState {
             fence_identity: identity,
             destination_fence_retained: self.guard.is_some(),
             controls_pending: self.control.controls_pending(),

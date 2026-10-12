@@ -114,8 +114,8 @@ pub(super) fn delete_link(path: &std::path::Path, digest: u64) -> std::io::Resul
         .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
         .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
         .open(path)?;
-    let target = reparse_data(&link, symbolic_link_target)?.flatten();
-    if target.is_none_or(|target| link_digest(target) != digest) {
+    let target = reparse_data(&link, symbolic_link_digest)?.flatten();
+    if target != Some(digest) {
         return Ok(false);
     }
     delete_through(&link, || Ok::<_, std::io::Error>(()))?;
@@ -181,7 +181,7 @@ pub(super) fn delete_through<E: From<std::io::Error>>(
     Ok(())
 }
 
-pub(super) fn symbolic_link_target(data: &[u8]) -> Option<Vec<u16>> {
+pub(super) fn symbolic_link_digest(data: &[u8]) -> Option<u64> {
     const SYMLINK: u32 = 0xA000_000C;
     const PATH_BUFFER: usize = 20;
     let field = |at: usize| {
@@ -194,15 +194,21 @@ pub(super) fn symbolic_link_target(data: &[u8]) -> Option<Vec<u16>> {
     }
     let (offset, length) = (field(8)?, field(10)?);
     let name = data.get(PATH_BUFFER + offset..PATH_BUFFER + offset + length)?;
-    let mut units = decode_utf16_name(name)?;
-    let unc = r"\??\UNC\".encode_utf16().collect::<Vec<_>>();
-    let nt = r"\??\".encode_utf16().collect::<Vec<_>>();
-    if units.starts_with(&unc) {
-        units.splice(..unc.len(), r"\\".encode_utf16());
-    } else if units.starts_with(&nt) {
-        units.drain(..nt.len());
+    if !name.len().is_multiple_of(2) {
+        return None;
     }
-    Some(units)
+    let unc = b"\\\0?\0?\0\\\0U\0N\0C\0\\\0";
+    let nt = b"\\\0?\0?\0\\\0";
+    let (slashes, name) = match name.strip_prefix(unc) {
+        Some(name) => (2, name),
+        None => (0, name.strip_prefix(nt).unwrap_or(name)),
+    };
+    Some(link_digest(
+        std::iter::repeat_n(u16::from(b'\\'), slashes).chain(
+            name.chunks_exact(2)
+                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]])),
+        ),
+    ))
 }
 
 pub(super) fn delete_unowned(

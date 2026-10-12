@@ -1,149 +1,116 @@
 use super::*;
 
-pub(super) const NATIVE_WITNESS_VERSION: u8 = 1;
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) const NATIVE_WITNESS_VERSION: u8 = 2;
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct NativeMetadataImage {
     pub(super) readonly: bool,
     pub(super) posix_mode: Option<u32>,
     pub(super) windows_attributes: Option<u32>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) type NativeFingerprint = [u8; 32];
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) type NativeWitness = (Option<NativeFingerprint>, Option<NativeFingerprint>);
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn encode_native_witness(
     before: Option<[u8; 32]>,
     after: Option<[u8; 32]>,
     metadata: Option<NativeMetadataImage>,
     work: &NativeMaterializationWork,
-) -> Result<MaterializationPreimage, NativeTreeMaterializationError> {
+) -> Result<(Vec<u8>, NativeAllocation), NativeTreeMaterializationError> {
     use std::io::Write as _;
-    let mut writer = NativeImageWriter::new(work)?;
     let mut header = [0; 67];
     header[0] = NATIVE_WITNESS_VERSION;
-    if let Some(before) = before {
-        header[1] = 1;
-        header[2..34].copy_from_slice(&before);
+    for (index, fingerprint) in [before, after].into_iter().enumerate() {
+        let offset = 1 + index * 33;
+        header[offset] = u8::from(fingerprint.is_some());
+        header[offset + 1..offset + 33].copy_from_slice(&fingerprint.unwrap_or([0; 32]));
     }
-    if let Some(after) = after {
-        header[34] = 1;
-        header[35..67].copy_from_slice(&after);
+    let mut writer = ImageWriter {
+        bytes: Vec::new(),
+        allocation: work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
+        failure: None,
+    };
+    if let Err(error) = writer.write_all(&header) {
+        return Err(writer.failure.take().unwrap_or_else(|| error.into()));
     }
-    writer
-        .write_all(&header)
-        .map_err(|error| writer.failure.take().unwrap_or_else(|| error.into()))?;
     if let Some(metadata) = metadata {
-        writer.metadata(&metadata)?;
+        if serde_json::to_writer(&mut writer, &metadata).is_err() {
+            return Err(writer
+                .failure
+                .take()
+                .unwrap_or(NativeTreeMaterializationError::InvalidLayout));
+        }
     }
-    Ok(MaterializationPreimage {
-        image: writer.image,
-        custody: Some(writer.allocation),
-    })
+    Ok((writer.bytes, writer.allocation))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn decode_native_witness(
     image: &[u8],
-) -> Result<(Option<[u8; 32]>, Option<[u8; 32]>), NativeTreeMaterializationError> {
-    if image.len() < 67 || image[0] != NATIVE_WITNESS_VERSION {
+) -> Result<NativeWitness, NativeTreeMaterializationError> {
+    let (witness, _) = image
+        .split_at_checked(67)
+        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+    let image: &[u8; 67] = witness
+        .try_into()
+        .map_err(|_| NativeTreeMaterializationError::InvalidLayout)?;
+    let (version, fields) = image
+        .split_first()
+        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+    if *version != NATIVE_WITNESS_VERSION {
         return Err(NativeTreeMaterializationError::InvalidLayout);
     }
-    let decode = |offset| {
-        let bytes: &[u8] = &image[offset..offset + 33];
-        let fingerprint: [u8; 32] = bytes[1..]
+    let decode = |present: u8, bytes: &[u8]| {
+        let fingerprint: [u8; 32] = bytes
             .try_into()
             .map_err(|_| NativeTreeMaterializationError::InvalidLayout)?;
-        match bytes[0] {
+        match present {
             0 if fingerprint == [0; 32] => Ok(None),
             1 => Ok(Some(fingerprint)),
             _ => Err(NativeTreeMaterializationError::InvalidLayout),
         }
     };
-    Ok((decode(1)?, decode(34)?))
+    let (before, after) = fields
+        .split_at_checked(33)
+        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+    let (before_present, before_bytes) = before
+        .split_first()
+        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+    let (after_present, after_bytes) = after
+        .split_first()
+        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+    Ok((
+        decode(*before_present, before_bytes)?,
+        decode(*after_present, after_bytes)?,
+    ))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn decode_native_preimage_metadata(
+    image: &[u8],
+) -> Result<Option<NativeMetadataImage>, NativeTreeMaterializationError> {
+    let (_, metadata) = image
+        .split_at_checked(67)
+        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+    if metadata.is_empty() {
+        Ok(None)
+    } else {
+        serde_json::from_slice(metadata)
+            .map(Some)
+            .map_err(|_| NativeTreeMaterializationError::InvalidLayout)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn decode_native_metadata(
     image: &[u8],
 ) -> Result<NativeMetadataImage, NativeTreeMaterializationError> {
     serde_json::from_slice(image).map_err(|_| NativeTreeMaterializationError::InvalidLayout)
-}
-
-pub(super) struct NativeImageWriter<'a> {
-    pub(super) image: Vec<u8>,
-    pub(super) allocation: NativeAllocation,
-    pub(super) failure: Option<NativeTreeMaterializationError>,
-    work: &'a NativeMaterializationWork,
-}
-impl<'a> NativeImageWriter<'a> {
-    pub(super) fn new(
-        work: &'a NativeMaterializationWork,
-    ) -> Result<Self, NativeTreeMaterializationError> {
-        Ok(Self {
-            image: Vec::new(),
-            allocation: work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
-            failure: None,
-            work,
-        })
-    }
-    pub(super) fn metadata(
-        &mut self,
-        value: &NativeMetadataImage,
-    ) -> Result<(), NativeTreeMaterializationError> {
-        serde_json::to_writer(&mut *self, value).map_err(|error| {
-            self.failure
-                .take()
-                .unwrap_or_else(|| std::io::Error::other(error).into())
-        })
-    }
-}
-impl std::io::Write for NativeImageWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let result = (|| {
-            let delta = crate::WorkCounters {
-                bytes_encoded: bytes.len() as u64,
-                bytes_copied: bytes.len() as u64,
-                ..crate::WorkCounters::UNCHARGED
-            };
-            self.work.admit(delta)?;
-            let needed = self
-                .image
-                .len()
-                .checked_add(bytes.len())
-                .ok_or(crate::WorkError::Overflow)?;
-            if needed > self.image.capacity() {
-                self.allocation
-                    .grow((needed - self.image.capacity()) as u64)?;
-                let reserved = self.image.try_reserve_exact(needed - self.image.len());
-                let reconciled = self
-                    .allocation
-                    .reconcile_capacity(self.image.capacity() as u64);
-                reserved.map_err(NativeTreeMaterializationError::AllocationFailed)?;
-                reconciled?;
-            }
-            self.image.extend_from_slice(bytes);
-            self.work.spent(delta)?;
-            Ok::<_, NativeTreeMaterializationError>(bytes.len())
-        })();
-        result.map_err(|error| {
-            self.failure = Some(error);
-            std::io::ErrorKind::Other.into()
-        })
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-#[cfg(feature = "native-mount")]
-pub(super) fn encode_native_metadata(
-    metadata: &crate::WorkspaceMetadata,
-    work: &NativeMaterializationWork,
-) -> Result<(Vec<u8>, NativeAllocation), NativeTreeMaterializationError> {
-    let mut writer = NativeImageWriter::new(work)?;
-    writer.metadata(&NativeMetadataImage {
-        readonly: metadata
-            .windows_attributes
-            .is_some_and(|attributes| attributes & 1 != 0)
-            || metadata.posix_mode.is_some_and(|mode| mode & 0o222 == 0),
-        posix_mode: metadata.posix_mode,
-        windows_attributes: metadata.windows_attributes,
-    })?;
-    Ok((writer.image, writer.allocation))
 }

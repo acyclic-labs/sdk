@@ -197,7 +197,7 @@ pub(super) fn retained_file(
         Ok(custody) => Ok((file, Some(custody))),
         Err(cause) => {
             drop(file);
-            let retired = work.native_read_meter().lock().release(bytes);
+            let retired = (&work.state).lock().release(bytes);
             retired?;
             Err(cause.into())
         }

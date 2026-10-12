@@ -100,7 +100,7 @@ async fn native_stock_startup_retains_original_configuration_and_current_context
     let tool = crate::tool::files::read_file()?;
     let grant = format!("tool:{}", tool.definition.name);
     let mut tools = crate::tool::ToolRegistry::default();
-    tools.register(tool)?;
+    tools.register((tool, None), &mut None, None)?;
     let fixture = NativeCustomerFixture::new_with_grants(&[&grant], tools.clone()).await?;
     let volume = VolumeRef::new(
         fixture.creation.filesystem_provider.clone(),
@@ -334,7 +334,7 @@ impl SandboxCreator {
         };
         assert_eq!(evidence, expected_evidence);
         let bytes = crate::contract::canonical_json_bytes(&allocation)?;
-        crate::contract::validate_json_byte_bound(&allocation, request.maximum_bytes)?;
+        crate::contract::json_byte_length(&allocation, request.maximum_bytes, &mut None).map(|_| ())?;
         if manifest_bytes.saturating_add(bytes.len() as u64) > request.maximum_bytes {
             return Err(Error::Invalid(
                 "sandbox allocation exceeds its aggregate IO bound".into(),
@@ -601,11 +601,7 @@ impl CreationFixture {
                     .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
                 let initial_generation = initial.id();
                 let workspace = workspace_ref(filesystem_provider.clone(), &name)?;
-                let initial_ref = GenerationRef::new(
-                    filesystem_provider.clone(),
-                    initial_generation.digest().into_bytes().to_vec(),
-                    None,
-                )?;
+                let initial_ref = GenerationRef::new(&(filesystem_provider), &(initial_generation.digest().into_bytes()), None, None)?.0;
                 let selected = filesystem
                     .apply(
                         &workspace,
@@ -1159,10 +1155,7 @@ async fn original_creation_fence_survives_current_preparation_and_parent_recover
         .coordinator
         .lock()
         .await
-        .release_lease(
-            &original_prep,
-            IdempotencyKey::new("release-created-preparation")?,
-        )
+        .apply(IdempotencyKey::new("release-created-preparation")?, crate::scheduler::SchedulerEvent::LeaseReleased { operation_id: original_prep.operation.operation_id, fence: crate::scheduler::LeaseFence::from(&original_prep.reservation) }, &mut None)
         .await?;
     let crate::distributed::WorkPull::Claimed(recovered_prep) =
         fixture.host.pull_work(&fixture.worker).await?
@@ -1177,10 +1170,7 @@ async fn original_creation_fence_survives_current_preparation_and_parent_recover
         .coordinator
         .lock()
         .await
-        .release_lease(
-            &fixture.root_lease,
-            IdempotencyKey::new("release-created-parent")?,
-        )
+        .apply(IdempotencyKey::new("release-created-parent")?, crate::scheduler::SchedulerEvent::LeaseReleased { operation_id: fixture.root_lease.operation.operation_id, fence: crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation) }, &mut None)
         .await?;
     let old_parent_fence = (&fixture.root_lease.reservation).into();
     let crate::distributed::WorkPull::Claimed(recovered_parent) =
@@ -1539,7 +1529,7 @@ impl CreationFixture {
             read_authorization: fork.authorized_source.clone(),
         };
         let (preparation, _, _invocation) = self.prepare(&request).await?;
-        let report = preparer.prepare_for_task(fork, &preparation).await?;
+        let report = preparer.prepare_for_task(fork, &Arc::new(preparation)).await?;
         let seed = report.clone().into_seed(&mut None)?;
         Ok(PreparedFilesystemChild {
             request,

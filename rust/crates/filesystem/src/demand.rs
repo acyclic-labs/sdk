@@ -424,7 +424,7 @@ impl SourceCursor {
         }
     }
 
-    fn cursor_accounting_error(error: crate::FsError) -> DemandError {
+    pub(crate) fn cursor_accounting_error(error: crate::FsError) -> DemandError {
         match error {
             crate::FsError::Work(error) => DemandError::Work(error),
             crate::FsError::Cancelled(_) => DemandError::Cancelled,
@@ -5064,6 +5064,7 @@ impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native {
     use super::*;
+    use crate::native_host::{HostRoot, HostStat, HostStatReader, NativeHostWork as _};
     use crate::model::{FilesystemProfile, VolumeLimits};
     use crate::native_host::HostListedEntry;
     use std::path::{Path, PathBuf};

@@ -53,7 +53,7 @@ impl<A, O> Fs<A, O> {
         budget.finish(result, &accounting)
     }
 
-    pub(super) fn workspace_name(
+    pub(crate) fn workspace_name(
         &self,
         name: &str,
         accounting: &mut KernelAccounting<'_>,

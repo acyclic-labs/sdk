@@ -421,7 +421,6 @@ impl HostRoot {
                 FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
                 FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
                 work,
-                || DemandError::InvalidRequest,
             )?
             .ok_or(DemandError::InvalidRequest)?;
             return Ok(file);
@@ -450,7 +449,6 @@ impl HostRoot {
                     FILE_GENERIC_READ,
                     FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
                     work,
-                    || DemandError::InvalidRequest,
                 )?
                 .ok_or(DemandError::InvalidRequest)?
                 .into_std(),

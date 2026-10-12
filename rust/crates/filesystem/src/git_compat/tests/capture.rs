@@ -4,20 +4,7 @@ use super::*;
 async fn persisted_foreign_commit_tree_needs_capture_provenance() {
     let store = MemoryGitCompatStore::default();
     let mut state = GitCompatState::new("main", workspace());
-    let foreign = WorkspaceId::derive(
-        [8; 16],
-        &WorkspaceName::new(
-            "foreign-persisted-tree",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .expect("workspace name")
-        .value,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .expect("workspace identity")
-    .value;
+    let foreign = workspace_identity([8; 16], "foreign-persisted-tree");
     let commit = GitCommit::new(
         GitTreeRef::exact(foreign, generation(7)),
         tree(1),
@@ -572,8 +559,18 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
             .await
             .expect("retry");
     assert_eq!(first.generation.id(), retry.generation.id());
-    assert_eq!(first.initial_generation, retry.initial_generation);
-    assert_ne!(first.initial_generation, Some(first.generation.id()));
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+    let proof = first
+        .authenticated_proof(operation_id, &graph)
+        .await
+        .expect("first proof")
+        .expect("filtered proof");
+    let replay = retry
+        .authenticated_proof(operation_id, &graph)
+        .await
+        .expect("retry proof");
+    assert_eq!(Some(proof.clone()), replay);
+    assert_ne!(proof.initial_generation, first.generation.id());
 }
 
 #[test]

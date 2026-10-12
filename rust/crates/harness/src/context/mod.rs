@@ -19,12 +19,11 @@ use std::{collections::BTreeMap, sync::Arc};
 mod accounting;
 pub use accounting::*;
 mod selection;
-pub(crate) use selection::place_messages_with_io;
 pub use selection::*;
 mod discovery;
 pub use discovery::*;
 mod compaction;
-pub(crate) use compaction::clone_context_prefix;
+pub(crate) use compaction::clone_context;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use compaction::clone_retention_native;
 pub use compaction::*;

@@ -81,11 +81,11 @@ pub(super) fn reserve_slots<T>(
         slot.as_mut().expect("capacity custody"),
     )
 }
-pub(super) fn measured_order<K: Ord, V>(
-    values: &mut Vec<(K, V)>,
+pub(super) fn sort_records<T>(
+    values: &mut [T],
     work: &crate::materializer::NativeMaterializationWork,
+    compare: impl Fn(&T, &T) -> std::cmp::Ordering,
 ) -> Result<(), LocalCoreStateStoreError> {
-    // Preserve the public BTreeMap's last-write-wins and sorted encoding.
     for index in 1..values.len() {
         let mut position = index;
         while position != 0 {
@@ -93,17 +93,26 @@ pub(super) fn measured_order<K: Ord, V>(
                 items_examined: 1,
                 ..Default::default()
             })?;
-            if values[position - 1].0 <= values[position].0 {
+            if !compare(&values[position - 1], &values[position]).is_gt() {
                 break;
             }
             work.charge(crate::WorkCounters {
-                bytes_copied: (3 * std::mem::size_of::<(K, V)>()) as u64,
+                bytes_copied: (3 * std::mem::size_of::<T>()) as u64,
                 ..Default::default()
             })?;
             values.swap(position - 1, position);
             position -= 1;
         }
     }
+    Ok(())
+}
+
+pub(super) fn measured_order<K: Ord, V>(
+    values: &mut Vec<(K, V)>,
+    work: &crate::materializer::NativeMaterializationWork,
+) -> Result<(), LocalCoreStateStoreError> {
+    // Preserve the public BTreeMap's last-write-wins and sorted encoding.
+    sort_records(values, work, |left, right| left.0.cmp(&right.0))?;
     let mut index = 1;
     while index < values.len() {
         work.charge(crate::WorkCounters {
@@ -194,75 +203,9 @@ pub(super) fn measured_record_path(
     allocation: &mut crate::materializer::NativeAllocation,
 ) -> Result<PathBuf, LocalCoreStateStoreError> {
     let mut owned = work.path(root, Some(Path::new(leaf)))?;
-    owned.1.resize_retained(owned.0.capacity() as u64)?;
+    owned.1.resize(owned.0.capacity() as u64)?;
     allocation.absorb(&mut owned.1)?;
     Ok(owned.0)
-}
-
-pub(super) fn materialization_lock<T>(
-    paths: RecordPaths<'_>,
-    work: &crate::materializer::NativeMaterializationWork,
-    action: impl FnOnce(&RecordPaths<'_>) -> Result<T, LocalCoreStateStoreError>,
-) -> Result<T, LocalCoreStateStoreError> {
-    let (paths, mut lock) = materialization_acquire_lock(paths, work)?;
-    let result = action(&paths);
-    let cleanup = lock
-        .1
-        .take()
-        .ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?;
-    let (unlocked, recorded) = cleanup.attempt(|| FileExt::unlock(&lock.0));
-    match result {
-        Err(error) => Err(error),
-        Ok(value) => {
-            recorded?;
-            unlocked?;
-            Ok(value)
-        }
-    }
-}
-
-pub(super) fn materialization_acquire_lock<'a>(
-    mut paths: RecordPaths<'a>,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(RecordPaths<'a>, OwnerLock), LocalCoreStateStoreError> {
-    crate::native_host::create_directories(&paths.directory, &mut &*work)?;
-    let lock = materialization_open_options(
-        &paths.lock,
-        &crate::native_host::NativeOpenOptions::ReadWriteCreate,
-        work,
-    )?;
-    let cleanup = work.reserve_cleanup_write()?;
-    let deadline = Instant::now() + RECORD_LOCK_DEADLINE;
-    loop {
-        work.charge(crate::WorkCounters {
-            backend_read_operations: 1,
-            ..crate::WorkCounters::default()
-        })?;
-        match lock.try_lock_exclusive() {
-            Ok(()) => break,
-            Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
-                if Instant::now() >= deadline {
-                    let mut allocation = paths.allocation.take().expect("native record paths");
-                    drop((
-                        paths.directory,
-                        paths.current,
-                        paths.previous,
-                        paths.temporary,
-                    ));
-                    allocation.substitute(paths.lock.capacity() as u64)?;
-                    return Err(LocalCoreStateStoreError::LazyWork(
-                        crate::LazyWorkspaceError::NativeRecordLockTimeout(
-                            paths.lock,
-                            Some(allocation),
-                        ),
-                    ));
-                }
-                std::thread::sleep(RECORD_LOCK_RETRY);
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok((paths, OwnerLock(lock, Some(cleanup))))
 }
 
 pub(super) struct MaterializationReader<'a> {
@@ -321,7 +264,11 @@ pub(super) fn measured_read_file<T: DeserializeOwned>(
     path: &Path,
     work: &crate::materializer::NativeMaterializationWork,
 ) -> Result<Option<(T, crate::materializer::NativeAllocation)>, LocalCoreStateStoreError> {
-    let file = match materialization_open(path, false, work) {
+    let file = match materialization_open_options(
+        path,
+        &crate::native_host::NativeOpenOptions::Read,
+        work,
+    ) {
         Ok(file) => file,
         Err(crate::materializer::NativeTreeMaterializationError::Io(error))
             if error.kind() == std::io::ErrorKind::NotFound =>
@@ -366,7 +313,7 @@ pub(super) fn measured_json_error(error: serde_json::Error) -> LocalCoreStateSto
     match error.into_inner() {
         Some(inner) => {
             match inner.downcast::<crate::materializer::NativeTreeMaterializationError>() {
-                Ok(error) => LocalCoreStateStoreError::MaterializationWork(*error),
+                Ok(error) => LocalCoreStateStoreError::from(*error),
                 Err(error) => LocalCoreStateStoreError::Io(std::io::Error::new(kind, error)),
             }
         }
@@ -408,7 +355,7 @@ pub(super) fn measured_decode_reader<T: DeserializeOwned>(
     })
     .and_then(|value| deserializer.end().map(|()| value));
     if let Some(error) = decode.failure.borrow_mut().take() {
-        return Err(LocalCoreStateStoreError::MaterializationWork(error));
+        return Err(LocalCoreStateStoreError::from(error));
     }
     let value = result.map_err(measured_json_error)?;
     drop(deserializer);
@@ -420,30 +367,6 @@ pub(super) fn measured_decode_slice<T: DeserializeOwned>(
     work: &crate::materializer::NativeMaterializationWork,
 ) -> Result<(T, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
     measured_decode_reader(std::io::Cursor::new(bytes), bytes.len() as u64, work)
-}
-
-pub(super) fn measured_read_record<T: DeserializeOwned>(
-    paths: &RecordPaths,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<Option<(T, crate::materializer::NativeAllocation)>, LocalCoreStateStoreError> {
-    match measured_read_file(&paths.current, work) {
-        Ok(Some(value)) => Ok(Some(value)),
-        Err(LocalCoreStateStoreError::Io(error)) => Err(LocalCoreStateStoreError::Io(error)),
-        Err(LocalCoreStateStoreError::MaterializationWork(error)) => {
-            Err(LocalCoreStateStoreError::MaterializationWork(error))
-        }
-        Err(LocalCoreStateStoreError::Json(error)) if error.is_io() => {
-            Err(LocalCoreStateStoreError::Json(error))
-        }
-        current => match measured_read_file(&paths.previous, work)? {
-            Some(value) => {
-                materialization_copy(&paths.previous, &paths.current, work)?;
-                materialization_sync(&paths.directory, work)?;
-                Ok(Some(value))
-            }
-            None => current,
-        },
-    }
 }
 
 pub(super) struct MaterializationWriter<'a> {
@@ -501,16 +424,6 @@ impl Write for MaterializationWriter<'_> {
     }
 }
 
-pub(super) fn materialization_sync(
-    path: &Path,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(), LocalCoreStateStoreError> {
-    let root = crate::native_host::HostRoot::open(path, &mut &*work)?;
-    let directory = root.open_dir_held(Path::new(""), &mut &*work)?;
-    crate::native_host::sync_directory_held(&directory, &mut &*work)?;
-    Ok(())
-}
-
 pub(super) fn materialization_parent(
     path: &Path,
     work: &crate::materializer::NativeMaterializationWork,
@@ -523,23 +436,6 @@ pub(super) fn materialization_parent(
     held.open_dir_held(Path::new(""), &mut &*work)
 }
 
-pub(super) fn materialization_open(
-    path: &Path,
-    truncate: bool,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<File, crate::materializer::NativeTreeMaterializationError> {
-    let options = if truncate {
-        crate::native_host::NativeOpenOptions::ReadWriteCreate
-    } else {
-        crate::native_host::NativeOpenOptions::Read
-    };
-    let file = materialization_open_options(path, &options, work)?;
-    if truncate {
-        crate::native_host::truncate_file(&file, 0, &mut &*work)?;
-    }
-    Ok(file)
-}
-
 pub(super) fn materialization_open_options(
     path: &Path,
     options: &crate::native_host::NativeOpenOptions,
@@ -550,141 +446,4 @@ pub(super) fn materialization_open_options(
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
     })?;
     crate::native_host::open_leaf(&parent, Path::new(leaf), options, &mut &*work)
-}
-
-pub(super) fn materialization_exists(
-    path: &Path,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<bool, LocalCoreStateStoreError> {
-    let parent = materialization_parent(path, work)?;
-    let leaf = path.file_name().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
-    })?;
-    match crate::materializer::native_stat_held(&parent, Path::new(leaf), work) {
-        Ok(_) => Ok(true),
-        Err(crate::materializer::NativeTreeMaterializationError::Io(error))
-            if error.kind() == std::io::ErrorKind::NotFound =>
-        {
-            Ok(false)
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-#[cfg(not(windows))]
-pub(super) fn materialization_rename(
-    from: &Path,
-    to: &Path,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(), LocalCoreStateStoreError> {
-    let parent = materialization_parent(from, work)?;
-    let source = from.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "journal source has no leaf",
-        )
-    })?;
-    let target = to.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "journal destination has no leaf",
-        )
-    })?;
-    crate::native_host::rename_no_replace_held(
-        &parent,
-        Path::new(source),
-        &parent,
-        Path::new(target),
-        &mut &*work,
-    )?;
-    Ok(())
-}
-
-pub(super) fn materialization_copy(
-    from: &Path,
-    to: &Path,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(), LocalCoreStateStoreError> {
-    let file = materialization_open(from, false, work)?;
-    let length = crate::native_host::stat_file(&file, &mut &*work)?.len();
-    let mut source = MaterializationReader {
-        file,
-        work,
-        remaining_file_bytes: length,
-        original_length: length,
-    };
-    let mut destination = MaterializationWriter {
-        file: materialization_open(to, true, work)?,
-        work: Some(work),
-        encoded: false,
-    };
-    let mut bytes = [0; 64 * 1024];
-    loop {
-        let count = source.read(&mut bytes)?;
-        if count == 0 {
-            break;
-        }
-        destination.write_all(
-            bytes
-                .get(..count)
-                .ok_or_else(|| std::io::Error::other("invalid journal copy length"))?,
-        )?;
-    }
-    crate::native_host::sync_file_held(&destination.file, &mut &*work)?;
-    Ok(())
-}
-
-pub(super) fn materialization_remove(
-    path: &Path,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(), LocalCoreStateStoreError> {
-    let parent = materialization_parent(path, work)?;
-    let leaf = path.file_name().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
-    })?;
-    match crate::native_host::remove_leaf(&parent, Path::new(leaf), false, &mut &*work) {
-        Ok(()) => {}
-        Err(crate::materializer::NativeTreeMaterializationError::Io(error))
-            if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    Ok(())
-}
-
-pub(super) fn measured_write_record<T: Serialize>(
-    paths: &RecordPaths,
-    journal: &T,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(), LocalCoreStateStoreError> {
-    let mut writer = MaterializationWriter {
-        file: materialization_open(&paths.temporary, true, work)?,
-        work: Some(work),
-        encoded: true,
-    };
-    let encoded = serde_json::to_writer(&mut writer, journal);
-    encoded.map_err(measured_json_error)?;
-    crate::native_host::sync_file_held(&writer.file, &mut &*work)?;
-    drop(writer);
-    materialization_remove(&paths.previous, work)?;
-    #[cfg(windows)]
-    {
-        let previous = if materialization_exists(&paths.current, work)? {
-            &paths.current
-        } else {
-            &paths.temporary
-        };
-        materialization_copy(previous, &paths.previous, work)?;
-        materialization_copy(&paths.temporary, &paths.current, work)?;
-        materialization_remove(&paths.temporary, work)?;
-    }
-    #[cfg(not(windows))]
-    {
-        if materialization_exists(&paths.current, work)? {
-            materialization_rename(&paths.current, &paths.previous, work)?;
-        }
-        materialization_rename(&paths.temporary, &paths.current, work)?;
-        materialization_sync(&paths.directory, work)?;
-    }
-    materialization_remove(&paths.previous, work)?;
-    Ok(())
 }

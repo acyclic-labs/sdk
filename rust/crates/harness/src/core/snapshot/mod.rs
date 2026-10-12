@@ -73,7 +73,67 @@ impl PartialEq for Snapshot {
     }
 }
 impl Snapshot {
-    pub(crate) const LOGICAL_SCHEMA_SLOT_BYTES: u64 = super::inventory::CloneInventory::SLOT;
+    pub(crate) const LOGICAL_SCHEMA_SLOT_BYTES: u64 = {
+        let sizes = [
+            std::mem::size_of::<Reducer>(),
+            std::mem::size_of::<Snapshot>(),
+            std::mem::size_of::<snapshot::Projection>(),
+            std::mem::size_of::<Event>(),
+            std::mem::size_of::<super::EventPayload>(),
+            std::mem::size_of::<super::EffectStatus>(),
+            std::mem::size_of::<EffectState>(),
+            std::mem::size_of::<super::ExtensionBinding>(),
+            std::mem::size_of::<super::ExtensionAdmission>(),
+            std::mem::size_of::<super::Command>(),
+            std::mem::size_of::<super::Action>(),
+            std::mem::size_of::<super::Scope>(),
+            std::mem::size_of::<super::RecordedScope>(),
+            std::mem::size_of::<crate::Capabilities>(),
+            std::mem::size_of::<super::ExtensionStateMigration>(),
+            std::mem::size_of::<ExtensionRecord>(),
+            std::mem::size_of::<ExtensionConfiguration>(),
+            std::mem::size_of::<ExtensionDependency>(),
+            std::mem::size_of::<Authority>(),
+            std::mem::size_of::<EventReference>(),
+            std::mem::size_of::<ForkSeed>(),
+            std::mem::size_of::<crate::fork::ForkSelection>(),
+            std::mem::size_of::<crate::fork::ForkOmission>(),
+            std::mem::size_of::<crate::fork::CapturedResource>(),
+            std::mem::size_of::<crate::fork::ResourceRevision>(),
+            std::mem::size_of::<crate::fork::SharedGrant>(),
+            std::mem::size_of::<crate::fork::ReferenceGrant>(),
+            std::mem::size_of::<crate::fork::SummaryForkCapture>(),
+            std::mem::size_of::<crate::fork::AttestedBoundary>(),
+            std::mem::size_of::<crate::merge::ProjectMergeReceipt>(),
+            std::mem::size_of::<crate::conversation::ConversationMessage>(),
+            std::mem::size_of::<ConversationState>(),
+            std::mem::size_of::<crate::conversation::ModelContextSelection>(),
+            std::mem::size_of::<FileRef>(),
+            std::mem::size_of::<crate::conversation::VolumeRef>(),
+            std::mem::size_of::<crate::conversation::FileDescriptor>(),
+            std::mem::size_of::<InteractionTicket>(),
+            std::mem::size_of::<InteractionResolution>(),
+            std::mem::size_of::<crate::resources::ResourceRef>(),
+            std::mem::size_of::<crate::resources::ProviderRef>(),
+            std::mem::size_of::<(String, serde_json::Value)>(),
+            std::mem::size_of::<serde_json::Value>(),
+            std::mem::size_of::<crate::runtime::TaskAdmissionRecord>(),
+            std::mem::size_of::<crate::resource_preparation::ResourcePreparationRequest>(),
+            std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>(),
+            std::mem::size_of::<crate::resource_preparation::ResourceCreationOrigin>(),
+            std::mem::size_of::<crate::workflow::WorkflowCommand>(),
+            std::mem::size_of::<crate::source_authorization::ProjectSourceAuthorization>(),
+        ];
+        let mut maximum = 0;
+        let mut index = 0;
+        while index < sizes.len() {
+            if sizes[index] > maximum {
+                maximum = sizes[index];
+            }
+            index += 1;
+        }
+        maximum as u64
+    };
     fn digest_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<[u8; 32]> {
         crate::contract::canonical_json_digest_with_work(
             &(

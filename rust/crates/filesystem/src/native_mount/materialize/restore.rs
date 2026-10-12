@@ -72,7 +72,7 @@ pub(super) fn prepare_restore(
     let lock = acquire_restore_lock(&destination_parent, &relative.0, true, work)?;
     cleanup_removed_restore(&destination_parent, &relative.0, work)?;
     match replacement {
-        HostPathReplacement::Atomic => crate::native_exchange::recover_native_entry_exchange_held_measured(&destination_parent.directory, Path::new(destination_name), work)
+        HostPathReplacement::Atomic => crate::native_exchange::recover_native_entry_exchange_held(&destination_parent.directory, Path::new(destination_name), work)
             .map_err(restore_demand_error)?,
         HostPathReplacement::LiveMount => recover_live_mount_replacement(
             &destination_parent,
@@ -150,7 +150,7 @@ pub(super) fn publish_restore(
     let name = Path::new(destination_name);
     match destination_parent.stat(name, work) {
         Ok(_) => match replacement {
-            HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries_held_measured(&destination_parent.directory, name, &stage_parent.directory, name, work)
+            HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries_held(&destination_parent.directory, name, &stage_parent.directory, name, work)
                 .map_err(restore_demand_error)?,
             HostPathReplacement::LiveMount => replace_live_mount(
                 &stage_parent,

@@ -152,10 +152,7 @@ impl HostStatReader {
             let name = copied;
             let stat = match (|| {
                 work.record(delta)?;
-                match windows_wide_name(&name, work, || {
-                    io::Error::new(io::ErrorKind::InvalidInput, "native name exceeds NT length")
-                        .into()
-                })? {
+                match relative_kernel_name(&name, work)? {
                     Some(string) => {
                         stat_windows_name(&self.directory, &string, self.volume_serial_number, work)
                     }
@@ -245,7 +242,6 @@ pub(super) fn read_dir_held_with_volume<W: NativeHostWork>(
         FILE_GENERIC_READ,
         FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
         work,
-        W::invalid_request,
     )?
     .ok_or_else(W::invalid_request)?;
     let directory = Dir::from_std_file(file.into_std());
