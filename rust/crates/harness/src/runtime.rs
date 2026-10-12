@@ -4820,7 +4820,7 @@ fn tool_approval_binding_with_work(
         }
         _ => {
             validate_policy_identity(policy)?;
-            invocation.validate()?;
+            ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
             crate::contract::canonical_json_digest(&(task, policy, definition, invocation))?
         }
     };
@@ -7387,7 +7387,7 @@ impl TaskContext {
             }
             events.push(event);
         }
-        if !admission.completed() {
+        if !admission.completed {
             return Err(Error::Invalid(
                 "model stream ended without completion".into(),
             ));
@@ -10379,7 +10379,7 @@ mod tests {
             harness,
             task_id: OperationId::new(),
             durable_task: None,
-            descendants: TaskGroup::new(2),
+            descendants: TaskGroup::new(2, None).unwrap(),
             scope,
             policy_overrides: Vec::new(),
             owned_interactions: None,
@@ -10773,7 +10773,7 @@ mod tests {
             harness,
             task_id: OperationId::new(),
             durable_task: None,
-            descendants: TaskGroup::new(1),
+            descendants: TaskGroup::new(1, None).unwrap(),
             scope,
             policy_overrides: Vec::new(),
             owned_interactions: None,
@@ -11168,7 +11168,7 @@ mod tests {
         else {
             return Err(Error::Conflict("local admission changed task kind".into()));
         };
-        assert!(matches!(handle.result_owned().await,
+        assert!(matches!(handle.result().await,
             Outcome::Succeeded(Ok((id, value))) if id == operation && value == 7));
         Ok(())
     }
@@ -12011,7 +12011,7 @@ mod tests {
             )?,
             task_id: OperationId::from_bytes([41; 16]),
             durable_task: Some(task),
-            descendants: TaskGroup::new(1),
+            descendants: TaskGroup::new(1, None).unwrap(),
             scope,
             policy_overrides: Vec::new(),
             owned_interactions: None,
@@ -12037,7 +12037,8 @@ mod tests {
             "provider-call-name".into(),
             definition.name.clone(),
             serde_json::json!({"text":"hello"}),
-        );
+            None,
+        )?;
         let approval = context
             .policy_approval(&policy, &definition, &invocation)
             .await?
@@ -12106,7 +12107,8 @@ mod tests {
                     invocation.call_id.clone(),
                     invocation.name.clone(),
                     invocation.arguments.clone(),
-                ),
+                    None,
+                )?,
             ),
         ] {
             assert_ne!(

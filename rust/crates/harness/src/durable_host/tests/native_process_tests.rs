@@ -1562,17 +1562,9 @@ where
         },
         schema: serde_json::json!({"type":"integer"}),
     });
-    let definition = TaskDefinition::<Value, Value>::resumable(
-        implementation.clone(),
-        serde_json::json!({"type":"integer"}),
-        serde_json::json!({"type":"object"}),
+    let (identity, machine, tasks, machines) = test_registries(
+        implementation, serde_json::json!({"type":"integer"}), serde_json::json!({"type":"object"}),
     )?;
-    let identity = definition.identity().clone();
-    let machine = implementation.identity.clone();
-    let mut tasks = TaskRegistry::default();
-    tasks.register(definition)?;
-    let mut machines = MachineRegistry::default();
-    machines.register(implementation)?;
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?;
     let runtime = FilesystemTaskRuntime::open(
         stream,
@@ -1920,7 +1912,7 @@ async fn original_native_preparation_resumes_physical_partial_and_lost_acknowled
         .ok_or_else(|| Error::NotFound("completed original preparation journal".into()))?;
     assert_eq!(original.journal.plan, seed.view.preparation().journal.plan);
     assert_eq!(original.journal.phase, Applied);
-    assert_eq!(original.journal.plan.operation_id, NativePreparationRoot::operation(&seed.owner));
+    assert_eq!(original.journal.plan.operation_id, NativePreparationRoot::operation(seed.owner.task_binding().0, seed.view.work())?);
     let acyclic_fs::MaterializationIntent::NativePreparation { selection, original: request } = &original.journal.plan.intent else {
         return Err(Error::Storage("native root used a synthetic generation transition".into()));
     };
@@ -1980,7 +1972,7 @@ async fn original_native_preparation_resumes_physical_partial_and_lost_acknowled
         let receipt = &recovered.value.preparation();
         assert_eq!(receipt.journal.phase, Applied);
         assert_eq!(receipt.journal.applied, 3);
-        assert_eq!(receipt.journal.plan.operation_id, NativePreparationRoot::operation(&fixture.owner));
+        assert_eq!(receipt.journal.plan.operation_id, NativePreparationRoot::operation(fixture.owner.task_binding().0, seed.view.work())?);
         if let Some(before) = before {
             assert_eq!(before.journal.plan, receipt.journal.plan);
             assert_eq!(before.original_fence, receipt.original_fence);

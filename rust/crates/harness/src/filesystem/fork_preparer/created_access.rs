@@ -254,9 +254,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             if birth.id() != initial_generation {
                 return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap initial generation differs from its actual birth"));
             }
-            let selected = birth.workspace().generation_with_native_work(
+            let selected = birth.workspace().generation(
                 selected_generation, work, io.cancellation(),
-            ).await.map_err(native_workspace_error)?;
+            ).await.map_err(|error| native_workspace_error((error, None)))?;
             let native_snapshot = if let Some((lazy, frozen)) = native_import {
                 if lazy.backing.workspace_id() != birth.workspace_id() {
                     return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap import names another original workspace"));

@@ -194,7 +194,7 @@ impl ExecutionSummary {
                         "model observation is missing"))?,
                     limits, io,
                 )?;
-                if admission.completed() {
+                if admission.completed {
                     *state = None;
                 }
             }
@@ -265,7 +265,7 @@ impl PreparationRecord for Observation {
 
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
-    stream: Arc<P>,
+    stream: acyclic_stream::StreamClient<P>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
@@ -887,7 +887,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
             }
             if prepared.as_ref().and_then(|projection| projection.canonical.as_ref())
-                != Some(&envelope.source) || !admission.completed() || output.is_empty() {
+                != Some(&envelope.source) || !admission.completed || output.is_empty() {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                     "canonical summary lacks its prepared source or settled output"));
             }
@@ -1012,10 +1012,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             match io {
-                Some(io) => ContentGrant::verify_original_volume_with_io(
-                    verifier, scope, volume, operation, io,
+                Some(io) => ContentGrant::authorize_volume(
+                    verifier, scope, volume, operation, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()),
                 )?,
-                None => { ContentGrant::verify(verifier, scope, volume, operation)?; }
+                None => { ContentGrant::verify(verifier, scope, volume, operation, u64::MAX, &mut None)?; }
             }
         }
         if !matches!(verifier.audience().kind,
@@ -1025,10 +1025,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let volume = volume.clone_with_work(&mut work)?;
-        let verifier = verifier.clone_with_work(&mut work)?;
+        let volume = volume.copy(&mut work)?;
+        let verifier = verifier.copy(&mut work)?;
         let schemas = schemas.clone_with_work(&mut work)?;
-        let scope = scope.clone_with_work(&mut work)?;
+        let scope = scope.copy(&mut work)?;
         let interactions = match verifier.audience().kind {
             crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
                 stream.clone(), Arc::clone(&host), verifier.audience(), &verifier,
@@ -1042,7 +1042,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             .map(|io| io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| io.invalid("execution journal custody underflows"))?)).transpose()?;
         Ok(Self {
-            stream,
+            stream: acyclic_stream::StreamClient::new(stream),
             host,
             volume,
             verifier,
@@ -1088,7 +1088,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 "task interaction binding requires an admitted journal owner"));
         }
         self.interactions = Some(FilesystemInteractionHost::new(
-            self.stream.clone(), Arc::clone(&self.host), verifier.audience(), verifier,
+            self.stream.provider.clone(), Arc::clone(&self.host), verifier.audience(), verifier,
             schemas, scope, private_volume, self.maximum_payload_bytes, io,
         )?);
         Ok(self)
@@ -1123,7 +1123,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 
     fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>>
     {
-        acyclic_stream::Stream::new(Arc::clone(&self.stream),
+        self.stream.stream(
             crate::distributed::execution_path(operation_id, &mut None)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
@@ -1283,7 +1283,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             ).await,
             None => {
                 let grant = ContentGrant::verify(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write)?;
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?;
                 self.host.put_internal_content(
                     &self.volume, &grant, &path, bytes, media_type, "execution.json",
                     self.maximum_payload_bytes, &key, InternalContentClass::Execution,
@@ -1300,12 +1300,12 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         match io {
             Some(io) => {
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
                 self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await
             }
             None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None)?;
                 self.host.read_content(reference, &grant, self.maximum_payload_bytes).await
             }
         }
@@ -1358,7 +1358,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             io.charge(copying)?;
             Some(hold)
         } else { None };
-        let stream = acyclic_stream::Stream::new(Arc::clone(&self.stream), &path)
+        let stream = self.stream.stream(&path)
             .map_err(|error| Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error))?;
         let _read_path_hold;
         _read_path_hold = if let Some(io) = io {
@@ -1510,14 +1510,14 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let ordinary_bytes;
             let bytes = if let Some(io) = io {
                 super::fork_preparer_io::item(Some(io), 0)?;
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
                 native_bytes = self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await?;
                 _bytes_hold = io.guard_bytes(&native_bytes)?;
                 native_bytes.as_ref()
             } else {
                 _bytes_hold = None;
-                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None)?;
                 ordinary_bytes = self.host.read_content(reference, &grant, self.maximum_payload_bytes).await?;
                 ordinary_bytes.as_ref()
             };
@@ -1600,8 +1600,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         "exact file read is not granted"));
                 }
             } else {
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(
+                    &self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
             }
             let before = io.owned_bytes()?;
             let _bytes_hold;
@@ -2506,8 +2506,8 @@ mod tests {
             },
         );
         let scope = issuer.issue("owner", &crate::Capabilities::new([
-                volume.capability(VolumeOperation::Read)?,
-                volume.capability(VolumeOperation::Write)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
             ]), Some(agent), None, &mut None).expect("scope proof");
         let stream = Arc::new(acyclic_stream::MemoryStream::default());
         let open = |operation, turn| {
@@ -2648,8 +2648,8 @@ mod tests {
                 "conversation:bind".into(),
                 "conversation:append".into(),
                 "conversation:select_context".into(),
-                volume.capability(VolumeOperation::Read)?,
-                volume.capability(VolumeOperation::Write)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
             ]), Some(agent), None, &mut None).expect("scope proof");
         let content = Arc::new(super::super::FilesystemContentVerifier::new(
             host.clone(),

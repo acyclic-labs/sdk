@@ -209,7 +209,7 @@ where
     ) -> Result<(), MountLifecycleError> {
         cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         if self.writable {
-            let head = self.workspace.head_with_native_work(&work, cancellation).await?;
+            let head = self.workspace.head(work, cancellation).await.map_err(|error| (error, None))?;
             if head.id() != self.expected_generation {
                 return Err(MountLifecycleError::Workspace(WorkspaceError::StaleGeneration));
             }
@@ -218,7 +218,7 @@ where
             &self.source_root, &self.selected_root, work, Some(self.source_identity),
         )?;
         if self.writable {
-            let head = self.workspace.head_with_native_work(&work, cancellation).await?;
+            let head = self.workspace.head(work, cancellation).await.map_err(|error| (error, None))?;
             if head.id() != self.expected_generation {
                 return Err(MountLifecycleError::Workspace(WorkspaceError::StaleGeneration));
             }
@@ -371,7 +371,7 @@ where
                     cancellation, Some(self.source.cancellation()),
                 )
                 .await?.generation_id();
-            let head = self.workspace.head_with_native_work(&work, cancellation).await?;
+            let head = self.workspace.head(work, cancellation).await.map_err(|error| (error, None))?;
             if head.id() != current { return Err(MountLifecycleError::Source(MountSourceError::Stale)); }
             self.capture_host_subtree_with_work(&MountPath::root(), work, cancellation).await?;
             Ok::<(), MountLifecycleError>(())
@@ -702,7 +702,7 @@ where
         };
         session.stop().map_err(MountLifecycleError::Native)?;
         owner.take();
-        { let cleanup = crate::CancellationToken::new(); let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cleanup); self.source.cancel(&mut super::adapter::NativeDemandCarrier::Borrowed(&mut work)).expect("ordinary SDK source cancellation uses the same unbounded cleanup engine"); }
+        self.source.cancel();
         Ok(())
     }
 }
@@ -1494,13 +1494,13 @@ where
         super::adapter::validate_native_source_io_binding(&original, native_original)?;
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, cancellation);
         if let Some(expected) = expected_generation {
-            let head = self.workspace().head_with_native_work(&original, cancellation)
-                .await.map_err(MountLifecycleError::from)?;
+            let head = self.workspace().head(&original, cancellation)
+                .await.map_err(|error| (error, None)).map_err(MountLifecycleError::from)?;
             if head.id() != expected {
                 return Err(MountLifecycleError::Workspace(WorkspaceError::StaleGeneration));
             }
         }
-        let probe = self.workspace().engine_checkout_with_native_work(
+        let probe = self.workspace().checkout(
             GenerationSelector::Head, CheckoutMode::read_only_pinned(),
             &original, cancellation,
         ).await.map_err(MountLifecycleError::Workspace)?;
@@ -1573,7 +1573,7 @@ where
         } else {
             CheckoutMode::read_only_pinned()
         };
-        let checkout = self.workspace().engine_checkout_with_native_work(
+        let checkout = self.workspace().checkout(
             expected_generation.map_or(GenerationSelector::Head, GenerationSelector::Exact),
             mode, &original, cancellation,
         ).await.map_err(MountLifecycleError::Workspace)?;
@@ -1598,8 +1598,8 @@ where
         };
         let authored = authored.into_arc_meter(native_work)?;
         if let Some(expected) = expected_generation {
-            let head = self.workspace().head_with_native_work(&original, cancellation)
-                .await.map_err(MountLifecycleError::from)?;
+            let head = self.workspace().head(&original, cancellation)
+                .await.map_err(|error| (error, None)).map_err(MountLifecycleError::from)?;
             if head.id() != expected {
                 return Err(MountLifecycleError::Workspace(WorkspaceError::StaleGeneration));
             }
@@ -2029,7 +2029,7 @@ where
                 let workspace = self.workspace();
                 let expected_generation = self.id();
                 if mount.writable
-                    && workspace.head_with_native_work(original, cancellation).await?.id() != expected_generation
+                    && workspace.head(original, cancellation).await.map_err(|error| (error, None))?.id() != expected_generation
                 {
                     return Err(MountLifecycleError::Workspace(WorkspaceError::StaleGeneration));
                 }
@@ -2038,7 +2038,7 @@ where
                 } else {
                     CheckoutMode::read_only_pinned()
                 };
-                let checkout = workspace.engine_checkout_with_native_work(
+                let checkout = workspace.checkout(
                     GenerationSelector::Exact(expected_generation), mode, original, cancellation,
                 ).await?;
                 let mut checkout = if mount.writable {
@@ -2113,7 +2113,7 @@ where
                     }
                 }
                 if mount.writable
-                    && workspace.head_with_native_work(original, cancellation).await?.id() != expected_generation
+                    && workspace.head(original, cancellation).await.map_err(|error| (error, None))?.id() != expected_generation
                 {
                     return Err(MountLifecycleError::Workspace(WorkspaceError::StaleGeneration));
                 }

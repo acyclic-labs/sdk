@@ -194,6 +194,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             project.clone(),
             stream_provider.clone(),
             reader,
+            None, None, #[cfg(not(target_arch = "wasm32"))] None,
         )?;
         let request = ForkRequest {
             authorized_source: None,

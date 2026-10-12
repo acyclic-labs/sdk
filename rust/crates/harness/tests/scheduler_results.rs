@@ -379,17 +379,17 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
     );
     assert!(
         coordinator
-            .orchestrate(parent, IdempotencyKey::new("join-once")?)
-            .await?
-    );
-    assert!(
-        coordinator
-            .orchestrate(parent, IdempotencyKey::new("join-once")?)
+            .orchestrate(parent, IdempotencyKey::new("join-once")?, None)
             .await?
     );
     assert!(
         !coordinator
-            .orchestrate(parent, IdempotencyKey::new("join-again")?)
+            .orchestrate(parent, IdempotencyKey::new("join-once")?, None)
+            .await?
+    );
+    assert!(
+        !coordinator
+            .orchestrate(parent, IdempotencyKey::new("join-again")?, None)
             .await?
     );
     let outcome = coordinator
@@ -487,12 +487,12 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
     }
     assert!(
         coordinator
-            .orchestrate(quorum, IdempotencyKey::new("quorum-once")?)
+            .orchestrate(quorum, IdempotencyKey::new("quorum-once")?, None)
             .await?
     );
     assert!(
-        coordinator
-            .orchestrate(quorum, IdempotencyKey::new("quorum-once")?)
+        !coordinator
+            .orchestrate(quorum, IdempotencyKey::new("quorum-once")?, None)
             .await?
     );
     let Some(Outcome::Succeeded(quorum_result)) = coordinator
@@ -524,7 +524,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         digest: [9; 32],
         result_schema: serde_json::json!({"type":"number"}),
     };
-    let mut reducers = ReducerRegistry::new();
+    let mut reducers = ReducerRegistry::default();
     reducers.register(Arc::new(SumReducer(reducer.clone())))?;
     let reduction = id(8);
     coordinator
@@ -592,20 +592,19 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         )
         .await?;
     coordinator
-        .complete_reduction(&reducers, reduction, IdempotencyKey::new("reduce-once")?)
+        .orchestrate(reduction, IdempotencyKey::new("reduce-once")?, Some(&reducers))
         .await?;
     assert_eq!(
         coordinator
-            .complete_reduction(&reducers, reduction, IdempotencyKey::new("reduce-once")?)
+            .orchestrate(reduction, IdempotencyKey::new("reduce-once")?, Some(&reducers))
             .await?,
         false
     );
-    assert!(matches!(
-        coordinator
-            .complete_reduction(&reducers, reduction, IdempotencyKey::new("reduce-again")?)
-            .await,
-        Err(acyclic_harness::Error::Conflict(_))
-    ));
+    assert!(
+        !coordinator
+            .orchestrate(reduction, IdempotencyKey::new("reduce-again")?, Some(&reducers))
+            .await?
+    );
     let Some(Outcome::Succeeded(reduced)) = coordinator
         .scheduler()
         .operation(reduction)
@@ -624,18 +623,18 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .await?
         .with_payload_store(stager);
     assert!(
-        reopened
-            .orchestrate(parent, IdempotencyKey::new("join-once")?)
+        !reopened
+            .orchestrate(parent, IdempotencyKey::new("join-once")?, None)
             .await?
     );
     assert!(
-        reopened
-            .orchestrate(quorum, IdempotencyKey::new("quorum-once")?)
+        !reopened
+            .orchestrate(quorum, IdempotencyKey::new("quorum-once")?, None)
             .await?
     );
     assert_eq!(
         reopened
-            .complete_reduction(&reducers, reduction, IdempotencyKey::new("reduce-once")?)
+            .orchestrate(reduction, IdempotencyKey::new("reduce-once")?, Some(&reducers))
             .await?,
         false
     );

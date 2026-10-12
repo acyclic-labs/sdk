@@ -6,7 +6,7 @@ use crate::{
     Result, TaskId,
     conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
-    distributed::{ChildOperationPageRequest, DistributedCoordinator, SchedulerPayloadStore},
+    distributed::{DistributedCoordinator, SchedulerPayloadStore},
     registry::ComponentIdentity,
     runtime::{
         BatchCancellationReport, BatchCancellationStatus, DurableBatchRequest,
@@ -837,11 +837,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn release_quiescent_execution_with_native_work(
         &self, execution: OperationId, tail: u64,
-        pending: &crate::filesystem::WorkflowReleaseWitness<'_,P>,
+        pending: &crate::filesystem::WorkflowReleaseWitness<'_>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<bool> {
         let mut io = crate::store::history::native_work_io(work)?;
-        if pending.task_binding() != (self.task_id,&self.fence) {
+        if pending.condition().0 != (self.task_id,&self.fence) {
             return Err(Error::Unauthorized("pending workflow belongs to another task or fence".into()));
         }
         let mut coordinator = self.host.coordinator.lock().await;
@@ -883,7 +883,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         coordinator.apply_if_execution_quiescent(
             IdempotencyKey::new(key)?,
             crate::scheduler::SchedulerEvent::LeaseReleased {operation_id:self.operation_id(),fence},
-            execution,tail,Some((pending.path(),pending.tail())),&mut Some(&mut io),
+            execution,tail,Some(pending.condition().1),&mut Some(&mut io),
         ).await?;
         Ok(true)
 
@@ -1789,7 +1789,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         mut phase: Option<&mut crate::distributed::CommitPhase>,
     ) -> Result<bool> {
         if let Some(phase) = phase.as_deref_mut() {
-            *phase = crate::distributed::CommitPhase::NotCalled;
+            *phase = crate::distributed::CommitPhase::Uncommitted;
         }
         let fresh = !matches!(write, crate::distributed::JournalWrite::Settlement);
         let mut request = self
@@ -5591,11 +5591,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                     &self.owner_scope,
                     &self.verifier,
                     OperationId::from_bytes(parent.into_bytes()),
-                    ChildOperationPageRequest {
-                        expected_revision,
-                        after_slot: after_slot.as_deref(),
-                        maximum,
-                    },
+                    expected_revision, after_slot.as_deref(), maximum,
                  &mut None,)
                 .await.map(|(page, _)| page)?;
             Ok(TaskChildrenPage {
@@ -6003,6 +5999,19 @@ pub(crate) mod tests {
     };
     use acyclic_stream::{MemoryStream, SystemUnixMillisClock};
 
+    fn test_registries(
+        implementation: Arc<dyn ResumableMachine>, input: Value, output: Value,
+    ) -> Result<(ComponentIdentity, MachineIdentity, TaskRegistry, MachineRegistry)> {
+        let machine = implementation.identity().clone();
+        let definition = TaskDefinition::<Value, Value>::resumable(implementation.clone(), input, output)?;
+        let task = definition.identity().clone();
+        let mut tasks = TaskRegistry::default();
+        tasks.register(definition)?;
+        let mut machines = MachineRegistry::default();
+        machines.register(implementation)?;
+        Ok((task, machine, tasks, machines))
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn test_work(
         budget: acyclic_fs::WorkBudget, cancellation: &acyclic_fs::CancellationToken,
@@ -6205,17 +6214,9 @@ pub(crate) mod tests {
             },
             schema: serde_json::json!({"type":"integer"}),
         });
-        let definition = TaskDefinition::<Value, Value>::resumable(
-            implementation.clone(),
-            serde_json::json!({"type":"integer"}),
-            serde_json::json!({"type":"integer"}),
+        let (task_identity, machine, tasks, machines) = test_registries(
+            implementation, serde_json::json!({"type":"integer"}), serde_json::json!({"type":"integer"}),
         )?;
-        let task_identity = definition.identity().clone();
-        let machine = implementation.identity.clone();
-        let mut tasks = TaskRegistry::default();
-        tasks.register(definition)?;
-        let mut machines = MachineRegistry::default();
-        machines.register(implementation)?;
         let host = CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, payloads.clone()).await?,
             stream.clone(),
@@ -6707,17 +6708,9 @@ pub(crate) mod tests {
             },
             schema: serde_json::json!({"type":"integer"}),
         });
-        let definition = TaskDefinition::<Value, Value>::resumable(
-            implementation.clone(),
-            serde_json::json!({"type":"integer"}),
-            serde_json::json!({"type":"integer"}),
+        let (task_identity, machine, tasks, machines) = test_registries(
+            implementation, serde_json::json!({"type":"integer"}), serde_json::json!({"type":"integer"}),
         )?;
-        let task_identity = definition.identity().clone();
-        let machine = implementation.identity.clone();
-        let mut tasks = TaskRegistry::default();
-        tasks.register(definition)?;
-        let mut machines = MachineRegistry::default();
-        machines.register(implementation)?;
         let host = Arc::new(CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, reader.clone()).await?,
             stream.clone(),
@@ -7343,7 +7336,8 @@ pub(crate) mod tests {
         journal.append(attempt, "started".into(), ExecutionEvent::Started).await?;
         let invocation = crate::tool::ToolInvocation::for_model_call(
             attempt, 0, "native-owned-tool".into(), "test".into(), serde_json::json!({}),
-        );
+            None,
+        )?;
         let invocation = crate::executor::stage_json(&journal, attempt, "tool-invocation", &invocation, None).await?;
         journal.append(attempt, "tool-started".into(), ExecutionEvent::ToolStarted {
             step: 0, call_id: "native-owned-tool".into(), invocation,
@@ -7429,7 +7423,8 @@ pub(crate) mod tests {
                 .tail().await?;
             let invocation = crate::tool::ToolInvocation::for_model_call(
                 attempt, 1, "interleaved-native-tool".into(), "test".into(), serde_json::json!({}),
-            );
+                None,
+            )?;
             let invocation = crate::executor::stage_json(&journal, attempt, "interleaved-tool-invocation", &invocation, None).await?;
             journal.append(attempt, "interleaved-tool-started".into(), ExecutionEvent::ToolStarted {
                 step: 1, call_id: "interleaved-native-tool".into(), invocation,
@@ -7959,7 +7954,8 @@ pub(crate) mod tests {
                 "owned-tool".into(),
                 "test".into(),
                 serde_json::json!({}),
-            );
+                None,
+            )?;
             let invocation =
                 crate::executor::stage_json(&journal, attempt, "tool-invocation", &invocation, None)
                     .await?;

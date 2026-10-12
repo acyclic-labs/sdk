@@ -1226,7 +1226,7 @@ pub(crate) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map_err(|_| failure(Some(io), crate::wire::ErrorCode::Invalid, "generation reference key must be 32 bytes"))?;
     let id = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(bytes));
     filesystem_call!(io, original,
-        workspace.generation_with_native_work(id, original, io.cancellation()),
+        async { workspace.generation(id, original, io.cancellation()).await.map_err(|error| (error, None)) },
         workspace.generation(id, io.remaining()?, io.cancellation()))
 }
 
@@ -1238,8 +1238,8 @@ pub(in crate::filesystem) async fn read<A: AsyncAuthorityStore, O: AsyncObjectSt
     let workspace = open(host, reference, io).await?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
-        let generation = workspace.head_with_native_work(original, io.cancellation())
-            .await.map_err(native_workspace_error)?;
+        let generation = workspace.head(original, io.cancellation())
+            .await.map_err(|error| native_workspace_error((error, None)))?;
         return generation.read(path, maximum_bytes, original, io.cancellation())
             .await.map_err(|error| native_workspace_error((error, None)));
     }
@@ -1255,8 +1255,8 @@ pub(in crate::filesystem) async fn resolve<A: AsyncAuthorityStore, O: AsyncObjec
     let workspace = open(host, reference, io).await?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
-        let generation = workspace.head_with_native_work(original, io.cancellation())
-            .await.map_err(native_workspace_error)?;
+        let generation = workspace.head(original, io.cancellation())
+            .await.map_err(|error| native_workspace_error((error, None)))?;
         return Ok(super::super::WorkspaceObservation {
             workspace: {
                 let mut history = io.history_io();
@@ -1387,7 +1387,7 @@ where A: AsyncAuthorityStore, O: AsyncObjectStore,
         Some(reference) => generation(host, &workspace, reference, io).await?,
         None => io.receive(workspace.head(io.remaining()?, io.cancellation()).await)?,
     };
-    let mut transaction = io.receive(workspace.begin_pinned_transaction_measured(
+    let mut transaction = io.receive(workspace.begin_pinned_transaction(
         &generation, super::super::filesystem_key(key), io.remaining()?, io.cancellation(),
     ).await)?;
     for mutation in mutations {
@@ -1490,13 +1490,13 @@ where A: AsyncAuthorityStore, O: AsyncObjectStore,
     let workspace = open(host, reference, io).await?;
     let pinned = match expected {
         Some(reference) => generation(host, &workspace, reference, io).await?,
-        None => workspace.head_with_native_work(original, io.cancellation())
-            .await.map_err(native_workspace_error)?,
+        None => workspace.head(original, io.cancellation())
+            .await.map_err(|error| native_workspace_error((error, None)))?,
     };
     let operation = operation_key(key, Some(io))?;
-    let mut transaction = workspace.begin_pinned_transaction_with_native_work(
+    let mut transaction = workspace.begin_pinned_transaction(
         &pinned, operation, original, io.cancellation(),
-    ).await.map_err(native_workspace_error)?;
+    ).await.map_err(|error| native_workspace_error((error, None)))?;
     for mutation in mutations {
         before_publication(original).await?;
         match mutation {
@@ -1565,18 +1565,18 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
     label[19..].copy_from_slice(encoded.as_bytes());
     let identity = std::str::from_utf8(&label).expect("fixed ASCII generation identity");
     let Some(io) = io else {
-        return generation.pin(identity).await.map(|_| ())
+        return generation.pin(identity, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|_| ()).map_err(|failure| failure.error)
             .map_err(LazyWorkspaceError::WorkspaceCause);
     };
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
         original.spent(encoding)?;
-        return generation.pin_with_native_work(identity, original, io.cancellation())
-            .await.map(|_| ()).map_err(|(source, custody)| LazyWorkspaceError::NativeWorkspaceCause(
-                acyclic_fs::lazy_workspace::NativeLazyWorkspaceCause { source, custody }));
+        return generation.pin(identity, original, io.cancellation())
+            .await.map(|_| ()).map_err(|source| LazyWorkspaceError::NativeWorkspaceCause(
+                acyclic_fs::lazy_workspace::NativeLazyWorkspaceCause { source, custody: None }));
     }
     io.spent_workspace(encoding).map_err(LazyWorkspaceError::WorkspaceCause)?;
-    let result = generation.pin_measured(
+    let result = generation.pin(
         identity, io.remaining_workspace().map_err(LazyWorkspaceError::WorkspaceCause)?,
         io.cancellation(),
     ).await;
