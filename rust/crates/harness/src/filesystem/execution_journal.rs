@@ -194,7 +194,7 @@ impl ExecutionSummary {
                         "model observation is missing"))?,
                     limits, io,
                 )?;
-                if admission.completed() {
+                if admission.completed {
                     *state = None;
                 }
             }
@@ -887,7 +887,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
             }
             if prepared.as_ref().and_then(|projection| projection.canonical.as_ref())
-                != Some(&envelope.source) || !admission.completed() || output.is_empty() {
+                != Some(&envelope.source) || !admission.completed || output.is_empty() {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                     "canonical summary lacks its prepared source or settled output"));
             }

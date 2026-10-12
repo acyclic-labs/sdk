@@ -775,7 +775,7 @@ where
                 step, ModelPurpose::Response, limits, io).await?,
         };
         drop(records);
-        if !retained.admission.completed() { return Err(Error::Indeterminate(operation)); }
+        if !retained.admission.completed { return Err(Error::Indeterminate(operation)); }
         let request = retained.request.ok_or(Error::Indeterminate(operation))?;
         for message in &request.request().messages {
             match io {

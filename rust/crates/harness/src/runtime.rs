@@ -7387,7 +7387,7 @@ impl TaskContext {
             }
             events.push(event);
         }
-        if !admission.completed() {
+        if !admission.completed {
             return Err(Error::Invalid(
                 "model stream ended without completion".into(),
             ));
