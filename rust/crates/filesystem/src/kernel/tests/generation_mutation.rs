@@ -2342,11 +2342,11 @@ impl AsyncObjectStore for NoGenerationCalls {
         panic!("denied generation entered ordinary probe");
     }
     async fn read_with_native_work(&self, _: ObjectId, _: u64, _: &crate::NativeMaterializationWork, _: &CancellationToken)
-    -> Result<crate::async_storage::NativeObjectRead, crate::storage::ObjectStoreError> {
+    -> Result<crate::storage::ObjectRead, crate::storage::ObjectStoreError> {
         panic!("denied generation entered original read");
     }
     async fn read_many_with_native_work(&self, _: &[crate::storage::ObjectReadRequest], _: &crate::NativeMaterializationWork, _: &CancellationToken)
-    -> Result<crate::async_storage::NativeObjectReadBatch, crate::storage::ObjectStoreError> {
+    -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), crate::storage::ObjectStoreError> {
         panic!("denied generation entered original batch");
     }
     async fn put_hashed_with_native_work(&self, _: crate::storage::HashedObject, _: &crate::NativeMaterializationWork, _: &CancellationToken)

@@ -334,7 +334,7 @@ async fn read_page<S: AsyncObjectStore>(
                 .await.map_err(|error| match error {
                     ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),
                     error => crate::FsError::AttributeLookup(map_storage(error)),
-                })?.into_read();
+                })?;
             let mut scope = super::file_read::OriginalReadAccounting::new(accounting)?;
             let decoded = super::attribute::decode_attribute_page(&read, limits, &mut |step| -> Result<(), crate::FsError> { (&mut |step| scope.observe(step)
                     .map_err(super::file_read::ReadDecodeError::into_original_fs_error))(step) }, crate::kernel::AttributePage::Leaf, crate::kernel::AttributePage::Internal, |first_name, page| crate::kernel::AttributeChild { first_name, page }, |child| &child.first_name);

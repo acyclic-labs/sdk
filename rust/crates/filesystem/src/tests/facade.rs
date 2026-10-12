@@ -918,12 +918,12 @@ impl ObjectStore for PostPutObjectStore {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn read_with_native_work(&self, object_id: ObjectId, maximum_bytes: u64, original: &crate::NativeMaterializationWork, cancellation: &CancellationToken) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
+    fn read_with_native_work(&self, object_id: ObjectId, maximum_bytes: u64, original: &crate::NativeMaterializationWork, cancellation: &CancellationToken) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
         ObjectStore::read_with_native_work(&*self.inner, object_id, maximum_bytes, original, cancellation)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn read_many_with_native_work(&self, requests: &[ObjectReadRequest], original: &crate::NativeMaterializationWork, cancellation: &CancellationToken) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
+    fn read_many_with_native_work(&self, requests: &[ObjectReadRequest], original: &crate::NativeMaterializationWork, cancellation: &CancellationToken) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
         ObjectStore::read_many_with_native_work(&*self.inner, requests, original, cancellation)
     }
 }

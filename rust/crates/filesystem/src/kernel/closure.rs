@@ -1045,7 +1045,7 @@ impl<'a> ProofMeter<'a> {
                     error => error.into(),
                 })?;
             // The returned Bytes keeps the provider's real original guard.
-            return Ok((read.into_read(), self.empty_guard()?));
+            return Ok((read, self.empty_guard()?));
         }
         let result = store.read(object, maximum, self.remaining()?, cancellation).await;
         self.owned(|accounting| {

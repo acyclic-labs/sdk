@@ -770,7 +770,7 @@ pub trait ObjectStore: Send + Sync {
         _maximum_bytes: u64,
         _work: &crate::materializer::NativeMaterializationWork,
         _cancellation: &crate::CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
+    ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
         Err(ObjectStoreError::NativeUnavailable)
     }
 
@@ -797,7 +797,7 @@ pub trait ObjectStore: Send + Sync {
         _requests: &[ObjectReadRequest],
         _work: &crate::materializer::NativeMaterializationWork,
         _cancellation: &crate::CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
+    ) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
         Err(ObjectStoreError::NativeUnavailable)
     }
 
@@ -834,7 +834,7 @@ impl<T: ObjectStore + ?Sized> ObjectStore for Arc<T> {
         maximum_bytes: u64,
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
+    ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
         (**self).read_with_native_work(object_id, maximum_bytes, work, cancellation)
     }
 
@@ -852,7 +852,7 @@ impl<T: ObjectStore + ?Sized> ObjectStore for Arc<T> {
         requests: &[ObjectReadRequest],
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
+    ) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
         (**self).read_many_with_native_work(requests, work, cancellation)
     }
 
