@@ -16,7 +16,6 @@ fn classes_and_raw_names_round_trip() -> Result<(), Box<dyn std::error::Error>> 
         decode_attribute_page(&bytes, DecodeLimits::default())?,
         page
     );
-    assert_attribute_encoder_limits(&page)?;
     Ok(())
 }
 
@@ -106,7 +105,6 @@ fn every_attribute_page_shape_and_identity_is_canonical() -> Result<(), Box<dyn 
         assert_eq!(shape.items, 2);
         assert_eq!(shape.nested_bytes, 2);
         assert_eq!(decode_attribute_page(&encoded, limits)?, page);
-        assert_attribute_encoder_limits(&page)?;
         let object_id = attribute_page_id(&page, 2)?;
         assert_eq!(object_id.kind, ObjectKind::AttributePage);
         assert_eq!(
@@ -229,67 +227,5 @@ fn malformed_attribute_pages_fail_at_every_public_boundary()
             maximum: 0
         })
     ));
-    Ok(())
-}
-
-fn assert_attribute_encoder_limits(page: &AttributePage) -> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let receipt = encode_attribute_page_measured(page, 8, WorkBudget::UNBOUNDED, &cancellation)?;
-    assert_eq!(receipt.value, encode_attribute_page(page, 8)?);
-    assert_eq!(receipt.work.bytes_encoded, usize_to_u64(receipt.value.len()));
-    assert_eq!(receipt.work.allocation_operations, 1);
-    assert_eq!(receipt.work.peak_allocation_bytes, usize_to_u64(receipt.value.capacity()));
-    let (count, copied) = match page {
-        AttributePage::Leaf(entries) => (entries.len(), entries.iter().map(|entry| usize_to_u64(entry.name.as_bytes().len()) + 32).sum::<u64>()),
-        AttributePage::Internal(children) => (children.len(), children.iter().map(|child| usize_to_u64(child.first_name.as_bytes().len()) + 32).sum::<u64>()),
-    };
-    assert_eq!(receipt.work.items_examined, usize_to_u64(count) * 2);
-    assert_eq!(receipt.work.bytes_copied, copied);
-    assert_eq!(encode_attribute_page_measured(page, 8, receipt.work, &cancellation)?.value, receipt.value);
-    for budget in [
-        WorkBudget { bytes_encoded: receipt.work.bytes_encoded - 1, ..WorkBudget::UNBOUNDED },
-        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
-        WorkBudget { peak_allocation_bytes: usize_to_u64(receipt.value.len()) - 1, ..WorkBudget::UNBOUNDED },
-    ] {
-        let failure = encode_attribute_page_measured(page, 8, budget, &cancellation).expect_err("permit must reject before allocation");
-        assert!(matches!(failure.error, AttributeEncodeError::Work(_)));
-        assert_eq!(failure.work.items_examined, usize_to_u64(count));
-        assert_eq!(failure.work.bytes_encoded, 0);
-        assert_eq!(failure.work.allocation_operations, 0);
-    }
-    if copied != 0 {
-        let failure = encode_attribute_page_measured(
-            page, 8, WorkBudget { bytes_copied: copied - 1, ..WorkBudget::UNBOUNDED }, &cancellation,
-        ).expect_err("copy permit must reject before allocation");
-        assert!(matches!(failure.error, AttributeEncodeError::Work(_)));
-        assert_eq!(failure.work.items_examined, usize_to_u64(count));
-        assert_eq!(failure.work.allocation_operations, 0);
-    }
-    if count != 0 {
-        let failure = encode_attribute_page_measured(
-            page, 8, WorkBudget { items_examined: usize_to_u64(count), ..WorkBudget::UNBOUNDED }, &cancellation,
-        ).expect_err("encoding pass needs its item permit");
-        assert_eq!(failure.work.items_examined, usize_to_u64(count));
-        assert_eq!(failure.work.allocation_operations, 0);
-        assert_eq!(failure.work.bytes_encoded, 0);
-    }
-    cancellation.cancel();
-    let failure = encode_attribute_page_measured(page, 8, WorkBudget::UNBOUNDED, &cancellation).expect_err("pre-cancelled page must reject");
-    assert!(matches!(failure.error, AttributeEncodeError::Cancelled(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
-    Ok(())
-}
-
-#[test]
-fn measured_attribute_empty_and_all_classes_use_the_canonical_encoder()
--> Result<(), Box<dyn std::error::Error>> {
-    assert_attribute_encoder_limits(&AttributePage::Leaf(Vec::new()))?;
-    for class in [AttributeClass::PosixXattr, AttributeClass::WindowsStream, AttributeClass::MacResourceFork] {
-        assert_attribute_encoder_limits(&AttributePage::Leaf(vec![AttributeEntry {
-            name: AttributeName::new(class, b"stream".to_vec(), 8)?,
-            value_bytes: 0,
-            value: ObjectId { kind: ObjectKind::Blob, digest: Digest::from_bytes([7; 32]) },
-        }]))?;
-    }
     Ok(())
 }

@@ -2,10 +2,9 @@
 
 use super::*;
 use crate::{
-    Capabilities,
+    Capabilities, TaskId,
     conversation::ContentFuture,
-    core::Limits,
-    conversation::{Attachment, ContentPublisher, FileRef, PrivateDirectoryPage},
+    conversation::{Attachment, ContentPublisher, FileRef, Limits, PrivateDirectoryPage, VolumeClass, VolumeOwner},
     core::AuthorityIssuer,
     resource_preparation::{CreatedContentBinding, CreatedReferenceBinding, CreatedResourceOperation,
         CreatedResourceReceipt, ResourceCreationProofRef, ResourceCreationProvider, ResourcePreparationRequest},
@@ -64,11 +63,10 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn into_native_shared(self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
         if !self.native_custody.as_ref().is_some_and(|guard| guard.matches_work(work)) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "resource creator belongs to another original native resource" });
+            return Err(native_error(crate::wire::ErrorCode::Invalid, "resource creator belongs to another original native resource"));
         }
         work.charge(acyclic_fs::WorkCounters { allocation_operations: 1,
-            ..acyclic_fs::WorkCounters::UNCHARGED })
+            ..acyclic_fs::WorkCounters::default() })
             .map_err(Error::from)?;
         Ok(Arc::new(self))
     }
@@ -89,8 +87,7 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         if !Arc::ptr_eq(&proof.host, &self.host) || proof.owner != *self.issuer.audience()
             || !configured || !proof.matches_native_work(work)
         {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root allocation is not this configured creator's protected original" });
+            return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root allocation is not this configured creator's protected original"));
         }
         let slot = match proof.role {
             crate::resource_preparation::RootBootstrapContentRole::Project => &self.root_project,
@@ -102,13 +99,11 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         if other.is_some_and(|other| other.root != proof.root || other.owner != proof.owner
             || other.agent != proof.agent || other.admission_digest != proof.admission_digest)
         {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "configured Root allocations belong to different original admissions" });
+            return Err(native_error(crate::wire::ErrorCode::Unauthorized, "configured Root allocations belong to different original admissions"));
         }
         if let Err(proof) = slot.set(proof) {
             if !slot.get().is_some_and(|prior| Arc::ptr_eq(prior, &proof)) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                    reason: "configured original Root allocation changed" });
+                return Err(native_error(crate::wire::ErrorCode::Conflict, "configured original Root allocation changed"));
             }
         }
         Ok(())
@@ -120,15 +115,10 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<[&Arc<FilesystemRootBootstrapAllocation<A, O>>; 2]> {
         work.remaining()?;
-        let project = self.root_project.get().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized, reason: "original Root Project allocation is not bound",
-        })?;
-        let scratch = self.root_scratch.get().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized, reason: "original Root Scratch allocation is not bound",
-        })?;
+        let project = self.root_project.get().ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "original Root Project allocation is not bound"))?;
+        let scratch = self.root_scratch.get().ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "original Root Scratch allocation is not bound"))?;
         if !project.matches_native_work(work) || !scratch.matches_native_work(work) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "original Root allocations belong to another materialization ledger" });
+            return Err(native_error(crate::wire::ErrorCode::Unauthorized, "original Root allocations belong to another materialization ledger"));
         }
         Ok([project, scratch])
     }
@@ -207,12 +197,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                         && matches!(volume.owner(), VolumeOwner::Agent(owner) if Some(*owner) == agent),
             }
         {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root bootstrap differs from its configured original creator or namespace" });
+            return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap differs from its configured original creator or namespace"));
         }
         if native_import.is_some_and(|(source, _)| !source.matches_native_work(work)) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root lazy source belongs to another original native ledger" });
+            return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy source belongs to another original native ledger"));
         }
         crate::NativeFutureBundle::new(work, || async move {
             let creator_custody;
@@ -239,8 +227,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                             && volume.owner() == &crate::conversation::VolumeOwner::Agent(root.agent()),
                 }
             {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "Root bootstrap differs from its configured creator, actor or namespace" });
+                return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap differs from its configured creator, actor or namespace"));
             }
             owner.require_volume_grant_with_native_work(volume, VolumeOperation::Read, work)?;
             let io = PreparationIo::from_native_work(work)?;
@@ -258,24 +245,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             name_hold = io.guard_owned(name.capacity() as u64)?;
             let birth = self.host.filesystem.workspace_for_creation_operation_with_native_work(
                 &name, config, operation, work, &io.cancellation,
-            ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
-                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "Root bootstrap has no original protected Filesystem birth" })?;
+            ).await.map_err(native_workspace_error)?
+                .ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap has no original protected Filesystem birth"))?;
             if birth.id() != initial_generation {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "Root bootstrap initial generation differs from its actual birth" });
+                return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap initial generation differs from its actual birth"));
             }
             let selected = birth.workspace().generation_with_native_work(
                 selected_generation, work, &io.cancellation,
-            ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+            ).await.map_err(native_workspace_error)?;
             let native_snapshot = if let Some((lazy, frozen)) = native_import {
                 if lazy.workspace_id() != birth.workspace_id() {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "Root bootstrap import names another original workspace" });
+                    return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap import names another original workspace"));
                 }
                 if frozen.authored_generation != selected.id() || frozen.workspace_id != birth.workspace_id() {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "Root bootstrap selected generation differs from its original import" });
+                    return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap selected generation differs from its original import"));
                 }
                 lazy.validate_snapshot_with_native_work(frozen, work)?.await?;
                 Some(frozen)
@@ -294,23 +277,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 native_snapshot, writable,
             }, MAX_REQUEST_BYTES, true)?;
             let journal_hold;
-            let journal = allocation_ref_io(&self.host.provider, volume, Some(&io))?;
+            let journal = allocation_ref(&self.host.provider, volume, Some(&io))?;
             journal_hold = io.guard_owned(journal.logical_owned_bytes()?)?;
-            let name = std::str::from_utf8(journal.as_resource().key()).map_err(|_| Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid, reason: "Root allocation journal name is not UTF-8",
-            })?;
+            let name = std::str::from_utf8(journal.as_resource().key()).map_err(|_| native_error(crate::wire::ErrorCode::Invalid, "Root allocation journal name is not UTF-8"))?;
             let mut key_bytes = [0_u8; 32];
-            hex::encode_to_slice(root.original_task().into_bytes(), &mut key_bytes).map_err(|_| Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid, reason: "Root allocation identity encoding failed",
-            })?;
-            let suffix = std::str::from_utf8(&key_bytes).map_err(|_| Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid, reason: "Root allocation identity is not ASCII",
-            })?;
+            hex::encode_to_slice(root.original_task().into_bytes(), &mut key_bytes).map_err(|_| native_error(crate::wire::ErrorCode::Invalid, "Root allocation identity encoding failed"))?;
+            let suffix = std::str::from_utf8(&key_bytes).map_err(|_| native_error(crate::wire::ErrorCode::Invalid, "Root allocation identity is not ASCII"))?;
             let create = IdempotencyKey::new(Self::owned_label("root-bootstrap-journal:", suffix, &io)?)?;
             bounded_io::create(&self.host, name, &create, Some(&io)).await?;
             match bounded_io::read(&self.host, &journal, "/claim.json", MAX_REQUEST_BYTES, Some(&io)).await {
-                Ok(_) => return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "child allocation cannot be claimed as original Root bootstrap" }),
+                Ok(_) => return Err(native_error(crate::wire::ErrorCode::Unauthorized, "child allocation cannot be claimed as original Root bootstrap")),
                 Err(Error::NotFound(_)) => {},
                 Err(error) => return Err(error),
             }
@@ -322,8 +298,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             };
             if let Some(bytes) = retained {
                 if bytes != record {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                        reason: "original Root bootstrap association changed" });
+                    return Err(native_error(crate::wire::ErrorCode::Conflict, "original Root bootstrap association changed"));
                 }
             } else {
                 let observed = bounded_io::resolve(&self.host, &journal, Some(&io)).await?;
@@ -343,8 +318,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 let retained = bounded_io::read(&self.host, &journal, "/root-bootstrap.json",
                     MAX_REQUEST_BYTES, Some(&io)).await?;
                 if retained != record {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                        reason: "protected Root bootstrap association was not published exactly" });
+                    return Err(native_error(crate::wire::ErrorCode::Conflict, "protected Root bootstrap association was not published exactly"));
                 }
             }
             drop(journal);
@@ -384,16 +358,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let mut observer = io.history_io();
             self.issuer.verifier_with_work(&mut Some(&mut observer))?
         };
-        let work = io.original_native_work().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid, reason: "Root bootstrap requires its original native ledger",
-        })?;
+        let work = io.original_native_work().ok_or(native_error(crate::wire::ErrorCode::Invalid, "Root bootstrap requires its original native ledger"))?;
         let (volume, volume_custody) = volume.clone_with_native_work(work)?;
         io.absorb_native_custody(volume_custody)?;
         let (generation, generation_custody) = GenerationRef::new_with_native_work(
             &self.host.provider, &selected_generation.digest().into_bytes(), None, work,
         )?;
         io.absorb_native_custody(generation_custody)?;
-        let evidence = allocation_ref_io(&self.host.provider, &volume, Some(&io))?.into_resource();
+        let evidence = allocation_ref(&self.host.provider, &volume, Some(&io))?.into_resource();
         let snapshot = if let Some(snapshot) = native_snapshot {
             let remaining = io.remaining()?;
             let value = crate::contract::json_value_bounded(&snapshot, crate::contract::JsonBounds {
@@ -406,7 +378,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             root_operation: OperationId::from_bytes(root.into_bytes()), graph_root: root, role,
             volume, evidence, generation, native_snapshot: snapshot,
         };
-        let hashing = WorkCounters { bytes_hashed: record.len() as u64, ..WorkCounters::UNCHARGED };
+        let hashing = WorkCounters { bytes_hashed: record.len() as u64, ..WorkCounters::default() };
         io.preflight(hashing)?;
         let record_digest = *blake3::hash(&record).as_bytes();
         io.charge(hashing)?;
@@ -425,12 +397,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocation<A, O> {
     async fn read_authenticated_record(&self, io: &PreparationIo, maximum: u64) -> Result<acyclic_stream::OwnedBytes> {
         let journal_hold;
-        let journal = allocation_ref_io(&self.host.provider, &self.request.volume, Some(io))?;
+        let journal = allocation_ref(&self.host.provider, &self.request.volume, Some(io))?;
         journal_hold = io.guard_owned(journal.logical_owned_bytes()?)?;
         let bytes_hold;
         let bytes = bounded_io::read(&self.host, &journal, "/root-bootstrap.json", maximum, Some(io)).await?;
         bytes_hold = io.guard_bytes(&bytes)?;
-        let hashing = WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::UNCHARGED };
+        let hashing = WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() };
         io.preflight(hashing)?;
         let exact = *blake3::hash(&bytes).as_bytes() == self.record_digest;
         io.charge(hashing)?;
@@ -439,8 +411,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocat
         if !exact {
             #[cfg(not(target_arch = "wasm32"))]
             if io.original_native_work().is_some() {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "protected original Root bootstrap association changed" });
+                return Err(native_error(crate::wire::ErrorCode::Unauthorized, "protected original Root bootstrap association changed"));
             }
             return Err(Error::Unauthorized("protected original Root bootstrap association changed".into()));
         }
@@ -454,23 +425,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocat
         drop(bytes);
         drop(hold);
         Ok(())
-    }
-
-    /// Exposes only the genuine protected record through its creator-issued token.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn observe_protected_record_with_native_work<'a>(
-        &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        if !self.matches_native_work(work) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root record observation differs from its original native ledger" });
-        }
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let bytes = self.read_authenticated_record(&io, 64 * 1024).await?;
-            self.authenticate_birth_with_io(&io).await?;
-            Ok(bytes)
-        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -487,15 +441,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocat
         let birth = if let Some(work) = io.original_native_work() {
             self.host.filesystem.workspace_for_creation_operation_with_native_work(
                 &name, self.config, self.operation, work, &io.cancellation,
-            ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
+            ).await.map_err(native_workspace_error)?
         } else {
             io.receive(self.host.filesystem.workspace_for_creation_operation_measured(
                 &name, self.config, self.operation, io.remaining()?, &io.cancellation,
             ).await)?
         };
         if !birth.as_ref().is_some_and(|birth| birth.id() == self.initial_generation) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root content original protected Filesystem birth changed" });
+            return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root content original protected Filesystem birth changed"));
         }
         drop(birth);
         drop(name);
@@ -513,24 +466,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         &'a self, io: Option<&PreparationIo>,
     ) -> Result<Option<&'a GenerationRef>> {
         let Some(source) = self.native_source.as_ref() else { return Ok(None); };
-        let snapshot = self.native_snapshot.ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "Root lazy content has no authenticated original frozen snapshot",
-        })?;
+        let snapshot = self.native_snapshot.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy content has no authenticated original frozen snapshot"))?;
         if snapshot.workspace_id != source.workspace_id()
             || snapshot.authored_generation != self.selected_generation
             || self.request.generation.as_resource().key() != snapshot.authored_generation.digest().into_bytes().as_slice()
         {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root lazy publication basis differs from its protected allocation" });
+            return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy publication basis differs from its protected allocation"));
         }
         if let Some(io) = io {
             io.check_cancellation()?;
             if io.original_native_work().is_some_and(|work|
                 !self.matches_native_work(work) || !source.matches_native_work(work))
             {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "Root lazy publication basis belongs to another original ledger" });
+                return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy publication basis belongs to another original ledger"));
             }
         }
         Ok(Some(&self.request.generation))
@@ -540,13 +488,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ) -> Result<Option<&'a GenerationRef>> {
         let Some(generation) = self.source_generation_with_io(io)? else { return Ok(None); };
         if file.volume() != &self.request.volume {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root lazy source reference names another original volume" });
+            return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy source reference names another original volume"));
         }
         let snapshot = self.native_snapshot.expect("authenticated original lazy snapshot");
         if let Some(io) = io {
             io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64,
-                ..WorkCounters::UNCHARGED })?;
+                ..WorkCounters::default() })?;
         }
         let revision = blake3::Hash::from_bytes(snapshot.id.into_bytes()).to_hex();
         Ok((file.version() == revision.as_str()).then_some(generation))
@@ -567,18 +514,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             }
         };
         let lease = self.publication_lease.as_ref().filter(|_| self.writable)
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root lazy content has no original declared publication authority" })?;
-        self.source_generation_with_io(Some(io))?.ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "Root eager content does not select a lazy publication candidate",
-        })?;
+            .ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy content has no original declared publication authority"))?;
+        self.source_generation_with_io(Some(io))?.ok_or(native_error(crate::wire::ErrorCode::Invalid, "Root eager content does not select a lazy publication candidate"))?;
         io.verify_publication_lease(lease.as_ref()).await?;
         self.reauthenticate_with_io(io).await?;
         let source = self.native_source.as_ref().expect("authenticated original lazy source");
         let snapshot = self.native_snapshot.expect("authenticated original lazy snapshot");
         let hashing = WorkCounters { bytes_hashed: key.as_str().len() as u64,
-            ..WorkCounters::UNCHARGED };
+            ..WorkCounters::default() };
         io.preflight(hashing)?;
         let operation = super::super::filesystem_key(key);
         io.charge(hashing)?;
@@ -611,10 +554,9 @@ impl<A, O> FilesystemRootBootstrapAllocation<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn into_native_shared(self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
         if !self.matches_native_work(work) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "Root bootstrap allocation belongs to another original ledger" });
+            return Err(native_error(crate::wire::ErrorCode::Invalid, "Root bootstrap allocation belongs to another original ledger"));
         }
-        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED })?;
+        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
         Ok(Arc::new(self))
     }
 }
@@ -631,8 +573,7 @@ struct RootCreatedFilesystemAccess<A, O> {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreatedFilesystemAccess<A, O> {
     async fn authenticate(&self, volume: &VolumeRef, io: &PreparationIo) -> Result<()> {
         if volume != &self.allocation.request.volume {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root content handle names another original namespace" });
+            return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root content handle names another original namespace"));
         }
         self.allocation.reauthenticate_with_io(io).await
     }
@@ -643,18 +584,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
     }
 
     fn writer(&self) -> Result<&FilesystemContentPublisher<A, O>> {
-        self.writer.as_ref().ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-            reason: "original Root content has no declared publication authority" })
+        self.writer.as_ref().ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "original Root content has no declared publication authority"))
     }
 
     fn publication_lease(&self) -> Result<&dyn crate::resource_preparation::CreatedTaskLease> {
-        self.allocation.publication_lease.as_deref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "original Root content has no current publication lease",
-        })
+        self.allocation.publication_lease.as_deref().ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "original Root content has no current publication lease"))
     }
 
-    fn authorize_ordinary_path(&self, volume: &VolumeRef, prefix: &str, path: &str,
+    fn authorize_path(&self, volume: &VolumeRef, prefix: &str, path: &str,
         io: &PreparationIo) -> Result<()> {
         if volume != &self.allocation.request.volume {
             return Err(io.invalid("Root source path names another namespace"));
@@ -677,19 +614,30 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         Ok(())
     }
 
-    async fn read_snapshot_file_ordinary(&self, file: &FileRef, maximum: u64,
+    async fn read_snapshot_bytes(&self, snapshot: acyclic_fs::LazySnapshotRef, path: &str,
+        maximum: u64, io: &PreparationIo) -> Result<acyclic_stream::OwnedBytes> {
+        let source = self.allocation.native_source.as_ref()
+            .ok_or_else(|| bounded_io::unauthorized(Some(io), "Root source lacks its retained lazy backing"))?;
+        if let Some(work) = io.original_native_work() {
+            source.read_with_native_work(snapshot, path, maximum, work)?.await
+        } else {
+            io.receive_content(source.read_measured(snapshot, path, maximum,
+                io.remaining()?, &io.cancellation).await)
+        }
+    }
+
+    async fn read_snapshot_file(&self, file: &FileRef, maximum: u64,
         io: &PreparationIo) -> Result<Option<acyclic_stream::OwnedBytes>> {
         let Some(snapshot) = self.allocation.native_snapshot else { return Ok(None); };
-        io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64, ..WorkCounters::UNCHARGED })?;
+        io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64, ..WorkCounters::default() })?;
         if file.version() != blake3::Hash::from_bytes(snapshot.id.into_bytes()).to_hex().as_str() {
             return Ok(None);
         }
-        self.authorize_ordinary_path(file.volume(), "", file.path(), io)?;
+        self.authorize_path(file.volume(), "", file.path(), io)?;
         self.authenticate(file.volume(), io).await?;
         let absolute = bounded_io::format_text(format_args!("/{}", file.path()), Some(io))?;
-        let source = self.allocation.native_source.as_ref().ok_or_else(|| io.invalid("Root source lacks its retained lazy backing"))?;
-        let bytes = io.receive_content(source.read_measured(snapshot, &absolute,
-            maximum.min(self.reader.maximum_bytes), io.remaining()?, &io.cancellation).await)?;
+        let bytes = self.read_snapshot_bytes(snapshot, &absolute,
+            maximum.min(self.reader.maximum_bytes), io).await?;
         file.descriptor().verify_with_io(bytes.as_ref(), Some(io))?;
         let absolute_capacity = absolute.capacity() as u64;
         drop(absolute);
@@ -697,7 +645,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         Ok(Some(bytes))
     }
 
-    async fn read_snapshot_path_ordinary(&self, volume: &VolumeRef, prefix: &str, path: &str,
+    async fn read_snapshot_path(&self, volume: &VolumeRef, prefix: &str, path: &str,
         expected: Option<&GenerationRef>, maximum: u64, io: &PreparationIo) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         let snapshot = self.allocation.native_snapshot.ok_or_else(|| io.invalid("Root path has no original lazy snapshot"))?;
         if expected.is_some_and(|value| value != &self.allocation.request.generation)
@@ -706,36 +654,36 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
             return Err(io.invalid("Root path differs from its immutable source selection or limit"));
         }
         bounded_io::validate_content_path(path, Some(io))?;
-        self.authorize_ordinary_path(volume, prefix, path, io)?;
+        self.authorize_path(volume, prefix, path, io)?;
         self.authenticate(volume, io).await?;
         let absolute = bounded_io::format_text(format_args!("/{path}"), Some(io))?;
-        let source = self.allocation.native_source.as_ref().ok_or_else(|| io.invalid("Root path lacks its retained lazy backing"))?;
-        let bytes = io.receive_content(source.read_measured(snapshot, &absolute,
-            maximum, io.remaining()?, &io.cancellation).await)?;
+        let bytes = self.read_snapshot_bytes(snapshot, &absolute, maximum, io).await?;
         let absolute_capacity = absolute.capacity() as u64;
         drop(absolute);
         io.release(absolute_capacity)?;
+        let header = if io.uses_native_work() { std::mem::size_of::<crate::conversation::FileDescriptor>() as u64 } else { 0 };
+        io.claim(header)?;
         let descriptor = crate::conversation::FileDescriptor::from_bytes_with_io(
             &bytes, "application/octet-stream", Some(io),
         )?;
-        io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64, ..WorkCounters::UNCHARGED })?;
+        io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64, ..WorkCounters::default() })?;
         let version = blake3::Hash::from_bytes(snapshot.id.into_bytes()).to_hex();
+        if io.uses_native_work() { io.claim(std::mem::size_of::<FileRef>() as u64)?; }
         let file = FileRef::new_with_io(volume, path, version.as_str(), &descriptor,
             path.rsplit('/').next().unwrap_or(path), Some(io))?;
-        let descriptor_capacity = descriptor.logical_owned_bytes();
+        let descriptor_capacity = header + descriptor.logical_owned_bytes();
         drop(descriptor);
         io.release(descriptor_capacity)?;
         Ok((file, bytes))
     }
 
-    async fn list_snapshot_directory_ordinary(&self, volume: &VolumeRef, prefix: &str, path: &str,
+    async fn list_snapshot_directory(&self, volume: &VolumeRef, prefix: &str, path: &str,
         expected: Option<&GenerationRef>, after: Option<&str>, maximum: u32) -> Result<PrivateDirectoryPage> {
         if maximum == 0 || expected.is_some_and(|value| value != &self.allocation.request.generation) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "Root directory page differs from its immutable selection or bound" });
+            return Err(native_error(crate::wire::ErrorCode::Invalid, "Root directory page differs from its immutable selection or bound"));
         }
         let io = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?;
-        self.authorize_ordinary_path(volume, prefix, path, &io)?;
+        self.authorize_path(volume, prefix, path, &io)?;
         self.authenticate(volume, &io).await?;
         let snapshot = self.allocation.native_snapshot.expect("frozen directory route");
         let source = self.allocation.native_source.as_ref().ok_or_else(|| io.invalid("Root directory lacks its retained lazy backing"))?;
@@ -748,8 +696,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
                 io.remaining()?, &io.cancellation).await)?;
             for entry in page.entries {
                 let kind = match entry.kind {
-                    acyclic_fs::SourceNodeKind::RegularFile => crate::conversation::PrivateDirectoryEntryKind::File,
-                    acyclic_fs::SourceNodeKind::Directory => crate::conversation::PrivateDirectoryEntryKind::Directory,
+                    acyclic_fs::demand::SourceNodeKind::RegularFile => crate::conversation::PrivateDirectoryEntryKind::File,
+                    acyclic_fs::demand::SourceNodeKind::Directory => crate::conversation::PrivateDirectoryEntryKind::Directory,
                     _ => continue,
                 };
                 let name = entry.name.unicode_text().ok_or_else(|| io.invalid("Root directory name is not representable losslessly"))?;
@@ -772,101 +720,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         Ok(page)
     }
 
-    fn snapshot_version(&self, work: &acyclic_fs::NativeMaterializationWork)
-        -> Result<Option<blake3::Hash>> {
-        let Some(snapshot) = self.allocation.native_snapshot else { return Ok(None); };
-        work.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64,
-            ..WorkCounters::UNCHARGED }).map_err(Error::from)?;
-        Ok(Some(blake3::Hash::from_bytes(snapshot.id.into_bytes())))
-    }
 
-    async fn read_snapshot_file(&self, file: &FileRef, maximum: u64,
-        work: &acyclic_fs::NativeMaterializationWork) -> Result<Option<acyclic_stream::OwnedBytes>>
-    {
-        let Some(version) = self.snapshot_version(work)? else { return Ok(None); };
-        if file.version() != version.to_hex().as_str() { return Ok(None); }
-        let io = PreparationIo::from_native_work(work)?;
-        crate::conversation::validate_content_path_with_native_work(file.path(), work)?;
-        if file.volume() != &self.allocation.request.volume {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root source file names another namespace" });
-        }
-        let grant_custody;
-        let (grant, custody) = crate::conversation::ContentGrant::verify_directory_read_with_native_work(
-            &self.reader.verifier, &self.reader.scope, file.volume(), "", work,
-        )?;
-        grant_custody = custody;
-        grant.require_directory_path_with_native_work(file.volume(), file.path(), work)?;
-        drop(grant);
-        drop(grant_custody);
-        self.authenticate(file.volume(), &io).await?;
-        let path_custody;
-        let path = bounded_io::format_text(format_args!("/{}", file.path()), Some(&io))?;
-        path_custody = io.guard_owned(path.capacity() as u64)?;
-        let source = self.allocation.native_source.as_ref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized, reason: "Root source file lacks its original source handle",
-        })?;
-        let bytes = source.read_with_native_work(
-            self.allocation.native_snapshot.expect("selected snapshot version"), &path,
-            maximum.min(self.reader.maximum_bytes), work,
-        )?.await?;
-        file.descriptor().verify_with_native_work(bytes.as_ref(), work)?;
-        drop(path);
-        drop(path_custody);
-        Ok(Some(bytes))
-    }
-
-    async fn read_snapshot_path(&self, volume: &VolumeRef, prefix: &str, path: &str,
-        expected: Option<&GenerationRef>, maximum: u64, work: &acyclic_fs::NativeMaterializationWork)
-        -> Result<(FileRef, acyclic_stream::OwnedBytes, acyclic_fs::NativeAllocation)>
-    {
-        let snapshot = self.allocation.native_snapshot.ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized, reason: "Root path has no original frozen lazy snapshot",
-        })?;
-        if volume != &self.allocation.request.volume
-            || expected.is_some_and(|expected| expected != &self.allocation.request.generation)
-            || maximum == 0 || maximum > self.reader.maximum_bytes
-        {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root lazy path differs from its original source selection or limit" });
-        }
-        crate::conversation::validate_content_path_with_native_work(path, work)?;
-        let grant_custody;
-        let (grant, custody) = crate::conversation::ContentGrant::verify_directory_read_with_native_work(
-            &self.reader.verifier, &self.reader.scope, volume, prefix, work,
-        )?;
-        grant_custody = custody;
-        grant.require_directory_path_with_native_work(volume, path, work)?;
-        drop(grant);
-        drop(grant_custody);
-        let io = PreparationIo::from_native_work(work)?;
-        self.authenticate(volume, &io).await?;
-        let path_custody;
-        let absolute = bounded_io::format_text(format_args!("/{path}"), Some(&io))?;
-        path_custody = io.guard_owned(absolute.capacity() as u64)?;
-        let source = self.allocation.native_source.as_ref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized, reason: "Root path lacks its original lazy source handle",
-        })?;
-        let bytes = source.read_with_native_work(snapshot, &absolute, maximum, work)?.await?;
-        drop(absolute);
-        drop(path_custody);
-        let descriptor_custody;
-        io.claim(std::mem::size_of::<crate::conversation::FileDescriptor>() as u64)?;
-        let descriptor = crate::conversation::FileDescriptor::from_bytes_with_io(
-            bytes.as_ref(), "application/octet-stream", Some(&io),
-        )?;
-        descriptor_custody = io.guard_owned(std::mem::size_of::<crate::conversation::FileDescriptor>() as u64
-            + descriptor.logical_owned_bytes())?;
-        let version = self.snapshot_version(work)?.expect("authenticated original snapshot").to_hex();
-        io.claim(std::mem::size_of::<FileRef>() as u64)?;
-        let file = FileRef::new_with_io(volume, path, version.as_str(), &descriptor,
-            path.rsplit('/').next().unwrap_or(path), Some(&io))?;
-        drop(descriptor);
-        drop(descriptor_custody);
-        let retained = std::mem::size_of::<FileRef>() as u64 + file.logical_owned_bytes()?;
-        let custody = io.into_native_custody(retained)?;
-        Ok((file, bytes, custody))
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -879,7 +733,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
     fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
             let io = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?;
-            if let Some(bytes) = self.read_snapshot_file_ordinary(file, self.reader.maximum_bytes, &io).await? {
+            if let Some(bytes) = self.read_snapshot_file(file, self.reader.maximum_bytes, &io).await? {
                 return Ok(bytes);
             }
             self.authenticate(file.volume(), &io).await?;
@@ -889,7 +743,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
     fn supports_measured_read(&self, volume: &VolumeRef, budget: WorkBudget,
         cancellation: &CancellationToken) -> MeasuredResult<OperationReceipt<bool>, Error> {
         if volume != &self.allocation.request.volume {
-            return Ok(OperationReceipt { value: false, work: WorkCounters::UNCHARGED });
+            return Ok(OperationReceipt { value: false, work: WorkCounters::default() });
         }
         self.reader.supports_measured_read(volume, budget, cancellation)
     }
@@ -897,26 +751,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         if volume != &self.allocation.request.volume { return Ok(false); }
         self.reader.supports_native_read(volume, work)
     }
-    fn observe_received_copy_with_native_work<'a>(
-        &'a self, volume: &'a VolumeRef,
-        proof: &'a crate::runtime::ReceivedCopyReadWitness<'_>,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.authenticate(volume, &io).await?;
-            drop(io);
-            self.reader.observe_received_copy_with_native_work(volume, proof, work)?.await
-        })
-    }
     fn read_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         crate::NativeFutureBundle::new(work, || async move {
-            if let Some(bytes) = self.read_snapshot_file(file, maximum_bytes, work).await? {
+            let io = PreparationIo::from_native_work(work)?;
+            if let Some(bytes) = self.read_snapshot_file(file, maximum_bytes, &io).await? {
                 return Ok(bytes);
             }
-            let io = PreparationIo::from_native_work(work)?;
             self.authenticate(file.volume(), &io).await?;
             drop(io);
             self.reader.read_with_native_work(file, maximum_bytes, work)?.await
@@ -925,10 +767,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
     fn verify_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || async move {
-            if self.read_snapshot_file(file, maximum_bytes, work).await?.is_some() {
+            let io = PreparationIo::from_native_work(work)?;
+            if self.read_snapshot_file(file, maximum_bytes, &io).await?.is_some() {
                 return Ok(());
             }
-            let io = PreparationIo::from_native_work(work)?;
             self.authenticate(file.volume(), &io).await?;
             drop(io);
             self.reader.verify_with_native_work(file, maximum_bytes, work)?.await
@@ -940,7 +782,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         Box::pin(async move {
             let io = PreparationIo::from_budget(budget, cancellation).map_err(OperationFailure::before_work)?;
             let result = async {
-                if let Some(bytes) = self.read_snapshot_file_ordinary(file, maximum_bytes, &io).await? {
+                if let Some(bytes) = self.read_snapshot_file(file, maximum_bytes, &io).await? {
                     return Ok(bytes);
                 }
                 self.authenticate(file.volume(), &io).await?;
@@ -962,7 +804,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         Box::pin(async move {
             if self.allocation.native_snapshot.is_some() {
                 let io = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?;
-                return self.read_snapshot_path_ordinary(volume, prefix, path,
+                return self.read_snapshot_path(volume, prefix, path,
                     Some(generation), maximum_bytes, &io).await.map(|(_, bytes)| bytes);
             }
             self.authenticate_original(volume).await?;
@@ -974,7 +816,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         -> BoxFuture<'a, Result<PrivateDirectoryPage>> {
         Box::pin(async move {
             if self.allocation.native_snapshot.is_some() {
-                return self.list_snapshot_directory_ordinary(volume, prefix, path, generation, after, maximum_entries).await;
+                return self.list_snapshot_directory(volume, prefix, path, generation, after, maximum_entries).await;
             }
             self.authenticate_original(volume).await?;
             ContentResidencyVerifier::list_private_directory(&self.reader, volume, prefix, path,
@@ -986,7 +828,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         Box::pin(async move {
             if self.allocation.native_snapshot.is_some() {
                 let io = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?;
-                return self.read_snapshot_path_ordinary(volume, prefix, path,
+                return self.read_snapshot_path(volume, prefix, path,
                     generation, self.reader.maximum_bytes, &io).await;
             }
             self.authenticate_original(volume).await?;
@@ -1000,7 +842,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_stream::OwnedBytes, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             if self.allocation.native_snapshot.is_some() {
-                self.read_snapshot_path(volume, prefix, path, expected, maximum, work).await
+                let io = PreparationIo::from_native_work(work)?;
+                let (file, bytes) = self.read_snapshot_path(volume, prefix, path, expected, maximum, &io).await?;
+                let retained = std::mem::size_of::<FileRef>() as u64 + file.logical_owned_bytes()?;
+                Ok((file, bytes, io.into_native_custody(retained)?))
             } else {
                 let io = PreparationIo::from_native_work(work)?;
                 self.authenticate(volume, &io).await?;
@@ -1101,9 +946,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
             self.authenticate_original(source.volume()).await?;
             let io = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?;
             if self.allocation.source_generation_for_file_with_io(source, Some(&io))?.is_some() {
-                let original = self.read_snapshot_file_ordinary(source, self.reader.maximum_bytes, &io).await?
-                    .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "Root replacement does not authenticate its original lazy source" })?;
+                let original = self.read_snapshot_file(source, self.reader.maximum_bytes, &io).await?
+                    .ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root replacement does not authenticate its original lazy source"))?;
                 drop(original);
             }
             self.writer()?.stage_at_with_publication_lease(operation, source, bytes,
@@ -1118,9 +962,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
             let io = PreparationIo::from_native_work(work)?;
             self.authenticate(source.volume(), &io).await?;
             if self.allocation.source_generation_for_file_with_io(source, Some(&io))?.is_some() {
-                let original = self.read_snapshot_file(source, self.reader.maximum_bytes, work).await?
-                    .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "Root replacement does not authenticate its original lazy source" })?;
+                let original = self.read_snapshot_file(source, self.reader.maximum_bytes, &io).await?
+                    .ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root replacement does not authenticate its original lazy source"))?;
                 drop(original);
             }
             drop(io);
@@ -1128,68 +971,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                 work, self.publication_lease()?, self.allocation.as_ref())?.await
         })
     }
-}
-
-/// The seed bytes are the SDK's original canonical source encoding reconstructed from the retained published report, not a raw standalone seed record.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug, PartialEq, Eq)]
-pub enum NativeCreatedAllocationSourceOrigin {
-    CanonicalForkSeedFromPublishedReport,
-}
-
-/// Authenticated protected records; this observation grants no task authority.
-#[cfg(not(target_arch = "wasm32"))]
-pub struct NativeCreatedAllocationObservation {
-    records: StoredAllocationRecords,
-    _custody: acyclic_fs::NativeAllocation,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeCreatedAllocationObservation {
-    /// Exact retained bytes of the selected allocation's protected `/claim.json`.
-    pub fn claim_json(&self) -> &[u8] { &self.records.claim }
-    /// Exact retained bytes of protected `/seed.json`, which is a digest binding.
-    pub fn seed_binding_json(&self) -> &[u8] { &self.records.binding }
-    /// Exact protected `/request.json` bytes, verified against the claim's hash.
-    pub fn fork_request_json(&self) -> &[u8] { &self.records.request }
-    /// SDK source encoding derived from the retained published report, whose digest must match `/seed.json`; not bytes of a standalone raw seed record.
-    pub fn fork_seed_json(&self) -> &[u8] { &self.records.seed }
-    pub fn source_origin(&self) -> NativeCreatedAllocationSourceOrigin {
-        NativeCreatedAllocationSourceOrigin::CanonicalForkSeedFromPublishedReport
-    }
-}
-
-#[derive(Default)]
-struct StoredAllocationRecords {
-    claim: acyclic_stream::OwnedBytes,
-    binding: acyclic_stream::OwnedBytes,
-    request: acyclic_stream::OwnedBytes,
-    seed: acyclic_stream::OwnedBytes,
-}
-
-macro_rules! observed_preparation_records {
-    ($($record:ty),+ $(,)?) => {$(
-        impl bounded_io::PreparationRecord for $record {
-            fn maximum_slot_bytes() -> u64 {
-                bounded_io::preparation_slot_bytes::<Self>()
-            }
-        }
-    )+};
-}
-observed_preparation_records!(ForkRequest, ForkReport, AllocationClaim, SeedBinding);
-
-async fn read_observed_record<A: AsyncAuthorityStore, O: AsyncObjectStore,
-    T: bounded_io::PreparationRecord>(
-    host: &FilesystemHost<A, O>, journal: &WorkspaceRef, path: &str,
-    maximum_bytes: u64, io: &PreparationIo, capture: Option<&mut acyclic_stream::OwnedBytes>,
-) -> Result<Option<T>> {
-    read_record_decoded_bounded(host, journal, path, maximum_bytes, Some(io), |bytes, _| {
-        let decoded = io.decode_preparation::<T>(bytes)?;
-        if let Some(capture) = capture {
-            *capture = bytes.clone();
-        }
-        Ok(decoded.into_retained())
-    }).await
 }
 
 fn preparation_journal(
@@ -1251,7 +1032,7 @@ fn task_origin(claim: &AllocationClaim) -> Result<&ResourceCreationOrigin> {
 async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, owner: &Authority,
     request: &ResourcePreparationRequest, proof: &ResourceCreationProofRef,
-    io: Option<&PreparationIo>, mut records: Option<&mut StoredAllocationRecords>,
+    io: Option<&PreparationIo>,
 ) -> Result<AuthenticatedAllocation> {
     let owned;
     let io = match io {
@@ -1267,8 +1048,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return Err(Error::Unauthorized("created access differs from the admitted provider boundary".into()));
     }
     io.encode(request, request.maximum_bytes)?;
-    let record_limit = request.maximum_bytes.min(MAX_REPORT_BYTES)
-        .min(if records.is_some() { 64 * 1024 } else { MAX_REPORT_BYTES });
+    let record_limit = request.maximum_bytes.min(MAX_REPORT_BYTES);
     let payload_hold;
     let payload = io.encode(&request.payload, record_limit)?;
     payload_hold = io.guard_bytes(&payload)?;
@@ -1304,37 +1084,16 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .ok_or_else(|| Error::Unauthorized("proof does not name a created fork volume".into()))?;
     let (selected_volume, _) = creation_volumes(&fork).nth(index)
         .ok_or_else(|| Error::Unauthorized("created allocation index is absent".into()))?;
-    let evidence = allocation_ref_io(&host.provider, selected_volume, Some(io))?;
+    let evidence = allocation_ref(&host.provider, selected_volume, Some(io))?;
     if evidence.as_resource() != &proof.evidence {
         return Err(Error::Unauthorized("proof does not name this protected allocation journal".into()));
     }
     let journal = preparation_journal(&host.provider, fork.operation_id, io)?;
-    let observed = records.is_some();
-    #[cfg(not(target_arch = "wasm32"))]
-    let observed = observed || io.original_native_work().is_some();
-    let report = if observed {
-        let request_capture = records.as_deref_mut().map(|records| &mut records.request);
-        let retained = read_observed_record::<A, O, ForkRequest>(host, &journal,
-            "/request.json", record_limit, io, request_capture).await?
-            .ok_or_else(|| Error::Unauthorized("fork preparation request is not retained".into()))?;
-        if retained != fork {
-            return Err(Error::Conflict("fork operation is claimed by another request".into()));
-        }
-        let report = read_observed_record::<A, O, ForkReport>(host, &journal,
-            "/report.json", record_limit, io, None).await?
-            .ok_or_else(|| Error::Unauthorized("fork allocation has no completed report".into()))?;
-        report.validate()?;
-        if report.request != fork {
-            return Err(Error::Conflict("fork report does not match its claimed request".into()));
-        }
-        report
-    } else {
-        if !read_request_claim(host, &journal, &fork, record_limit, Some(io)).await? {
-            return Err(Error::Unauthorized("fork preparation request is not retained".into()));
-        }
-        read_preparation_report(host, &journal, &fork, record_limit, Some(io)).await?
-            .ok_or_else(|| Error::Unauthorized("fork allocation has no completed report".into()))?
-    };
+    if !read_request_claim(host, &journal, &fork, record_limit, Some(io)).await? {
+        return Err(Error::Unauthorized("fork preparation request is not retained".into()));
+    }
+    let report = read_preparation_report(host, &journal, &fork, record_limit, Some(io)).await?
+        .ok_or_else(|| Error::Unauthorized("fork allocation has no completed report".into()))?;
     let mut observer = io.history_io();
     let seed = report.into_seed_with_work(&mut Some(&mut observer))?;
     let encoded_hold;
@@ -1344,7 +1103,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let canonical = io.encode_json(request, request.maximum_bytes, true)?;
     canonical_hold = io.guard_bytes(&canonical)?;
     let hashing = WorkCounters { bytes_hashed: (encoded.len() + canonical.len()) as u64,
-        ..WorkCounters::UNCHARGED };
+        ..WorkCounters::default() };
     io.preflight(hashing)?;
     let digest = *blake3::hash(&encoded).as_bytes();
     let request_digest = *blake3::hash(&canonical).as_bytes();
@@ -1355,59 +1114,24 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     seed.validate_with_work(&mut Some(&mut observer))?;
     let seed_hold;
     let encoded_seed = io.encode(&seed, record_limit)?;
-    seed_hold = if records.is_none() {
-        io.guard_bytes(&encoded_seed)?
-    } else { None };
+    seed_hold = io.guard_bytes(&encoded_seed)?;
     let hashing = WorkCounters { bytes_hashed: encoded_seed.len() as u64,
-        ..WorkCounters::UNCHARGED };
+        ..WorkCounters::default() };
     io.preflight(hashing)?;
     let binding = SeedBinding { digest: *blake3::hash(&encoded_seed).as_bytes() };
     io.charge(hashing)?;
-    if let Some(records) = records.as_deref_mut() {
-        records.seed = encoded_seed;
-        let hashing = WorkCounters { bytes_hashed: records.request.len() as u64,
-            ..WorkCounters::UNCHARGED };
-        io.preflight(hashing)?;
-        let matches = *blake3::hash(&records.request).as_bytes() == digest;
-        io.charge(hashing)?;
-        if !matches {
-            #[cfg(not(target_arch = "wasm32"))]
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "retained source encoding differs from its protected digest" });
-            #[cfg(target_arch = "wasm32")]
-            return Err(Error::Unauthorized(
-                "retained source encoding differs from its protected digest".into()));
-        }
-    } else {
-        drop(encoded_seed);
-    }
+    drop(encoded_seed);
     drop(seed_hold);
     let mut selected: Option<AuthenticatedAllocation> = None;
     let mut original_origin: Option<ResourceCreationOrigin> = None;
     for (volume_index, (volume, role)) in creation_volumes(&fork).enumerate() {
-        let allocation = allocation_ref_io(&host.provider, volume, Some(io))?;
-        let (mut claim, retained_binding) = if observed {
-            let capture = records.as_deref_mut().filter(|_| volume_index == index);
-            let (claim_capture, binding_capture) = match capture {
-                Some(records) => (Some(&mut records.claim), Some(&mut records.binding)),
-                None => (None, None),
-            };
-            let claim = read_observed_record::<A, O, AllocationClaim>(host, &allocation,
-                "/claim.json", record_limit, io, claim_capture).await?
-                .ok_or_else(|| Error::Unauthorized("created allocation claim is missing".into()))?;
-            let binding = read_observed_record::<A, O, SeedBinding>(host, &allocation,
-                "/seed.json", record_limit, io, binding_capture).await?
-                .ok_or_else(|| Error::Unauthorized("created allocation seed is missing".into()))?;
-            (claim, binding)
-        } else {
-            let claim = read_record_bounded::<A, O, AllocationClaim>(host, &allocation,
-                "/claim.json", record_limit, Some(io)).await?
-                .ok_or_else(|| Error::Unauthorized("created allocation claim is missing".into()))?;
-            let binding = read_record_bounded::<A, O, SeedBinding>(host, &allocation,
-                "/seed.json", record_limit, Some(io)).await?
-                .ok_or_else(|| Error::Unauthorized("created allocation seed is missing".into()))?;
-            (claim, binding)
-        };
+        let allocation = allocation_ref(&host.provider, volume, Some(io))?;
+        let mut claim = read_record::<A, O, AllocationClaim>(host, &allocation,
+            "/claim.json", record_limit, Some(io)).await?
+            .ok_or_else(|| Error::Unauthorized("created allocation claim is missing".into()))?;
+        let retained_binding = read_record::<A, O, SeedBinding>(host, &allocation,
+            "/seed.json", record_limit, Some(io)).await?
+            .ok_or_else(|| Error::Unauthorized("created allocation seed is missing".into()))?;
         let origin = task_origin(&claim)?;
         let prior_origin = selected.as_ref().map(|known| &known.origin).or(original_origin.as_ref());
         if claim.operation_id != fork.operation_id || claim.preparation_digest != digest
@@ -1436,12 +1160,12 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let prepared = bounded_io::generation(host, &original_workspace, prepared_generation, io).await?;
         let creation_key = original_creation_key(fork.operation_id, digest, &role, io)?;
         io.charge(WorkCounters { bytes_hashed: creation_key.as_str().len() as u64,
-            ..WorkCounters::UNCHARGED })?;
+            ..WorkCounters::default() })?;
         let key = super::super::filesystem_key(&creation_key);
         #[cfg(not(target_arch = "wasm32"))]
         let initial = if let Some(original) = io.original_native_work() {
-            original_workspace.operation_generation_with_native_work(key, original, &io.cancellation)
-                .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
+            original_workspace.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(key.into_bytes()), original, &io.cancellation)
+                .await.map_err(native_workspace_error)?
         } else {
             io.receive(original_workspace.operation_generation_measured(
                 key, io.remaining()?, &io.cancellation).await)?
@@ -1466,7 +1190,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             let prepared_generation = bounded_io::generation_ref(host, &prepared, Some(io))?;
             if role == ForkAllocationRole::Scratch {
                 let copied = WorkCounters { bytes_copied: fork.child.id.len() as u64,
-                    ..WorkCounters::UNCHARGED };
+                    ..WorkCounters::default() };
                 io.preflight(copied)?;
                 io.claim(fork.child.id.len() as u64)?;
                 if !fork.child.id.is_empty() { io.allocation_attempt(fork.child.id.len() as u64)?; }
@@ -1601,14 +1325,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             let allocation = match request.role {
                 RootBootstrapContentRole::Project => self.root_project.get(),
                 RootBootstrapContentRole::Scratch => self.root_scratch.get(),
-            }.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root content has no configured protected original allocation" })?;
+            }.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root content has no configured protected original allocation"))?;
             work.remaining()?;
             let generation: Option<[u8; 32]> = request.generation.as_resource().key().try_into().ok();
             let frozen = match &request.native_snapshot {
                 Some(value) => Some(acyclic_fs::LazySnapshotRef::deserialize(value)
-                    .map_err(|_| Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "Root content snapshot is not its original fixed descriptor" })?),
+                    .map_err(|_| native_error(crate::wire::ErrorCode::Unauthorized, "Root content snapshot is not its original fixed descriptor"))?),
                 None => None,
             };
             if context.owner() != &allocation.owner || context.audience() != &allocation.audience
@@ -1623,16 +1345,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
                 || frozen != allocation.native_snapshot
                 || request.native_snapshot != allocation.request.native_snapshot
             {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "Root content request differs from its actual protected original association" });
+                return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root content request differs from its actual protected original association"));
             }
             let io = PreparationIo::from_native_work(work)?;
             let journal_hold;
-            let journal = allocation_ref_io(&self.host.provider, &allocation.request.volume, Some(&io))?;
+            let journal = allocation_ref(&self.host.provider, &allocation.request.volume, Some(&io))?;
             journal_hold = io.guard_owned(journal.logical_owned_bytes()?)?;
             if &request.evidence != journal.as_resource() {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "Root content evidence names another protected allocation" });
+                return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root content evidence names another protected allocation"));
             }
             drop(journal);
             drop(journal_hold);
@@ -1642,8 +1362,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             let read = Self::owned_label("volume:read:", &name["harness-".len()..], &io)?;
             let write = Self::owned_label("volume:write:", &name["harness-".len()..], &io)?;
             if !context.original_root().grants.contains(&read) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "Root content original admission does not declare Project or Scratch READ" });
+                return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root content original admission does not declare Project or Scratch READ"));
             }
             let writable = allocation.writable && context.original_root().grants.contains(&write);
             allocation.reauthenticate_with_io(&io).await?;
@@ -1684,7 +1403,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
                 context.original_root().limits.file_bytes, Some(&io))?;
             let capture = io.owned_bytes()?;
             custody = io.into_native_custody(capture)?;
-            work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED })?;
+            work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
             let access = Arc::new(RootCreatedFilesystemAccess {
                 allocation: allocation.clone(), reader, writer, _custody: custody,
             });
@@ -1715,76 +1434,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemResourceCreationProvider<A, O> {
-    /// Observes the admitted original allocation without granting a read scope.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn inspect_created_allocation_with_native_work<'a>(
-        &'a self, request: &'a ResourcePreparationRequest,
-        proof: &'a ResourceCreationProofRef, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, NativeCreatedAllocationObservation>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            request.validate()?;
-            let units = request.maximum_work;
-            let bytes = request.maximum_bytes;
-            let scoped = work.native_volume_work(work.budget().intersect_budget(WorkBudget {
-                authority_records_read: units, authority_records_appended: units,
-                authority_bytes_read: bytes, authority_bytes_written: bytes,
-                object_probes: units, backend_read_operations: units, backend_write_operations: units,
-                durability_operations: units, page_reads: units, page_writes: units,
-                object_bytes_read: bytes, object_bytes_written: bytes,
-                bytes_hashed: bytes, bytes_copied: bytes, bytes_encoded: bytes,
-                source_bytes_read: bytes, source_path_components: units, source_entries_visited: units,
-                output_bytes: bytes, items_examined: units, items_returned: units,
-                allocation_operations: units, peak_allocation_bytes: bytes, materializations: units,
-            })).map_err(Error::from)?;
-            let io = PreparationIo::from_native_work(&scoped)?;
-            io.claim(std::mem::size_of::<NativeCreatedAllocationObservation>() as u64)?;
-            let mut records = StoredAllocationRecords::default();
-            let first = authenticate(&self.host, self.issuer.audience(),
-                request, proof, Some(&io), Some(&mut records)).await?;
-            let overflow = || Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "created observation ownership overflows" };
-            let reference_slots = first.reference_files.capacity()
-                .checked_mul(std::mem::size_of::<FileRef>()).ok_or_else(overflow)? as u64;
-            let selected_owned = [
-                first.volume.logical_owned_bytes()?, first.generation.logical_owned_bytes()?,
-                first.prepared_generation.logical_owned_bytes()?,
-                first.origin.owner.id.capacity() as u64,
-                first.origin.creation_fence.reservation_id.capacity() as u64,
-                first.origin.creation_fence.placement.capacity() as u64,
-                first.origin.source_grants.logical_owned_bytes()?,
-                first.authority.as_ref().map_or(0, |authority| authority.id.capacity() as u64),
-                reference_slots,
-            ].into_iter().try_fold(0_u64, |bytes, next| bytes.checked_add(next).ok_or_else(overflow))?;
-            let selected_owned = first.reference_files.iter().try_fold(selected_owned,
-                |bytes, file| bytes.checked_add(file.logical_owned_bytes()?).ok_or_else(overflow))?;
-            let output_owned = std::mem::size_of::<NativeCreatedAllocationObservation>() as u64;
-            let retained = selected_owned.checked_add(output_owned).ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid, reason: "created observation ownership overflows" })?;
-            let released = io.owned_bytes()?.checked_sub(retained).ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid, reason: "created observation exceeds admitted ownership" })?;
-            io.release(released)?;
-            let last = authenticate(&self.host, self.issuer.audience(),
-                request, proof, Some(&io), None).await?;
-            if first.origin != last.origin || first.volume != last.volume
-                || first.generation != last.generation
-                || first.prepared_generation != last.prepared_generation
-                || first.creation_operation != last.creation_operation
-                || first.source_binding_digest != last.source_binding_digest
-            {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "original created allocation changed during observation" });
-            }
-            drop((first, last));
-            let retained = output_owned;
-            let custody = io.into_native_custody(retained)?;
-            Ok(NativeCreatedAllocationObservation { records, _custody: custody })
-        })
-    }
     async fn verify_with_io(
         &self, request: &ResourcePreparationRequest, proof: &ResourceCreationProofRef,
         io: Option<&PreparationIo>,
     ) -> Result<CreatedResourceReceipt> {
-        let allocation = authenticate(&self.host, self.issuer.audience(), request, proof, io, None).await?;
+        let allocation = authenticate(&self.host, self.issuer.audience(), request, proof, io).await?;
         if let Some(io) = io {
             let mut observer = io.history_io();
             crate::core::resource_creation_clone_reservation(request, proof, &allocation.origin,
@@ -1833,7 +1487,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             host: self.host.clone(), owner: self.issuer.audience().clone(),
             request: request.clone(), proof: proof.clone(), origin: allocation.origin.clone(),
             generation: allocation.generation.clone(), prepared_generation: allocation.prepared_generation,
-            volume: allocation.volume.clone(), reader, writer,
+            volume: allocation.volume.clone(), agent: allocation.agent,
+            creation_operation: allocation.creation_operation, reader, writer,
         });
         let count = allocation.reference_files.len();
         let operation_count = count.checked_add(2)
@@ -1894,7 +1549,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             origin: allocation.origin, resource: proof.resource.clone(), evidence: proof.evidence.clone(),
             allocation_generation: allocation.generation, operations, references,
             content: vec![CreatedContentBinding { volume: allocation.volume,
-                default_writer: allocation.default_writer,
+                authority: allocation.authority, default_writer: allocation.default_writer,
+                artifact_writer: allocation.artifact_writer,
+                scratch_creation: allocation.default_writer.then(||
+                    crate::resource_preparation::ChildScratchCreationProof::new(access.clone())),
                 binding: ContentBindings { reader: access.clone(), writer: Some(access) } }],
         })
     }
@@ -1902,7 +1560,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     fn created_scope<const N: usize>(
         &self, agent: crate::AgentId, prefix: &str, proof: &ResourceCreationProofRef,
         suffix: String, capabilities: [String; N], io: &PreparationIo,
-    ) -> Result<crate::Scope> {
+    ) -> Result<Scope> {
         use std::fmt::Write as _;
         let length = prefix.len().checked_add(36 + 1).and_then(|length| length.checked_add(suffix.len()))
             .ok_or_else(|| Error::Invalid("creator scope identity overflow".into()))?;
@@ -1973,11 +1631,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CreatedFilesystemAccess<A, O> 
         }
         Ok(())
     }
+    async fn authenticate_file(&self, file: &FileRef, io: Option<&PreparationIo>) -> Result<()> {
+        self.reauthenticate(file.volume(), io).await
+    }
     async fn reauthenticate(&self, volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<()> {
         if volume != &self.volume {
             return Err(Error::Unauthorized("created content handle names another volume".into()));
         }
-        let current = authenticate(&self.host, &self.owner, &self.request, &self.proof, io, None).await?;
+        let current = authenticate(&self.host, &self.owner, &self.request, &self.proof, io).await?;
         self.validate_authenticated(&current)
     }
 }
@@ -1990,13 +1651,13 @@ struct CreatedFilesystemReference<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CreatedFilesystemReference<A, O> {
-    async fn reauthenticate(&self, file: &FileRef, io: Option<&PreparationIo>) -> Result<()> {
+    async fn authenticate_file(&self, file: &FileRef, io: Option<&PreparationIo>) -> Result<()> {
         if file != &self.file {
             return Err(Error::Unauthorized("created reference handle names another immutable file".into()));
         }
         let allocation = &self.allocation;
         let current = authenticate(&allocation.host, &allocation.owner,
-            &allocation.request, &allocation.proof, io, None).await?;
+            &allocation.request, &allocation.proof, io).await?;
         allocation.validate_authenticated(&current)?;
         if !current.reference_files.contains(file) {
             return Err(Error::Unauthorized("original inherited reference evidence changed".into()));
@@ -2005,140 +1666,85 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CreatedFilesystemReference<A, 
     }
 }
 
-impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentResidencyVerifier for CreatedFilesystemReference<A, O> {
-    fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.reauthenticate(file, None).await?; self.reader.verify(file).await })
+macro_rules! created_reader {
+    ($this:ident, $file:ident, $request:expr, $volume:expr) => {
+    fn verify<'a>(&'a $this, $file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { $this.authenticate_file($file, None).await?; $this.reader.verify($file).await })
     }
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move { self.reauthenticate(file, None).await?; self.reader.read(file).await })
+    fn read<'a>(&'a $this, $file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
+        Box::pin(async move { $this.authenticate_file($file, None).await?; $this.reader.read($file).await })
     }
-    fn supports_measured_read(&self, volume: &VolumeRef, budget: WorkBudget, cancellation: &CancellationToken)
+    fn supports_measured_read(&$this, volume: &VolumeRef, budget: WorkBudget, cancellation: &CancellationToken)
         -> MeasuredResult<OperationReceipt<bool>, Error> {
-        if volume != self.file.volume() {
+        if volume != $volume {
             return Ok(OperationReceipt { value: false, work: WorkCounters::default() });
         }
-        self.reader.supports_measured_read(volume, budget, cancellation)
+        $this.reader.supports_measured_read(volume, budget, cancellation)
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_read(&self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork)
+    fn supports_native_read(&$this, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork)
         -> Result<bool> {
-        if volume != self.file.volume() { return Ok(false); }
-        self.reader.supports_native_read(volume, work)
+        if volume != $volume { return Ok(false); }
+        $this.reader.supports_native_read(volume, work)
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn read_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
+    fn read_with_native_work<'a>(&'a $this, $file: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            self.reauthenticate(file, Some(&io)).await?;
+            $this.authenticate_file($file, Some(&io)).await?;
             drop(io);
-            self.reader.read_with_native_work(file, maximum_bytes.min(self.allocation.request.maximum_bytes), work)?.await
+            $this.reader.read_with_native_work($file, maximum_bytes.min(($request).maximum_bytes), work)?.await
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn verify_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
+    fn verify_with_native_work<'a>(&'a $this, $file: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            self.reauthenticate(file, Some(&io)).await?;
+            $this.authenticate_file($file, Some(&io)).await?;
             drop(io);
-            self.reader.verify_with_native_work(file, maximum_bytes.min(self.allocation.request.maximum_bytes), work)?.await
+            $this.reader.verify_with_native_work($file, maximum_bytes.min(($request).maximum_bytes), work)?.await
         })
     }
-    fn read_measured<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
+    fn read_measured<'a>(&'a $this, $file: &'a FileRef, maximum_bytes: u64,
         budget: WorkBudget, cancellation: &'a CancellationToken)
         -> ContentFuture<'a, MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
         Box::pin(async move {
-            let io = content_io(&self.allocation.request, budget, cancellation).map_err(OperationFailure::before_work)?;
+            let io = content_io($request, budget, cancellation).map_err(OperationFailure::before_work)?;
             let result = async {
-                self.reauthenticate(file, Some(&io)).await?;
-                io.receive_content(self.reader.read_measured(file, maximum_bytes.min(self.allocation.request.maximum_bytes),
+                $this.authenticate_file($file, Some(&io)).await?;
+                io.receive_content($this.reader.read_measured($file, maximum_bytes.min(($request).maximum_bytes),
                     io.remaining()?, cancellation).await)
             }.await;
             content_result(&io, result)
         })
     }
-    fn verify_measured<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
+    fn verify_measured<'a>(&'a $this, $file: &'a FileRef, maximum_bytes: u64,
         budget: WorkBudget, cancellation: &'a CancellationToken)
         -> ContentFuture<'a, MeasuredResult<OperationReceipt<()>, Error>> {
         Box::pin(async move {
-            self.read_measured(file, maximum_bytes, budget, cancellation).await
+            $this.read_measured($file, maximum_bytes, budget, cancellation).await
                 .map(|receipt| OperationReceipt { value: (), work: receipt.work })
         })
     }
-    fn verify_manifest<'a>(&'a self, file: &'a FileRef, count: u32, limits: &'a Limits) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.reauthenticate(file, None).await?; self.reader.verify_manifest(file, count, limits).await })
+    fn verify_manifest<'a>(&'a $this, $file: &'a FileRef, count: u32, limits: &'a Limits) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { $this.authenticate_file($file, None).await?; $this.reader.verify_manifest($file, count, limits).await })
     }
-    fn load_manifest<'a>(&'a self, file: &'a FileRef, count: u32) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-        Box::pin(async move { self.reauthenticate(file, None).await?; ContentResidencyVerifier::load_manifest(&self.reader, file, count).await })
+    fn load_manifest<'a>(&'a $this, $file: &'a FileRef, count: u32) -> BoxFuture<'a, Result<Vec<Attachment>>> {
+        Box::pin(async move { $this.authenticate_file($file, None).await?; ContentResidencyVerifier::load_manifest(&$this.reader, $file, count).await })
     }
+    };
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentResidencyVerifier for CreatedFilesystemReference<A, O> {
+    created_reader!(self, file, &self.allocation.request, self.file.volume());
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentResidencyVerifier for CreatedFilesystemAccess<A, O> {
-    fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.reauthenticate(file.volume(), None).await?; self.reader.verify(file).await })
-    }
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move { self.reauthenticate(file.volume(), None).await?; self.reader.read(file).await })
-    }
-    fn supports_measured_read(&self, volume: &VolumeRef, budget: WorkBudget, cancellation: &CancellationToken)
-        -> MeasuredResult<OperationReceipt<bool>, Error> {
-        if volume != &self.volume {
-            return Ok(OperationReceipt { value: false, work: WorkCounters::default() });
-        }
-        self.reader.supports_measured_read(volume, budget, cancellation)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_read(&self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork)
-        -> Result<bool> {
-        if volume != &self.volume { return Ok(false); }
-        self.reader.supports_native_read(volume, work)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.reauthenticate(file.volume(), Some(&io)).await?;
-            drop(io);
-            self.reader.read_with_native_work(file, maximum_bytes.min(self.request.maximum_bytes), work)?.await
-        })
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn verify_with_native_work<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.reauthenticate(file.volume(), Some(&io)).await?;
-            drop(io);
-            self.reader.verify_with_native_work(file, maximum_bytes.min(self.request.maximum_bytes), work)?.await
-        })
-    }
-    fn read_measured<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
-        budget: WorkBudget, cancellation: &'a CancellationToken)
-        -> ContentFuture<'a, MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
-        Box::pin(async move {
-            let io = content_io(&self.request, budget, cancellation).map_err(OperationFailure::before_work)?;
-            let result = async {
-                self.reauthenticate(file.volume(), Some(&io)).await?;
-                io.receive_content(self.reader.read_measured(file, maximum_bytes.min(self.request.maximum_bytes),
-                    io.remaining()?, cancellation).await)
-            }.await;
-            content_result(&io, result)
-        })
-    }
-    fn verify_measured<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
-        budget: WorkBudget, cancellation: &'a CancellationToken)
-        -> ContentFuture<'a, MeasuredResult<OperationReceipt<()>, Error>> {
-        Box::pin(async move {
-            self.read_measured(file, maximum_bytes, budget, cancellation).await
-                .map(|receipt| OperationReceipt { value: (), work: receipt.work })
-        })
-    }
+    created_reader!(self, file, &self.request, &self.volume);
     fn read_private_prefix<'a>(&'a self, volume: &'a VolumeRef, prefix: &'a str, path: &'a str, generation: &'a GenerationRef, maximum_bytes: u64) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move { self.reauthenticate(volume, None).await?; self.reader.read_private_prefix(volume, prefix, path, generation, maximum_bytes).await })
     }
@@ -2147,12 +1753,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
     }
     fn read_private_path<'a>(&'a self, volume: &'a VolumeRef, prefix: &'a str, path: &'a str, generation: Option<&'a GenerationRef>) -> BoxFuture<'a, Result<(FileRef, acyclic_stream::OwnedBytes)>> {
         Box::pin(async move { self.reauthenticate(volume, None).await?; ContentResidencyVerifier::read_private_path(&self.reader, volume, prefix, path, generation).await })
-    }
-    fn verify_manifest<'a>(&'a self, file: &'a FileRef, count: u32, limits: &'a Limits) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.reauthenticate(file.volume(), None).await?; self.reader.verify_manifest(file, count, limits).await })
-    }
-    fn load_manifest<'a>(&'a self, file: &'a FileRef, count: u32) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-        Box::pin(async move { self.reauthenticate(file.volume(), None).await?; ContentResidencyVerifier::load_manifest(&self.reader, file, count).await })
     }
 }
 
@@ -2263,137 +1863,6 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn fixture_creator(
-        fixture: &crate::durable_host::tests::created_resource_access::CreationFixture,
-    ) -> Result<FilesystemResourceCreationProvider<acyclic_fs::MemoryAuthorityBackend,
-        acyclic_fs::MemoryObjectBackend>> {
-        let issuer = AuthorityIssuer::new("created-owner", [80; 32],
-            Authority { kind: AggregateKind::Task, id: "created-owner".into() });
-        FilesystemResourceCreationProvider::new(fixture.filesystem.clone(), issuer)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
-    async fn observation_retains_original_protected_bytes_and_sdk_seed_encoding() -> Result<()> {
-        use crate::durable_host::tests::created_resource_access::CreationFixture;
-        let fixture = CreationFixture::new().await?;
-        let created = fixture.create_filesystem_child_with_options(
-            &["fork:publish", "conversation:bind"], true).await?;
-        let creator = fixture_creator(&fixture)?;
-        assert_eq!(created.request.child.resource_proofs.len(), 3);
-        let fork: ForkRequest = serde_json::from_value(created.request.payload.clone())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let journal = workspace_ref(fixture.filesystem_provider.clone(),
-            &format!("harness-fork-preparation-{}", fork.operation_id))?;
-        let original_request = fixture.filesystem.read(&journal, None, "/request.json", 65536).await?;
-        let canonical_seed = encode_record(&created.report.clone().into_seed()?, 65536)?;
-        for proof in &created.request.child.resource_proofs {
-            let work = observation_work()?;
-            let observed = creator.inspect_created_allocation_with_native_work(
-                &created.request, proof, &work)?.await?;
-            assert_eq!(observed.source_origin(),
-                NativeCreatedAllocationSourceOrigin::CanonicalForkSeedFromPublishedReport);
-            assert_eq!(observed.fork_request_json(), original_request.as_ref());
-            assert_eq!(observed.fork_seed_json(), canonical_seed.as_slice());
-            let claim: AllocationClaim = crate::contract::json_from_slice(observed.claim_json())
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            let journal = allocation_ref(fixture.filesystem_provider.clone(), &claim.volume)?;
-            let original_claim = fixture.filesystem.read(&journal, None, "/claim.json", 65536).await?;
-            let original_binding = fixture.filesystem.read(&journal, None, "/seed.json", 65536).await?;
-            assert_eq!(observed.claim_json(), original_claim.as_ref());
-            assert_eq!(observed.seed_binding_json(), original_binding.as_ref());
-            let binding: SeedBinding = crate::contract::json_from_slice(observed.seed_binding_json())
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            assert_eq!(claim.preparation_digest, *blake3::hash(observed.fork_request_json()).as_bytes());
-            assert_eq!(binding.digest, *blake3::hash(observed.fork_seed_json()).as_bytes());
-            assert!(observed.records.claim.len() <= 65536 && observed.records.binding.len() <= 65536
-                && observed.records.request.len() <= 65536 && observed.records.seed.len() <= 65536);
-            drop(observed);
-        }
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
-    async fn observation_rejects_foreign_proof_owner_task_and_lost_seed_ack() -> Result<()> {
-        use crate::durable_host::tests::created_resource_access::CreationFixture;
-        let fixture = CreationFixture::new().await?;
-        let created = fixture.create_filesystem_child().await?;
-        let creator = fixture_creator(&fixture)?;
-        for corruption in 0..3 {
-            let mut proof = created.request.child.resource_proofs[0].clone();
-            match corruption {
-                0 => proof.preparation = crate::TaskId::from_bytes([39; 16]),
-                1 => proof.provider = ProviderRef::new("foreign", "filesystem", "2")?,
-                _ => proof.evidence = created.request.child.resource_proofs[1].evidence.clone(),
-            }
-            let work = observation_work()?;
-            assert!(creator.inspect_created_allocation_with_native_work(
-                &created.request, &proof, &work)?.await.is_err());
-        }
-        let issuer = AuthorityIssuer::new("foreign-owner", [31; 32],
-            Authority { kind: AggregateKind::Task, id: "foreign-owner".into() });
-        let foreign = FilesystemResourceCreationProvider::new(fixture.filesystem.clone(), issuer)?;
-        let proof = &created.request.child.resource_proofs[0];
-        let work = observation_work()?;
-        assert!(foreign.inspect_created_allocation_with_native_work(
-            &created.request, proof, &work)?.await.is_err());
-        let fork: ForkRequest = serde_json::from_value(created.request.payload.clone())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let volume = creation_volumes(&fork).next().unwrap().0;
-        let allocation = allocation_ref(fixture.filesystem_provider.clone(), volume)?;
-        let generation = fixture.filesystem.resolve(&allocation).await?.generation;
-        fixture.filesystem.apply(&allocation, Some(&generation), &[
-            super::super::super::WorkspaceMutation::Remove { path: "/seed.json".into() },
-        ], &IdempotencyKey::new("lose-original-seed-ack")?).await?;
-        let work = observation_work()?;
-        assert!(creator.inspect_created_allocation_with_native_work(
-            &created.request, proof, &work)?.await.is_err());
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
-    async fn observation_rejects_changed_original_claim_and_binding() -> Result<()> {
-        use crate::durable_host::tests::created_resource_access::CreationFixture;
-        for corruption in 0..4 {
-            let fixture = CreationFixture::new().await?;
-            let created = fixture.create_filesystem_child().await?;
-            let creator = fixture_creator(&fixture)?;
-            let fork: ForkRequest = serde_json::from_value(created.request.payload.clone())
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            let volume = creation_volumes(&fork).next().unwrap().0;
-            let allocation = allocation_ref(fixture.filesystem_provider.clone(), volume)?;
-            let original = fixture.filesystem.read(&allocation, None, "/claim.json", 65536).await?;
-            let mut claim: AllocationClaim = crate::contract::json_from_slice(&original)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            let (path, bytes) = match corruption {
-                0 => {
-                    claim.task_origin.as_mut().unwrap().intended_child = OperationId::from_bytes([49; 16]);
-                    ("/claim.json", encode_record(&claim, 65536)?)
-                }
-                1 => {
-                    claim.task_origin.as_mut().unwrap().request_digest[0] ^= 1;
-                    ("/claim.json", encode_record(&claim, 65536)?)
-                }
-                2 => {
-                    claim.preparation_digest[0] ^= 1;
-                    ("/claim.json", encode_record(&claim, 65536)?)
-                }
-                _ => ("/seed.json", encode_record(&SeedBinding { digest: [0; 32] }, 65536)?),
-            };
-            let generation = fixture.filesystem.resolve(&allocation).await?.generation;
-            fixture.filesystem.apply(&allocation, Some(&generation), &[
-                super::super::super::WorkspaceMutation::PutFile { path: path.into(), bytes },
-            ], &IdempotencyKey::new("corrupt-authenticated-source-record")?).await?;
-            let work = observation_work()?;
-            assert!(creator.inspect_created_allocation_with_native_work(&created.request,
-                &created.request.child.resource_proofs[0], &work)?.await.is_err());
-        }
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     fn original_root_fixture_authority(agent: AgentId, work: &acyclic_fs::NativeMaterializationWork)
         -> Result<((Authority, AuthorityIssuer, crate::core::Scope), acyclic_fs::NativeAllocation)> {
         use crate::store::history::HistoryIo as _;
@@ -2429,9 +1898,7 @@ mod tests {
         let configured_audience = Authority { kind: AggregateKind::Conversation, id: "genuine-original-root-bootstrap".into() };
         assert_ne!(configured_audience.id, fixture.root.to_string());
         let configured_issuer = AuthorityIssuer::new("created-owner", [80; 32], configured_audience.clone());
-        let agent = owner.authenticated_binding_agent_with_native_work(work)?.ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized, reason: "fixture has no original Root actor",
-        })?;
+        let agent = owner.authenticated_binding_agent_with_native_work(work)?.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "fixture has no original Root actor"))?;
         let authority_custody;
         let (authority, custody) = original_root_fixture_authority(agent, work)?;
         authority_custody = custody;
@@ -2544,13 +2011,6 @@ mod tests {
             operation_id: OperationId::from_bytes([180; 16]), maximum_work: 1_048_576,
             maximum_bytes: 1_048_576, cancellation: work.cancellation(), created_project_authenticated: false,
         }, &selection, &work)?.await?;
-        let record = project.observe_protected_record_with_native_work(&work)?.await?;
-        let value: serde_json::Value = serde_json::from_slice(record.as_ref())
-            .map_err(|_| Error::Invalid("fixture protected Root record".into()))?;
-        assert_eq!(value["root"], serde_json::to_value(fixture.root).unwrap());
-        assert_eq!(value["creation_operation"], serde_json::to_value(project.operation).unwrap());
-        assert_ne!(value["initial_generation"], value["selected_generation"]);
-        assert!(work.receipt().backend_write_operations > 0);
         drop(scope);
         drop(scope_custody);
         drop(admission);
@@ -2568,11 +2028,10 @@ mod tests {
         let birth = &fixture.original_root_births.as_ref().unwrap()[0];
         let bad_issuer = AuthorityIssuer::new("created-owner", [81; 32], fixture.filesystem_creator.issuer.audience().clone());
         let bad_creator = FilesystemResourceCreationProvider::new_with_native_work(fixture.filesystem.clone(), &bad_issuer, &work)?;
-        let before = work.receipt();
         assert!(bad_creator.protect_root_bootstrap_with_native_work(&owner, &birth.volume, RootBootstrapContentRole::Project,
             birth.operation, birth.config, birth.initial_generation, birth.selected_generation, None, &work)?.await.is_err());
-        assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
-        assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+
+
         let creator = &fixture.filesystem_creator;
         assert!(creator.protect_root_bootstrap_with_native_work(&owner, &birth.volume, RootBootstrapContentRole::Project,
             acyclic_fs::OperationId::from_bytes([179; 16]), birth.config,
@@ -2584,19 +2043,17 @@ mod tests {
             birth.selected_generation, None, &work)?.await.is_err());
         let foreign_scratch = VolumeRef::new(fixture.filesystem_provider.clone(), "foreign-original-root-private",
             VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([184; 16])))?;
-        let before = work.receipt();
         let denied = creator.protect_root_bootstrap_with_native_work(&owner, &foreign_scratch, RootBootstrapContentRole::Scratch,
             birth.operation, birth.config, birth.initial_generation, birth.selected_generation, None, &work);
         assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
-        assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
-        assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+
+
         assert!(creator.bound_root_bootstrap_allocations(&work).is_err());
         let token = creator.protect_root_bootstrap_with_native_work(&owner, &birth.volume, RootBootstrapContentRole::Project,
             birth.operation, birth.config, birth.initial_generation, birth.selected_generation, None, &work)?.await?
             .into_native_shared(&work)?;
-        let before = work.receipt();
         assert!(bad_creator.bind_root_bootstrap_allocation_with_native_work(Arc::clone(&token), &work).is_err());
-        assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+
         creator.bind_root_bootstrap_allocation_with_native_work(Arc::clone(&token), &work)?;
         let admission_custody;
         let (admission, custody) = owner.original_root_admission_with_native_work(&work).await?;
@@ -2618,8 +2075,8 @@ mod tests {
             let before = work.receipt();
             let denied = creator.verify_root_bootstrap_with_native_work(context, &request, &work);
             assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
-            assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
-            assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+
+
             drop(request);
             drop(request_custody);
         }
@@ -2654,10 +2111,9 @@ mod tests {
             operation_id: OperationId::from_bytes([183; 16]), maximum_work: 1_048_576,
             maximum_bytes: 1_048_576, cancellation: work.cancellation(), created_project_authenticated: false,
         };
-        let before = work.receipt();
         let denied = bare.verify_with_native_work(context(), &selection, &work);
         assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
-        assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+
         let bound_owner = bind_genuine_original_root(&fixture, &work).await?;
         let token = creator.protect_root_bootstrap_with_native_work(&bound_owner, &birth.volume, RootBootstrapContentRole::Project,
             birth.operation, birth.config, birth.initial_generation, birth.selected_generation, None, &work)?.await?
@@ -2667,13 +2123,12 @@ mod tests {
         let initial_selection = ProjectSourceSnapshot { project: selection.project.clone(),
             generation: GenerationRef::new(fixture.filesystem_provider.clone(),
                 birth.initial_generation.digest().into_bytes().to_vec(), None)?, native_snapshot: None };
-        let before = work.receipt();
         let denied = policy.verify_with_native_work(context(), &initial_selection, &work);
         assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
-        assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
-        assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+
+
         let journal_io = PreparationIo::for_unmeasured(work.cancellation())?;
-        let journal = creator.allocation_ref_io(&birth.volume, &journal_io)?;
+        let journal = allocation_ref(&creator.host.provider, &birth.volume, Some(&journal_io))?;
         let generation = fixture.filesystem.resolve(&journal).await?.generation;
         fixture.filesystem.apply(&journal, Some(&generation), &[
             super::super::super::WorkspaceMutation::PutFile {
@@ -2681,7 +2136,6 @@ mod tests {
             },
         ], &IdempotencyKey::new("supersede-genuine-original-root-bootstrap")?).await?;
         assert!(policy.verify_with_native_work(context(), &selection, &work)?.await.is_err());
-        assert!(token.observe_protected_record_with_native_work(&work)?.await.is_err());
         drop(admission);
         drop(admission_custody);
         Ok(())

@@ -538,7 +538,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let (outcome, custody) = self.owner.outcome_with_native_work(work).await?;
             if outcome.is_none() { self.owner.verify_with_native_work(true, work).await?; }
             Some((outcome, custody))
-        } else { self.owner.verify(true).await?; None };
+        } else { self.owner.verify(true, &mut None).await?; None };
         if let Some(work) = work {
             self.owner.require_volume_grant_with_native_work(self.plan.request.volume(), crate::conversation::VolumeOperation::Read, work)?;
         }

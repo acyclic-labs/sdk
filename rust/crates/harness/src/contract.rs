@@ -78,7 +78,7 @@ pub(crate) use event_json::{
 };
 pub use event_json::{json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes};
 mod snapshot_json;
-pub(crate) use snapshot_json::{snapshot_json_admission};
+pub(crate) use snapshot_json::snapshot_json_admission;
 pub use json::{
     JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape,
     canonical_json_bytes_bounded, json_bytes_bounded,
@@ -90,7 +90,6 @@ pub use json::{
 pub use json::{
     json_from_slice_bounded_native_trusted,
     json_from_value_bounded_native_trusted, json_from_value_owned_bounded_native_trusted,
-
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use json::{

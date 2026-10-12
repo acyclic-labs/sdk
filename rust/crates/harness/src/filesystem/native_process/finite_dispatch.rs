@@ -222,7 +222,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         check(work)?;
         match work {
             Some(work) => self.owner.verify_with_native_work(false, work).await?,
-            None => { self.owner.verify(false).await?; }
+            None => { self.owner.verify(false, &mut None).await?; }
         }
         let mut io = work.map(crate::store::history::native_work_io).transpose()?;
         let cursor = self.history.pin_with_work(0,
@@ -276,7 +276,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 request.validate_native_paths(view.manifest())?;
                 self.authority.approvals.verify(self.approval, self.command, approval_digest).await?;
                 require_view_grants(&self.owner, &request.view)?;
-                self.owner.verify(false).await?;
+                self.owner.verify(false, &mut None).await?;
             }
         }
         check(work)

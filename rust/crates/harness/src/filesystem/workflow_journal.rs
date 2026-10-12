@@ -26,15 +26,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-fn freeze_retained_bytes(
-    bytes: Vec<u8>, io: Option<&PreparationIo>,
-) -> Result<(OwnedBytes, u64)> {
-    let mut borrowed = io.map(PreparationIo::history_io);
-    let mut work = borrowed.as_mut()
-        .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-    crate::store::operations::owned_bytes_from_retained_vec(bytes, &mut work)
-}
-
 fn external_read_hold<'a>(
     bytes: &OwnedBytes, io: Option<&'a PreparationIo>,
 ) -> Result<Option<super::DecodeReservation<'a>>> {
@@ -192,7 +183,7 @@ where
         scope: Scope,
         maximum_payload_bytes: u64,
     ) -> Result<Self> {
-        owner.validate_storage(&verifier, maximum_payload_bytes)?;
+        owner.validate_storage(&verifier, maximum_payload_bytes, &mut None)?;
         let mut journal = Self::new(
             owner.stream(),
             host,
@@ -366,7 +357,7 @@ where
         record.validate_with_io(io)?;
         if let Some(owner) = &self.owner {
             if verify_machine {
-                owner.validate_workflow_record_with_io(&record, io)?;
+                owner.validate_workflow_record(&record, io)?;
             } else if record.prior.machine != owner.workflow_admission().initial.machine
                 || record.next.machine != owner.workflow_admission().initial.machine
             {
@@ -588,9 +579,9 @@ where
                     return owner.verify_with_native_work(true, work).await;
                 }
                 let mut borrowed = io.history_io();
-                owner.verify_with_work(true, &mut Some(&mut borrowed)).await
+                owner.verify(true, &mut Some(&mut borrowed)).await
             }
-            None => owner.verify(true).await,
+            None => owner.verify(true, &mut None).await,
         }
     }
 
@@ -1176,7 +1167,7 @@ where
             let mut borrowed = io.map(PreparationIo::history_io);
             let mut work = borrowed.as_mut()
                 .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-            owner.verify_with_work(false, &mut work).await?;
+            owner.verify(false, &mut work).await?;
         }
         let _admission;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -1190,7 +1181,7 @@ where
             expected_revision, &idempotency_key, &record, io,
         )?;
         if let Some(owner) = &self.owner {
-            owner.validate_workflow_record_with_io(&record, io)?;
+            owner.validate_workflow_record(&record, io)?;
         }
         {
             let history_hold;
@@ -1269,10 +1260,7 @@ where
         };
         let _key;
         let key_bytes = super::fork_preparer_io::clone_bytes(digest.as_bytes(), io)?;
-        let (key_bytes, retained) = freeze_retained_bytes(key_bytes, io)?;
-        _key = if retained == 0 { None } else {
-            io.map(|io| io.guard_owned(retained)).transpose()?
-        };
+        _key = io.map(|io| io.guard_bytes(&key_bytes)).transpose()?.flatten();
         let key = StreamKey::new(key_bytes).map_err(|error| {
             #[cfg(not(target_arch = "wasm32"))]
             if io.is_some() {
@@ -1362,7 +1350,7 @@ where
             let mut borrowed = io.map(PreparationIo::history_io);
             let mut work = borrowed.as_mut()
                 .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-            owner.verify_with_work(false, &mut work).await?;
+            owner.verify(false, &mut work).await?;
         }
         if let Some(existing) = self.read_admission(io).await? {
             return if existing == admission { Ok(existing) } else {
@@ -1423,10 +1411,7 @@ where
         };
         let _key;
         let key_bytes = super::fork_preparer_io::clone_bytes(digest.as_bytes(), io)?;
-        let (key_bytes, retained) = freeze_retained_bytes(key_bytes, io)?;
-        _key = if retained == 0 { None } else {
-            io.map(|io| io.guard_owned(retained)).transpose()?
-        };
+        _key = io.map(|io| io.guard_bytes(&key_bytes)).transpose()?.flatten();
         let key = StreamKey::new(key_bytes).map_err(|error| {
             #[cfg(not(target_arch = "wasm32"))]
             if io.is_some() {

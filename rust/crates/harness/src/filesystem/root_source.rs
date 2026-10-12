@@ -95,7 +95,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     {
         Box::pin(async move {
             self.lazy.validate_snapshot_measured(snapshot, budget, cancellation).await
-                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, root_source_error))
+                .map_err(|failure| failure.map_error(root_source_error))
         })
     }
     fn read<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str, maximum: u64,
@@ -104,7 +104,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     {
         Box::pin(async move {
             self.lazy.read_at_snapshot_measured(snapshot, path, maximum, budget, cancellation).await
-                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, root_source_error))
+                .map_err(|failure| failure.map_error(root_source_error))
         })
     }
     fn list<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str,
@@ -114,7 +114,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     {
         Box::pin(async move {
             self.lazy.list_directory_at_snapshot_measured(snapshot, path, cursor, maximum, budget, cancellation).await
-                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, root_source_error))
+                .map_err(|failure| failure.map_error(root_source_error))
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -198,9 +198,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootNati
     pub fn from_lazy_with_native_work<D: DemandSource + 'static, S: LazyWorkspaceStore>(
         lazy: Arc<LazyWorkspace<A, O, D, S>>, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        let custody = work.claim_allocation(std::mem::size_of::<RetainedRootLazy<A, O, D, S>>() as u64, 0)
+        let custody = work.retain_owned(std::mem::size_of::<RetainedRootLazy<A, O, D, S>>() as u64)
             .map_err(Error::from)?;
-        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED })
+        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
             .map_err(Error::from)?;
         Ok(Self { backing: Arc::new(RetainedRootLazy { lazy, _custody: Some(custody) }) })
     }
@@ -268,7 +268,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
     pub fn new(host: Arc<FilesystemHost<A, O>>, owner: Authority, graph_root: TaskId) -> Result<Self> {
         host.provider.validate()?;
         Ok(Self {
-            host, owner, graph_root, native: None,
+            host, owner, graph_root, native: None, bootstrap: None,
             #[cfg(not(target_arch = "wasm32"))]
             _native_custody: None,
         })
@@ -292,7 +292,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             cause, custody: Some(owner_custody),
         })?;
         Ok(Self {
-            host, owner, graph_root, native: None, _native_custody: Some(custody),
+            host, owner, graph_root, native: None, bootstrap: None, _native_custody: Some(custody),
         })
     }
 
@@ -303,7 +303,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "Root source policy belongs to another native ledger" });
         }
-        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED })
+        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
             .map_err(Error::from)?;
         Ok(Arc::new(self))
     }

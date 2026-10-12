@@ -147,7 +147,7 @@ pub const FORK_PREPARE_TASK_COMMAND_KIND: &str = "acyclic.fork.prepare.v1";
 pub const TASK_ADMIT_PREPARED_COMMAND_KIND: &str = "acyclic.task.admit_prepared.v1";
 
 /// Complete requested child, distinct from its dispatch operation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedTaskAdmitCommand {
     /// Exact child identity, definitions, input, requested grants and proofs.
@@ -547,7 +547,12 @@ where
                 let request = (request, io.take_native_custody(request_bytes)?);
                 let owner = self.runtime.task_host().journal_owner_with_native_work(task, fence, work).await?
                     .into_native_shared(work)?;
-                let preparation = owner.resource_preparation_with_native_work(request, work)?.await?;
+                let mut preparation = owner.resource_preparation_with_native_work(request, work)?.await?;
+                let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64)?;
+                preparation.native_custody.as_mut().ok_or_else(|| boundary(Some(io), ErrorCode::Unauthorized,
+                    "native preparation has no original metadata custody"))?.absorb(&mut header)
+                    .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
+                let preparation = Arc::new(preparation);
                 self.retain_native_preparation(task, command.operation_id, preparation, io, work)?
             };
             let fork: crate::fork::ForkRequest = mail::decode_borrowed_command(&preparation.request().payload, io)?;
@@ -587,7 +592,7 @@ where
         let _guard = super::default_tools::InvocationCancellation(cancellation.clone());
         let owner = self.runtime.task_host().journal_owner(task, fence.clone()).await?
             .with_invocation_cancellation(&cancellation);
-        let preparation = owner.resource_preparation(request).await?;
+        let preparation = Arc::new(owner).resource_preparation(request).await?;
         let fork: crate::fork::ForkRequest = serde_json::from_value(preparation.request().payload.clone())
             .map_err(|cause| Error::Invalid(format!("invalid exact fork request: {cause}")))?;
         let preparer = if let Some(preparer) = &self.fork_preparer {
@@ -1184,7 +1189,7 @@ where
                 }
             }
         }
-        let runner = DurableToolRunner::new_with_native_work(self.runtime.tool_registry(), journal, work)?
+        let runner = DurableToolRunner::new_with_native_work(&self.runtime.tool_registry(), journal, work)?
             .with_limits(context.context().scope().limits())?;
         let (outcome, custody) = if reconciliation_only {
             runner.reconcile_with_native_context(task, operation, definition, &invocation.arguments, &tool_context, work)?.await?
@@ -1350,7 +1355,8 @@ where
             task, OperationId::from_bytes(task.into_bytes()),
         ).await?;
         let selection: MailReceiveTaskCommand =
-            crate::contract::json_from_slice(&context.read_file(&receive.payload).await?)?;
+            crate::contract::json_from_slice(&context.read_file(&receive.payload).await?)
+                .map_err(|error| Error::Storage(error.to_string()))?;
         if selection.after.checked_add(1) != Some(item.sequence) {
             return Err(boundary(io, ErrorCode::Unauthorized, "steering receipt changed the selected cursor"));
         }
