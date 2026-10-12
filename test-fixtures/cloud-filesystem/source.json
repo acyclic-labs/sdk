@@ -1,0 +1,38 @@
+{
+  "repository": "acyclic-labs/cloud",
+  "commit": "8c6c33bed06513ecc843b269d12b0e13350b3b36",
+  "sdk_pin": "08a5b8ea796a3b85aeee3e56a79d0439ae68247f",
+  "descriptor_blob": "0a06ab6edaab5ec84581206fd54f4b54d29da876",
+  "test": "write_read_list_and_delete_through_reconstructed_replica",
+  "files": [
+    {
+      "path": "Cargo.toml",
+      "blob": "e9a955678591ca3807fbd5e2d5f0aec25c5156b7"
+    },
+    {
+      "path": "svc/fs/src/grpc.rs",
+      "blob": "853e30f7e942a48f0ab58ae9d81e7532450894bb"
+    },
+    {
+      "path": "svc/fs/src/backend.rs",
+      "blob": "f4c5e8723d16046e798dd75189a9f13d96c83822"
+    },
+    {
+      "path": "svc/fs/tests/multi_tenant.rs",
+      "blob": "e86e234ad1d0207489c1da4b2806832014c678ac"
+    },
+    {
+      "path": "ops/prober/tests/filesystem.rs",
+      "blob": "15baa9ef4d93b145d19ef3011d04c79107fef717"
+    },
+    {
+      "path": "ops/prober/src/filesystem.rs",
+      "blob": "d6ea070fc25315446739a51f8f7c94143e499d15"
+    },
+    {
+      "path": "svc/edge/native/src/tests.rs",
+      "blob": "63cee631f536d03d772ceac517f45f33d83b7dbc"
+    }
+  ],
+  "capture": "Requests and assertions from the named Cloud handler test, replayed through the same FilesystemWireService to which the Cloud handler delegates unchanged. Protobuf JSON is a fixture encoding, not an HTTP endpoint. This capture does not run Cloud authentication, reconstructed-replica storage or Edge transport."
+}

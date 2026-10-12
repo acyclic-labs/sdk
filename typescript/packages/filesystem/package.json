@@ -53,6 +53,7 @@
     "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
     "check:types": "bun x tsc -p tsconfig.type-tests.json --pretty false",
     "test": "bun run build && bun run test:composition && bun run test:s3",
+    "test:cloud": "node --test test/cloud-contract.test.mjs",
     "test:composition": "bun test/node-memory.mjs",
     "test:native:installed": "node test/native-public-installed.mjs",
     "test:s3": "bun test test/hosted-s3.test.mjs",

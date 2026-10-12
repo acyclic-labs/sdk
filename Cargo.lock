@@ -142,6 +142,7 @@ dependencies = [
  "notify",
  "proptest",
  "prost",
+ "prost-reflect",
  "prost-types",
  "rcgen",
  "rustix",

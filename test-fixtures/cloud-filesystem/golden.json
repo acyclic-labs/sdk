@@ -1,0 +1,310 @@
+[
+  {
+    "input": "HandshakeRequest",
+    "method": "Handshake",
+    "output": "HandshakeResponse",
+    "request": {},
+    "response": {
+      "capabilities": {
+        "contractVersion": "1",
+        "maximumPageItems": 1024,
+        "maximumRequestBytes": "16777216",
+        "maximumResponseBytes": "16777216",
+        "maximumTransactionMutations": 2048,
+        "profiles": [
+          "FILESYSTEM_PROFILE_PORTABLE",
+          "FILESYSTEM_PROFILE_POSIX",
+          "FILESYSTEM_PROFILE_WINDOWS",
+          "FILESYSTEM_PROFILE_BROWSER"
+        ]
+      },
+      "protocol": {
+        "protocol": {
+          "descriptorDigest": "0d2f20e6a20ea342c256973888ebc40798aa73e39f259410179c72392aee5fcc",
+          "version": "1"
+        },
+        "supported": {
+          "capabilities": [
+            {
+              "name": "filesystem",
+              "version": "1"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": "CreateWorkspaceRequest",
+    "method": "CreateWorkspace",
+    "output": "WorkspaceResponse",
+    "request": {
+      "name": "same-name",
+      "operation": {
+        "idempotencyKey": "AQEBAQEBAQEBAQEBAQEBAQ=="
+      },
+      "profile": "FILESYSTEM_PROFILE_PORTABLE"
+    },
+    "response": {
+      "status": "MUTATION_STATUS_COMMITTED",
+      "workspace": {
+        "head": {
+          "generationId": "POeoQcWBPR/sg/+tGmuKwkenNepRajfngMNTnnca3q4=",
+          "workspace": {
+            "name": "same-name",
+            "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+          }
+        },
+        "name": "same-name",
+        "profile": "FILESYSTEM_PROFILE_PORTABLE",
+        "workspace": {
+          "name": "same-name",
+          "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+        }
+      }
+    }
+  },
+  {
+    "input": "ApplyTransactionRequest",
+    "method": "ApplyTransaction",
+    "output": "MutationResponse",
+    "request": {
+      "base": {
+        "generationId": "POeoQcWBPR/sg/+tGmuKwkenNepRajfngMNTnnca3q4=",
+        "workspace": {
+          "name": "same-name",
+          "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+        }
+      },
+      "maximumConflicts": 16,
+      "mutations": [
+        {
+          "createFile": {
+            "contents": "cHJvYmU=",
+            "path": "/value"
+          }
+        }
+      ],
+      "operation": {
+        "idempotencyKey": "AgICAgICAgICAgICAgICAg=="
+      }
+    },
+    "response": {
+      "generation": {
+        "generationId": "FDaSteflUXe4DFbu9Nw4H+7WATD1+wgxxme2abr2CVU=",
+        "workspace": {
+          "name": "same-name",
+          "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+        }
+      },
+      "status": "MUTATION_STATUS_COMMITTED"
+    }
+  },
+  {
+    "input": "GetHeadRequest",
+    "method": "GetHead",
+    "output": "GenerationResponse",
+    "request": {
+      "workspace": {
+        "name": "same-name",
+        "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+      }
+    },
+    "response": {
+      "generation": {
+        "generationId": "FDaSteflUXe4DFbu9Nw4H+7WATD1+wgxxme2abr2CVU=",
+        "workspace": {
+          "name": "same-name",
+          "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+        }
+      },
+      "parents": [
+        {
+          "generationId": "POeoQcWBPR/sg/+tGmuKwkenNepRajfngMNTnnca3q4=",
+          "workspace": {
+            "name": "same-name",
+            "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+          }
+        }
+      ]
+    }
+  },
+  {
+    "input": "ReadRequest",
+    "method": "Read",
+    "output": "ReadResponse",
+    "request": {
+      "generation": {
+        "generationId": "FDaSteflUXe4DFbu9Nw4H+7WATD1+wgxxme2abr2CVU=",
+        "workspace": {
+          "name": "same-name",
+          "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+        }
+      },
+      "maximumBytes": "64",
+      "path": "/value"
+    },
+    "response": {
+      "contents": "cHJvYmU="
+    }
+  },
+  {
+    "input": "ListDirectoryRequest",
+    "method": "ListDirectory",
+    "output": "ListDirectoryResponse",
+    "request": {
+      "generation": {
+        "generationId": "FDaSteflUXe4DFbu9Nw4H+7WATD1+wgxxme2abr2CVU=",
+        "workspace": {
+          "name": "same-name",
+          "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+        }
+      },
+      "page": {
+        "maximumItems": 16
+      },
+      "path": "/"
+    },
+    "response": {
+      "page": {
+        "entries": [
+          {
+            "name": {
+              "bytes": "dmFsdWU=",
+              "encoding": "NAME_ENCODING_UTF8"
+            },
+            "stat": {
+              "fileId": "7PXXabERf07NQWiwrzvmjQ==",
+              "kind": "FILE_KIND_REGULAR",
+              "linkCount": "1",
+              "logicalBytes": {
+                "present": "5"
+              },
+              "metadata": {
+                "accessedNs": {
+                  "unavailable": true
+                },
+                "changedNs": {
+                  "unavailable": true
+                },
+                "createdNs": {
+                  "unavailable": true
+                },
+                "modifiedNs": {
+                  "unavailable": true
+                },
+                "posixFlags": {
+                  "unavailable": true
+                },
+                "posixGid": {
+                  "unavailable": true
+                },
+                "posixMode": {
+                  "unavailable": true
+                },
+                "posixUid": {
+                  "unavailable": true
+                },
+                "windowsAttributes": {
+                  "unavailable": true
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "input": "ApplyTransactionRequest",
+    "method": "ApplyTransaction",
+    "output": "MutationResponse",
+    "request": {
+      "base": {
+        "generationId": "FDaSteflUXe4DFbu9Nw4H+7WATD1+wgxxme2abr2CVU=",
+        "workspace": {
+          "name": "same-name",
+          "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+        }
+      },
+      "maximumConflicts": 16,
+      "mutations": [
+        {
+          "remove": {
+            "path": "/value"
+          }
+        }
+      ],
+      "operation": {
+        "idempotencyKey": "AwMDAwMDAwMDAwMDAwMDAw=="
+      }
+    },
+    "response": {
+      "generation": {
+        "generationId": "gy2zuZQ+ignXnPnTFD+4VZsPZCJGUbOl6TKWKwvuAfE=",
+        "workspace": {
+          "name": "same-name",
+          "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+        }
+      },
+      "status": "MUTATION_STATUS_COMMITTED"
+    }
+  },
+  {
+    "input": "ListDirectoryRequest",
+    "method": "ListDirectory",
+    "output": "ListDirectoryResponse",
+    "request": {
+      "generation": {
+        "generationId": "gy2zuZQ+ignXnPnTFD+4VZsPZCJGUbOl6TKWKwvuAfE=",
+        "workspace": {
+          "name": "same-name",
+          "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+        }
+      },
+      "page": {
+        "maximumItems": 16
+      },
+      "path": "/"
+    },
+    "response": {
+      "page": {}
+    }
+  },
+  {
+    "input": "ReadRequest",
+    "method": "Read",
+    "output": "ReadResponse",
+    "request": {
+      "generation": {
+        "generationId": "FDaSteflUXe4DFbu9Nw4H+7WATD1+wgxxme2abr2CVU=",
+        "workspace": {
+          "name": "same-name",
+          "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+        }
+      },
+      "maximumBytes": "64",
+      "path": "/value"
+    },
+    "response": {
+      "contents": "cHJvYmU="
+    }
+  },
+  {
+    "input": "DeleteWorkspaceRequest",
+    "method": "DeleteWorkspace",
+    "output": "MutationResponse",
+    "request": {
+      "operation": {
+        "idempotencyKey": "BAQEBAQEBAQEBAQEBAQEBA=="
+      },
+      "workspace": {
+        "name": "same-name",
+        "workspaceId": "cDAMB36EwM2f02IgicHjaw=="
+      }
+    },
+    "response": {
+      "status": "MUTATION_STATUS_COMMITTED"
+    }
+  }
+]
