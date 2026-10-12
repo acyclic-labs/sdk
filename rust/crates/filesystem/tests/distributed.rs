@@ -136,15 +136,7 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
     let store = StreamAuthorityStore::new(Arc::clone(&provider));
     let authority_id = AuthorityId::from_bytes([7; 16]);
     let cancellation = CancellationToken::new();
-    assert_eq!(
-        store
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
+    assert_eq!(({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = store.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
             .value,
         CreateAuthorityOutcome::Created(Head::genesis(Epoch::GENESIS))
     );
@@ -164,54 +156,17 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
         fingerprint: Digest::from_bytes([9; 32]),
         payload: bytes::Bytes::from_static(b"generation"),
     };
-    let committed = store
-        .compare_and_append(
-            authority_id,
-            Epoch::GENESIS,
-            Head::genesis(Epoch::GENESIS),
-            proposal.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?
+    let committed =({ let __authority_args = (authority_id, Epoch::GENESIS, Head::genesis(Epoch::GENESIS), proposal.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = store.compare_and_append(acyclic_fs::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: acyclic_fs::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
         .value;
     let AppendOutcome::Committed(commit) = committed else {
         return Err("first operation was not committed".into());
     };
-    assert_eq!(
-        store
-            .compare_and_append(
-                authority_id,
-                Epoch::GENESIS,
-                Head::genesis(Epoch::GENESIS),
-                proposal.clone(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
+    assert_eq!(({ let __authority_args = (authority_id, Epoch::GENESIS, Head::genesis(Epoch::GENESIS), proposal.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = store.compare_and_append(acyclic_fs::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: acyclic_fs::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
             .value,
         AppendOutcome::AlreadyCommitted(commit.clone())
     );
-    let second_authority = AuthorityId::from_bytes([17; 16]);
-    store
-        .create_authority(
-            second_authority,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-    assert!(matches!(
-        store
-            .compare_and_append(
-                second_authority,
-                Epoch::GENESIS,
-                Head::genesis(Epoch::GENESIS),
-                proposal.clone(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
+    let second_authority = AuthorityId::from_bytes([17; 16]);({ let __authority_args = (second_authority, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = store.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?;
+    assert!(matches!(({ let __authority_args = (second_authority, Epoch::GENESIS, Head::genesis(Epoch::GENESIS), proposal.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = store.compare_and_append(acyclic_fs::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: acyclic_fs::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
             .value,
         AppendOutcome::Committed(_)
     ));
@@ -219,17 +174,7 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
         fingerprint: Digest::from_bytes([10; 32]),
         ..proposal.clone()
     };
-    assert!(matches!(
-        store
-            .compare_and_append(
-                authority_id,
-                Epoch::GENESIS,
-                Head::genesis(Epoch::GENESIS),
-                conflicting.clone(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
+    assert!(matches!(({ let __authority_args = (authority_id, Epoch::GENESIS, Head::genesis(Epoch::GENESIS), conflicting.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = store.compare_and_append(acyclic_fs::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: acyclic_fs::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
             .value,
         AppendOutcome::IdempotencyConflict { .. }
     ));
@@ -253,19 +198,10 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
             .all(|child| !child.path.as_str().contains("/operations")),
         "native Stream idempotency must replace shadow operation paths"
     );
-    assert_eq!(
-        store
-            .replay(
-                authority_id,
-                Sequence::GENESIS,
-                ReplayLimit {
+    assert_eq!(({ let __authority_args = (authority_id, Sequence::GENESIS, ReplayLimit {
                     records: 4,
                     payload_bytes: 1024,
-                },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
+                }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = store.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
             .value,
         vec![commit.clone()]
     );
@@ -274,66 +210,25 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
         sequence: commit.sequence,
         digest: commit.digest,
     };
-    assert!(matches!(
-        store
-            .fence(authority_id, head, WorkBudget::UNBOUNDED, &cancellation,)
-            .await?
+    assert!(matches!(({ let __authority_args = (authority_id, head, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = store.fence(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?
             .value,
         FenceOutcome::Advanced(_)
     ));
-    assert_eq!(
-        store
-            .compare_and_append(
-                authority_id,
-                Epoch::GENESIS,
-                Head::genesis(Epoch::GENESIS),
-                proposal.clone(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
+    assert_eq!(({ let __authority_args = (authority_id, Epoch::GENESIS, Head::genesis(Epoch::GENESIS), proposal.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = store.compare_and_append(acyclic_fs::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: acyclic_fs::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
             .value,
         AppendOutcome::AlreadyCommitted(commit)
     );
-    assert!(matches!(
-        store
-            .compare_and_append(
-                authority_id,
-                Epoch::GENESIS,
-                Head::genesis(Epoch::GENESIS),
-                conflicting,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
+    assert!(matches!(({ let __authority_args = (authority_id, Epoch::GENESIS, Head::genesis(Epoch::GENESIS), conflicting, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = store.compare_and_append(acyclic_fs::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: acyclic_fs::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
             .value,
         AppendOutcome::IdempotencyConflict { .. }
     ));
-    assert!(matches!(
-        store
-            .compare_and_append(
-                authority_id,
-                Epoch::GENESIS,
-                Head::genesis(Epoch::GENESIS),
-                ProposedCommit {
+    assert!(matches!(({ let __authority_args = (authority_id, Epoch::GENESIS, Head::genesis(Epoch::GENESIS), ProposedCommit {
                     operation_id: OperationId::from_bytes([18; 16]),
                     ..proposal
-                },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
+                }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = store.compare_and_append(acyclic_fs::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: acyclic_fs::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
             .value,
         AppendOutcome::Fenced { .. }
-    ));
-    store
-        .create_authority(
-            AuthorityId::from_bytes([11; 16]),
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
+    ));({ let __authority_args = (AuthorityId::from_bytes([11; 16]), Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = store.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?;
     assert!(store.authorities(1).await.is_err());
     Ok(())
 }
@@ -410,38 +305,17 @@ async fn retirement_fences_an_inflight_authority_append() -> Result<(), Box<dyn 
         record_path: records.clone(),
     });
     let store = StreamAuthorityStore::new(Arc::clone(&provider));
-    let cancellation = CancellationToken::new();
-    store
-        .create_authority(
-            authority,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
+    let cancellation = CancellationToken::new();({ let __authority_args = (authority, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = store.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?;
     let before = provider.tail(records.clone()).await?;
     provider.pause_record_commit.store(true, Ordering::SeqCst);
     let writer_store = StreamAuthorityStore::new(Arc::clone(&provider));
-    let writer = tokio::spawn(async move {
-        writer_store
-            .compare_and_append(
-                authority,
-                Epoch::GENESIS,
-                Head::genesis(Epoch::GENESIS),
-                ProposedCommit {
+    let writer = tokio::spawn(async move {({ let __authority_args = (authority, Epoch::GENESIS, Head::genesis(Epoch::GENESIS), ProposedCommit {
                     operation_id: OperationId::from_bytes([40; 16]),
                     fingerprint: Digest::from_bytes([41; 32]),
                     payload: bytes::Bytes::from_static(b"inflight"),
-                },
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+                }, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = writer_store.compare_and_append(acyclic_fs::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: acyclic_fs::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
     });
-    provider.entered.notified().await;
-    store
-        .retire_authority(authority, WorkBudget::UNBOUNDED, &cancellation)
-        .await?;
+    provider.entered.notified().await;({ let __authority_args = (authority, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = store.retire_authority(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?;
     provider.resume.notify_one();
     assert!(matches!(
         writer.await?,
@@ -637,31 +511,17 @@ async fn generation_fork_rejects_an_authority_without_lineage_locators()
     let store = StreamAuthorityStore::new(streams);
     let source = AuthorityId::from_bytes([0x61; 16]);
     let destination = AuthorityId::from_bytes([0x62; 16]);
-    let cancellation = CancellationToken::new();
-    store
-        .create_authority(source, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation)
-        .await?;
-    let Err(error) = store
-        .fork_generation_authority(
-            GenerationForkSource {
+    let cancellation = CancellationToken::new();({ let __authority_args = (source, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = store.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?;
+    let Err(error) =({ let __authority_args = (GenerationForkSource {
                 authority: source,
                 generation: GenerationId::new(Digest::from_bytes([0x63; 32])),
                 lineage: GenerationFork::PublishedPrefix,
-            },
-            destination,
-            OperationId::from_bytes([0x64; 16]),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+            }, destination, OperationId::from_bytes([0x64; 16]), WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = store.fork_authority(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
     else {
         return Err("missing lineage locator unexpectedly forked".into());
     };
     assert!(matches!(error.error, AuthorityStoreError::Rejected(_)));
-    assert!(matches!(
-        store
-            .head(destination, WorkBudget::UNBOUNDED, &cancellation)
-            .await,
+    assert!(matches!(({ let __authority_args = (destination, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = store.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }),
         Err(OperationFailure {
             error: AuthorityStoreError::Missing,
             ..
@@ -707,20 +567,11 @@ async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
         })
         .await?;
     let source_authority = AuthorityId::from_bytes(source.id().into_bytes());
-    assert!(
-        store
-            .fork_generation_authority(
-                GenerationForkSource {
+    assert!(({ let __authority_args = (GenerationForkSource {
                     authority: source_authority,
                     generation: selected.id(),
                     lineage: GenerationFork::PublishedPrefix,
-                },
-                destination_authority,
-                OperationId::from_bytes([0x65; 16]),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+                }, destination_authority, OperationId::from_bytes([0x65; 16]), WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = store.fork_authority(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
             .is_err()
     );
     assert_eq!(

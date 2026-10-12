@@ -227,23 +227,12 @@ async fn memory_stores_expose_the_complete_async_contract()
 
     let authorities = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([0x41; 16]);
-    let created = (AsyncAuthorityStore::create_authority(
-        &authorities,
-        authority_id,
-        Epoch::GENESIS,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let created = (async { let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::create_authority(&authorities, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) }).await?;
     let CreateAuthorityOutcome::Created(head) = created.value else {
         return Err("authority unexpectedly existed".into());
     };
     assert_eq!(
-        (AsyncAuthorityStore::head(
-            &authorities,
-            authority_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await?
+        (async { let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::head(&authorities, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await?
         .value,
         head
     );
@@ -253,57 +242,25 @@ async fn memory_stores_expose_the_complete_async_contract()
         fingerprint: Digest::from_bytes([0x43; 32]),
         payload: bytes::Bytes::from_static(b"payload"),
     };
-    let appended = (AsyncAuthorityStore::compare_and_append(
-        &authorities,
-        authority_id,
-        Epoch::GENESIS,
-        head,
-        proposed,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let appended = (async { let __authority_args = (authority_id, Epoch::GENESIS, head, proposed, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = AsyncAuthorityStore::compare_and_append(&authorities, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await?;
     assert!(matches!(appended.value, AppendOutcome::Committed(_)));
     assert_eq!(
-        (AsyncAuthorityStore::replay(
-            &authorities,
-            authority_id,
-            Sequence::GENESIS,
-            ReplayLimit {
+        (async { let __authority_args = (authority_id, Sequence::GENESIS, ReplayLimit {
                 records: 1,
                 payload_bytes: 7,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await?
+            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = AsyncAuthorityStore::replay(&authorities, __authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await?
         .value
         .len(),
         1
     );
     assert!(
-        (AsyncAuthorityStore::find_operation(
-            &authorities,
-            authority_id,
-            operation_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await?
+        (async { let __authority_args = (authority_id, operation_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::find_operation(&authorities, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await?
         .value
         .is_some()
     );
-    let current = (AsyncAuthorityStore::head(
-        &authorities,
-        authority_id,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
+    let current = (async { let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::head(&authorities, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await?
     .value;
-    let fenced = (AsyncAuthorityStore::fence(
-        &authorities,
-        authority_id,
-        current,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let fenced = (async { let __authority_args = (authority_id, current, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::fence(&authorities, __authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await?;
     assert!(matches!(
         fenced.value,
         FenceOutcome::Advanced(head) if head.epoch.get() == 2
@@ -326,58 +283,20 @@ async fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_e
         payload: bytes::Bytes::from_static(b"cancelled"),
     };
     let authority_failures = [
-        (AsyncAuthorityStore::create_authority(
-            &authority,
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        )).await
+        (async { let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancelled,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::create_authority(&authority, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) }).await
         .map(|_| ()),
-        (AsyncAuthorityStore::head(
-            &authority,
-            authority_id,
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        )).await
+        (async { let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancelled,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::head(&authority, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await
         .map(|_| ()),
-        (AsyncAuthorityStore::compare_and_append(
-            &authority,
-            authority_id,
-            Epoch::GENESIS,
-            head,
-            commit,
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        )).await
+        (async { let __authority_args = (authority_id, Epoch::GENESIS, head, commit, WorkBudget::UNBOUNDED, &cancelled,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = AsyncAuthorityStore::compare_and_append(&authority, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await
         .map(|_| ()),
-        (AsyncAuthorityStore::replay(
-            &authority,
-            authority_id,
-            Sequence::GENESIS,
-            ReplayLimit {
+        (async { let __authority_args = (authority_id, Sequence::GENESIS, ReplayLimit {
                 records: 1,
                 payload_bytes: 1,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        )).await
+            }, WorkBudget::UNBOUNDED, &cancelled,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = AsyncAuthorityStore::replay(&authority, __authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await
         .map(|_| ()),
-        (AsyncAuthorityStore::fence(
-            &authority,
-            authority_id,
-            head,
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        )).await
+        (async { let __authority_args = (authority_id, head, WorkBudget::UNBOUNDED, &cancelled,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::fence(&authority, __authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await
         .map(|_| ()),
-        (AsyncAuthorityStore::find_operation(
-            &authority,
-            authority_id,
-            operation_id,
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        )).await
+        (async { let __authority_args = (authority_id, operation_id, WorkBudget::UNBOUNDED, &cancelled,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::find_operation(&authority, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await
         .map(|_| ()),
     ];
     for failure in authority_failures {
@@ -485,10 +404,10 @@ async fn default_guarded_fork_preserves_typed_guard_failure_and_retention_prefix
             payload: bytes::Bytes::from_static(b"retention"),
         },
     };
-    let baseline = (append_first_record(
-        &MemoryAuthorityStore::default(), fork.retention, fork.retained.clone(),
-        WorkCounters::default(), WorkBudget::UNBOUNDED, &cancellation,
-    )).await?;
+    let baseline_store = MemoryAuthorityStore::default();
+    let mut baseline_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let result = crate::async_storage::first_record(&baseline_store, fork.retention, fork.retained.clone(), &mut baseline_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity));
+    let baseline = baseline_work.receipt(result)?;
     let guard_work = WorkCounters {
         backend_read_operations: 1,
         authority_bytes_read: 13,
@@ -503,17 +422,12 @@ async fn default_guarded_fork_preserves_typed_guard_failure_and_retention_prefix
         )))
     };
     let store = MemoryAuthorityStore::default();
-    let failure = (AsyncAuthorityStore::commit_workspace_fork_guarded(
-        &store, fork.clone(), PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED, &cancellation, &mut guard,
-    )).await
+    let failure = (async { let __authority_args = (fork.clone(), PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, &mut guard,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::fork_workspace(&store, __authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut (&mut *__authority_args.4))).await.map_err(|error| error.into_error(crate::FsError::from)); __authority_work.receipt(__authority_result) }).await
         .err().ok_or("guarded fork ignored rejection")?;
     assert!(matches!(failure.error, crate::facade::FsError::WorkspaceDeleted));
     assert_eq!(*failure.work, baseline.work.checked_add(guard_work)?);
     assert_eq!(calls, 1);
-    let missing = (AsyncAuthorityStore::head(
-        &store, fork.destination, WorkBudget::UNBOUNDED, &cancellation,
-    )).await
+    let missing = (async { let __authority_args = (fork.destination, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::head(&store, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await
         .err().ok_or("guard rejection published destination")?;
     assert!(matches!(missing.error, AuthorityStoreError::Missing));
     Ok(())
@@ -543,15 +457,11 @@ async fn default_guarded_fork_rejects_managed_permit_before_retention_or_guard()
             value: (), work: WorkCounters::default(),
         }))
     };
-    let failure = (AsyncAuthorityStore::commit_workspace_fork_guarded(
-        &store, fork.clone(),
-        PublicationPermit::Reservation {
+    let failure = (async { let __authority_args = (fork.clone(), PublicationPermit::Reservation {
             operation_id: [0xb5; 16],
             gate_tail: 1,
             expected: Head::genesis(Epoch::GENESIS),
-        },
-        WorkBudget::UNBOUNDED, &cancellation, &mut guard,
-    )).await
+        }, WorkBudget::UNBOUNDED, &cancellation, &mut guard,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::fork_workspace(&store, __authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut (&mut *__authority_args.4))).await.map_err(|error| error.into_error(crate::FsError::from)); __authority_work.receipt(__authority_result) }).await
         .err().ok_or("managed fork permit was silently stripped")?;
     assert!(matches!(
         failure.error,
@@ -560,9 +470,7 @@ async fn default_guarded_fork_rejects_managed_permit_before_retention_or_guard()
     assert_eq!(*failure.work, WorkCounters::default());
     assert_eq!(calls, 0);
     for authority in [fork.retention, fork.destination] {
-        let failure = (AsyncAuthorityStore::head(
-            &store, authority, WorkBudget::UNBOUNDED, &cancellation,
-        )).await
+        let failure = (async { let __authority_args = (authority, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::head(&store, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await
             .err().ok_or("managed rejection created authority")?;
         assert!(matches!(failure.error, AuthorityStoreError::Missing));
     }

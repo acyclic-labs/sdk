@@ -482,29 +482,28 @@ impl FileResultProjection {
 
 impl ToolProjection for FileResultProjection {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        work.remaining()?;
+    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+        if let Some(work) = work { work.remaining()?; }
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn project_with_native_work(
-        &self, _: &ToolInvocation, result: &ToolResult, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        let value = super::decode_with_native_work::<FileResult>(&result.value, work)?;
-        match self.0 {
-            super::schema::ProjectionMode::Full => super::schema::project_json_with_native_work(&value.0, work),
-            super::schema::ProjectionMode::Reference => super::schema::project_reference_with_native_work(&value.0.file,
-                "File publication completed. The original output reference, workspace and content identity remain in the canonical tool result. Body bytes are omitted from this model projection.", work),
+    fn project(
+        &self, _: &ToolInvocation, result: &ToolResult, _work: crate::NativeWork<'_>,
+    ) -> Result<(Value, crate::NativeCustody)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = _work {
+            let value = super::decode_with_native_work::<FileResult>(&result.value, work)?;
+            return match self.0 {
+                super::schema::ProjectionMode::Full => super::schema::project_json(&value.0, Some(work)),
+                super::schema::ProjectionMode::Reference => super::schema::project_reference(&value.0.file,
+                    "File publication completed. The original output reference, workspace and content identity remain in the canonical tool result. Body bytes are omitted from this model projection.", Some(work)),
+            };
         }
-    }
-
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         let value: FileResult = decode(&result.value)?;
         match self.0 {
-            super::schema::ProjectionMode::Full => super::schema::project_json(value),
-            super::schema::ProjectionMode::Reference => super::schema::project_reference(value.file,
-                "File publication completed. The original output reference, workspace and content identity remain in the canonical tool result. Body bytes are omitted from this model projection.".into()),
+            super::schema::ProjectionMode::Full => super::schema::project_json(&value, None),
+            super::schema::ProjectionMode::Reference => super::schema::project_reference(&value.file,
+                "File publication completed. The original output reference, workspace and content identity remain in the canonical tool result. Body bytes are omitted from this model projection.", None),
         }
     }
 }
@@ -525,51 +524,51 @@ impl ReadFileProjection {
 
 impl ToolProjection for ReadFileProjection {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        work.remaining()?;
+    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+        if let Some(work) = work { work.remaining()?; }
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn project_with_native_work(
+    fn project(
         &self, invocation: &ToolInvocation, result: &ToolResult,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        let text = super::decode_with_native_work::<native::ReadText>(&result.value, work)?;
-        match self.0 {
-            super::schema::ProjectionMode::Full => super::schema::project_json_with_native_work(&text.0, work),
-            super::schema::ProjectionMode::Reference => {
-                use sha2::Digest as _;
-                let input = super::decode_with_native_work::<ReadFileInput>(&invocation.arguments, work)?;
-                work.charge(acyclic_fs::WorkCounters {
-                    bytes_hashed: text.0.0.len() as u64, ..Default::default()
-                }).map_err(super::edit::native_error)?;
-                if input.0.file.descriptor().byte_length() != text.0.0.len() as u64
-                    || input.0.file.descriptor().sha256() != &<[u8; 32]>::from(sha2::Sha256::digest(text.0.0.as_bytes()))
-                {
-                    return Err(native::invalid("file descriptor differs from exact text result"));
+        _work: crate::NativeWork<'_>,
+    ) -> Result<(Value, crate::NativeCustody)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = _work {
+            let text = super::decode_with_native_work::<native::ReadText>(&result.value, work)?;
+            return match self.0 {
+                super::schema::ProjectionMode::Full => super::schema::project_json(&text.0, Some(work)),
+                super::schema::ProjectionMode::Reference => {
+                    use sha2::Digest as _;
+                    let input = super::decode_with_native_work::<ReadFileInput>(&invocation.arguments, work)?;
+                    work.charge(acyclic_fs::WorkCounters {
+                        bytes_hashed: text.0.0.len() as u64, ..Default::default()
+                    }).map_err(super::edit::native_error)?;
+                    if input.0.file.descriptor().byte_length() != text.0.0.len() as u64
+                        || input.0.file.descriptor().sha256() != &<[u8; 32]>::from(sha2::Sha256::digest(text.0.0.as_bytes()))
+                    {
+                        return Err(native::invalid("file descriptor differs from exact text result"));
+                    }
+                    native::summary_reference(&input.0.file, 160, format_args!(
+                        "Read {} UTF-8 bytes. The exact text is retained in the canonical tool result and omitted from this model projection.",
+                        text.0.0.len()
+                    ), work)
                 }
-                native::summary_reference(&input.0.file, 160, format_args!(
-                    "Read {} UTF-8 bytes. The exact text is retained in the canonical tool result and omitted from this model projection.",
-                    text.0.0.len()
-                ), work)
-            }
+            };
         }
-    }
-
-    fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         let text: String = decode(&result.value)?;
         match self.0 {
-            super::schema::ProjectionMode::Full => super::schema::project_json(text),
+            super::schema::ProjectionMode::Full => super::schema::project_json(&text, None),
             super::schema::ProjectionMode::Reference => {
                 let input: ReadFileInput = decode(&invocation.arguments)?;
                 input.file.descriptor().verify(text.as_bytes(), &mut None)?;
                 super::schema::project_reference(
-                    input.file,
-                    format!(
+                    &input.file,
+                    &format!(
                         "Read {} UTF-8 bytes. The exact text is retained in the canonical tool result and omitted from this model projection.",
                         text.len()
                     ),
+                    None,
                 )
             }
         }
@@ -578,33 +577,20 @@ impl ToolProjection for ReadFileProjection {
 
 impl ToolProjection for FileTool {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        work.remaining()?;
+    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+        if let Some(work) = work { work.remaining()?; }
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn project_with_native_work(
+    fn project(
         &self, invocation: &ToolInvocation, result: &ToolResult,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        work: crate::NativeWork<'_>,
+    ) -> Result<(Value, crate::NativeCustody)> {
         match self {
             Self::Read => ReadFileProjection(super::schema::ProjectionMode::Full)
-                .project_with_native_work(invocation, result, work),
+                .project(invocation, result, work),
             _ => FileResultProjection(super::schema::ProjectionMode::Full)
-                .project_with_native_work(invocation, result, work),
-        }
-    }
-
-    fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        match self {
-            Self::Read => {
-                ReadFileProjection(super::schema::ProjectionMode::Full).project(invocation, result)
-            }
-            Self::Write | Self::Edit | Self::Patch { .. } => {
-                FileResultProjection(super::schema::ProjectionMode::Full)
-                    .project(invocation, result)
-            }
+                .project(invocation, result, work),
         }
     }
 }
@@ -759,7 +745,7 @@ pub(super) mod native {
     pub(in crate::tool) fn summary_reference(
         file: &FileRef, maximum: usize, arguments: std::fmt::Arguments<'_>,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+    ) -> Result<(Value, crate::NativeCustody)> {
         use std::fmt::Write as _;
         let mut allocation = super::super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
         let mut text = String::new();
@@ -788,7 +774,7 @@ pub(super) mod native {
             return Err(writer.denial.take().unwrap_or_else(|| invalid("file summary formatting failed")));
         }
         drop(writer);
-        super::super::schema::project_reference_with_native_work(file, &text, work)
+        super::super::schema::project_reference(file, &text, Some(work))
     }
 
     #[derive(Serialize)]
@@ -838,15 +824,15 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("file-preflight".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([61; 16])),
-            )?,
-            "source.txt",
-            "generation-1",
-            FileDescriptor::from_bytes(b"exact", "text/plain")?,
-            "source.txt",
-        )
+             &mut None)?,
+            "source.txt".into(),
+            "generation-1".into(),
+            FileDescriptor::from_bytes(b"exact", "text/plain", &mut None)?,
+            "source.txt".into(),
+         &mut None)
     }
 
     #[test]

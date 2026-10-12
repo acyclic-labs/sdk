@@ -59,7 +59,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
                 .map_err(|error| error.into_work_or(DemandError::InvalidRequest)),
             Self::Source(work) => work.allocate(bytes),
             Self::Original { work, allocation, .. } => {
-                *allocation = Some(work.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED).map_err(original_name_error)?);
+                *allocation = Some(work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED).map_err(original_name_error)?);
                 Ok(())
             }
         }
@@ -149,17 +149,6 @@ pub(crate) fn host_name_bytes_measured(
     work.check()?;
     let (allocations, work, budget, cancellation) = work.allocation_parts();
     host_name_bytes_with_accounting(name, profile, maximum_bytes, &mut NameWork::<DemandWork>::Owned {
-        allocations, work, budget, cancellation,
-    })
-}
-
-#[cfg(windows)]
-pub(crate) fn host_wide_name_bytes_measured(
-    name: &[u16], profile: FilesystemProfile, maximum_bytes: u32, work: &mut DemandWork,
-) -> Result<(NameEncoding, Vec<u8>), DemandError> {
-    work.check()?;
-    let (allocations, work, budget, cancellation) = work.allocation_parts();
-    host_wide_name_bytes_with_accounting(name, profile, maximum_bytes, &mut NameWork::<DemandWork>::Owned {
         allocations, work, budget, cancellation,
     })
 }

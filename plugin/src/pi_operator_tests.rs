@@ -1,3 +1,4 @@
+use acyclic_harness::TaskId;
 use super::*;
 use crate::pi_fork::tests::work;
 use crate::{pi_caller, pi_fork::tests::Fixture};
@@ -30,7 +31,7 @@ fn operator_cli_requires_explicit_original_operation_and_decision() {
 #[test]
 fn prepared_descriptor_admission_fails_before_typed_growth_without_fake_allocation_work() {
     let original_work = work();
-    let mut existing_custody = original_work.retain_owned(0).unwrap();
+    let mut existing_custody = original_work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
     existing_custody.resize_retained(original_work.remaining().unwrap().peak_allocation_bytes).unwrap();
     let result = decode_prepared_approval(b"{}", &original_work);
     assert!(matches!(&result, Err(Error::NativeWork {

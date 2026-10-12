@@ -48,7 +48,7 @@ impl SessionController {
                 Ok(Self::from(host))
             }
             PluginTaskBinding::Pi(_) => {
-                let mut custody = work.retain_owned(std::mem::size_of::<PiSession>() as u64)
+                let mut custody = work.claim(std::mem::size_of::<PiSession>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
                 let session = PiSession::open(directory, loaded.0.0, loaded.0.1, resources, work).await?;
                 custody.absorb(&mut loaded.1)
@@ -417,7 +417,7 @@ impl PiSession {
                 return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi original root creation was substituted" });
             }
             if !handles.contains_key(key) && !self.roots.contains_key(key) {
-                let expected = acyclic_fs::SourceReference {
+                let expected = acyclic_fs::demand::SourceReference {
                     identity: creation.source_identity, epoch: creation.source_epoch,
                 };
                 let physical = self.resources.shared_roots.acquire_with_native_work(
@@ -442,7 +442,11 @@ impl PiSession {
                     return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi native root identity changed after allocation" });
                 }
                 let volume = binding.project_volumes.get(key).ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root has no original project volume" })?;
-                let workspace_name = volume.storage_name_with_native_work(original_native_work)?;
+                let workspace_name = {
+                    let mut io = acyclic_harness::store::history::native_work_io(original_native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                    let value = volume.storage_name(&mut Some(&mut io))?;
+                    (value, io.into_custody())
+                };
                 let workspace = self.resources.fs.open_workspace_with_native_work(
                     &workspace_name.0, original_native_work, original_native_work.cancellation(),
                 ).await.map_err(|(source, custody)| RootError::NativeFilesystem { source, custody })?;
@@ -500,7 +504,7 @@ impl PiSession {
                     })
             },
         )?;
-        let mut context_custody = original_native_work.retain_owned(context_bytes)
+        let mut context_custody = original_native_work.claim(context_bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
         let mut context_roots = Vec::with_capacity(self.roots.len());
         for (key, handle) in &self.roots {
@@ -708,7 +712,7 @@ impl PiSession {
         let work = self.mail_work(caller, owner, query_work).await?;
         let operation = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation, &work)?;
         let message = arguments.get("message").and_then(Value::as_str).ok_or_else(|| RootError::Invalid("Pi mail message must be a string".to_owned()))?;
-        let _envelope_custody = work.retain_owned(message.len() as u64)
+        let _envelope_custody = work.claim(message.len() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
         let envelope = pi_mail::PiMailEnvelope { kind, message: message.to_owned() };
         if caller == owner.policy().root_task {

@@ -40,8 +40,8 @@ fn extension_activation_requires_validated_configuration_and_pins_revision() -> 
     assert!(matches!(reducer.apply(select(71, 0)), Err(Error::Conflict(_))));
     let first = request_file(br#"{"enabled":true}"#)?;
     let invalid = request_file(br#"{"enabled":false,"extra":1}"#)?;
-    assert!(reducer.validate_configuration_bytes(&extension, &invalid, br#"{"enabled":false,"extra":1}"#, None).is_err());
-    reducer.validate_configuration_bytes(&extension, &first, br#"{"enabled":true}"#, None)?;
+    assert!(reducer.schemas().validate_configuration_bytes(&extension, &invalid, br#"{"enabled":false,"extra":1}"#, None).is_err());
+    reducer.schemas().validate_configuration_bytes(&extension, &first, br#"{"enabled":true}"#, None)?;
     reducer.apply(agent_command(&owner, 72, 0, Action::ConfigureExtension {
         extension: extension.clone(), content: first.clone(),
     }))?;
@@ -56,7 +56,7 @@ fn extension_activation_requires_validated_configuration_and_pins_revision() -> 
     assert!(runtime.narrow(Capabilities::new(std::iter::empty::<&str>()),
         crate::conversation::Limits::default())?.with_extensions_from(&reducer).is_err());
     let second = request_file(br#"{"enabled":false}"#)?;
-    reducer.validate_configuration_bytes(&extension, &second, br#"{"enabled":false}"#, None)?;
+    reducer.schemas().validate_configuration_bytes(&extension, &second, br#"{"enabled":false}"#, None)?;
     reducer.apply(agent_command(&owner, 74, 2, Action::ConfigureExtension { extension, content: second }))?;
     reducer.set_resident_event_limit(1)?;
     let snapshot = reducer.snapshot(usize::MAX, &mut None)?.0;

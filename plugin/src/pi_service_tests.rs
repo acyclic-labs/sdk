@@ -1,4 +1,6 @@
 
+use std::fs;
+use crate::pi_registration;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::{
@@ -368,7 +370,11 @@ async fn pi_original_root_registration_precedes_selected_allocation_and_reuses_a
     let original_task = original.task_id;
     assert!(matches!(original.scratch.allocation, PiScratchAllocation::Preparing));
     let original_scratch = original.scratch.volume.clone_with_native_work(&work).unwrap();
-    let scratch_name = original_scratch.0.storage_name_with_native_work(&work).unwrap();
+    let scratch_name = {
+        let mut io = acyclic_harness::store::history::native_work_io(&work).unwrap();
+        let value = original_scratch.0.storage_name(&mut Some(&mut io)).unwrap();
+        (value, io.into_custody())
+    };
     assert!(resources.fs.open_workspace_with_native_work(
         &scratch_name.0, &work, work.cancellation(),
     ).await.is_err());
@@ -470,7 +476,7 @@ fn pi_scoped_native_response_cannot_reset_an_exhausted_original_quota() {
         &json!({"operation":"already-owned-sdk-body"}),
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, &work,
     ).unwrap();
-    let mut blocker = work.retain_owned(0).unwrap();
+    let mut blocker = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
     let remaining = work.remaining().unwrap().peak_allocation_bytes;
     blocker.resize_retained(remaining).unwrap();
     let error = crate::service_session::guarded_scoped_reply(

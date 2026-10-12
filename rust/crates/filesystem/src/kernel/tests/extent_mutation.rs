@@ -1,7 +1,7 @@
 use crate::async_storage::AsyncObjectStore;
 use super::*;
 use crate::foundation::Digest;
-use crate::kernel::{extent_page_id, decode_extent_page};
+use crate::kernel::{extent_page_id, decode_extent_page, encode_extent_page};
 use crate::memory::MemoryObjectStore;
 
 use crate::storage::object_digest;
@@ -898,7 +898,7 @@ async fn flatten_extent_tree(
         ExtentPage::Internal(children) => {
             let mut extents = Vec::new();
             for child in children {
-                extents.extend(Box::pin(flatten_extent_tree(store, child.page).await).await?);
+                extents.extend(Box::pin(flatten_extent_tree(store, child.page)).await?);
             }
             extents
         }

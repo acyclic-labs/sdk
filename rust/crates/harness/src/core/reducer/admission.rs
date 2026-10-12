@@ -7,14 +7,10 @@ impl Reducer {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.authority_verifier.verify_audience(&self.authority, work)?;
-        let key = match work.as_deref_mut() {
-            Some(work) => work.clone_text(&command.idempotency_key.0)?,
-            None => command.idempotency_key.0.clone(),
-        };
-        let capacity = key.capacity() as u64;
-        let valid = IdempotencyKey::new(key).map(|_| ());
-        if let Some(work) = work.as_deref_mut() { work.release_owned(capacity)?; }
-        valid?;
+        let key = command.idempotency_key.as_str();
+        if key.is_empty() || key.chars().any(char::is_control) {
+            return Err(Error::Invalid("idempotency key is invalid".into()));
+        }
         self.authority_verifier.verify(&command.scope, work)
     }
 
@@ -402,4 +398,3 @@ impl Reducer {
     }
 
 }
-

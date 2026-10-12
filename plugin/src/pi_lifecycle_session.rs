@@ -22,7 +22,7 @@ where
     F: Future<Output = RootResult<T>> + Send + 'static,
     B: FnOnce() -> F,
 {
-    let custody = work.retain_owned(std::mem::size_of::<(TaskId, tokio::task::JoinHandle<RootResult<T>>, acyclic_fs::NativeAllocation)>() as u64)
+    let custody = work.claim(std::mem::size_of::<(TaskId, tokio::task::JoinHandle<RootResult<T>>, acyclic_fs::NativeAllocation)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let future = acyclic_harness::NativeFutureBundle::new(work, build)?;
     Ok((tokio::spawn(future), custody))
@@ -490,13 +490,18 @@ async fn original_native_first_dispatch_pending(
     let conversation = protected.conversation_authority_with_native_work(
         task, plan.commit.child.agent_id, &admission.grants, work,
     )?;
-    let verifier = conversation.0.1.verifier_with_native_work(work)?;
+    let verifier = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = conversation.0.1.verifier(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let history = acyclic_harness::store::HistoryReader::new_with_native_work(
         stream, &conversation.0.0, &verifier.0, work)?;
     let pin = history.0.pin_with_native_work(0, work).await?;
-    let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
-        task, pi_fork::derived(plan.original, "native-effect", &work)?, work,
-    )?;
+    let effect = acyclic_harness::effect_host::task_effect_id(
+        task, pi_fork::derived(plan.original, "native-effect", &work)?, &mut Some(&mut acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?),
+        )?;
     let observed = history.0.effect_with_native_work(&pin.0, effect, limits, work).await?;
     Ok(observed.0.is_none())
 }

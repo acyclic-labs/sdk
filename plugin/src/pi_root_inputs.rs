@@ -28,7 +28,7 @@ pub(crate) struct PiRootPreparation {
     pub(crate) command: WorkflowCommand,
     pub(crate) plan: TaskEffectPlan,
     pub(crate) request: PiRootRequest,
-    pub(crate) context: std::sync::Arc<acyclic_harness::NativeTaskContext>,
+    pub(crate) context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
     pub(crate) custody: NativeAllocation,
 }
 
@@ -40,7 +40,7 @@ impl PiRootPreparation {
         session: &Path, runtime: &super::pi_native_host::PiNativeRuntime,
         filesystem: &FilesystemHost<super::LocalAuthorityBackend, super::LocalObjectBackend>,
         binding: &PiTaskBinding, origin: super::pi_recovery::PiTaskOrigin<'_>,
-        context: Option<std::sync::Arc<acyclic_harness::NativeTaskContext>>,
+        context: Option<std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>>,
         work: &NativeMaterializationWork,
     ) -> Result<Self>
     {
@@ -99,8 +99,8 @@ where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
     ).await?;
     drop(schema.0);
     drop(schema.1);
-    let plan_custody = work.retain_owned(
-        (ROOT_ALLOCATION_PROVIDER.len() + ROOT_ALLOCATION_EFFECT.len()) as u64,
+    let plan_custody = work.claim(
+        (ROOT_ALLOCATION_PROVIDER.len() + ROOT_ALLOCATION_EFFECT.len()) as u64, 0, acyclic_fs::WorkCounters::UNCHARGED,
     ).map_err(native_error)?;
     let plan = TaskEffectPlan {
         provider: ROOT_ALLOCATION_PROVIDER.to_owned(), guarantee: EffectGuarantee::AtMostOnce,

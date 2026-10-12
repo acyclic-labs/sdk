@@ -65,6 +65,7 @@ pub mod store;
 pub mod tool;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[path = "wasm_bindings/mod.rs"]
 mod wasm;
 pub mod wire_api;
 pub mod wire_codec;
@@ -150,6 +151,5 @@ pub use extension::{
 #[cfg(feature = "filesystem")]
 pub use resource_preparation::ChildScratchCreationProof;
 pub use live::{
-    TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce, quorum,
-    race,
+    TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce,
 };

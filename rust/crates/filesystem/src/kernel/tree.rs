@@ -1,7 +1,7 @@
 //! Canonical authenticated directory-page encoding.
 
 use crate::kernel::Child;
-use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder, ReadAllocationStep, EncodeAllocationStep, EncodeWorkStep};
+use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder, ReadAllocationStep, EncodeWorkStep};
 use super::codec::{DecodedPageKind, DecodedPageShape};
 use super::types::{
     FileKind, LogicalName, NameEncoding, TreeEntry, TreePage, TreePageError,

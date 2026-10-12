@@ -269,8 +269,8 @@ impl IndexedDbAuthorityStore {
         let copy_work = WorkCounters {
             bytes_copied: length,
             // Admit a conservative envelope for JSON values, map nodes and the input copy.
-            allocation_operations: length.saturating_add(1),
-            peak_allocation_bytes: length.saturating_mul(128),
+            allocation_operations: length + 1,
+            peak_allocation_bytes: length * 128,
             items_examined: length,
             ..WorkCounters::default()
         };
@@ -337,11 +337,9 @@ impl IndexedDbAuthorityStore {
         database_name: &str,
         maximum_payload_bytes: u64,
     ) -> Result<Self, IndexedDbOpenError> {
-        let maximum_encoded = maximum_payload_bytes
-            .checked_add((COMMIT_PREFIX_BYTES as u64));
         if database_name.is_empty()
             || maximum_payload_bytes == 0
-            || maximum_encoded.is_none_or(|value| value > u64::from(u32::MAX))
+            || maximum_payload_bytes > u64::from(u32::MAX) - COMMIT_PREFIX_BYTES as u64
         {
             return Err(IndexedDbOpenError::InvalidOptions);
         }
@@ -821,8 +819,7 @@ impl crate::OperationWindowStore for IndexedDbAuthorityStore {
                 "invalid window replacement".to_owned(),
             ));
         }
-        let maximum = usize::try_from(self.maximum_payload_bytes.min(MAXIMUM_WINDOW_BYTES))
-            .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
+        let maximum = self.maximum_payload_bytes.min(MAXIMUM_WINDOW_BYTES) as usize;
         let mut encoded = vec![0; maximum];
         let mut encoder = std::io::Cursor::new(encoded.as_mut_slice());
         serde_json::to_writer(&mut encoder, &replacement)
@@ -892,15 +889,12 @@ async fn open_database(database_name: &str) -> Result<Database, IndexedDbOpenErr
         .map_err(IndexedDbOpenError::Open)
 }
 
-impl AsyncAuthorityStore for IndexedDbAuthorityStore {
-    /// One strict transaction creates the authority with its first record.
-    async fn create_authority_with_first_record(
-        &self,
-        authority: AuthorityId,
-        commit: ProposedCommit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<bool> {
+impl AsyncAuthorityStore for IndexedDbAuthorityStore {async fn create_first_record<G: crate::AuthorityGuard>(&self, authority: AuthorityId, commit: ProposedCommit, context: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<bool, crate::AuthorityError<G::Error>> {
+if guard.is_some() { return crate::async_storage::first_record(self, authority, commit, context, guard).await; }
+let budget = context.remaining()?;
+let cancellation = context.cancellation;
+let result: AuthorityResult<bool> = async {
+
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
@@ -911,8 +905,12 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         if Self::authority_exists(&transaction, authority, cancellation, work).await? {
             drop(transaction);
             let appended =
-                crate::append_first_record(self, authority, commit, work, budget, cancellation)
-                    .await?;
+                {
+                    let mut fallback = crate::AuthorityWork::new(budget, cancellation);
+                    fallback.work = work;
+                    let result = crate::async_storage::first_record(self, authority, commit, &mut fallback, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity));
+                    fallback.receipt(result)?
+                };
             return Ok(appended);
         }
         let work = self
@@ -923,15 +921,17 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .await
             .map_err(|error| Self::backend(error, work))?;
         Ok(crate::OperationReceipt { value: true, work })
-    }
 
-    /// One strict transaction creates the retention and destination authorities with their first records.
-    async fn commit_workspace_fork(
-        &self,
-        fork: WorkspaceForkCommit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<WorkspaceForkOutcome> {
+}.await;
+let value = context.accept(result)?;
+Ok(value)
+}
+async fn fork_workspace<G: crate::AuthorityGuard>(&self, fork: WorkspaceForkCommit, permit: PublicationPermit, context: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<WorkspaceForkOutcome, crate::AuthorityError<G::Error>> {
+if guard.is_some() || permit != PublicationPermit::Unrestricted { return crate::async_storage::workspace_fork(self, fork, permit, context, guard).await; }
+let budget = context.remaining()?;
+let cancellation = context.cancellation;
+let result: AuthorityResult<WorkspaceForkOutcome> = async {
+
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
@@ -949,18 +949,15 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             || Self::authority_exists(&transaction, fork.destination, cancellation, work).await?
         {
             drop(transaction);
-            return crate::commit_workspace_fork_in_steps(self, fork, budget, cancellation)
-                .await
+            let mut fallback = crate::AuthorityWork::new(budget, cancellation);
+            // The original fallback starts a fresh budget, then adds this probe's work.
+            let result = crate::async_storage::workspace_fork(self, fork, PublicationPermit::Unrestricted, &mut fallback, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity));
+            return fallback.receipt(result)
                 .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))
-                .and_then(|stepped| {
-                    let work = work
-                        .checked_add(stepped.work)
-                        .map_err(|error| AuthorityFailure::new(error.into(), work))?;
-                    Ok(crate::OperationReceipt {
-                        value: stepped.value,
-                        work,
-                    })
-                });
+                .and_then(|stepped| Ok(crate::OperationReceipt {
+                    value: stepped.value,
+                    work: work.checked_add(stepped.work).map_err(|error| AuthorityFailure::new(error.into(), work))?,
+                }));
         }
         let work = self
             .write_first_record(
@@ -990,16 +987,17 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             value: WorkspaceForkOutcome::Committed,
             work,
         })
-    }
 
-    async fn fork_generation_authority(
-        &self,
-        source: GenerationForkSource,
-        destination_authority: AuthorityId,
-        _operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<CreateAuthorityOutcome> {
+}.await;
+let value = context.accept(result)?;
+Ok(value)
+}
+async fn fork_authority<G: crate::AuthorityGuard>(&self, source: GenerationForkSource, destination_authority: AuthorityId, _operation_id: OperationId, context: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
+crate::async_storage::seal(guard.as_deref_mut(), context).await?;
+let budget = context.remaining()?;
+let cancellation = context.cancellation;
+let result: AuthorityResult<CreateAuthorityOutcome> = async {
+
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
@@ -1009,18 +1007,19 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                     "IndexedDB authorities do not retain generation lineage prefixes".to_owned(),
                 ),
             ));
-        }
-        self.create_authority(destination_authority, Epoch::GENESIS, budget, cancellation)
-            .await
-    }
+        }({ let __authority_args = (destination_authority, Epoch::GENESIS, budget, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
 
-    async fn create_authority(
-        &self,
-        authority_id: AuthorityId,
-        genesis_epoch: Epoch,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<CreateAuthorityOutcome> {
+}.await;
+let value = context.accept(result)?;
+if matches!(value, CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), context).await?; }
+Ok(value)
+}
+async fn create_authority<G: crate::AuthorityGuard>(&self, authority_id: AuthorityId, genesis_epoch: Epoch, context: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
+crate::async_storage::seal(guard.as_deref_mut(), context).await?;
+let budget = context.remaining()?;
+let cancellation = context.cancellation;
+let result: AuthorityResult<CreateAuthorityOutcome> = async {
+
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
@@ -1048,7 +1047,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                 work: gate_work,
             });
         }
-        let read_work = authority_fixed_read_work(0);
+        let read_work = authority_backend_read_work();
         let head = Head::genesis(genesis_epoch);
         let encoded = encode_head(head);
         let write_work = read_work
@@ -1074,14 +1073,18 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             value: CreateAuthorityOutcome::Created(head),
             work: write_work,
         })
-    }
 
-    async fn head(
-        &self,
-        authority_id: AuthorityId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Head> {
+}.await;
+let value = context.accept(result)?;
+if matches!(value, CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), context).await?; }
+Ok(value)
+}
+async fn head(&self, authority_id: AuthorityId, context: &mut crate::AuthorityWork<'_>) -> Result<Head, AuthorityStoreError> {
+
+let budget = context.remaining()?;
+let cancellation = context.cancellation;
+let result: AuthorityResult<Head> = async {
+
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
@@ -1097,37 +1100,17 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         )
         .await?;
         Ok(crate::OperationReceipt { value, work })
-    }
 
-    async fn compare_and_append(
-        &self,
-        authority_id: AuthorityId,
-        epoch: Epoch,
-        expected: Head,
-        commit: ProposedCommit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<AppendOutcome> {
-        self.compare_and_append_guarded(
-            GuardedAppend {
-                authority_id,
-                epoch,
-                expected,
-                commit,
-                permit: PublicationPermit::Unrestricted,
-            },
-            budget,
-            cancellation,
-        )
-        .await
-    }
+}.await;
+let value = context.accept(result)?;
+Ok(value)
+}
+async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: GuardedAppend, context: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<(AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+crate::async_storage::seal(guard.as_deref_mut(), context).await?;
+let budget = context.remaining()?;
+let cancellation = context.cancellation;
+let result: AuthorityResult<AppendOutcome> = async {
 
-    async fn compare_and_append_guarded(
-        &self,
-        request: GuardedAppend,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<AppendOutcome> {
         let GuardedAppend {
             authority_id,
             epoch,
@@ -1138,7 +1121,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        self.validate_payload(&commit, WorkCounters::default())?;
+        let payload_bytes = self.payload_bytes(&commit, WorkCounters::default())?;
         let work = authority_fixed_read_work(HEAD_BYTES);
         Self::admit(work, budget)?;
         let transaction = transaction(&self.database, &[ AUTHORITY_HEADS, AUTHORITY_COMMITS, AUTHORITY_OPERATIONS, AUTHORITY_GATES, OPERATION_WINDOWS, ], TransactionMode::Readwrite)
@@ -1209,20 +1192,22 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             epoch,
             actual,
             commit,
+            payload_bytes,
             budget,
             work,
         )?;
         Self::publish_prepared(transaction, authority_id, prepared, cancellation).await
-    }
 
-    async fn reserve_publication(
-        &self,
-        authority_id: AuthorityId,
-        expected: Head,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<ReservationOutcome> {
+}.await;
+let value = context.accept(result)?;
+Ok((value, None))
+}
+async fn reserve_publication(&self, authority_id: AuthorityId, expected: Head, operation_id: OperationId, context: &mut crate::AuthorityWork<'_>) -> Result<ReservationOutcome, AuthorityStoreError> {
+
+let budget = context.remaining()?;
+let cancellation = context.cancellation;
+let result: AuthorityResult<ReservationOutcome> = async {
+
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
@@ -1285,14 +1270,17 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             }),
             work: write_work,
         })
-    }
 
-    async fn release_publication(
-        &self,
-        reservation: PublicationReservation,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<()> {
+}.await;
+let value = context.accept(result)?;
+Ok(value)
+}
+async fn release_publication(&self, reservation: PublicationReservation, context: &mut crate::AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
+
+let budget = context.remaining()?;
+let cancellation = context.cancellation;
+let result: AuthorityResult<()> = async {
+
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
@@ -1344,200 +1332,30 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             value: (),
             work: write_work,
         })
-    }
 
-    async fn replay(
-        &self,
-        authority_id: AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Vec<DurableCommit>> {
-        const MAXIMUM_REPLAY_RECORDS: u32 = 4_096;
-        if limit.records == 0 || limit.payload_bytes == 0 {
-            return Err(AuthorityFailure::before_work(
-                AuthorityStoreError::InvalidReplayLimit,
-            ));
-        }
-        if limit.records > MAXIMUM_REPLAY_RECORDS {
-            return Err(AuthorityFailure::before_work(
-                AuthorityStoreError::Rejected(format!(
-                    "browser replay page has {} records; maximum is {MAXIMUM_REPLAY_RECORDS}",
-                    limit.records
-                )),
-            ));
-        }
-        let head_receipt =
-            AsyncAuthorityStore::head(self, authority_id, budget, cancellation).await?;
-        let head = head_receipt.value;
-        let mut work = head_receipt.work;
-        if after > head.sequence {
-            return Err(AuthorityFailure::new(
-                AuthorityStoreError::Rejected(
-                    "replay cursor is ahead of authority head".to_owned(),
-                ),
-                work,
-            ));
-        }
-        if after == head.sequence {
-            return Ok(crate::OperationReceipt {
-                value: Vec::new(),
-                work,
-            });
-        }
-        let available = head.sequence.get() - after.get();
-        let requested = u64::from(limit.records).min(available);
-        let start = after.get() + u64::from(after == Sequence::GENESIS);
-        // The page holds at most 4,097 records, each bounded to u32 payload bytes.
-        let count = requested + u64::from(after != Sequence::GENESIS);
-        let handle_bytes = count * size_of::<(Sequence, Blob)>() as u64;
-        let allocation_work = work
-            .checked_add(WorkCounters {
-                allocation_operations: u64::from(count != 0),
-                peak_allocation_bytes: handle_bytes,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| AuthorityFailure::new(error.into(), work))?;
-        Self::admit(allocation_work, budget)
-            .map_err(|failure| AuthorityFailure::new(failure.error, work))?;
-        let mut blobs = Vec::new();
-        blobs
-            .try_reserve_exact(count as usize)
-            .map_err(|error| Self::backend(error, work))?;
-        work = allocation_work;
-        let transaction = transaction(&self.database, &[AUTHORITY_COMMITS], TransactionMode::Readonly)
-            .map_err(|error| Self::backend(error, work))?;
-        let mut returned_payload_bytes = 0_u64;
-        for offset in 0..count {
-            let sequence = Sequence::new(start + offset);
-            let prospective = work
-                .checked_add(WorkCounters {
-                    backend_read_operations: 1,
-                    ..WorkCounters::default()
-                })
-                .map_err(|error| AuthorityFailure::new(error.into(), work))?;
-            Self::admit(prospective, budget)?;
-            let blob = {
-                let commits = transaction
-                    .object_store(AUTHORITY_COMMITS)
-                    .map_err(|error| Self::backend(error, work))?;
-                Self::get_blob(
-                    &commits,
-                    &commit_key(authority_id, sequence),
-                    cancellation,
-                    prospective,
-                )
-                .await?
-                .ok_or_else(|| {
-                    Self::corrupt("contiguous authority commit is missing", prospective)
-                })?
-            };
-            work = prospective;
-            let encoded_length = Self::blob_length(&blob, work)?;
-            let payload_length =
-                authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
-            if sequence != after {
-                let next_payload = returned_payload_bytes + payload_length;
-                if next_payload > limit.payload_bytes {
-                    if returned_payload_bytes == 0 {
-                        return Err(AuthorityFailure::new(
-                            AuthorityStoreError::ReplayRecordTooLarge {
-                                observed: payload_length,
-                                maximum: limit.payload_bytes,
-                            },
-                            work,
-                        ));
-                    }
-                    break;
-                }
-                returned_payload_bytes = next_payload;
-            }
-            blobs.push((sequence, blob));
-        }
-        drop(transaction);
-        let mut previous_digest = crate::Digest::ZERO;
-        let count = blobs.len() as u64;
-        // wasm32 vector lengths and capacities fit these u64 byte counts.
-        let vector_bytes = count * size_of::<DurableCommit>() as u64;
-        let blob_vector_bytes = blobs.capacity() as u64 * size_of::<(Sequence, Blob)>() as u64;
-        let mut retained = vector_bytes + blob_vector_bytes;
-        let prospective = work
-            .checked_add(WorkCounters {
-                allocation_operations: u64::from(count != 0),
-                peak_allocation_bytes: retained,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| AuthorityFailure::new(error.into(), work))?;
-        Self::admit(prospective, budget).map_err(|failure| AuthorityFailure::new(failure.error, work))?;
-        let mut output = Vec::new();
-        output
-            .try_reserve_exact(blobs.len())
-            .map_err(|error| Self::backend(error, work))?;
-        work = prospective;
-        for (sequence, blob) in blobs {
-            let encoded_length = Self::blob_length(&blob, work)?;
-            let payload_length = authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
-            let mut read_work = authority_commit_read_work(encoded_length, payload_length);
-            read_work.peak_allocation_bytes += retained;
-            let prospective = work
-                .checked_add(read_work)
-                .map_err(|error| AuthorityFailure::new(error.into(), work))?;
-            Self::admit(prospective, budget)?;
-            let encoded = Self::materialize_blob(
-                &blob,
-                encoded_length,
-                cancellation,
-                prospective,
-            )
-            .await?;
-            let commit = decode_commit_owned(authority_id, encoded, self.maximum_payload_bytes)
-                .map_err(|error| Self::corrupt(error, prospective))?;
-            if commit.sequence != sequence {
-                return Err(Self::corrupt(
-                    "authority commit key does not match its sequence",
-                    prospective,
-                ));
-            }
-            if sequence == after {
-                previous_digest = commit.digest;
-            } else {
-                if commit.previous_digest != previous_digest {
-                    return Err(Self::corrupt(
-                        "authority replay hash chain is discontinuous",
-                        prospective,
-                    ));
-                }
-                previous_digest = commit.digest;
-                // Bytes::slice retains the complete canonical encoded buffer.
-                retained += encoded_length;
-                output.push(commit);
-            }
-            work = prospective;
-        }
-        if output
-            .last()
-            .is_some_and(|commit| commit.sequence == head.sequence)
-            && previous_digest != head.digest
-        {
-            return Err(Self::corrupt(
-                "authority head digest does not match its terminal commit",
-                work,
-            ));
-        }
-        Ok(crate::OperationReceipt {
-            value: output,
-            work,
-        })
-    }
+}.await;
+let value = context.accept(result)?;
+Ok(value)
+}
+async fn replay(&self, authority_id: AuthorityId, after: Sequence, limit: ReplayLimit, context: &mut crate::AuthorityWork<'_>) -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
 
-    async fn fence(
-        &self,
-        authority_id: AuthorityId,
-        expected: Head,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<FenceOutcome> {
+let budget = context.remaining()?;
+let cancellation = context.cancellation;
+let result: AuthorityResult<Vec<DurableCommit>> = async {
+
+        self.replay_page(authority_id, after, limit, budget, cancellation)
+            .await
+
+}.await;
+let value = context.accept(result)?;
+Ok((value, None))
+}
+async fn fence(&self, authority_id: AuthorityId, expected: Head, context: &mut crate::AuthorityWork<'_>) -> Result<FenceOutcome, AuthorityStoreError> {
+
+let budget = context.remaining()?;
+let cancellation = context.cancellation;
+let result: AuthorityResult<FenceOutcome> = async {
+
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
@@ -1587,15 +1405,17 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             value: FenceOutcome::Advanced(next),
             work: write_work,
         })
-    }
 
-    async fn find_operation(
-        &self,
-        authority_id: AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Option<DurableCommit>> {
+}.await;
+let value = context.accept(result)?;
+Ok(value)
+}
+async fn find_operation(&self, authority_id: AuthorityId, operation_id: OperationId, context: &mut crate::AuthorityWork<'_>) -> Result<(Option<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+
+let budget = context.remaining()?;
+let cancellation = context.cancellation;
+let result: AuthorityResult<Option<DurableCommit>> = async {
+
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
@@ -1627,7 +1447,11 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             value: Some(commit),
             work,
         })
-    }
+
+}.await;
+let value = context.accept(result)?;
+Ok((value, None))
+}
 }
 
 impl AsyncObjectStore for IndexedDbObjectStore {
@@ -2469,42 +2293,21 @@ mod tests {
         let store = open_clean_authority(DATABASE_NAME).await?;
         let authority_id = AuthorityId::from_bytes([7; 16]);
         let cancellation = CancellationToken::new();
-        let created = AsyncAuthorityStore::create_authority(
-            &store,
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let created =({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =  AsyncAuthorityStore::create_authority(&store, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         let genesis = Head::genesis(Epoch::GENESIS);
         assert_eq!(created.value, CreateAuthorityOutcome::Created(genesis));
         assert_eq!(created.work.backend_read_operations, 1);
         assert_eq!(created.work.backend_write_operations, 2);
         assert_eq!(created.work.durability_operations, 1);
-        let existing = AsyncAuthorityStore::create_authority(
-            &store,
-            authority_id,
-            Epoch::new(9).map_err(js_error)?,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let existing =({ let __authority_args = (authority_id, Epoch::new(9).map_err(js_error)?, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =  AsyncAuthorityStore::create_authority(&store, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         assert_eq!(existing.value, CreateAuthorityOutcome::Existing(genesis));
         assert_eq!(existing.work.backend_read_operations, 2);
-        let denied_gate = AsyncAuthorityStore::create_authority(
-            &store,
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget {
+        let denied_gate =({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget {
                 backend_read_operations: 1,
                 ..WorkBudget::UNBOUNDED
-            },
-            &cancellation,
-        )
-        .await;
+            }, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =  AsyncAuthorityStore::create_authority(&store, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) });
         assert!(denied_gate.is_err(), "existing authority gate read escaped admission");
 
         let first_proposal = ProposedCommit {
@@ -2526,32 +2329,14 @@ mod tests {
         .err()
         .ok_or_else(|| js_error("append exceeded its hash budget"))?;
         assert_eq!(denied.work.bytes_hashed, 0);
-        let first = AsyncAuthorityStore::compare_and_append(
-            &store,
-            authority_id,
-            Epoch::GENESIS,
-            genesis,
-            first_proposal.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let first =({ let __authority_args = (authority_id, Epoch::GENESIS, genesis, first_proposal.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result =  AsyncAuthorityStore::compare_and_append(&store, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         let AppendOutcome::Committed(first_commit) = first.value else {
             return Err(JsValue::from_str(
                 "first authority append was not committed",
             ));
         };
-        let retry = AsyncAuthorityStore::compare_and_append(
-            &store,
-            authority_id,
-            Epoch::GENESIS,
-            genesis,
-            first_proposal.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let retry =({ let __authority_args = (authority_id, Epoch::GENESIS, genesis, first_proposal.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result =  AsyncAuthorityStore::compare_and_append(&store, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         assert_eq!(
             retry.value,
@@ -2561,16 +2346,7 @@ mod tests {
             fingerprint: Digest::from_bytes([10; 32]),
             ..first_proposal
         };
-        let identity_conflict = AsyncAuthorityStore::compare_and_append(
-            &store,
-            authority_id,
-            Epoch::GENESIS,
-            genesis,
-            conflicting_identity,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let identity_conflict =({ let __authority_args = (authority_id, Epoch::GENESIS, genesis, conflicting_identity, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result =  AsyncAuthorityStore::compare_and_append(&store, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         assert_eq!(
             identity_conflict.value,
@@ -2599,39 +2375,16 @@ mod tests {
         let store = open_clean_authority(DATABASE_NAME).await?;
         let authority_id = AuthorityId::from_bytes([31; 16]);
         let cancellation = CancellationToken::new();
-        let genesis = Head::genesis(Epoch::GENESIS);
-        AsyncAuthorityStore::create_authority(
-            &store,
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let genesis = Head::genesis(Epoch::GENESIS);({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =
+        AsyncAuthorityStore::create_authority(&store, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         let operation_id = OperationId::from_bytes([32; 16]);
-        let reserved = AsyncAuthorityStore::reserve_publication(
-            &store,
-            authority_id,
-            genesis,
-            operation_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let reserved =({ let __authority_args = (authority_id, genesis, operation_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result =  AsyncAuthorityStore::reserve_publication(&store, __authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         let ReservationOutcome::Reserved(reservation) = reserved.value else {
             return Err(JsValue::from_str("publication gate was not reserved"));
         };
-        let retry = AsyncAuthorityStore::reserve_publication(
-            &store,
-            authority_id,
-            genesis,
-            operation_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let retry =({ let __authority_args = (authority_id, genesis, operation_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result =  AsyncAuthorityStore::reserve_publication(&store, __authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         assert_eq!(
             retry.value,
@@ -2642,21 +2395,10 @@ mod tests {
             fingerprint: Digest::from_bytes([34; 32]),
             payload: Bytes::from_static(b"reserved"),
         };
-        let blocked = AsyncAuthorityStore::compare_and_append(
-            &store,
-            authority_id,
-            Epoch::GENESIS,
-            genesis,
-            proposal.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let blocked =({ let __authority_args = (authority_id, Epoch::GENESIS, genesis, proposal.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result =  AsyncAuthorityStore::compare_and_append(&store, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         assert!(matches!(blocked.value, AppendOutcome::Fenced { .. }));
-        let committed = AsyncAuthorityStore::compare_and_append_guarded(
-            &store,
-            GuardedAppend {
+        let committed =({ let __authority_args = (GuardedAppend {
                 authority_id,
                 epoch: Epoch::GENESIS,
                 expected: genesis,
@@ -2666,11 +2408,7 @@ mod tests {
                     gate_tail: reservation.gate_tail,
                     expected: genesis,
                 },
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&store, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         assert!(matches!(committed.value, AppendOutcome::Committed(_)));
         release(&store, reservation, &cancellation)
@@ -2689,29 +2427,16 @@ mod tests {
         store: &IndexedDbAuthorityStore,
         reservation: PublicationReservation,
         cancellation: &CancellationToken,
-    ) -> AuthorityResult<()> {
-        AsyncAuthorityStore::release_publication(
-            store,
-            reservation,
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
+    ) -> AuthorityResult<()> {({ let __authority_args = (reservation, WorkBudget::UNBOUNDED, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =
+        AsyncAuthorityStore::release_publication(store, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
     }
 
     #[wasm_bindgen_test]
     async fn indexed_db_authority_serializes_competing_connections() -> Result<(), JsValue> {
         const DATABASE_NAME: &str = "acyclic-fs-authority-race-v2";
         let creator = open_clean_authority(DATABASE_NAME).await?;
-        let authority_id = AuthorityId::from_bytes([21; 16]);
-        AsyncAuthorityStore::create_authority(
-            &creator,
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
+        let authority_id = AuthorityId::from_bytes([21; 16]);({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =
+        AsyncAuthorityStore::create_authority(&creator, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         let left = IndexedDbAuthorityStore::open(DATABASE_NAME, 1_024)
             .await
@@ -2741,20 +2466,11 @@ mod tests {
         identity_byte: u8,
     ) -> Promise {
         wasm_bindgen_futures::future_to_promise(async move {
-            let outcome = AsyncAuthorityStore::compare_and_append(
-                &store,
-                authority_id,
-                Epoch::GENESIS,
-                Head::genesis(Epoch::GENESIS),
-                ProposedCommit {
+            let outcome =({ let __authority_args = (authority_id, Epoch::GENESIS, Head::genesis(Epoch::GENESIS), ProposedCommit {
                     operation_id: OperationId::from_bytes([identity_byte; 16]),
                     fingerprint: Digest::from_bytes([identity_byte; 32]),
                     payload: Bytes::from_static(b"race"),
-                },
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+                }, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result =  AsyncAuthorityStore::compare_and_append(&store, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
             .map_err(js_error)?;
             let code = match outcome.value {
                 AppendOutcome::Committed(_) => "committed",
@@ -2776,20 +2492,11 @@ mod tests {
             sequence: first.sequence,
             digest: first.digest,
         };
-        let second = AsyncAuthorityStore::compare_and_append(
-            store,
-            authority_id,
-            Epoch::GENESIS,
-            first_head,
-            ProposedCommit {
+        let second =({ let __authority_args = (authority_id, Epoch::GENESIS, first_head, ProposedCommit {
                 operation_id: OperationId::from_bytes([11; 16]),
                 fingerprint: Digest::from_bytes([12; 32]),
                 payload: Bytes::from_static(b"second"),
-            },
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
+            }, WorkBudget::UNBOUNDED, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result =  AsyncAuthorityStore::compare_and_append(store, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         match second.value {
             AppendOutcome::Committed(commit) => Ok(commit),
@@ -2818,59 +2525,33 @@ mod tests {
             retained: proposal(34),
         };
         // Both authorities and both first records land in one transaction.
-        let committed = AsyncAuthorityStore::commit_workspace_fork(
-            &store,
-            fork.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let committed =({ let __authority_args = (fork.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::fork_workspace(&store, __authority_args.0, crate::PublicationPermit::Unrestricted, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         assert_eq!(committed.value, WorkspaceForkOutcome::Committed);
         for (authority, commit) in [
             (fork.destination, &fork.creation),
             (fork.retention, &fork.retained),
         ] {
-            let head =
-                AsyncAuthorityStore::head(&store, authority, WorkBudget::UNBOUNDED, &cancellation)
-                    .await
+            let head =({ let __authority_args = (authority, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =
+                AsyncAuthorityStore::head(&store, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                     .map_err(js_error)?
                     .value;
             assert_eq!(head.sequence, Sequence::new(1));
-            let found = AsyncAuthorityStore::find_operation(
-                &store,
-                authority,
-                commit.operation_id,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
+            let found =({ let __authority_args = (authority, commit.operation_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =  AsyncAuthorityStore::find_operation(&store, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
             .map_err(js_error)?
             .value
             .ok_or_else(|| JsValue::from_str("first record is not found by its operation"))?;
             assert_eq!(found.fingerprint, commit.fingerprint);
         }
         // A retry finds both first records and changes nothing.
-        let retried = AsyncAuthorityStore::commit_workspace_fork(
-            &store,
-            fork.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let retried =({ let __authority_args = (fork.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::fork_workspace(&store, __authority_args.0, crate::PublicationPermit::Unrestricted, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         assert_eq!(retried.value, WorkspaceForkOutcome::Committed);
         // Another creation at the same destination is rejected.
-        let rejected = AsyncAuthorityStore::commit_workspace_fork(
-            &store,
-            WorkspaceForkCommit {
+        let rejected =({ let __authority_args = (WorkspaceForkCommit {
                 creation: proposal(35),
                 ..fork.clone()
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::fork_workspace(&store, __authority_args.0, crate::PublicationPermit::Unrestricted, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         assert_eq!(rejected.value, WorkspaceForkOutcome::CreationRejected);
 
@@ -2882,14 +2563,7 @@ mod tests {
             (proposal(37), true),
             (proposal(38), false),
         ] {
-            let created = AsyncAuthorityStore::create_authority_with_first_record(
-                &store,
-                volume,
-                commit,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
+            let created =({ let __authority_args = (volume, commit, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =  AsyncAuthorityStore::create_first_record(&store, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
             .map_err(js_error)?;
             assert_eq!(created.value, expected);
         }
@@ -2915,18 +2589,10 @@ mod tests {
         first: DurableCommit,
         second: DurableCommit,
     ) -> Result<(), JsValue> {
-        let replay = AsyncAuthorityStore::replay(
-            store,
-            authority_id,
-            Sequence::GENESIS,
-            ReplayLimit {
+        let replay =({ let __authority_args = (authority_id, Sequence::GENESIS, ReplayLimit {
                 records: 8,
                 payload_bytes: 64,
-            },
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
+            }, WorkBudget::UNBOUNDED, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result =  AsyncAuthorityStore::replay(store, __authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         assert_eq!(replay.value, vec![first.clone(), second.clone()]);
         let retained_peak = 2 * size_of::<DurableCommit>() as u64
@@ -2934,47 +2600,24 @@ mod tests {
             + first.payload.len() as u64
             + 2 * (COMMIT_PREFIX_BYTES as u64 + second.payload.len() as u64);
         assert!(replay.work.peak_allocation_bytes >= retained_peak);
-        assert!(
-            AsyncAuthorityStore::replay(
-                store,
-                authority_id,
-                Sequence::GENESIS,
-                ReplayLimit {
+        assert!(({ let __authority_args = (authority_id, Sequence::GENESIS, ReplayLimit {
                     records: 8,
                     payload_bytes: 64
-                },
-                WorkBudget {
+                }, WorkBudget {
                     peak_allocation_bytes: retained_peak - 1,
                     ..WorkBudget::UNBOUNDED
-                },
-                cancellation,
-            )
-            .await
+                }, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result =
+            AsyncAuthorityStore::replay(store, __authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
             .is_err(),
             "replay accepted a budget below its simultaneously retained buffers"
         );
-        let resumed = AsyncAuthorityStore::replay(
-            store,
-            authority_id,
-            first.sequence,
-            ReplayLimit {
+        let resumed =({ let __authority_args = (authority_id, first.sequence, ReplayLimit {
                 records: 1,
                 payload_bytes: 16,
-            },
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
+            }, WorkBudget::UNBOUNDED, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result =  AsyncAuthorityStore::replay(store, __authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         assert_eq!(resumed.value, vec![second]);
-        let found = AsyncAuthorityStore::find_operation(
-            store,
-            authority_id,
-            first.operation_id,
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
+        let found =({ let __authority_args = (authority_id, first.operation_id, WorkBudget::UNBOUNDED, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =  AsyncAuthorityStore::find_operation(store, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         assert_eq!(found.value, Some(first));
         Ok(())
@@ -2986,18 +2629,11 @@ mod tests {
         cancellation: &CancellationToken,
         second: DurableCommit,
     ) -> Result<(), JsValue> {
-        let fenced = AsyncAuthorityStore::fence(
-            store,
-            authority_id,
-            Head {
+        let fenced =({ let __authority_args = (authority_id, Head {
                 epoch: Epoch::GENESIS,
                 sequence: second.sequence,
                 digest: second.digest,
-            },
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
+            }, WorkBudget::UNBOUNDED, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =  AsyncAuthorityStore::fence(store, __authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         let FenceOutcome::Advanced(fenced_head) = fenced.value else {
             return Err(js_error("fresh IndexedDB fence conflicted"));
@@ -3005,20 +2641,11 @@ mod tests {
         assert_eq!(fenced_head.epoch, Epoch::new(2).map_err(js_error)?);
         assert_eq!(fenced_head.sequence, second.sequence);
         assert_eq!(fenced_head.digest, second.digest);
-        let stale = AsyncAuthorityStore::compare_and_append(
-            store,
-            authority_id,
-            Epoch::GENESIS,
-            fenced_head,
-            ProposedCommit {
+        let stale =({ let __authority_args = (authority_id, Epoch::GENESIS, fenced_head, ProposedCommit {
                 operation_id: OperationId::from_bytes([13; 16]),
                 fingerprint: Digest::from_bytes([14; 32]),
                 payload: Bytes::from_static(b"stale"),
-            },
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
+            }, WorkBudget::UNBOUNDED, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result =  AsyncAuthorityStore::compare_and_append(store, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .map_err(js_error)?;
         assert_eq!(
             stale.value,

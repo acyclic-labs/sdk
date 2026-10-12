@@ -27,7 +27,6 @@ pub fn output<T: JsonSchema>() -> Result<Value> {
     .map_err(|error| Error::Invalid(error.to_string()))
 }
 
-// This is also the actual serializer used by the native file projectors.
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum JsonProjection<T> {
@@ -39,16 +38,17 @@ pub fn json_projection<T: JsonSchema>() -> Result<Value> {
     output::<JsonProjection<T>>()
 }
 
-pub(crate) fn project_json<T: Serialize>(value: T) -> Result<Value> {
+pub(crate) fn project_json<T: Serialize>(
+    value: &T, _work: crate::NativeWork<'_>,
+) -> Result<(Value, crate::NativeCustody)> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = _work {
+        return super::value(&JsonProjection::Json { value }, work.remaining()?.bytes_encoded, work)
+            .map(|(value, custody)| (value, Some(custody)));
+    }
     serde_json::to_value(JsonProjection::Json { value })
+        .map(|value| (value, None))
         .map_err(|error| Error::Invalid(error.to_string()))
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn project_json_with_native_work<T: Serialize>(
-    value: &T, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    super::value(&JsonProjection::Json { value }, work.remaining()?.bytes_encoded, work)
 }
 
 /// Explicit model representation, independent of the retained canonical result.
@@ -91,29 +91,23 @@ pub fn reference_projection() -> Result<Value> {
     output::<ReferenceProjection<'_>>()
 }
 
-pub(crate) fn project_reference(file: crate::conversation::FileRef, text: String) -> Result<Value> {
-    serde_json::to_value(ReferenceProjection::Parts {
-        parts: [
-            ReferencePart::Text { text: &text },
-            ReferencePart::File {
-                file: &file,
-                policy: ReferencePolicy::Reference,
-            },
-        ],
-    })
-    .map_err(|error| Error::Invalid(error.to_string()))
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn project_reference_with_native_work(
-    file: &crate::conversation::FileRef, text: &str, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    super::value(&ReferenceProjection::Parts {
+pub(crate) fn project_reference(
+    file: &crate::conversation::FileRef, text: &str, _work: crate::NativeWork<'_>,
+) -> Result<(Value, crate::NativeCustody)> {
+    let projection = ReferenceProjection::Parts {
         parts: [
             ReferencePart::Text { text },
             ReferencePart::File { file, policy: ReferencePolicy::Reference },
         ],
-    }, work.remaining()?.bytes_encoded, work)
+    };
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = _work {
+        return super::value(&projection, work.remaining()?.bytes_encoded, work)
+            .map(|(value, custody)| (value, Some(custody)));
+    }
+    serde_json::to_value(projection)
+        .map(|value| (value, None))
+        .map_err(|error| Error::Invalid(error.to_string()))
 }
 
 #[cfg(test)]
@@ -132,15 +126,15 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("schema".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([11; 16])),
-            )?,
-            "file.txt",
-            "pinned-1",
-            FileDescriptor::from_bytes(b"exact", "text/plain")?,
-            "file.txt",
-        )
+             &mut None)?,
+            "file.txt".into(),
+            "pinned-1".into(),
+            FileDescriptor::from_bytes(b"exact", "text/plain", &mut None)?,
+            "file.txt".into(),
+         &mut None)
     }
 
     #[test]
@@ -164,12 +158,12 @@ mod tests {
         for (canonical, projection, schema) in [
             (
                 &published,
-                FileResultProjection(ProjectionMode::Reference).project(&invocation, &published)?,
+                FileResultProjection(ProjectionMode::Reference).project(&invocation, &published, None)?.0,
                 FileResultProjection(ProjectionMode::Reference).schema()?,
             ),
             (
                 &read,
-                ReadFileProjection(ProjectionMode::Reference).project(&invocation, &read)?,
+                ReadFileProjection(ProjectionMode::Reference).project(&invocation, &read, None)?.0,
                 ReadFileProjection(ProjectionMode::Reference).schema()?,
             ),
         ] {
@@ -192,11 +186,11 @@ mod tests {
             assert_eq!(canonical, &unchanged);
         }
         assert_eq!(
-            FileResultProjection(ProjectionMode::Full).project(&invocation, &published)?,
+            FileResultProjection(ProjectionMode::Full).project(&invocation, &published, None)?.0,
             json!({"kind":"json","value":published.value})
         );
         assert_eq!(
-            ReadFileProjection(ProjectionMode::Full).project(&invocation, &read)?,
+            ReadFileProjection(ProjectionMode::Full).project(&invocation, &read, None)?.0,
             json!({"kind":"json","value":read.value})
         );
         assert!(
@@ -205,7 +199,8 @@ mod tests {
                     &invocation,
                     &ToolResult {
                         value: json!("changed")
-                    }
+                    },
+                    None,
                 )
                 .is_err()
         );
@@ -216,8 +211,8 @@ mod tests {
         tool.projection = std::sync::Arc::new(projector);
         assert_ne!(tool.definition.digest()?, original_digest);
         assert_eq!(
-            tool.projection.project(&invocation, &published)?,
-            FileResultProjection(ProjectionMode::Reference).project(&invocation, &published)?
+            tool.projection.project(&invocation, &published, None)?.0,
+            FileResultProjection(ProjectionMode::Reference).project(&invocation, &published, None)?.0
         );
         Ok(())
     }
@@ -236,7 +231,7 @@ mod tests {
         }
         crate::tool::validate_value(&input_schema, &json!({"file":file}), "generated read", None)?;
         crate::tool::validate_value(&output_schema, &canonical, "generated result", None)?;
-        let projection = project_json(result.clone())?;
+        let projection = project_json(&result, None)?.0;
         crate::tool::validate_value(&projection_schema, &projection, "generated projection", None)?;
         assert_eq!(projection, json!({"kind":"json","value":canonical}));
         assert_eq!(

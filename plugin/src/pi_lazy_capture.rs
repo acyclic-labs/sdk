@@ -57,7 +57,7 @@ impl PiLazyCapture {
             (revision, custody)
         };
         source.validate_snapshot_with_native_work(frozen, work).await.map_err(native_lazy_error)?;
-        let mut slot = work.claim((std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64)
+        let mut slot = { let claim_bytes = (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), acyclic_fs::WorkCounters::UNCHARGED) }
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         metadata.absorb(&mut slot).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(Arc::new(Self { source, frozen, revision, _metadata_custody: metadata }))
@@ -136,14 +136,13 @@ impl ForkCaptureProvider for PiLazyCapture {
 
 impl ForkSeedVerifier for PiLazyCapture {
     fn provider(&self) -> &ProviderRef { self.revision.provider() }
-    fn verify<'a>(&'a self, _seed: &'a ForkSeed) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async { Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported,
-            reason: "Pi seed verification requires native work" }) })
-    }
-
-    fn verify_with_native_work<'a>(&'a self, seed: &'a ForkSeed, work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<acyclic_harness::NativeFutureBundle<'a, ()>> {
-        acyclic_harness::NativeFutureBundle::new(work, || async move {
+    fn verify<'a, 'w: 'a>(&'a self, seed: &'a ForkSeed,
+        observer: &'a mut Option<&'w mut dyn acyclic_harness::store::history::HistoryIo>)
+        -> Result<acyclic_harness::store::history::HistoryContentFuture<'a, ()>> {
+        let work = observer.as_ref().and_then(|io| io.original_native_work()).cloned()
+            .ok_or(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported,
+                reason: "Pi seed verification requires native work" })?;
+        acyclic_harness::NativeFutureBundle::new(&work.clone(), || async move {
             let mut found = false;
             for capture in &seed.resources {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
@@ -158,8 +157,8 @@ impl ForkSeedVerifier for PiLazyCapture {
             }
             if !found { return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "published Pi fork lost its required immutable native cut" }); }
-            self.source.validate_snapshot_with_native_work(self.frozen, work).await.map_err(native_lazy_error)
-        })
+            self.source.validate_snapshot_with_native_work(self.frozen, &work).await.map_err(native_lazy_error)
+        }).map(acyclic_harness::store::history::HistoryContentFuture::Native)
     }
 }
 

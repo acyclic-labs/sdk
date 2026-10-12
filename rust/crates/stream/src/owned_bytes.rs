@@ -11,26 +11,12 @@ use std::io;
 use std::ops::{Bound, Deref, RangeBounds};
 use std::sync::Arc;
 
-trait AllocationCustody: AsRef<[u8]> + Send + Sync {
-    #[cfg(not(target_arch = "wasm32"))]
-    fn metadata_meter(&self) -> &Arc<dyn NativeReadMeter>;
-}
-
-// Original data custody retires last, after the SDK-owned metadata claim.
-#[cfg(not(target_arch = "wasm32"))]
-struct GuardBundle<G> {
+// Data and SDK metadata retire before the original allocation owner.
+struct GuardBundle<G: ?Sized> {
     data: Vec<u8>,
+    #[cfg(not(target_arch = "wasm32"))]
     _metadata: ReadAllocation,
     _original_guard: G,
-}
-#[cfg(not(target_arch = "wasm32"))]
-impl<G: Send + Sync> AllocationCustody for GuardBundle<G> {
-    fn metadata_meter(&self) -> &Arc<dyn NativeReadMeter> { self._metadata.meter() }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl<G> AsRef<[u8]> for GuardBundle<G> {
-    fn as_ref(&self) -> &[u8] { &self.data }
 }
 
 /// Ordinary or original-allocation-guarded immutable bytes.
@@ -40,7 +26,7 @@ pub struct OwnedBytes {
     start: usize,
     end: usize,
     retained_capacity: Option<usize>,
-    guard: Option<Arc<dyn AllocationCustody>>,
+    guard: Option<Arc<GuardBundle<dyn Send + Sync>>>,
 }
 
 impl OwnedBytes {
@@ -66,7 +52,8 @@ impl OwnedBytes {
         let mut original_guard = Some(original_guard);
         Self::from_vec_with_guard_in_place(&mut data, &mut original_guard, meter)
             .map_err(|error| PreparedOwnedBytesFailure {
-                data, error: PreparedOwnedBytesError::Admission(error), original_guard,
+                data, error: PreparedOwnedBytesError::Admission(error),
+                original_guard: original_guard.expect("rejected promotion retains its guard"),
             })
     }
 
@@ -89,7 +76,7 @@ impl OwnedBytes {
     /// Borrows immutable bytes while retaining this carrier's original custody.
     #[must_use]
     pub fn as_slice(&self) -> &[u8] {
-        let data = self.guard.as_ref().map_or(self.bytes.as_ref(), |guard| guard.as_ref().as_ref());
+        let data = self.guard.as_ref().map_or(self.bytes.as_ref(), |guard| guard.data.as_slice());
         &data[self.start..self.end]
     }
 
@@ -125,7 +112,7 @@ impl OwnedBytes {
     pub fn matches_meter(&self, meter: &Arc<dyn NativeReadMeter>) -> bool {
         self.guard.as_ref().is_some_and(|guard| {
             let owner = meter.allocation_owner().unwrap_or_else(|| Arc::clone(meter));
-            Arc::ptr_eq(guard.metadata_meter(), &owner)
+            Arc::ptr_eq(guard._metadata.meter(), &owner)
         })
     }
 
@@ -218,7 +205,7 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
         let maximum_len = data.len();
         if data.capacity() != maximum_len {
             return Err(PreparedOwnedBytesFailure {
-                data, original_guard: Some(original_guard), error: PreparedOwnedBytesError::NotFullyInitialized,
+                data, original_guard, error: PreparedOwnedBytesError::NotFullyInitialized,
             });
         }
         let metadata = ReadAllocation::new(&meter, std::mem::size_of::<GuardBundle<G>>())
@@ -227,7 +214,7 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
             Ok(metadata) => Ok(Self {
                 guard: Arc::new(GuardBundle { data, _metadata: metadata, _original_guard: original_guard }),
             }),
-            Err(error) => Err(PreparedOwnedBytesFailure { data, original_guard: Some(original_guard), error }),
+            Err(error) => Err(PreparedOwnedBytesFailure { data, original_guard, error }),
         }
     }
 
@@ -278,7 +265,7 @@ pub enum PreparedOwnedBytesError {
 pub struct PreparedOwnedBytesFailure<G> {
     data: Vec<u8>,
     error: PreparedOwnedBytesError,
-    original_guard: Option<G>,
+    original_guard: G,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

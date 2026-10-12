@@ -49,7 +49,7 @@ fn session_tasks<'a>(
 ) -> Result<(Vec<PiTaskSelection<'a>>, NativeAllocation)> {
     let mut custody = {
         work.cancellation().check().map_err(|_| native_error(NativeTreeMaterializationError::Cancelled))?;
-        work.retain_owned(recovery_metadata_quota(state)?).map_err(native_error)
+        work.claim(recovery_metadata_quota(state)?, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)
     }?;
     super::validate_state_version(state).map_err(Error::Invalid)?;
     super::validate_state_bounds(state).map_err(Error::Invalid)?;
@@ -169,7 +169,7 @@ where
     A: acyclic_fs::AsyncAuthorityStore + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
-    let mut custody = work.retain_owned(0).map_err(native_error)?;
+    let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     let mut tasks = session_tasks(state, work)?;
     let pi_definition = PiTaskMachine::new(work)?.definition(work)?;
     let preparation_definition = if tasks.0.iter().any(|task| task.preparation.is_some()) {
@@ -208,7 +208,7 @@ where
             None => PiTaskOrigin::RootState(state),
             Some(parent) => PiTaskOrigin::Child(parent),
         };
-        let input = authenticate_pi_task_inner(runtime, task.binding, origin, work, pi_definition.0.identity()).await?;
+        let input = authenticate_pi_task_inner(runtime, task.binding, origin, work, pi_definition.identity()).await?;
         authenticate_original_alias(runtime, task.binding.task_id, input.0.1,
             &input.0.0, task.alias, work).await?;
     }
@@ -320,7 +320,7 @@ where
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
     let definition = PiTaskMachine::new(work)?.definition(work)?;
-    let admitted = authenticate_pi_task_inner(runtime, binding, origin, work, definition.0.identity()).await?;
+    let admitted = authenticate_pi_task_inner(runtime, binding, origin, work, definition.identity()).await?;
     Ok((admitted.0.0, admitted.1))
 }
 
@@ -363,17 +363,29 @@ where
         .chain(std::iter::once(&binding.scratch.volume))
         .chain(binding.results.as_ref().map(|result| &result.volume))
     {
-        let read = volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Read, work)?;
+        let read = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = volume.capability(acyclic_harness::conversation::VolumeOperation::Read, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         if !admission.0.grants.contains(&read.0) {
             return Err(invalid("Pi selection lacks its original read grant"));
         }
     }
-    let scratch_write = binding.scratch.volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
+    let scratch_write = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = binding.scratch.volume.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     if !admission.0.grants.contains(&scratch_write.0) {
         return Err(invalid("Pi scratch lacks its original write grant"));
     }
     if let Some(result) = &binding.results {
-        let write = result.volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
+        let write = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = result.volume.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         if !admission.0.grants.contains(&write.0) {
             return Err(invalid("Pi result storage lacks its original created write grant"));
         }
@@ -408,15 +420,15 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
     work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
 
-    let mut custody = work.retain_owned(0).map_err(native_error)?;
+    let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     let mut retained_owned = 0;
     let remaining = work.remaining().map_err(native_error)?;
     let bounds = acyclic_harness::JsonBounds {
         maximum_bytes: super::MAXIMUM_ADAPTER_STATE_BYTES,
         maximum_items: remaining.items_examined, maximum_depth: 64,
     };
-    let result = acyclic_harness::json_from_value_owned_bounded_native_trusted::<T, _>(
-        value, bounds, std::mem::size_of::<T>() as u64,
+    let result = acyclic_harness::json_from_value_bounded::<T, _>(
+        std::borrow::Cow::Owned(value), bounds, std::mem::size_of::<T>() as u64,
         acyclic_harness::wire::ErrorCode::Invalid, schema, &mut |charge| {
             if let acyclic_harness::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } = charge {
                 let (additional, diagnostics) = recovery_conversion_quota(value_shape)?;
@@ -482,7 +494,7 @@ fn recovery_conversion_quota(shape: acyclic_harness::JsonValueShape) -> Result<(
                 "source", "selected", "configurations", "Limits", "struct Limits",
             ]))?)?;
     let diagnostics = acyclic_harness::json_typed_diagnostic_owned_bytes(
-        shape, labels, Some(acyclic_harness::ErrorCode::Invalid))?;
+        shape, labels, Some(acyclic_harness::wire::ErrorCode::Invalid))?;
     Ok((checked_quota(typed, additional)?, diagnostics))
 }
 
@@ -490,9 +502,9 @@ pub(crate) fn vector_slots<T>(count: usize, work: &NativeMaterializationWork) ->
     let bytes = count.checked_mul(std::mem::size_of::<T>())
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))?;
-    if count == 0 { return work.retain_owned(0).map_err(native_error); }
+    if count == 0 { return work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error); }
     // Exactly one with_capacity allocation attempt follows this admission.
-    work.claim(bytes).map_err(native_error)
+    work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)
 }
 
 
@@ -557,7 +569,7 @@ mod allocation_tests {
         }
         assert_eq!(observations.capacity(), 3);
         assert_eq!(custody.bytes(), (3 * std::mem::size_of::<PiTaskObservation>()) as u64);
-        let original = work.retain_owned(0).unwrap();
+        let original = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
         assert!(custody.shares_ledger(&original));
         drop(observations);
         drop(custody);
@@ -575,8 +587,8 @@ mod allocation_tests {
             &cancellation).unwrap();
         let second = NativeMaterializationWork::new(super::super::pi_root_provider::allocation_budget(),
             &cancellation).unwrap();
-        let mut retained = first.retain_owned(8).unwrap();
-        let mut observed = ("original producer", second.retain_owned(16).unwrap());
+        let mut retained = first.claim(8, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
+        let mut observed = ("original producer", second.claim(16, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap());
         assert!(matches!(retained.absorb(&mut observed.1).map_err(native_error),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::InvalidLayout, .. })));
         assert_eq!(retained.bytes(), 8);

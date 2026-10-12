@@ -12,6 +12,7 @@ use crate::{
     OperationFailure, OperationReceipt, PinnedReader, ResolvedFileRangeReadRequest, WorkBudget,
     WorkCounters, WorkError,
 };
+#[cfg(test)]
 use bytes::Bytes;
 #[cfg(unix)]
 use std::ffi::OsStr;
@@ -89,7 +90,7 @@ impl GenerationReceipt {
     }
 
     fn from_work(work: &crate::NativeMaterializationWork) -> Result<Self, GenerationFailure> {
-        let custody = work.retain_owned(0).map_err(|error| {
+        let custody = work.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(|error| {
             GenerationFailure::new(materialize_native_error(error), work.receipt())
         })?;
         Ok(Self {
@@ -368,9 +369,7 @@ impl GenerationHostPath {
                     let mut count = 0_usize;
                     for _ in text.encode_utf16() {
                         receipt.run(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
-                        count = count.checked_add(1).ok_or_else(|| {
-                            GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work())
-                        })?;
+                        count += 1;
                     }
                     count
                 }
@@ -1084,20 +1083,6 @@ where
     }, receipt).await.map_err(|failure| failure.0)
 }
 
-async fn materialize_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    relative: &Path,
-    options: &MaterializeOptions,
-    mut receipt: GenerationReceipt,
-) -> Result<OperationReceipt<MaterializationReceipt>, GenerationFailure> {
-    validate_bounds(options).map_err(|error| GenerationFailure::new(error, receipt.work()))?;
-    let path = generation_namespace_from_host(relative, checkout.volume_config(), &mut receipt)?;
-    materialize_source(
-        GenerationSource::Standalone(checkout), std::slice::from_ref(&path.0), options, MaterializeMode::DurableOutput, receipt,
-        None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
-    ).await.map_err(GenerationFailure::from)
-}
-
 fn generation_namespace_from_host(
     relative: &Path, config: crate::VolumeConfig, receipt: &mut GenerationReceipt,
 ) -> Result<(NamespacePath, crate::NativeAllocation), GenerationFailure> {
@@ -1108,9 +1093,7 @@ fn generation_namespace_from_host(
         if !matches!(component, std::path::Component::Normal(_)) {
             return Err(GenerationFailure::new(MaterializeError::InvalidPath, receipt.work()));
         }
-        count = count.checked_add(1).ok_or_else(|| {
-            GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work())
-        })?;
+        count += 1;
         if count > usize::from(limits.maximum_path_depth) {
             return Err(GenerationFailure::new(MaterializeError::InvalidPath, receipt.work()));
         }
@@ -1124,11 +1107,8 @@ fn generation_namespace_from_host(
         receipt.run(|work| work.charge(WorkCounters {
             items_examined: 1, source_path_components: 1, ..WorkCounters::UNCHARGED
         }))?;
-        let std::path::Component::Normal(name) = component else {
-            return Err(GenerationFailure::new(MaterializeError::InvalidPath, receipt.work()));
-        };
         let encoded = crate::native_name::host_name_bytes_with_native_work(
-            name, config.profile, limits.maximum_component_bytes, receipt.custody.work(),
+            component.as_os_str(), config.profile, limits.maximum_component_bytes, receipt.custody.work(),
         );
         let ((encoding, bytes), custody) = receipt.custody_result(encoded)?;
         let bytes = receipt.accept_source(bytes, custody)?;
@@ -1175,7 +1155,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             let result = async {
                 validate_bounds(options)?;
                 let allocation_work = native_work.clone();
-                let cleanup_allocation = allocation_work.claim(std::mem::size_of::<MaterializeError>() as u64)
+                let cleanup_allocation = allocation_work.claim(std::mem::size_of::<MaterializeError>() as u64, u64::from((std::mem::size_of::<MaterializeError>() as u64) != 0), crate::WorkCounters::UNCHARGED)
                     .map_err(materialize_native_error)?;
                 let cleanup_slot = (Box::new(MaterializeError::InvalidOptions), cleanup_allocation);
                 let (destination_root, relative) = {
@@ -1202,16 +1182,17 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
                     maximum_extent_spans: options.maximum_extent_spans,
                     transfer_bytes: options.transfer_bytes,
                 };
-                let materialized = match GenerationReceipt::from_work(
-                    &crate::NativeMaterializationWork::from_meter(Arc::clone(&work)),
-                ) {
-                    Err(failure) => Err(failure.error),
-                    Ok(receipt) => {
-                        materialize_host_path(
-                            checkout, &relative.0, &materialize_options, receipt,
-                        ).await.map(|_| ()).map_err(|failure| failure.error)
-                    }
-                };
+                let materialized = async {
+                    let mut receipt = GenerationReceipt::from_work(
+                        &crate::NativeMaterializationWork::from_meter(Arc::clone(&work)),
+                    )?;
+                    let path = generation_namespace_from_host(&relative.0, checkout.volume_config(), &mut receipt)?;
+                    materialize_source(
+                        GenerationSource::Standalone(checkout), std::slice::from_ref(&path.0),
+                        &materialize_options, MaterializeMode::DurableOutput, receipt,
+                        None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
+                    ).await.map(|_| ()).map_err(GenerationFailure::from)
+                }.await.map_err(|failure| failure.error);
                 let stage_path = (materialize_options.destination, stage_allocation);
                 restore_io(worker_context, Some(lock), Arc::clone(&work), move |work| {
                     let mut cleanup_slot = cleanup_slot;
@@ -1382,8 +1363,8 @@ fn publish_restore(
         },
         Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
             stage_parent.rename_to(name, destination_parent, name, work).map_err(restore_demand_error)?;
-            sync_restore_parent(destination_parent, work)?;
-            sync_restore_parent(&stage_parent, work)?;
+            destination_parent.sync(work).map_err(restore_demand_error)?;
+            stage_parent.sync(work).map_err(restore_demand_error)?;
         }
         Err(error) => return Err(restore_demand_error(error)),
     }
@@ -1417,7 +1398,7 @@ fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::NativeMateri
         let bytes = ".acyclic-restore-".len() + digits(u64::from(process)) + 1 + digits(sequence);
         let delta = WorkCounters { bytes_encoded: bytes as u64, ..WorkCounters::UNCHARGED };
         work.admit(delta).map_err(restore_demand_error)?;
-        let allocation = allocation_work.claim(bytes as u64).map_err(materialize_native_error)?;
+        let allocation = allocation_work.claim(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(materialize_native_error)?;
         let mut name = String::with_capacity(bytes);
         write!(name, ".acyclic-restore-{process}-{sequence}").expect("String formatting cannot fail");
         work.record(delta).map_err(restore_demand_error)?;
@@ -1430,7 +1411,7 @@ fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::NativeMateri
                     // deleting this name, which may already have been swapped.
                     Err(error) => return Err(restore_demand_error(error)),
                 };
-                if let Err(error) = sync_restore_parent(parent, work) {
+                if let Err(error) = parent.sync(work).map_err(restore_demand_error) {
                     let identity = root.identity();
                     drop(root);
                     let _ = parent.remove_identity(&name.0, identity, work)
@@ -1519,10 +1500,6 @@ fn acquire_restore_lock(
     })
 }
 
-fn sync_restore_parent(parent: &HostRoot, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
-    parent.sync(work).map_err(restore_demand_error)
-}
-
 const REMOVE_RESTORE_WITNESS: &[u8] = b"acyclic-remove-restore-v1\n";
 const LIVE_RESTORE_WITNESS: &[u8] = b"acyclic-live-restore-v1\n";
 
@@ -1548,7 +1525,7 @@ fn create_restore_witness(parent: &HostRoot, name: &Path, contents: &[u8], work:
     }
     work.charge(WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
     file.sync_all()?;
-    sync_restore_parent(parent, work)
+    parent.sync(work).map_err(restore_demand_error)
 }
 
 fn validate_restore_witness(parent: &HostRoot, name: &Path, expected: &[u8], work: &mut impl crate::demand::SourceDemandReadWork) -> Result<bool, MaterializeError> {
@@ -1584,7 +1561,7 @@ fn validate_restore_witness(parent: &HostRoot, name: &Path, expected: &[u8], wor
 
 fn remove_restore_witness(parent: &HostRoot, name: &Path, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
     parent.remove(name, work).map_err(restore_demand_error)?;
-    sync_restore_parent(parent, work)
+    parent.sync(work).map_err(restore_demand_error)
 }
 
 fn cleanup_removed_restore(
@@ -1600,7 +1577,7 @@ fn cleanup_removed_restore(
                         return Err(MaterializeError::Engine("unowned restore-removal artifact collision"));
                     }
                     parent.remove(removed, work).map_err(restore_demand_error)?;
-                    sync_restore_parent(parent, work)?;
+                    parent.sync(work).map_err(restore_demand_error)?;
                     remove_restore_witness(parent, witness, work)?;
                 }
                 Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1627,9 +1604,9 @@ fn remove_restored_path(
             match parent.stat(destination_name, work) {
                 Ok(_) => {
                     parent.rename_to(destination_name, parent, removed, work).map_err(restore_demand_error)?;
-                    sync_restore_parent(parent, work)?;
+                    parent.sync(work).map_err(restore_demand_error)?;
                     parent.remove(removed, work).map_err(restore_demand_error)?;
-                    sync_restore_parent(parent, work)?;
+                    parent.sync(work).map_err(restore_demand_error)?;
                 }
                 Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(restore_demand_error(error)),
@@ -1652,18 +1629,18 @@ fn replace_live_mount(
         with_restore_artifact(".acyclic-restore-live-witness-", relative, work, |witness, work| {
             create_restore_witness(parent, witness, LIVE_RESTORE_WITNESS, work)?;
             parent.rename_to(destination_name, parent, backup, work).map_err(restore_demand_error)?;
-            sync_restore_parent(parent, work)?;
+            parent.sync(work).map_err(restore_demand_error)?;
             if let Err(error) = staged_parent.rename_to(staged_name, parent, destination_name, work) {
                 if let Err(rollback) = parent.rename_to(backup, parent, destination_name, work) {
                     return Err(MaterializeError::RestoreRollback { primary: error, rollback });
                 }
-                sync_restore_parent(parent, work)?;
+                parent.sync(work).map_err(restore_demand_error)?;
                 return Err(restore_demand_error(error));
             }
-            sync_restore_parent(parent, work)?;
-            sync_restore_parent(staged_parent, work)?;
+            parent.sync(work).map_err(restore_demand_error)?;
+            staged_parent.sync(work).map_err(restore_demand_error)?;
             parent.remove(backup, work).map_err(restore_demand_error)?;
-            sync_restore_parent(parent, work)?;
+            parent.sync(work).map_err(restore_demand_error)?;
             remove_restore_witness(parent, witness, work)
         })
     })
@@ -1698,7 +1675,7 @@ fn recover_live_mount_replacement(
                 }
                 Err(error) => return Err(restore_demand_error(error)),
             }
-            sync_restore_parent(parent, work)?;
+            parent.sync(work).map_err(restore_demand_error)?;
             remove_restore_witness(parent, witness, work)
         })
     })
@@ -1780,7 +1757,7 @@ where
             let original = receipt.custody.work().clone();
             let (bytes, allocation) = receipt.custody_result(original.copy_bytes(data.as_bytes()))?;
             let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
-                bytes, allocation, original.runtime_meter_owner(),
+                bytes, allocation, original.runtime_meter(),
             ).map_err(|failure| match failure.into_error() {
                 acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
                 acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
@@ -1822,13 +1799,13 @@ where
                 #[cfg(windows)]
                 {
                     generation_action(before_effect, receipt, NativeMaterializationActionPhase::Before).await?;
-                    let meter = receipt.custody.work().runtime_meter_owner();
+                    let meter = receipt.custody.work().runtime_meter();
                     let control = receipt.runtime_result(file.control_async(|file, meter| mark_sparse_measured(file, meter.expect("metered control")), Some(meter)))?;
                     receipt.runtime_result(control.await)?;
                     generation_action(before_effect, receipt, NativeMaterializationActionPhase::Completed).await?;
                 }
                 generation_action(before_effect, receipt, NativeMaterializationActionPhase::Before).await?;
-                let meter = receipt.custody.work().runtime_meter_owner();
+                let meter = receipt.custody.work().runtime_meter();
                 let resize = receipt.runtime_result(file.set_len_async(logical_bytes, Some(meter)))?;
                 receipt.runtime_result(resize.await)?;
                 generation_action(before_effect, receipt, NativeMaterializationActionPhase::Completed).await?;
@@ -1847,7 +1824,7 @@ where
                     let file = receipt.run(|work| host_root.0.open_file(host_path.0.path(), work))?.into_std();
                     #[cfg(windows)]
                     let file = receipt.run(|work| host_root.0.open_file_positional_wide_with_work(&host_path.0.units, work))?.into_std();
-                    let meter = receipt.custody.work().runtime_meter_owner();
+                    let meter = receipt.custody.work().runtime_meter();
                     let file = receipt.runtime_result(
                         acyclic_native_runtime::NativeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
                             .map_err(|(error, file)| { drop(file); error }),
@@ -1865,7 +1842,7 @@ where
         }
         (FileKind::SymbolicLink, FilePayload::SymbolicLink { target_bytes, .. }) => {
             let target = read_source!(receipt, remaining, value,
-                reader.read_symbolic_link_with_native_work(path, receipt.custody.work(), cancellation) => value,
+                reader.read_symbolic_link(path, receipt.custody.work(), cancellation) => value,
                 reader.read_symbolic_link(path, remaining, cancellation) => {
                     receipt.adopt(value.len())?;
                     value
@@ -1927,7 +1904,7 @@ where
     generation_action(before_effect, receipt, NativeMaterializationActionPhase::Before).await?;
     let length = bytes.len() as u64;
     let custody = receipt.take(owned_bytes)?;
-    let meter = receipt.custody.work().runtime_meter_owner();
+    let meter = receipt.custody.work().runtime_meter();
     let write = receipt.runtime_result(file.write_async(offset, bytes, meter, custody))?;
     receipt.runtime_result(write.await)?;
     generation_action(before_effect, receipt, NativeMaterializationActionPhase::Completed).await?;
@@ -1944,7 +1921,7 @@ where
     Fut: Future<Output = Result<(), E>>,
 {
     generation_action(before_effect, receipt, NativeMaterializationActionPhase::Before).await?;
-    let meter = receipt.custody.work().runtime_meter_owner();
+    let meter = receipt.custody.work().runtime_meter();
     let sync = receipt.runtime_result(file.sync_async(acyclic_native_runtime::Durability::Full, Some(meter)))?;
     receipt.runtime_result(sync.await)?;
     generation_action(before_effect, receipt, NativeMaterializationActionPhase::Completed).await
@@ -2018,7 +1995,7 @@ where
                     #[cfg(target_os = "macos")]
                     {
                         generation_action(before_effect, receipt, NativeMaterializationActionPhase::Before).await?;
-                        let meter = receipt.custody.work().runtime_meter_owner();
+                        let meter = receipt.custody.work().runtime_meter();
                         let control = receipt.runtime_result(file.control_async(move |handle, meter| { let meter = meter.expect("metered control");
                             crate::native_host::punch_hole(handle, span.offset, span.length, Some(meter))
                         }, Some(meter)))?;
@@ -2141,7 +2118,7 @@ where
     let metadata = match metadata {
         Some(metadata) => metadata,
         None => read_source!(receipt, remaining, value,
-            reader.read_metadata_with_native_work(path, receipt.custody.work(), cancellation) => value,
+            reader.read_metadata(path, receipt.custody.work(), cancellation) => value,
             reader.read_metadata(path, remaining, cancellation) => value,
         ),
     };
@@ -2189,7 +2166,7 @@ async fn generation_blocking<T: Send + 'static>(
     receipt: &mut GenerationReceipt,
     operation: impl FnOnce(&mut NativeSourceWork<'_>) -> Result<T, DemandError> + Send + 'static,
 ) -> Result<T, GenerationFailure> {
-    let observer = receipt.custody.work().runtime_meter_owner();
+    let observer = receipt.custody.work().runtime_meter();
     let original = receipt.custody.work().clone();
     let task = receipt.runtime_result(acyclic_native_runtime::run_blocking_io(
         move || {
@@ -2348,7 +2325,7 @@ fn create_file(
     let file = receipt.run(|work| host_root.create_overlapped_file_wide_measured(&path.units, work))?;
     #[cfg(unix)]
     let file = receipt.run(|work| host_root.create_file(path.path(), work))?;
-    let meter = Some(acyclic_native_runtime::NativeFileMeter::Owned(receipt.custody.work().runtime_meter_owner()));
+    let meter = Some(acyclic_native_runtime::NativeFileMeter::Owned(receipt.custody.work().runtime_meter()));
     #[cfg(windows)]
     #[allow(unsafe_code, reason = "the newly created held handle is overlapped and exclusively transferred")]
     // SAFETY: the held-root-relative constructor provides a fresh, unassociated overlapped handle.
@@ -2419,10 +2396,10 @@ mod windows_name_tests {
         )?], limits)?;
         let host_path = GenerationHostPath::new(None, namespace.components(), &mut receipt).map_err(MaterializeError::from)?;
         let native = create_file(&root.0, &host_path.0, &mut receipt).map_err(MaterializeError::from)?;
-        let meter = receipt.custody.work().runtime_meter_owner();
+        let meter = receipt.custody.work().runtime_meter();
         let control = receipt.runtime_result(native.control_async(|file, meter| mark_sparse_measured(file, meter.expect("metered control")), Some(meter))).map_err(MaterializeError::from)?;
         receipt.runtime_result(control.await).map_err(MaterializeError::from)?;
-        let meter = receipt.custody.work().runtime_meter_owner();
+        let meter = receipt.custody.work().runtime_meter();
         let resize = receipt.runtime_result(native.set_len_async(1024 * 1024, Some(meter))).map_err(MaterializeError::from)?;
         receipt.runtime_result(resize.await).map_err(MaterializeError::from)?;
         let mut ordinary_control = None::<&mut fn(NativeMaterializationActionPhase) -> std::future::Ready<Result<(), MaterializeError>>>;

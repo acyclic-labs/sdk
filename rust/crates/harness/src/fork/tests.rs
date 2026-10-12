@@ -234,7 +234,9 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
     assert!(shared_seed.validate(&mut None).is_err());
     let inherited = file(&seed.child_private_volume, ".system/inherited-conversation/prefix.json", "one", b"one",
         "application/vnd.acyclic.harness.inherited-conversation+json")?;
-    seed.inherited_context.push(inherited.clone()); seed.inherited_through_sequence = 1; seed.attached_agents.push(attached);
+    seed.inherited_context = vec![inherited.clone(), inherited.clone()]; seed.inherited_through_sequence = 1;
+    assert!(seed.validate(&mut None).is_err());
+    seed.inherited_context = vec![inherited.clone()]; seed.attached_agents.push(attached);
     seed.validate(&mut None)?;
     let access = seed.attached_read_capabilities(attached)?;
     assert!(access.contains(&inherited.read_capability()?));

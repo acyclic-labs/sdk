@@ -206,29 +206,9 @@ pub fn new(
         self.revision
     }
 
-    /// Captures the original authenticated selection and its registry atomically.
-    pub(crate) fn original_extension_binding(&self) -> Result<(Option<ExtensionAdmission>, SchemaRegistry)> {
-        Ok((self.extension_admission()?, self.schemas.clone()))
-    }
-
-    /// Validates exact staged extension bytes at the provider admission boundary.
-    pub fn validate_custom_bytes(
-        &self,
-        schema: &str,
-        version: u32,
-        content: &FileRef,
-        bytes: &[u8],
-    ) -> Result<()> {
-        self.schemas.validate_bytes(schema, version, content, bytes)
-    }
-
-    /// Exact installed implementation that must execute a state migration into this extension version.
-    pub fn extension_implementation_digest(&self, name: &str, version: u32) -> Result<[u8; 32]> {
-        Ok(self
-            .schemas
-            .pinned_binding(name, version, None, &mut None)?
-            .implementation_digest)
-    }
+    /// Returns this aggregate's installed extension registry.
+    #[must_use]
+    pub const fn schemas(&self) -> &SchemaRegistry { &self.schemas }
 
     /// Authenticates and checks the exact migration boundary before a host reads old state or stages new bytes.
     pub(crate) fn preflight_extension_migration(
@@ -269,14 +249,6 @@ pub fn new(
         }
         self.schemas.pinned_binding(name, to_version, None, &mut None)?;
         Ok(())
-    }
-
-    /// Validates staged configuration bytes before an event can be admitted.
-    pub fn validate_configuration_bytes(
-        &self, extension: &ExtensionDependency, content: &FileRef, bytes: &[u8],
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        self.schemas.validate_configuration_bytes(extension, content, bytes, io)
     }
 
     /// Returns the fixed aggregate lifecycle projection.
@@ -492,4 +464,3 @@ pub fn new(
     }
 
 }
-

@@ -103,7 +103,7 @@ pub(crate) async fn stage_send(
     let kind_length = MAIL_SEND_TASK_COMMAND_KIND.len() as u64;
     work.charge(WorkCounters { bytes_copied: kind_length, allocation_operations: 1, ..Default::default() })
         .map_err(native_error)?;
-    let mut kind_custody = work.retain_owned(kind_length).map_err(native_error)?;
+    let mut kind_custody = work.claim(kind_length, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     let kind = MAIL_SEND_TASK_COMMAND_KIND.to_owned();
     if let Err(cause) = command.1.absorb(&mut kind_custody) {
         drop(kind);
@@ -116,7 +116,7 @@ pub(crate) async fn stage_send(
 
 /// A normal control command; the hosting root must resume its original passive checkpoint before executing it.
 pub(crate) async fn execute_send<P, A, O>(runtime: &FilesystemTaskRuntime<P, A, O>,
-    context: std::sync::Arc<acyclic_harness::NativeTaskContext>, owner: &TaskJournalOwner<P>, fence: LeaseFence, command: WorkflowCommand,
+    context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>, owner: &TaskJournalOwner<P>, fence: LeaseFence, command: WorkflowCommand,
     work: &NativeMaterializationWork,
 ) -> Result<TaskCommandProgress>
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {

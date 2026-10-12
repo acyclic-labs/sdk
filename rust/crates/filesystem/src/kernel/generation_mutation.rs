@@ -252,11 +252,11 @@ fn drop_owned<T>(owned: Owned<T>, bytes: u64, accounting: &mut KernelAccounting<
     release_allocation(allocation, bytes, accounting)
 }
 
-fn split_allocation(allocation: &mut KernelOwnedAllocation, bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
+fn split_allocation(allocation: &mut KernelOwnedAllocation, _bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
     match allocation {
         KernelOwnedAllocation::Standalone => Ok(KernelOwnedAllocation::Standalone),
         #[cfg(not(target_arch = "wasm32"))]
-        KernelOwnedAllocation::NativeOriginal(allocation) => allocation.split_off(bytes)
+        KernelOwnedAllocation::NativeOriginal(allocation) => allocation.split_off(_bytes)
             .map(KernelOwnedAllocation::NativeOriginal).map_err(Into::into),
     }
 }
@@ -359,7 +359,7 @@ impl Owned<TransactionState> {
                 store, entries, None, 1, DecodeLimits::for_volume(config), accounting, cancellation.clone(), None,
             ).await.map_err(|error| {
                 if is_original(accounting) { error } else {
-                    GenerationMutationError::Directory(super::list::map_error(super::persistent_pagination::project_failure(error))).into()
+                    GenerationMutationError::Directory(super::persistent_pagination::project_failure(error)).into()
                 }
             })?;
             let listing = Owned { value: listing, allocation };

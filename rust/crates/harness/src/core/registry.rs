@@ -180,7 +180,8 @@ impl SchemaRegistry {
         Ok(binding)
     }
 
-    pub(in crate::core) fn validate_bytes(
+    /// Validates exact extension content against its installed schema.
+    pub fn validate_bytes(
         &self,
         name: &str,
         version: u32,
@@ -215,7 +216,8 @@ impl SchemaRegistry {
         Ok(record)
     }
 
-    pub(crate) fn implementation_digest(
+    /// Returns the exact installed implementation for a version.
+    pub fn implementation_digest(
         &self, name: &str, version: u32,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<[u8; 32]> {
@@ -262,7 +264,8 @@ impl SchemaRegistry {
         self.validate_configuration_bytes(&record.extension, &record.content, bytes, io)
     }
 
-    pub(in crate::core) fn validate_configuration_bytes(
+    /// Validates staged configuration bytes against the installed schema.
+    pub fn validate_configuration_bytes(
         &self, extension: &ExtensionDependency, content: &FileRef, bytes: &[u8],
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {

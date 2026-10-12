@@ -1550,8 +1550,8 @@ pub(crate) fn encode_native_control_value<T: serde::Serialize + ?Sized>(
         maximum_items: remaining.items_examined,
         maximum_depth: 64,
     };
-    let mut allocation = work.retain_owned(0).map_err(native_control_error)?;
-    match acyclic_harness::json_bytes_bounded_trusted(value, bounds, &mut |charge| {
+    let mut allocation = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_control_error)?;
+    match acyclic_harness::json_bytes_bounded(value, bounds, None, &mut |charge| {
         native_control_codec_charge(charge, work, &mut allocation)
     }) {
         Ok(bytes) => Ok((bytes, allocation)),
@@ -1618,7 +1618,7 @@ impl ControlResponseFrame {
         frame.reserve_native(maximum, work).map_err(ControlRequestError::NativeWork)?;
         // Reader storage is only a quota here. Its actual allocator attempt
         // is charged immediately before constructing the buffered reader.
-        frame.reader_allocation = Some(work.retain_owned(CONTROL_RESPONSE_READER_BYTES as u64)
+        frame.reader_allocation = Some(work.claim(CONTROL_RESPONSE_READER_BYTES as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(native_control_error).map_err(ControlRequestError::NativeWork)?);
         Ok(frame)
     }
@@ -1646,7 +1646,7 @@ impl ControlResponseFrame {
         let capacity = self.native_capacity_for(minimum);
         // The old backing guard remains live while this actual allocator
         // attempt acquires the complete replacement, not just a size delta.
-        let replacement = work.claim(capacity as u64).map_err(native_control_error)?;
+        let replacement = work.claim(capacity as u64, u64::from((capacity as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_control_error)?;
         self.bytes.try_reserve_exact(capacity - self.bytes.len())
             .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)
             .map_err(native_control_error)?;
@@ -2200,13 +2200,13 @@ fn decode_native_control_json<T: serde::de::DeserializeOwned>(
         maximum_items: remaining.items_examined,
         maximum_depth: 64,
     };
-    let mut allocation = work.retain_owned(0).map_err(native_control_error)?;
+    let mut allocation = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_control_error)?;
     let value_schema = match schema {
         NativeControlJsonSchema::Value => acyclic_harness::JsonValueSchema::Root,
         NativeControlJsonSchema::Response => acyclic_harness::JsonValueSchema::ControlResponse,
     };
-    let decoded = acyclic_harness::json_from_slice_bounded_native_trusted(
-        bytes, bounds, 0, acyclic_harness::wire::ErrorCode::Invalid, value_schema, &mut |charge| {
+    let decoded = acyclic_harness::json_from_slice_bounded(
+        std::marker::PhantomData::<T>, bytes, bounds, 0, Some(acyclic_harness::wire::ErrorCode::Invalid), Some(value_schema), &mut |charge| {
             match charge {
                 JsonCodecCharge::Admission { value_shape, .. } => {
                     let value_owned = acyclic_harness::json_value_decode_owned_bytes(value_shape)?;

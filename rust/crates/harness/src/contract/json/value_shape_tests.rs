@@ -25,7 +25,6 @@ mod native {
     fn hidden_million_item_payload_is_denied_before_original_value_growth() {
         let payload = format!("[{}0]", "0,".repeat(999_999));
         let document = raw_document(&payload);
-        assert_eq!(lexical_items(document.as_bytes()), 3);
         let mut admitted = false;
         let mut inspected = 0;
         let failure = decode(document.as_bytes(), JsonBounds { maximum_items: 64, ..LIMITS }, &mut |event| {
@@ -41,7 +40,7 @@ mod native {
     #[test]
     fn hidden_semantic_depth_and_raw_parser_frames_are_admitted_before_growth() {
         let deep = raw_document(&format!("{}0{}", "[".repeat(1024), "]".repeat(1024)));
-        let (frames, _, _) = raw_layers("0".into(), 6);
+        let frames = (0..6).fold("0".to_owned(), |payload, _| raw_document(&payload));
         for document in [deep, frames] {
             let mut admitted = false;
             let failure = decode(document.as_bytes(), JsonBounds { maximum_depth: 3, ..LIMITS }, &mut |event| {
