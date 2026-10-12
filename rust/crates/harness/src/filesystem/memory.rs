@@ -692,7 +692,7 @@ impl MemoryHarnessStorage {
     pub fn default_tools(&self, limits: Limits, source: Option<Arc<dyn super::RecursiveDefaultToolSource<
         MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend,
     >>>) -> Result<ToolRegistry> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         if limits.file_bytes > self.maximum_file_bytes {
             return Err(Error::Invalid(
                 "tool file limit exceeds the bound storage volume".into(),

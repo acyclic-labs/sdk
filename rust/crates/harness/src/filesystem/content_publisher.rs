@@ -248,7 +248,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             source.validate_with_native_work(work)?;
         } else {
-            source.validate()?;
+            source.validate(&mut None)?;
         }
         #[cfg(target_arch = "wasm32")]
         source.validate()?;

@@ -81,8 +81,8 @@ fn validate_file(file: &FileRef, limits: crate::conversation::Limits, io: Option
         }
         return Ok(());
     }
-    file.validate()?;
-    limits.validate_file(file)
+    file.validate(&mut None)?;
+    limits.validate_file(file, &mut None)
 }
 
 fn reserve<T>(items: &mut Vec<T>, maximum: usize, io: Option<&PreparationIo>) -> Result<()> {

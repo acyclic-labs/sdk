@@ -59,7 +59,7 @@ impl RootBootstrapContentRequest {
         let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, std::mem::size_of::<Self>() as u64)?;
         let native_snapshot = self.native_snapshot.as_ref()
             .map(|value| crate::core::copy_value(value, &mut quota)).transpose()?;
-        let volume = self.volume.clone_with_work(quota.work())?;
+        let volume = self.volume.copy(quota.work())?;
         quota.adopt(volume.logical_owned_bytes()?)?;
         let evidence = copy_reference(&self.evidence, &mut quota)?;
         let generation = GenerationRef::from_resource_with_work(
@@ -215,7 +215,7 @@ pub(crate) fn preflight_root_bootstrap_with_native_work(
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
     created_access_step(&mut io)?;
-    request.volume.validate_with_work(&mut io)?;
+    request.volume.validate(&mut io)?;
     request.evidence.validate_with_work(&mut io)?;
     request.generation.validate_with_work(&mut io)?;
     if request.root_operation != context.original_root.operation_id
@@ -316,7 +316,7 @@ impl CreatedResourceAccess {
         drop((read, write));
         let mut content = Vec::new();
         created_access_reserve(&mut content, 1, &mut io)?;
-        let volume = request.volume.clone_with_work(&mut io)?;
+        let volume = request.volume.copy(&mut io)?;
         let authority = io.as_deref_mut().expect("native observer").clone_authority(context.audience)?;
         io.as_deref_mut().expect("native observer").retain_owned(std::mem::size_of::<Self>() as u64)?;
         let default_writer = request.role == RootBootstrapContentRole::Scratch
@@ -375,7 +375,7 @@ impl CreatedResourceAccess {
         created_access_reserve(&mut content, 2, &mut io)?;
         for source in self.content.iter().chain(next.content.iter()) {
             created_access_step(&mut io)?;
-            let volume = source.volume.clone_with_work(&mut io)?;
+            let volume = source.volume.copy(&mut io)?;
             let authority = match &source.authority {
                 Some(authority) => Some(io.as_deref_mut().expect("native observer").clone_authority(authority)?),
                 None => return Err(root_denial("ROOT bootstrap seal lost its audience")),

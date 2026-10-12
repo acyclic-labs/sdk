@@ -547,7 +547,7 @@ impl ModelContent {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         model_history_step(work, 1)?;
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         let parts = match self {
             Self::Text(text) => return if text.len() as u64 <= limits.render_bytes { Ok(()) }
                 else { Err(model_history_invalid(work, "model text exceeds render limit")) },
@@ -609,7 +609,7 @@ impl ModelContent {
             model_history_step(work, 1)?;
             match part {
                 ModelContentPart::Text { text } if !text.is_empty() => {}
-                ModelContentPart::File { file, .. } => file.validate_with_work(work)?,
+                ModelContentPart::File { file, .. } => file.validate(work)?,
                 _ => return Err(model_history_invalid(work, "user input contains an unsupported part")),
             }
         }
@@ -917,7 +917,7 @@ impl NativeMediaPolicy {
             }
             Ok(())
         };
-        limits.validate_file_with_work(file, work)?;
+        limits.validate_file(file, work)?;
         finite(self.maximum_bytes, work)?;
         finite(self.maximum_work, work)?;
         model_history_step(work, 1)?;
@@ -944,7 +944,7 @@ impl NativeMediaPolicy {
         }
         model_history_step(work, 1)?;
         if let Some(binding) = &self.configuration {
-            limits.validate_file_with_work(&binding.configuration.content, work)?;
+            limits.validate_file(&binding.configuration.content, work)?;
             model_history_step(work, 1)?;
             if binding.configuration.content.descriptor().media_type() != "application/json"
                 || binding.configuration.content.descriptor().byte_length() > limits.render_bytes {
@@ -964,7 +964,7 @@ impl FileProjectionPolicy {
         if let Self::Native(policy) = self {
             return policy.validate(file, limits, work);
         }
-        limits.validate_file_with_work(file, work)?;
+        limits.validate_file(file, work)?;
         model_history_step(work, 1)?;
         if matches!(self, Self::BoundedFull) && file.descriptor().byte_length() > limits.render_bytes {
             Err(model_history_invalid(work, "model file exceeds render limit"))
@@ -1000,7 +1000,7 @@ impl ToolResultContent {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         model_history_step(work, 1)?;
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         if let Self::Parts { parts } = self {
             if parts.len() > limits.attachments.saturating_add(1) {
                 return Err(model_history_invalid(work, "tool result exceeds attachment limit"));
@@ -1486,7 +1486,7 @@ impl ModelPrefix {
         parent: Option<(&FileRef, &PreparedModelRequest)>,
     ) -> Result<Self> {
         let (parent, offset) = if let Some((reference, prior)) = parent {
-            reference.validate()?;
+            reference.validate(&mut None)?;
             if reference.descriptor().media_type() != Self::MEDIA_TYPE
                 || !request.request.messages.starts_with(&prior.request.messages)
             {
@@ -2167,7 +2167,7 @@ mod tests {
                     .0
                     .get(&capability)
                     .ok_or_else(|| Error::NotFound("prefix version is missing".into()))?;
-                file.descriptor().verify(bytes)
+                file.descriptor().verify(bytes, &mut None)
             })
         }
         fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {

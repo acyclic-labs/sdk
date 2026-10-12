@@ -300,7 +300,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             return Err(unauthorized(io, "bound lazy project requires its original native snapshot"));
         }
         if io.is_none() {
-            snapshot.project.validate()?;
+            snapshot.project.validate(&mut None)?;
             snapshot.generation.validate()?;
         }
         if snapshot.project.class() != VolumeClass::Project

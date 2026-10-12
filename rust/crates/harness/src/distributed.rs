@@ -1868,7 +1868,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     async fn load_json_with_work(
         &self, reference: &FileRef, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(serde_json::Value, u64)> {
-        reference.validate_with_work(work)?;
+        reference.validate(work)?;
         if reference.descriptor().media_type() != "application/json" {
             return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
                 "scheduler result must be a JSON file"));
@@ -1880,7 +1880,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             None => (self.content_verifier.read(reference).await?, 0),
         };
         custody.adopt(raw_bytes)?;
-        reference.descriptor().verify_with_work(bytes.as_ref(), custody.work())?;
+        reference.descriptor().verify(bytes.as_ref(), custody.work())?;
         let (value, value_bytes) = decode_json(bytes.as_ref(), crate::contract::JsonValueSchema::Root,
             crate::contract::json_value_logical_owned_bytes, custody.work())?;
         custody.adopt(value_bytes)?;
@@ -1970,7 +1970,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .ok_or_else(|| Error::Unsupported("scheduler payload store is not bound".into()))?;
         let bytes = crate::contract::canonical_json_bytes(value)?;
         let reference = store.stage(operation_id, key, &bytes).await?;
-        reference.descriptor().verify(&bytes)?;
+        reference.descriptor().verify(&bytes, &mut None)?;
         if reference.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid(
                 "scheduler payload store returned a non-JSON file".into(),
@@ -3352,7 +3352,7 @@ mod tests {
             &'a self,
             reference: &'a FileRef,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move { reference.descriptor().verify(b"null") })
+            Box::pin(async move { reference.descriptor().verify(b"null", &mut None) })
         }
 
         fn read<'a>(
@@ -3361,7 +3361,7 @@ mod tests {
         ) -> std::pin::Pin<Box<dyn Future<Output = Result<acyclic_stream::OwnedBytes>> + Send + 'a>>
         {
             Box::pin(async move {
-                reference.descriptor().verify(b"null")?;
+                reference.descriptor().verify(b"null", &mut None)?;
                 Ok(b"null".to_vec().into())
             })
         }

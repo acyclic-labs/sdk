@@ -558,7 +558,7 @@ impl Scheduler {
         if spec.entrypoint.name.trim().is_empty() || spec.entrypoint.version.trim().is_empty() {
             return Err(diagnostic(work, Invalid, "durable entrypoint name and version are required"));
         }
-        spec.state.validate_with_work(work)?;
+        spec.state.validate(work)?;
         for (key, value) in &spec.placement {
             observe(work)?;
             observe(work)?;
@@ -869,7 +869,7 @@ impl Scheduler {
                 }
             }
             SchedulerEvent::WorkflowResumed { workflow_revision, input, .. } => {
-                input.validate_with_work(work)?;
+                input.validate(work)?;
                 let operation = self.validated_operation(primary, work)?;
                 require_phase(operation, OperationPhase::Suspended, work)?;
                 if operation.cancellation_requested || operation.workflow.as_ref().is_none_or(|slot| {
@@ -906,7 +906,7 @@ impl Scheduler {
                 if execution_duration_ns.is_some() && (fence.is_none() || matches!(outcome, Outcome::Indeterminate { .. })) {
                     return Err(diagnostic(work, Invalid, "worker duration requires a fenced terminal completion"));
                 }
-                if let Outcome::Succeeded(reference) = outcome { reference.validate_with_work(work)?; }
+                if let Outcome::Succeeded(reference) = outcome { reference.validate(work)?; }
                 let operation = self.validated_operation(primary, work)?;
                 if operation.phase == OperationPhase::Terminal {
                     if operation.outcome.as_ref() == Some(outcome) && execution_duration_ns.is_none() && fence.is_none() {
@@ -930,7 +930,7 @@ impl Scheduler {
                 }
             }
             SchedulerEvent::Orchestrated { expected_revision, outcome, cancel, reducer, reduction_digest, .. } => {
-                if let Outcome::Succeeded(reference) = outcome { reference.validate_with_work(work)?; }
+                if let Outcome::Succeeded(reference) = outcome { reference.validate(work)?; }
                 let parent = self.validated_operation(primary, work)?;
                 if parent.revision != *expected_revision || parent.phase != OperationPhase::WaitingForChildren
                     || parent.cancellation_requested
@@ -2115,7 +2115,7 @@ impl TaskInbox {
                     "inbox item has the wrong task or an empty message identity".into(),
                 ));
             }
-            item.payload.validate()?;
+            item.payload.validate(&mut None)?;
             if let Some(existing) = self
                 .items
                 .iter()

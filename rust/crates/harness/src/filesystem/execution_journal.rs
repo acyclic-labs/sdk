@@ -708,7 +708,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         &self,
         limits: Limits,
     ) -> Result<crate::store::HistoryReadLimits> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         Ok(if let Some(limits) = self.history_read_limits {
             limits
         } else {
@@ -1196,7 +1196,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         limits: Limits,
     ) -> Result<tokio::sync::MappedMutexGuard<'_, StreamAggregate<P>>>
     {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         let verifier = self.input_verifier.as_ref().ok_or_else(|| {
             Error::Unsupported("conversation content verifier is not bound".into())
         })?;
@@ -1590,7 +1590,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         if let Some(io) = io {
             super::fork_preparer_io::item(Some(io), reference.logical_owned_bytes()?)?;
-            reference.validate()?;
+            reference.validate(&mut None)?;
             if reference.volume().class() == VolumeClass::AgentPrivate
                 && reference.volume().owner() != self.volume.owner()
             {
@@ -2124,7 +2124,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
-        limits.validate_with_work(&mut work)?;
+        limits.validate(&mut work)?;
         if selected.selection.message_ids.len() > limits.context_messages {
             return Err(super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Invalid, "selected history exceeds context message limit"));
@@ -2161,7 +2161,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             loaded.push(message.ok_or_else(|| super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Storage, "committed selected message is missing at its cutoff"))?);
         }
-        let (historical, _) = crate::conversation::ConversationState::selected_view_with_work(loaded, &mut work)?;
+        let (historical, _) = crate::conversation::ConversationState::selected_view(loaded, &mut work)?;
         let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
             (crate::conversation::MAX_PORTABLE_COUNT, crate::conversation::MAX_PORTABLE_COUNT,
                 self.maximum_payload_bytes),
@@ -2225,7 +2225,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             owner.validate_input_file(file, io)
         } else {
             let mut borrowed = io.map(PreparationIo::history_io);
-            file.validate_with_work(&mut borrowed.as_mut().map(
+            file.validate(&mut borrowed.as_mut().map(
                 |work| work as &mut dyn crate::store::history::HistoryIo))
         }
     }
@@ -2517,7 +2517,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
     }
     let mut borrowed = io.map(PreparationIo::history_io);
-    let (history, _) = crate::conversation::ConversationState::selected_view_with_work(
+    let (history, _) = crate::conversation::ConversationState::selected_view(
         loaded, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo),
     )?;
     let mut message_ids = Vec::new();

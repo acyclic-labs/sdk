@@ -574,7 +574,7 @@ impl DurableToolRunner {
             self.limits = limits;
             return Ok(self);
         }
-        limits.validate()?;
+        limits.validate(&mut None)?;
         self.limits = limits;
         Ok(self)
     }

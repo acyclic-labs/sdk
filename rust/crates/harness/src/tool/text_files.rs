@@ -327,7 +327,7 @@ impl TextTool {
                 input.file
             }
         };
-        crate::conversation::validate_content_path(file.path())?;
+        crate::conversation::validate_content_path(file.path(), &mut None)?;
         if crate::conversation::is_internal_path(file.path())
             || !crate::runtime::read_granted(scope.grants(), &file)?
         {

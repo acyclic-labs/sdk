@@ -1916,12 +1916,12 @@ impl TaskAdmissionRecord {
             RuntimeScope::validate_limits_with_native_work(&self.limits, native)?;
             RuntimeScope::validate_run_limits_with_native_work(&self.run_limits, native)?;
         } else {
-            self.limits.validate()?;
+            self.limits.validate(&mut None)?;
             self.run_limits.validate()?;
         }
         #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
         {
-            self.limits.validate()?;
+            self.limits.validate(&mut None)?;
             self.run_limits.validate()?;
         }
         if let Some(policy) = &self.policy {
@@ -3539,7 +3539,7 @@ impl Clone for RuntimeScope {
 impl RuntimeScope {
     /// Creates a checked root scope.
     pub fn new(grants: Capabilities, limits: Limits) -> Result<Self> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         Ok(Self {
             grants,
             limits,
@@ -3635,7 +3635,7 @@ impl RuntimeScope {
 
     /// Attenuates every grant and numeric bound.
     pub fn narrow(&self, grants: Capabilities, limits: Limits) -> Result<Self> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         if !self.allows_authority(&grants, &limits) {
             return Err(Error::Unauthorized(
                 "runtime scope cannot widen ancestor authority".into(),
@@ -3984,10 +3984,10 @@ impl RuntimeScope {
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             self.validate_narrowing_with_native_work(&self.grants, &admission.limits, native)?;
         } else {
-            admission.limits.validate()?;
+            admission.limits.validate(&mut None)?;
         }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        admission.limits.validate()?;
+        admission.limits.validate(&mut None)?;
         if !self.allows_authority(&self.grants, &admission.limits) {
             return Err(scope_metadata_boundary(work, crate::wire::ErrorCode::Unauthorized,
                 "runtime scope cannot widen ancestor authority"));
@@ -5454,7 +5454,7 @@ impl AgentHarness {
             ));
         }
         workspaces.provider().validate()?;
-        workspaces.project().validate()?;
+        workspaces.project().validate(&mut None)?;
         if workspaces.project().class() != crate::conversation::VolumeClass::Project
             || workspaces.project().provider() != workspaces.provider()
         {
@@ -6041,8 +6041,8 @@ impl AgentHarness {
 
     /// Verifies an already staged input or output through a bound content or artifact owner and the runtime's effective read grant.
     pub async fn verify_readable_file(&self, file: &FileRef) -> Result<()> {
-        file.validate()?;
-        self.scope.limits.validate_file(file)?;
+        file.validate(&mut None)?;
+        self.scope.limits.validate_file(file, &mut None)?;
         if !read_granted(self.scope.grants(), file)? {
             return Err(Error::Unauthorized(
                 "task scope cannot read this file".into(),
@@ -6053,7 +6053,7 @@ impl AgentHarness {
             .into_iter()
             .flatten()
         {
-            match verified_content_bytes(binding.reader.as_ref(), file).await {
+            match verified_content_bytes(binding.reader.as_ref(), file, (file).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes) {
                 Ok(_) => return Ok(()),
                 Err(error) => failure = error,
             }
@@ -7140,7 +7140,7 @@ impl TaskContext {
 
     /// Returns only the exact creator-authenticated handles already admitted to this task.
     pub fn created_content_bindings(&self, volume: &VolumeRef) -> Result<ContentBindings> {
-        volume.validate()?;
+        volume.validate(&mut None)?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             if !self.scope.grants().contains(&volume.capability(operation)?) {
                 return Err(Error::Unauthorized("task lacks original created-content read/write authority".into()));
@@ -7292,7 +7292,7 @@ impl TaskContext {
         for message in messages {
             message.content.validate_limits(limits, &mut None)?;
             for file in message.content.file_refs() {
-                limits.validate_file(file)?;
+                limits.validate_file(file, &mut None)?;
                 if !read_granted(self.scope.grants(), file)? {
                     return Err(Error::Unauthorized(
                         "task scope cannot project this file".into(),
@@ -7572,7 +7572,7 @@ impl TaskContext {
             }
             let hash = acyclic_fs::WorkCounters {bytes_hashed:output.len() as u64,..Default::default()};
             io.preflight(hash)?;
-            let verified = file.descriptor().verify(&output);
+            let verified = file.descriptor().verify(&output, &mut None);
             io.charge(hash)?;
             verified?;
             Ok(output)
@@ -7627,7 +7627,7 @@ impl TaskContext {
             ));
         }
         for entry in &page.entries {
-            crate::conversation::validate_content_path(&entry.name)?;
+            crate::conversation::validate_content_path(&entry.name, &mut None)?;
             if entry.name.contains('/')
                 || (path.is_empty() && entry.name == ".system")
                 || after.is_some_and(|cursor| entry.name.as_bytes() <= cursor.as_bytes())
@@ -7659,7 +7659,7 @@ impl TaskContext {
             .read_private_path(volume, granted_prefix, path, expected_generation)
             .await?;
         file.validate()?;
-        self.scope.limits.validate_file(&file)?;
+        self.scope.limits.validate_file(&file, &mut None)?;
         if file.volume() != volume || file.path() != path {
             return Err(Error::Conflict(
                 "private path provider returned another file".into(),
@@ -7675,11 +7675,11 @@ impl TaskContext {
         granted_prefix: &str,
         path: &str,
     ) -> Result<()> {
-        volume.validate()?;
+        volume.validate(&mut None)?;
         if crate::conversation::is_internal_path(path)
-            || (!path.is_empty() && crate::conversation::validate_content_path(path).is_err())
+            || (!path.is_empty() && crate::conversation::validate_content_path(path, &mut None).is_err())
             || (!granted_prefix.is_empty()
-                && crate::conversation::validate_content_path(granted_prefix).is_err())
+                && crate::conversation::validate_content_path(granted_prefix, &mut None).is_err())
         {
             return Err(Error::Invalid(
                 "private directory path or volume is invalid".into(),
@@ -7700,8 +7700,8 @@ impl TaskContext {
         binding: Option<&ContentBindings>,
         file: &FileRef,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        file.validate()?;
-        self.scope.limits.validate_file(file)?;
+        file.validate(&mut None)?;
+        self.scope.limits.validate_file(file, &mut None)?;
         if !read_granted(&self.scope.grants, file)? {
             return Err(Error::Unauthorized(
                 "task scope cannot read this file".into(),
@@ -7710,13 +7710,13 @@ impl TaskContext {
         #[cfg(feature = "filesystem")]
         if let Some(reader) = self.scope.created_reference(file) {
             let bytes = reader.read(file).await?;
-            file.descriptor().verify(&bytes)?;
+            file.descriptor().verify(&bytes, &mut None)?;
             return Ok(bytes);
         }
         let content =
             binding.ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
         let bytes = content.reader.read(file).await?;
-        file.descriptor().verify(&bytes)?;
+        file.descriptor().verify(&bytes, &mut None)?;
         Ok(bytes)
     }
 
@@ -7791,7 +7791,7 @@ impl TaskContext {
         let writer = self.bound_content_writer(self.content_binding(None))?;
         let file = writer.observe_staged_once(operation_id, self.scope.limits.file_bytes).await?;
         if let Some(file) = &file {
-            self.scope.limits.validate_file(file)?;
+            self.scope.limits.validate_file(file, &mut None)?;
             if file.volume() != writer.volume() {
                 return Err(Error::Storage("original publisher receipt belongs to another volume".into()));
             }
@@ -7812,7 +7812,7 @@ impl TaskContext {
                 self.scope.limits.file_bytes, io.remaining()?, cancellation).await)?;
             if let Some(file) = &file {
                 io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(file)?)?;
-                self.scope.limits.validate_file(file)?;
+                self.scope.limits.validate_file(file, &mut None)?;
                 if file.volume() != writer.volume() {
                     return Err(Error::Storage("original publisher receipt belongs to another volume".into()));
                 }
@@ -7834,8 +7834,8 @@ impl TaskContext {
         let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
             .map_err(acyclic_fs::OperationFailure::before_work)?;
         let result = async {
-            file.validate()?;
-            self.scope.limits.validate_file(file)?;
+            file.validate(&mut None)?;
+            self.scope.limits.validate_file(file, &mut None)?;
             if !read_granted_with_work(&self.scope.grants, file, &mut Some(&mut (&io).history_io()))? {
                 return Err(Error::Unauthorized("task scope cannot read this file".into()));
             }
@@ -7850,7 +7850,7 @@ impl TaskContext {
             io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
             let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
             io.preflight(hash)?;
-            let verified = file.descriptor().verify(&bytes);
+            let verified = file.descriptor().verify(&bytes, &mut None);
             io.charge(hash)?;
             verified?;
             Ok(bytes)
@@ -7884,14 +7884,14 @@ impl TaskContext {
             let file = io.receive_content(writer.stage_once_measured(operation_id, path, bytes, media_type,
                 display_name, io.remaining()?, cancellation).await)?;
             io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(&file)?)?;
-            self.scope.limits.validate_file(&file)?;
+            self.scope.limits.validate_file(&file, &mut None)?;
             if file.volume() != writer.volume() || file.path() != path
                 || file.display_name() != display_name || file.descriptor().media_type() != media_type {
                 return Err(Error::Storage("content publisher returned another file identity".into()));
             }
             let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
             io.preflight(hash)?;
-            let verified = file.descriptor().verify(bytes);
+            let verified = file.descriptor().verify(bytes, &mut None);
             io.charge(hash)?;
             verified?;
             io.receive_content(content.reader.verify_measured(&file, self.scope.limits.file_bytes,
@@ -7940,7 +7940,7 @@ impl TaskContext {
                 operation_id,path,bytes,media_type,display_name,work,
             )?.await?;
             let file = &output.0;
-            self.scope.limits.validate_file(file)?;
+            self.scope.limits.validate_file(file, &mut None)?;
             if file.volume() != writer.volume() || file.path() != path
                 || file.display_name() != display_name || file.descriptor().media_type() != media_type
                 || file.descriptor().byte_length() != bytes.len() as u64
@@ -7989,7 +7989,7 @@ impl TaskContext {
         source: &FileRef,
         bytes: &[u8],
     ) -> Result<FileRef> {
-        self.scope.limits.validate_file(source)?;
+        self.scope.limits.validate_file(source, &mut None)?;
         if !read_granted(&self.scope.grants, source)? {
             return Err(Error::Unauthorized(
                 "task scope cannot read this source".into(),
@@ -8084,7 +8084,7 @@ impl TaskContext {
             }
         };
         self.scope.verify_created_write(writer.volume()).await?;
-        self.scope.limits.validate_file(&file)?;
+        self.scope.limits.validate_file(&file, &mut None)?;
         if file.volume() != writer.volume()
             || file.path() != path
             || file.display_name() != display_name
@@ -8094,7 +8094,7 @@ impl TaskContext {
                 "content publisher returned another file identity".into(),
             ));
         }
-        file.descriptor().verify(bytes)?;
+        file.descriptor().verify(bytes, &mut None)?;
         content.reader.verify(&file).await?;
         Ok(file)
     }
@@ -8675,7 +8675,7 @@ impl TaskContext {
         message_id: OperationId,
         payload: FileRef,
     ) -> Result<crate::conversation::FileRef> {
-        payload.validate()?;
+        payload.validate(&mut None)?;
         let mailbox = self.owned_mailbox.as_ref()
             .ok_or_else(|| Error::Unauthorized("mail requires a retained task mailbox owner".into()))?;
         mailbox.validate_scope(&self.scope)?;
@@ -8836,10 +8836,10 @@ pub(crate) fn read_granted_with_work(
     if let Some(native) = work.as_ref().and_then(|io| io.original_native_work()) {
         file.validate_with_native_work(native)?;
     } else {
-        file.validate()?;
+        file.validate(&mut None)?;
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    file.validate()?;
+    file.validate(&mut None)?;
     if contains_content_grant_with_work(grants, file, "file:read:", work)?
         || contains_content_grant_with_work(grants, file.volume(), "volume:read:", work)?
         || contains_content_grant_with_work(
@@ -9071,7 +9071,7 @@ impl DurableBatchRequest {
             }
         }
         validate_task_schemas(&self.input_schema, &self.output_schema, true)?;
-        self.scope.limits().validate()?;
+        self.scope.limits().validate(&mut None)?;
         self.scope.run_limits().validate()?;
         if let Some(policy) = &self.policy {
             validate_policy_identity(policy)?;
