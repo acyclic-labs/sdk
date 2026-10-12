@@ -2987,7 +2987,7 @@ impl FusePhysicalSession {
                 if error.raw_os_error() != Some(libc::EPERM) { return Err(error.into()); }
                 let helper = retirement_helper.as_mut().ok_or(
                     NativeMountError::CapabilityUnavailable(
-                        "no canonical fusermount helper is available for retirement".into(),
+                        "no canonical fusermount helper is available for retirement",
                     ),
                 )?;
                 helper.retire(std::ffi::CStr::from_bytes_with_nul(&mount.path)
@@ -3531,7 +3531,7 @@ fn fuse_recovery_helper(
         }
     }
     Err(NativeMountError::CapabilityUnavailable(
-        "no canonical fusermount helper is available for crash recovery".into(),
+        "no canonical fusermount helper is available for crash recovery",
     ))
 }
 

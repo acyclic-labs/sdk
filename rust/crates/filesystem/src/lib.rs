@@ -312,7 +312,7 @@ pub use native_mount::{
     MountSparseSpan, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
     NativeMountCleanupState, NativeMountError, NativeMountKind, NativeMountRecoveryCleanupState,
     NativeMountRecoveryOwner, NativeMountRequest, NativeMountSession,
-    NativeMountSessionIsolation, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
+    NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, NativeMountDrainProof, NativeSourceIoLease, SharedCheckout, SharedCheckoutState,
     OwnedNativeMountOriginalWorkScope,
