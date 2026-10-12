@@ -34,7 +34,7 @@ async fn claim(runtime: &WasmTaskRuntime, operation: OperationId, worker: &Worke
         WorkPull::Claimed(lease) => lease,
         _ => return Err(JsValue::from_str("original browser caller lease unavailable")),
     };
-    runtime.runtime.task_host().start_task(&lease).await.map_err(js_error)?;
+    runtime.runtime.task_host().start_task(&lease, None).await.map_err(js_error)?;
     Ok(lease)
 }
 async fn settle_tools(runtime: &WasmTaskRuntime, execution: &super::super::headless::WasmHeadlessExecution,
@@ -69,7 +69,7 @@ async fn append(runtime: &WasmTaskRuntime, authority: &Authority, agent: AgentId
         expected_revision:aggregate.reducer().revision(), scope, causal_parent:None,
         action:Action::AppendConversationMessage { message:Box::new(ConversationMessage { id:uuid::Uuid::new_v4(), sequence,
             kind:MessageKind::User, content:file.clone(), attachments:Default::default(), reply_to:None, tool_call_id:None, extensions:Default::default() }) }
-    }).await.map_err(js_error)?;
+    }, #[cfg(feature = "filesystem")] None, &mut None).await.map_err(js_error)?;
     Ok(file)
 }
 fn configure_events(runtime: &mut WasmTaskRuntime, events: &Value) -> std::result::Result<(), JsValue> {
@@ -143,7 +143,7 @@ async fn browser_defaults_root_two_children_grandchild_and_foreign_project_use_a
     let bootstrap_scope = bootstrap_issuer.issue("configured", &bootstrap_grants, Some(bootstrap_agent), None, &mut None).expect("scope proof");
     let mut aggregate = StreamAggregate::open(&runtime.stream,bootstrap_authority.clone(),bootstrap_issuer.verifier(&mut None).expect("verifier copy"),SchemaRegistry::default()).await.map_err(js_error)?;
     aggregate.execute(Command { operation_id:OperationId::new(),idempotency_key:IdempotencyKey::new("bind-bootstrap").map_err(js_error)?,expected_revision:0,
-        scope:bootstrap_scope,causal_parent:None,action:Action::BindConversation {agent:bootstrap_agent} }).await.map_err(js_error)?;
+        scope:bootstrap_scope,causal_parent:None,action:Action::BindConversation {agent:bootstrap_agent} }, #[cfg(feature = "filesystem")] None, &mut None).await.map_err(js_error)?;
     let admitted = runtime.admit(bootstrap_operation.to_string(),"test.recursive".into(),"1".into(),wire(&serde_json::json!({"msg":"bootstrap-work"}))?,None).await?;
     assert_eq!(field(&admitted,"kind").as_string().as_deref(),Some("accepted"));
     let template = runtime.runtime.task_host().observe_admission(bootstrap_task).await.map_err(js_error)?;

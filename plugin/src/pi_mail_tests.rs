@@ -38,7 +38,7 @@ impl Fixture {
         let machine = Arc::new(Passive { identity: MachineIdentity { name: "pi.mail.test".into(), version: "1".into(), digest: [73; 32] }, schema: json!({"type":"object"}) });
         let mut tasks = TaskRegistry::default();
         tasks.register(TaskDefinition::<Value, Value>::resumable(machine.clone(), json!({"type":"object"}), json!({}))?)?;
-        let mut machines = MachineRegistry::default(); machines.register(machine)?;
+        let mut machines = MachineRegistry::default(); machines.register(machine, &mut None)?;
         Ok(Self { stream: Arc::new(MemoryStream::default()), host, volume, issuer, signed, scope, tasks, machines })
     }
     async fn runtime(&self) -> Result<Arc<Runtime>> {
@@ -53,12 +53,12 @@ impl Fixture {
     }
     async fn pull(&self, runtime: &Runtime) -> Result<WorkLease> {
         match runtime.task_host().pull_work(&Worker { id:"pi-mail-worker".into(), available:ResourceSnapshot::default(), labels:BTreeMap::new() }).await? {
-            WorkPull::Claimed(lease) => { runtime.task_host().start_task(&lease).await?; Ok(lease) }
+            WorkPull::Claimed(lease) => { runtime.task_host().start_task(&lease, None).await?; Ok(lease) }
             _ => Err(Error::NotFound("mail lease".into())),
         }
     }
     async fn admit(&self, runtime: &Runtime) -> Result<(WorkLease, TaskId)> {
-        let definition = self.tasks.get_version::<Value, Value>("pi.mail.test", "1")?;
+        let definition = self.tasks.get_version::<Value, Value>("pi.mail.test", "1", None)?;
         let operation = OperationId::from_bytes([73;16]);
         assert!(matches!(runtime.harness().admit(operation, &definition, json!({}), None).await?, Admission::Accepted(_)));
         Ok((self.pull(runtime).await?, TaskId::from_bytes(operation.into_bytes())))

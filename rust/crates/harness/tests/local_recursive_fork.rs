@@ -503,7 +503,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             0,
             &grant_scope,
             Action::BindConversation { agent: root_agent },
-        )?)
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let root_write = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
@@ -572,7 +572,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     extensions: [("example.model-prefix".into(), model_head.clone())].into(),
                 }),
             },
-        )?)
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
 
     let mut final_child_issuer = None;
@@ -621,6 +621,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             project.clone(),
             stream_provider.clone(),
             parent_reader,
+            None, None, #[cfg(not(target_arch = "wasm32"))] None,
         )?;
         let parent_workspaces = (level == DEPTH)
             .then(|| {
@@ -812,6 +813,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 project.clone(),
                 stream_provider.clone(),
                 reader,
+                None, None, #[cfg(not(target_arch = "wasm32"))] None,
             )?;
             let report = aggregate
                 .prepare_fork(&sibling_preparer, sibling_request)
@@ -1001,7 +1003,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                         extensions: [("example.model-prefix".into(), model_head.clone())].into(),
                     }),
                 },
-            )?)
+            )?, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let child_observation = host
             .resolve(&workspace_ref(
@@ -1318,7 +1320,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             0,
             &grant_scope,
             Action::BindConversation { agent },
-        )?)
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let root_write = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
@@ -1371,7 +1373,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                     extensions: Default::default(),
                 }),
             },
-        )?)
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
 
     for level in 1..=DEPTH {
@@ -1409,6 +1411,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             project.clone(),
             stream_provider.clone(),
             reader,
+            None, None, #[cfg(not(target_arch = "wasm32"))] None,
         )?;
         let request = ForkRequest {
             authorized_source: None,
@@ -1598,7 +1601,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                         extensions: Default::default(),
                     }),
                 },
-            )?)
+            )?, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         project_head = host
             .resolve(&workspace_ref(

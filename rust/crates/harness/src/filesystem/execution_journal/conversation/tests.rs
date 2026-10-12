@@ -66,8 +66,8 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
     if initialize { host.create_volume(&volume).await?; }
     let authority = Authority { kind: AggregateKind::Conversation, id: "durable-10k".into() };
     let issuer = AuthorityIssuer::new("durable-continuation", [58; 32], authority.clone());
-    let read = volume.capability(VolumeOperation::Read)?;
-    let write = volume.capability(VolumeOperation::Write)?;
+    let read = volume.capability(VolumeOperation::Read, &mut None)?;
+    let write = volume.capability(VolumeOperation::Write, &mut None)?;
     let scope = issuer.issue("owner", &Capabilities::new([
         capability::CONVERSATION_BIND.to_owned(), capability::CONVERSATION_APPEND.to_owned(),
         capability::CONVERSATION_SELECT_CONTEXT.to_owned(), "model:generate".to_owned(),
@@ -82,7 +82,7 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
             operation_id: OperationId::new(), idempotency_key: IdempotencyKey::new("bind-durable-10k")?,
             expected_revision: 0, scope: scope.clone(), causal_parent: None,
             action: Action::BindConversation { agent },
-        }).await?;
+        }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     }
     let reader = Arc::new(FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"),
         &scope, 262_144, None)?);
@@ -132,7 +132,7 @@ async fn durable_ten_thousand_turns_reopen_and_replay_original_identity() -> Res
         if index == 113 || index == TURNS - 1 {
             let workspace = crate::filesystem::workspace_ref(
                 binding.journal.host.provider.clone(),
-                &binding.journal.volume.storage_name()?,
+                &binding.journal.volume.storage_name(&mut None)?,
             )?;
             for (path, expected_entries) in [
                 ("/.system/execution", 1),

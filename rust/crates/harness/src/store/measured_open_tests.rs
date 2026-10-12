@@ -85,7 +85,7 @@ mod measured_open_tests {
             return Err(Error::Invalid("fresh original command must apply".into()));
         };
         let publication = operations::IndexedPublication::new(
-            &authority(), &event, encode_event(&authority(), &event)?, &mut None)?;
+            &authority(), &event, encode_event(&authority(), &event, &mut None)?, &mut None)?;
         let cancellation = CancellationToken::new();
         let mut denied = budget();
         denied.allocation_operations = 0;
@@ -120,7 +120,7 @@ mod measured_open_tests {
         let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
         assert_eq!(receipt.work.authority_records_appended, mutations);
         let reader = writer.history_reader()?;
-        assert_eq!(reader.operation_event(event.operation_id).await?, Some(event));
+        assert_eq!(reader.operation_event(event.operation_id, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await.map(|(event, _)| event)?, Some(event));
         Ok(())
     }
 
@@ -483,7 +483,7 @@ mod measured_open_tests {
                 authority: authority(), after_revision: 0, through_revision: 3,
             };
             let expected_state = reader.effect(
-                &cursor, effect_id, default_projection_read_limits()).await?;
+                &cursor, effect_id, default_projection_read_limits(), None).await.map(|state| state.map(|(state, _)| state))?;
             let prefix = native.receipt();
             provider.reset_io();
             let (state, state_custody) = reader.effect_with_native_work(

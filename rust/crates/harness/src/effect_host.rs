@@ -251,7 +251,7 @@ impl<P: StreamProvider> ObservedEffectAggregate<P> {
         if let Some(effect) = self.aggregate.reducer().effect(effect_id) {
             return Ok(EffectStateRef::Resident(effect));
         }
-        let (effect, retained) = self.aggregate.effect_with_work(
+        let (effect, retained) = self.aggregate.effect(
             effect_id, self.history_limits, work,
         ).await?.ok_or_else(|| missing_effect(work))?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -736,7 +736,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                         crate::wire::ErrorCode::Unsupported,
                         "native effect settlement requires filesystem task ownership"));
                 }
-                aggregate.aggregate.execute(command, None, command_custody.work()).await
+                aggregate.aggregate.execute(command, command_custody.work()).await
             };
             drop(command_custody);
             match result {
@@ -812,7 +812,7 @@ mod native_metadata_controls {
         )?);
         ConversationEffectHost::new(
             Arc::new(MemoryStream::default()),
-            authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(),
+            authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(None)?,
         )
     }
 
@@ -849,14 +849,14 @@ mod native_metadata_controls {
         let work = NativeMaterializationWork::new(denied, &cancellation)
             .expect("only meter backing is admitted");
         let before = work.receipt().allocation_operations;
-        assert!(matches!(EffectRegistry::new_with_native_work(&work), Err(Error::NativeWork { .. })));
+        assert!(matches!(EffectRegistry::new(Some(&work)), Err(Error::NativeWork { .. })));
         assert_eq!(work.receipt().allocation_operations, before);
 
         let work = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original cancellable ledger");
         cancellation.cancel();
         let before = work.receipt().allocation_operations;
-        assert!(matches!(EffectRegistry::new_with_native_work(&work), Err(Error::NativeWork { .. })));
+        assert!(matches!(EffectRegistry::new(Some(&work)), Err(Error::NativeWork { .. })));
         assert_eq!(work.receipt().allocation_operations, before);
     }
 

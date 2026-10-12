@@ -314,7 +314,7 @@ pub async fn effect_events<P: StreamProvider>(
             "effect cursor exceeds committed canonical tail".into(),
         ));
     }
-    let selected = effect_heads::select_with_work(
+    let (head, consumed_bytes) = effect_heads::select_with_work(
         client,
         &cursor.authority,
         verifier,
@@ -324,7 +324,7 @@ pub async fn effect_events<P: StreamProvider>(
         work,
     )
     .await?;
-    let Some(head) = selected.head else {
+    let Some(head) = head else {
         return Ok((Vec::new(), 0));
     };
     let count = head
@@ -341,7 +341,7 @@ pub async fn effect_events<P: StreamProvider>(
     let mut event_claims = 0_u64;
     let mut staged = None;
     let result = async {
-        let mut used = selected.consumed_bytes;
+        let mut used = consumed_bytes;
         let mut previous_revision = 0;
         for position in 0..count {
             let remaining = limits

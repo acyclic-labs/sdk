@@ -181,13 +181,14 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         volume: created.private.clone(), generation: created.seed.child_private_generation.clone(), paths: Vec::new(),
     };
     let history = crate::history::HistoryReader::new(&fixture.stream, &fork.parent, parent_issuer.verifier(&mut None).expect("verifier copy"))?
-        .fork_history(parent.reducer(), 0, crate::history::HistoryReadLimits { maximum_events: 2, maximum_bytes: 65_536 }).await?;
+        .fork_history(parent.reducer(), 0, crate::history::HistoryReadLimits { maximum_events: 2, maximum_bytes: 65_536 }, &mut None).await?;
     let resolver = Arc::new(FilesystemContentVerifier::new(
         fixture.filesystem.clone(), &parent_issuer.verifier(&mut None).expect("verifier copy"), &parent_scope, 65_536, None,
     )?);
     let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), parent.reducer().clone(),
-        parent_issuer.verifier(&mut None).expect("verifier copy"), parent_scope.clone(), created.project.clone(), stream_provider, resolver)?
-        .with_history_context(history)?;
+        parent_issuer.verifier(&mut None).expect("verifier copy"), parent_scope.clone(), created.project.clone(), stream_provider, resolver,
+        Some(history), None, #[cfg(not(target_arch = "wasm32"))] None,
+    )?;
     let mut admission = fixture.admission(85, serde_json::json!({"action":"filesystem-io"}));
     admission.parent = Some(task);
     admission.grants = Capabilities::new([
@@ -195,10 +196,11 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
         "conversation:bind".into(),
     ]);
-    admission = admission.with_resource_proofs(preparer.creation_proofs(&fork, task, None)?)?;
+    let (resources, proofs) = preparer.creation_allocations(&fork, task, None)?;
+    admission = admission.with_resource_proofs(proofs)?;
     let mut request = created.request.clone();
     request.child = admission;
-    request.resources = preparer.creation_resources(&fork, None)?;
+    request.resources = resources;
     request.payload = serde_json::to_value(&fork).map_err(|error| Error::Invalid(error.to_string()))?;
     let preparation = owner.resource_preparation(request).await?;
     let report = preparer.with_task_preparation(Arc::new(preparation))?.prepare(fork).await?;

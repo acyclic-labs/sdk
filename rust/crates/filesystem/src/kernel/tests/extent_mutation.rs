@@ -863,9 +863,9 @@ fn build_extent_tree(
     }
     let mut level = Vec::new();
     for chunk in extents.chunks(width) {
-        level.push(Summary {
-            first: chunk[0].offset,
-            end: extent_end(&chunk[chunk.len() - 1])?,
+        level.push(ExtentChild {
+            first_offset: chunk[0].offset,
+            end_offset: extent_end(&chunk[chunk.len() - 1])?,
             page: put(
                 store,
                 &ExtentPage::Leaf(chunk.to_vec()),
@@ -876,20 +876,12 @@ fn build_extent_tree(
     while level.len() > 1 {
         let mut parent = Vec::new();
         for chunk in level.chunks(width) {
-            let children: Vec<_> = chunk
-                .iter()
-                .map(|summary| ExtentChild {
-                    first_offset: summary.first,
-                    end_offset: summary.end,
-                    page: summary.page,
-                })
-                .collect();
-            parent.push(Summary {
-                first: chunk[0].first,
-                end: chunk[chunk.len() - 1].end,
+            parent.push(ExtentChild {
+                first_offset: chunk[0].first_offset,
+                end_offset: chunk[chunk.len() - 1].end_offset,
                 page: put(
                     store,
-                    &ExtentPage::Internal(children),
+                    &ExtentPage::Internal(chunk.to_vec()),
                     u32::try_from(width)?,
                 )?,
             });

@@ -194,6 +194,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             project.clone(),
             stream_provider.clone(),
             reader,
+            None, None, #[cfg(not(target_arch = "wasm32"))] None,
         )?;
         let request = ForkRequest {
             authorized_source: None,
@@ -255,7 +256,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             .find(|grant| grant.reader == child_agent && grant.file == attachment_file)
             .ok_or_else(|| Error::Invalid("child attachment grant is missing".into()))?
             .capability()?;
-        aggregate.publish_fork_report(report, scope.clone()).await?;
+        aggregate.publish_fork_report(report, scope.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
         let child_head = host
             .resolve(&workspace_ref(
                 provider.clone(),
@@ -396,7 +397,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 maximum_events: 2,
                 maximum_bytes: 131_072,
             },
-        )
+         &mut None)
         .await?;
     assert_eq!(messages.as_slice(), conversation.messages());
     let before_merge = HistoryCursor {
@@ -419,7 +420,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                     maximum_events: 1,
                     maximum_bytes: 65_536,
                 },
-            )
+             &mut None)
             .await
             .is_err()
     );

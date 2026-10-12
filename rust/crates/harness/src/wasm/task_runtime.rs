@@ -591,14 +591,14 @@ impl WasmTaskRegistry {
         let identity = machine.identity();
         if !matches!(
             self.tasks
-                .get_version::<Value, Value>(&identity.name, &identity.version),
+                .get_version::<Value, Value>(&identity.name, &identity.version, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None),
             Err(Error::NotFound(_))
         ) {
             return Err(js_error(Error::Conflict(
                 "task version is already registered".into(),
             )));
         }
-        self.machines.register(machine).map_err(js_error)?;
+        self.machines.register(machine, &mut None).map_err(js_error)?;
         self.tasks.register(task).map_err(js_error)?;
         Ok(())
     }
@@ -636,7 +636,7 @@ impl WasmTaskRuntime {
             wasm_limits(options.limits).map_err(js_error)?,
         )
         .map_err(js_error)?
-        .with_run_limits(wasm_run_limits(options.run_limits).map_err(js_error)?)
+        .with_run_limits(wasm_run_limits(options.run_limits).map_err(js_error)?, &mut None)
         .map_err(js_error)?;
         let authority = IndexedDbAuthorityStore::open(
             &options.filesystem_database,
@@ -727,9 +727,7 @@ impl WasmTaskRuntime {
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             None,
             vec![Arc::new(
-                crate::filesystem::FilesystemResourceCreationProvider::new(
-                    filesystem.clone(), owner.issuer.clone(),
-                ).map_err(js_error)?,
+                crate::filesystem::FilesystemResourceCreationProvider::new(filesystem.clone(), &owner.issuer, #[cfg(not(target_arch = "wasm32"))] None).map_err(js_error)?,
             )],
             resumable_tools,
         )

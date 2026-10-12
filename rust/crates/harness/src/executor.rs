@@ -891,20 +891,6 @@ fn stock_context_prefix(
     })
 }
 
-fn stock_encode_json<T: Serialize>(
-    value: &T,
-    maximum: u64,
-    io: Option<&PreparationIo>,
-) -> Result<acyclic_stream::OwnedBytes> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        return io.encode(value, maximum, true);
-    }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    crate::contract::canonical_json_bytes(value).map(acyclic_stream::OwnedBytes::from)
-}
-
 fn stock_json_bound<T: Serialize>(
     value: &T,
     maximum: u64,
@@ -1008,7 +994,11 @@ impl StockExecution<'_> {
         if summary_output.is_none() {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary requires a caller-selected output token budget"));
         }
-        let source_bytes = stock_encode_json(&source, self.stock.limits.file_bytes, self.io())?;
+        let source_bytes: acyclic_stream::OwnedBytes = match self.io() {
+            #[cfg(feature = "filesystem")]
+            Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
+            _ => crate::contract::canonical_json_bytes(&source)?.into(),
+        };
         let source_digest = crate::model::hash_bytes(&source_bytes, self.io())?;
         let source_messages = u32::try_from(source.messages.len())
             .map_err(|_| stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary source exceeds portable message count"))?;
@@ -2703,7 +2693,15 @@ impl StockExecution<'_> {
                 };
                 match stock_append_if_tail(journal, operation_id, tail, &key, &event, self.io()).await
                 {
-                    Ok(true) => true,
+                    Ok(true) => {
+                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        if let Some(work) = self.native_work() {
+                            tool_context.as_ref().ok_or_else(|| stock_boundary(self.io(),
+                                crate::wire::ErrorCode::Unauthorized, "native tool acceptance has no issued context"))?
+                                .record_native_tool_acceptance(work)?;
+                        }
+                        true
+                    },
                     Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
                     }
@@ -3086,7 +3084,7 @@ pub(crate) async fn completed_tool_projection(
     crate::contract::validate_json_schema_value(&definition.output_schema, &result.value, "tool output", io)?;
     match limits {
         Some(limits) => stock_projection_content(definition, &projection, limits, io),
-        None => definition.validate_projection(&projection),
+        None => definition.validate_projection(&projection, Limits::default(), io),
     }
 }
 
@@ -3197,7 +3195,7 @@ fn validate_model_content_scope(
     let runtime = scope.and_then(RuntimeScope::extension_runtime);
     for (file, binding) in content.file_bindings() {
         if let Some(scope) = scope
-            && !preparation_read_granted(scope.grants(), file, io)? {
+            && !with_history_io(io, |work| crate::runtime::read_granted_with_work(scope.grants(), file, work))? {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read model content"));
         }
         if let Some(binding) = binding {
@@ -3309,7 +3307,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         _ => {
             #[cfg(feature = "filesystem")]
             { _committed_hold = None; }
-            history.pin(0).await?
+            history.pin(0, None).await?
         }
     };
     if cursor.authority != committed.authority {
@@ -3329,7 +3327,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
             let mut observer = crate::store::history::native_work_io(
                 io.original_native_work().expect("native branch retains original work"),
             ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            let selection = history.operation_event_bounded_with_work(
+            let selection = history.operation_event(
                 envelope.operation_id, maximum_history_bytes, &mut Some(&mut observer),
             ).await?;
             observer.return_staged_output()?;
@@ -3350,7 +3348,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         _ => {
             #[cfg(feature = "filesystem")]
             { _selection_hold = None; }
-            history.operation_event_bounded(envelope.operation_id, maximum_history_bytes).await?
+            history.operation_event(envelope.operation_id, maximum_history_bytes, &mut None).await?
         }
     };
     let selection = selection
@@ -3429,7 +3427,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
                 io.original_native_work().expect("native branch retains original work"),
             ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
             let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
-            let records = history.conversation_range_with_work(
+            let records = history.conversation_range(
                 cursor, after_sequence, through_sequence, range_limits, &mut work,
             ).await?;
             let (view, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut work)?;
@@ -3445,7 +3443,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
                 Some(io) => {
                     let before = io.owned_bytes()?;
                     let mut observer = io.history_io();
-                    let value = history.conversation_range_with_work(cursor, after_sequence,
+                    let value = history.conversation_range(cursor, after_sequence,
                         through_sequence, range_limits, &mut Some(&mut observer)).await?;
                     _records_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
                     value
@@ -3453,7 +3451,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
                 _ => {
                     #[cfg(feature = "filesystem")]
                     { _records_hold = None; }
-                    history.conversation_range(cursor, after_sequence, through_sequence, range_limits).await?
+                    history.conversation_range(cursor, after_sequence, through_sequence, range_limits, &mut None).await?
                 }
             };
             #[cfg(feature = "filesystem")]
@@ -3474,7 +3472,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
     #[cfg(feature = "filesystem")]
     if let Some(io) = io.filter(|io| !stock_is_native(Some(io))) {
         let bytes = (view.messages().len() * std::mem::size_of::<uuid::Uuid>()) as u64;
-        io.claim(bytes)?;
+        io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
     }
     let mut message_ids = if stock_is_native(io) {
@@ -3570,7 +3568,7 @@ struct CheckpointDeltaResolver<'a> {
 impl CheckpointDeltaResolver<'_> {
     fn authorize(&self, file: &FileRef, io: Option<&PreparationIo>) -> Result<()> {
         with_history_io(io, |work| self.limits.validate_file(file, work))?;
-        if !preparation_read_granted(self.scope.grants(), file, io)? {
+        if !with_history_io(io, |work| crate::runtime::read_granted_with_work(self.scope.grants(), file, work))? {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized,
                 "attenuated task cannot read checkpoint delta"));
         }
@@ -3665,7 +3663,7 @@ pub async fn load_canonical_checkpoint(
     for file in retained.metadata.values() {
         with_history_io(io, |work| limits.validate_file(file, work))?;
         if let Some(scope) = scope
-            && !preparation_read_granted(scope.grants(), file, io)?
+            && !with_history_io(io, |work| crate::runtime::read_granted_with_work(scope.grants(), file, work))?
         {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read checkpoint metadata"));
         }
@@ -3742,12 +3740,6 @@ pub(crate) async fn load_model_request(
     #[cfg(feature = "filesystem")]
     let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
     crate::model::PreparedModelRequest::decode(&bytes, limits, io)
-}
-
-fn preparation_read_granted(
-    grants: &crate::Capabilities, file: &FileRef, io: Option<&PreparationIo>,
-) -> Result<bool> {
-    with_history_io(io, |work| crate::runtime::read_granted_with_work(grants, file, work))
 }
 
 #[cfg(feature = "filesystem")]
@@ -3840,14 +3832,14 @@ pub(crate) async fn load_json<'a, T: PreparationRecord>(
         {
             let parsed = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
             let _canonical_hold;
-            let canonical = io.encode(&parsed.value, bytes.len() as u64, true)?;
+            let canonical = io.encode(&parsed.0, bytes.len() as u64, true)?;
             _canonical_hold = io.guard_bytes(&canonical)?;
             if canonical.as_ref() != bytes.as_ref() {
                 return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,
                     "execution journal JSON is not canonical"));
             }
         }
-        let (value, hold) = io.decode_preparation::<T>(&bytes, crate::wire::ErrorCode::Storage)?.into_parts();
+        let (value, hold) = io.decode_preparation::<T>(&bytes, crate::wire::ErrorCode::Storage)?;
         return Ok(LoadedPreparation { value, hold: Some(hold), marker: std::marker::PhantomData });
     }
     Ok(LoadedPreparation {
@@ -3893,7 +3885,7 @@ impl ModelEventAdmission {
         }
         let mut calls = state.calls;
         for call_id in &calls {
-            ToolInvocation::validate_identity(call_id, "admitted.tool")?;
+            ToolInvocation::validate_identity(call_id, Some("admitted.tool"), &mut None)?;
         }
         calls.sort_unstable();
         calls.dedup();
@@ -3932,7 +3924,8 @@ impl ModelEventAdmission {
         }
         match event {
             ModelEvent::ToolCall { call_id, name, .. } => {
-                ToolInvocation::validate_identity_with_io(call_id, name, io)?;
+                crate::executor::with_history_io(io, |work|
+                    ToolInvocation::validate_identity(call_id, Some(name), work))?;
                 if self.calls.len() >= limits.tool_calls_per_step {
                     return Err(stock_boundary(
                         io, crate::wire::ErrorCode::Invalid,
@@ -4030,9 +4023,6 @@ impl ModelEventAdmission {
         Ok(())
     }
 
-    pub(crate) const fn completed(&self) -> bool {
-        self.completed
-    }
 }
 
 #[cfg(test)]
@@ -4046,6 +4036,15 @@ mod tests {
     ) -> StockExecutor {
         StockExecutor::new(model, provider, context, tools)
             .with_compaction_policy(crate::context::CompactionPolicy::Disabled)
+    }
+
+    fn fixture_token_count(request: &crate::model::PreparedModelRequest) -> Result<crate::context::ModelTokenCount> {
+        Ok(crate::context::ModelTokenCount {
+            request_digest: request.request_digest(),
+            fixed_tokens: u32::try_from(request.bytes().len())
+                .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
+            message_tokens: vec![0; request.request().messages.len()],
+        })
     }
 
     #[derive(Default)]
@@ -4671,7 +4670,6 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    /// Emits the slip seen in production â€” `parameters` where the pinned schema says `arguments` â€” then a well-formed call once it has been told what was wrong.
     struct SlippingModel {
         calls: AtomicUsize,
         requests: Mutex<Vec<ModelRequest>>,
@@ -4877,7 +4875,7 @@ mod tests {
         let narrowed = scope.with_run_limits(crate::runtime::TaskRunLimits {
             max_steps: Some(1),
             ..Default::default()
-        })?;
+        }, &mut None)?;
         let retargeted = executor.clone().with_tool_authority(narrowed, None)?;
         let reads = journal.3.load(Ordering::SeqCst);
         assert!(matches!(
@@ -4919,12 +4917,7 @@ mod tests {
             &self,
             request: &crate::model::PreparedModelRequest,
         ) -> Result<crate::context::ModelTokenCount> {
-            Ok(crate::context::ModelTokenCount {
-                request_digest: request.request_digest(),
-                fixed_tokens: u32::try_from(request.bytes().len())
-                    .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
-                message_tokens: vec![0; request.request().messages.len()],
-            })
+            fixture_token_count(request)
         }
 
         fn generate<'a>(
@@ -4989,12 +4982,7 @@ mod tests {
             &self,
             request: &crate::model::PreparedModelRequest,
         ) -> Result<crate::context::ModelTokenCount> {
-            Ok(crate::context::ModelTokenCount {
-                request_digest: request.request_digest(),
-                fixed_tokens: u32::try_from(request.bytes().len())
-                    .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
-                message_tokens: vec![0; request.request().messages.len()],
-            })
+            fixture_token_count(request)
         }
 
         fn generate<'a>(
@@ -6024,7 +6012,8 @@ mod tests {
                 "call-1".into(),
                 "example.echo".into(),
                 json!({"value":"hello"}),
-            );
+                None,
+            )?;
             for _ in 0..2 {
                 assert!(
                     matches!(executor.execute_progress(input.clone(), &journal).await?, StockTurnProgress::Pending(operation) if operation == invocation.operation_id)
@@ -6398,7 +6387,8 @@ mod tests {
             "call-1".into(),
             "example.echo".into(),
             json!({"value": "changed"}),
-        );
+            None,
+        )?;
         assert!(matches!(
             StockExecution::ordinary(&executor).resolve_tool_call(
                     &journal,
@@ -6843,7 +6833,8 @@ mod tests {
                 "call".into(),
                 definition.name.clone(),
                 json!({}),
-            );
+                None,
+            )?;
             let invocation_ref = stage_json(&journal, operation, "invocation", &invocation, None).await?;
             let result = stage_json(&journal, operation, "result", &ToolResult { value: canonical }, None)
             .await?;
@@ -7296,33 +7287,6 @@ mod tests {
         assert_eq!(second_entry.sequence, 1);
         Ok(())
     }
-    async fn admitted_binding_context(scope: RuntimeScope) -> Result<crate::runtime::TaskContext> {
-        let captured = Arc::new(Mutex::new(None));
-        let sink = captured.clone();
-        let mut tasks = crate::runtime::TaskRegistry::default();
-        tasks.register(crate::runtime::TaskDefinition::live(
-            "context-probe",
-            "1",
-            move |context, _: ()| {
-                let sink = sink.clone();
-                async move {
-                    *sink.lock().unwrap() = Some(context);
-                    Ok(())
-                }
-            },
-        )?)?;
-        let harness =
-            crate::runtime::AgentHarness::new(tasks, ToolRegistry::new(), scope, 1, None)?;
-        let definition = harness.task::<(), ()>("context-probe@1")?;
-        harness.spawn(&definition, ()).await?.result().await?;
-        let context = captured
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or_else(|| Error::Invalid("admitted context missing".into()))?;
-        Ok(context)
-    }
-
     #[tokio::test]
     async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Result<()> {
         let wide = RuntimeScope::new(
@@ -7393,7 +7357,7 @@ mod tests {
             ]),
             Limits::default(),
         )?;
-        let context = admitted_binding_context(scope.clone()).await?;
+        let context = capture_admitted_context(scope.clone()).await?;
         let tool = crate::tool::files::write_file()?;
         let mut tools = ToolRegistry::new();
         tools.register(tool)?;
@@ -7451,12 +7415,7 @@ mod tests {
                 &self,
                 request: &crate::model::PreparedModelRequest,
             ) -> Result<crate::context::ModelTokenCount> {
-                Ok(crate::context::ModelTokenCount {
-                    request_digest: request.request_digest(),
-                    fixed_tokens: u32::try_from(request.bytes().len())
-                        .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
-                    message_tokens: vec![0; request.request().messages.len()],
-                })
+                fixture_token_count(request)
             }
 
             fn generate<'a>(

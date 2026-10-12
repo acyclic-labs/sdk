@@ -1585,7 +1585,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "project_merge_receipt" => {
             let value: ProjectMergeReceipt = from_js(value)?;
-            value.validate_shape().map_err(js_error)?;
+            value.validate_shape(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "limits" => {
@@ -2564,14 +2564,14 @@ struct WasmToolResultInput {
 #[wasm_bindgen(js_name = validateToolDefinition)]
 pub fn validate_tool_definition(definition: JsValue) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
-    definition.validate().map_err(js_error)
+    definition.validate(&mut None).map_err(js_error)
 }
 
 /// Validates one tool invocation against its registered definition.
 #[wasm_bindgen(js_name = validateToolInvocation)]
 pub fn validate_tool_invocation(definition: JsValue, invocation: JsValue) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
-    definition.validate().map_err(js_error)?;
+    definition.validate(&mut None).map_err(js_error)?;
     let invocation: WasmToolInvocationInput = from_js(invocation)?;
     if invocation.call_id.is_empty() || invocation.name != definition.name {
         return Err(JsValue::from_str(
@@ -2590,7 +2590,7 @@ pub fn validate_tool_invocation(definition: JsValue, invocation: JsValue) -> Res
 #[wasm_bindgen(js_name = validateToolResult)]
 pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
-    definition.validate().map_err(js_error)?;
+    definition.validate(&mut None).map_err(js_error)?;
     let result: WasmToolResultInput = from_js(result)?;
     validate_value(&definition.output_schema, &result.value, "tool output", None).map_err(js_error)
 }
@@ -2603,12 +2603,12 @@ pub fn validate_tool_projection(
     #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
 ) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
-    definition.validate().map_err(js_error)?;
+    definition.validate(&mut None).map_err(js_error)?;
     let projection: serde_json::Value = from_js(projection)?;
     let limits: Limits = from_js(limits)?;
     definition
-        .validate_projection(&projection)
-        .and_then(|content| content.validate_limits(limits, &mut None))
+        .validate_projection(&projection, limits, None)
+        .map(drop)
         .map_err(js_error)
 }
 
@@ -2773,12 +2773,13 @@ pub fn project_discovered_context(
     let snapshot: crate::context::DiscoveredContext = from_js(snapshot)?;
     let context: crate::context::Context = from_js(context)?;
     let placement: crate::context::ContextPlacement = from_js(placement)?;
+    let limits = from_js(limits)?;
     let context = crate::context::apply_context_projection(
         context,
-        snapshot.messages().map_err(js_error)?,
+        snapshot.messages(limits, None).map_err(js_error)?,
         crate::context::ContextRenderMode::Prompt,
         placement,
-        from_js(limits)?,
+        limits,
     )
     .map_err(js_error)?;
     context_to_js(&context)

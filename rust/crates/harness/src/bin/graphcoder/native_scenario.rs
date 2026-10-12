@@ -122,7 +122,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         "tool:call:acyclic.edit_file".to_owned(),
         private.capability(VolumeOperation::Read, &mut None)?, private.capability(VolumeOperation::Write, &mut None)?,
         project.capability(VolumeOperation::Read, &mut None)?, project.capability(VolumeOperation::Write, &mut None)?,
-        project.directory_read_capability("")?,
+        project.directory_read_capability("", &mut None)?,
     ]);
     let scope = issuer.issue("explicit-trusted-local-bootstrap", &grants, Some(seed_agent), None, &mut None).expect("scope proof");
     let mut owner = AuthorityBinding { authority, issuer: ISSUER.into(), key: TEST_KEY, scope };
@@ -164,7 +164,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     files.create_volume(&private).await?;
     files.create_volume(&project).await?;
     // Known qualification prompts are real provider-owned command artifacts.
-    let project_writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &owner.scope, &project, VolumeOperation::Write)?;
+    let project_writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &owner.scope, &project, VolumeOperation::Write, u64::MAX, &mut None)?;
     let mut planned_commands = BTreeMap::new();
     let mut planned_inputs = BTreeMap::new();
     let mut artifact_grants = owner.scope.capabilities().iter().map(str::to_owned).collect::<Vec<_>>();
@@ -191,12 +191,12 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     tasks.register(stock.definition()?)?;
     tasks.register(preparation.definition()?)?;
     let mut machines = MachineRegistry::default();
-    machines.register(stock)?;
-    machines.register(preparation)?;
-    let creator = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), issuer.clone())?);
+    machines.register(stock, &mut None)?;
+    machines.register(preparation, &mut None)?;
+    let creator = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
     let runtime = Runtime::open_with_creation_providers(
         stream.clone(), files.clone(), private.clone(), issuer.verifier(&mut None).expect("verifier copy"), owner.scope.clone(),
-        RuntimeScope::new(owner.scope.capabilities().clone(), limits)?.with_run_limits(run_limits)?,
+        RuntimeScope::new(owner.scope.capabilities().clone(), limits)?.with_run_limits(run_limits, &mut None)?,
         tasks, machines, Default::default(), config.session_limits, config.concurrency,
         PAYLOAD_BYTES, Arc::new(SystemUnixMillisClock), None, vec![creator], Default::default(),
     ).await?;
@@ -214,7 +214,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let mut aggregate = aggregate(&stream, files.clone(), &owner, &config).await?;
     aggregate.execute(Command { operation_id: OperationId::new(), idempotency_key: IdempotencyKey::new("bind-bootstrap")?,
         expected_revision: 0, scope: owner.scope.clone(), causal_parent: None,
-        action: Action::BindConversation { agent: seed_agent } }).await?;
+        action: Action::BindConversation { agent: seed_agent } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let mut seed = Caller { task: seed_task, binding: owner, project, private, result: None,
         aggregate, lease: seed_lease };
     let mut producer = Producer { root: root.clone(), files, stream, runtime, config, template,
@@ -248,7 +248,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     // Authenticated foreign project selection only.
     producer.fork(&mut left, "cross_source", Some(logical_root.task), false).await?;
     let left_issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, left.binding.authority.clone());
-    let notice_writer = ContentGrant::verify(&left_issuer.verifier(&mut None).expect("verifier copy"), &left.binding.scope, &left.private, VolumeOperation::Write)?;
+    let notice_writer = ContentGrant::verify(&left_issuer.verifier(&mut None).expect("verifier copy"), &left.binding.scope, &left.private, VolumeOperation::Write, u64::MAX, &mut None)?;
     let notice_file = producer.files.put_content(&left.private, &notice_writer, "merge/selected-grandchild.txt",
         b"Explicit caller notice: import the selected immutable grandchild project; do not import private scratch.\n",
         "text/plain", "merge-notice.txt", PAYLOAD_BYTES, &IdempotencyKey::new("left-grandchild-merge-notice")?).await?;
@@ -427,7 +427,7 @@ impl Producer {
             environment: Default::default(), timeout_ms: 5000, control_timeout_ms: 1000,
             cancellation_poll_ms: 20, maximum_output_bytes: 1024, maximum_result_bytes: 16 * 1024,
             mcp_stdio: None, standard_input: None, view: view.manifest().clone() };
-        let writer = ContentGrant::verify(&verifier, &caller.binding.scope, &caller.private, VolumeOperation::Write)?;
+        let writer = ContentGrant::verify(&verifier, &caller.binding.scope, &caller.private, VolumeOperation::Write, u64::MAX, &mut None)?;
         let request_file = self.files.put_content(&caller.private, &writer, "command/request.json",
             &serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?,
             "application/json", "request.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-request")?).await?;
@@ -454,7 +454,7 @@ impl Producer {
 
     async fn seed(&mut self, caller: &mut Caller, label: &str, messages: usize) -> Result<()> {
         let issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, caller.binding.authority.clone());
-        let writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &caller.binding.scope, &caller.private, VolumeOperation::Write)?;
+        let writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &caller.binding.scope, &caller.private, VolumeOperation::Write, u64::MAX, &mut None)?;
         let scratch = self.files.put_content(&caller.private, &writer, "scratch/caller-marker.txt",
             format!("{label} private scratch; must never be copied as child scratch\n").as_bytes(),
             "text/plain", "caller-marker.txt", PAYLOAD_BYTES,
@@ -476,10 +476,10 @@ impl Producer {
                 causal_parent: None, action: Action::AppendConversationMessage {
                     message: Box::new(ConversationMessage { id: uuid::Uuid::new_v4(), sequence,
                         kind: MessageKind::User, content: file, attachments: Default::default(),
-                        reply_to: None, tool_call_id: None, extensions: Default::default() }) } }).await?;
+                        reply_to: None, tool_call_id: None, extensions: Default::default() }) } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
         }
         let project_writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &caller.binding.scope,
-            &caller.project, VolumeOperation::Write)?;
+            &caller.project, VolumeOperation::Write, u64::MAX, &mut None)?;
         let before = self.files.put_content(&caller.project, &project_writer, "sentinel.txt",
             format!("{label} project baseline\n").as_bytes(), "text/plain", "sentinel.txt", PAYLOAD_BYTES,
             &IdempotencyKey::new(format!("{label}-project-baseline"))?).await?;
@@ -696,7 +696,7 @@ async fn claim(runtime: &Runtime, task: TaskId, worker: &Worker) -> Result<WorkL
         WorkPull::Idle => return Err(Error::Conflict(format!("qualification task {task} has no owner lease"))),
         WorkPull::Unresolved { error, .. } => return Err(error),
     };
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     Ok(lease)
 }
 

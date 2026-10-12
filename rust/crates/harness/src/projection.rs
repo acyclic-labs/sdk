@@ -538,7 +538,7 @@ fn projection_step(io: Option<&crate::executor::PreparationIo>, items: u64) -> R
 fn projection_allocation(bytes: u64, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        io.claim(bytes)?;
+        io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
     }
     let _ = (bytes, io);
@@ -633,7 +633,7 @@ fn validate_projection_tool_identity(
         return Ok(());
     }
     let _ = io;
-    ToolInvocation::validate_identity(call_id, name)
+    ToolInvocation::validate_identity(call_id, Some(name), &mut None)
 }
 
 struct ProjectionIndex<'a, T> {
@@ -688,8 +688,6 @@ impl<'a, T> ProjectionIndex<'a, T> {
 enum ProjectionAttachments<'a> {
     Borrowed(&'a [Attachment]),
     Owned(Vec<Attachment>, Option<crate::conversation::ContentHold<'a>>),
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    Native(Vec<Attachment>, acyclic_fs::NativeAllocation),
 }
 
 impl ProjectionAttachments<'_> {
@@ -697,8 +695,6 @@ impl ProjectionAttachments<'_> {
         match self {
             Self::Borrowed(items) => items,
             Self::Owned(items, _) => items,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::Native(items, _) => items,
         }
     }
 }
@@ -717,9 +713,8 @@ impl ProjectionAttachments<'_> {
             parts.push(ModelContentPart::File { file, policy });
             Ok(())
         };
-        // Declare custody first so attachment storage drops before its guard.
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut custody = None;
+        // Both holds outlive the manifest data, including on early failure.
+        let source_hold;
         let _hold;
         let items = match self {
             Self::Borrowed(items) => {
@@ -730,29 +725,26 @@ impl ProjectionAttachments<'_> {
                 }
                 return Ok(());
             }
-            Self::Owned(items, hold) => { _hold = hold; items },
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::Native(items, guard) => { custody = Some(guard); items }
+            Self::Owned(items, hold) => { source_hold = hold; items },
         };
-        #[allow(unused_mut)]
-        let mut move_files = io.is_none();
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(custody) = custody.as_mut() {
-            move_files = io.and_then(crate::executor::PreparationIo::original_native_work)
-                .is_some_and(|work| work.shares_ledger(custody.work()));
-            if move_files {
-                let io = io.expect("same-ledger output owner");
-                let mut retained = 0_u64;
-                for attachment in items.iter().take(count) {
-                    projection_step(Some(io), 1)?;
-                    retained = retained.checked_add(attachment.file.logical_owned_bytes()?)
-                        .ok_or_else(|| projection_invalid(Some(io), "projected file ownership overflows"))?;
-                }
-                let output = custody.split_off(retained)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                io.absorb_native_custody(output)?;
+        let move_files = if let Some(io) = io.filter(|io| io.uses_native_work()) {
+            let hold = source_hold.as_ref().expect("native manifest retains ownership");
+            let mut retained = 0_u64;
+            for attachment in items.iter().take(count) {
+                projection_step(Some(io), 1)?;
+                retained = retained.checked_add(attachment.file.logical_owned_bytes()?)
+                    .ok_or_else(|| projection_invalid(Some(io), "projected file ownership overflows"))?;
             }
-        }
+            let discarded = hold.bytes().checked_sub(retained)
+                .ok_or_else(|| projection_invalid(Some(io), "projected files exceed manifest ownership"))?;
+            // Manifest and output use the same projection observer.
+            _hold = Some(io.guard_owned(discarded)?);
+            source_hold.expect("checked manifest ownership").into_retained();
+            true
+        } else { _hold = source_hold; io.is_none() };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let move_files = { _hold = source_hold; io.is_none() };
         for attachment in items.into_iter().take(count) {
             projection_step(io, 1)?;
             validate_projection_attachment(&attachment, io)?;
@@ -788,24 +780,8 @@ async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized
             if *item_count as usize > maximum_attachments {
                 return Err(projection_invalid(io, "selected message exceeds attachment projection limit"));
             }
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let native = io.and_then(crate::executor::PreparationIo::original_native_work);
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let loaded = if native.is_some() {
-                let (value, hold) = crate::conversation::load_manifest(resolver, manifest, *item_count, io).await?;
-                let hold = hold.expect("native manifest retains ownership");
-                let custody = io.expect("native manifest observer").take_native_custody(hold.bytes())?;
-                hold.into_retained();
-                ProjectionAttachments::Native(value, custody)
-            } else {
-                let (items, hold) = crate::conversation::load_manifest(resolver, manifest, *item_count, io).await?;
-                ProjectionAttachments::Owned(items, hold)
-            };
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let loaded = {
-                let (items, hold) = crate::conversation::load_manifest(resolver, manifest, *item_count, io).await?;
-                ProjectionAttachments::Owned(items, hold)
-            };
+            let (items, hold) = crate::conversation::load_manifest(resolver, manifest, *item_count, io).await?;
+            let loaded = ProjectionAttachments::Owned(items, hold);
             if loaded.as_slice().len() != *item_count as usize {
                 return Err(projection_invalid(io, "attachment manifest count does not match its declared count"));
             }
@@ -825,7 +801,7 @@ async fn read_projected_invocation<R: ContentResidencyVerifier + ?Sized>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let parsed = read_projection_value(resolver, file, maximum_bytes, io).await?;
-        let (value, custody) = convert_projection_value(parsed.into_parts(), maximum_bytes, io)?;
+        let (value, custody) = convert_projection_value(parsed, maximum_bytes, io)?;
         custody.into_retained();
         return Ok(value);
     }
@@ -840,7 +816,7 @@ async fn read_projected_tool_result<R: ContentResidencyVerifier + ?Sized>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let parsed = read_projection_value(resolver, file, maximum_bytes, io).await?;
-        let intermediate = convert_projection_value::<serde_json::Value>(parsed.into_parts(), maximum_bytes, io)?;
+        let intermediate = convert_projection_value::<serde_json::Value>(parsed, maximum_bytes, io)?;
         let (value, custody) = convert_projection_value(intermediate, maximum_bytes, io)?;
         custody.into_retained();
         return Ok(value);
@@ -983,7 +959,7 @@ fn convert_projection_value<'a, T: crate::filesystem::UploadRecord>(
 async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     resolver: &R, file: &FileRef, maximum_bytes: u64,
     io: &'io crate::executor::PreparationIo,
-) -> Result<crate::filesystem::ReservedDecoded<'io, serde_json::Value>> {
+) -> Result<(serde_json::Value, crate::filesystem::DecodeReservation<'io>)> {
     io.check_cancellation()?;
     if file.descriptor().media_type() != "application/json"
         || file.descriptor().byte_length() > maximum_bytes
@@ -1002,7 +978,7 @@ async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     let parsed = io.decode_preparation::<serde_json::Value>(
         &bytes, crate::wire::ErrorCode::Invalid,
     )?;
-    validate_model_json_numbers(&parsed.value, Some(io))?;
+    validate_model_json_numbers(&parsed.0, Some(io))?;
     Ok(parsed)
 }
 
@@ -1059,7 +1035,6 @@ fn validate_model_json_numbers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_stream::BoxProviderFuture as BoxFuture;
     use crate::conversation::{
         ConversationMessage, FileDescriptor, VolumeClass, VolumeOwner, VolumeRef,
     };
@@ -1072,31 +1047,22 @@ mod tests {
 
     #[derive(Default)]
     struct Resolver {
-        items: Vec<Attachment>,
         calls: AtomicUsize,
         bytes: Vec<u8>,
     }
 
     impl ContentResidencyVerifier for Resolver {
-        fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async { Err(Error::Unsupported("projection-only reader".into())) })
+        fn read<'a>(&'a self, _file: &'a FileRef, _maximum_bytes: u64,
+            io: Option<&'a crate::executor::PreparationIo>)
+            -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(self.bytes.clone().into())
+            })
         }
-
-        fn load_manifest<'a>(
-            &'a self,
-            _manifest: &'a FileRef,
-            _item_count: u32,
-        ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Ok(self.items.clone()) })
-        }
-        fn read<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-            Box::pin(async { Ok(self.bytes.clone().into()) })
-        }
-
     }
 
-    fn file(agent: AgentId, path: &str, media_type: &str) -> Result<FileRef> {
+    fn file(agent: AgentId, path: &str, media_type: &str, bytes: &[u8]) -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("test", "filesystem", "2")?,
@@ -1106,7 +1072,7 @@ mod tests {
             )?,
             (path).into(),
             "v1".into(),
-            FileDescriptor::from_bytes(b"data", media_type, &mut None)?,
+            FileDescriptor::from_bytes(bytes, media_type, &mut None)?,
             "data".into(), &mut None
         )
     }
@@ -1136,7 +1102,7 @@ mod tests {
         let agent = AgentId::new();
         let mut conversation = ConversationState::default();
         conversation.bind(agent)?;
-        let content = file(agent, "message.txt", "text/plain")?;
+        let content = file(agent, "message.txt", "text/plain", b"data")?;
         for _ in 0..5_000 {
             let user =
                 append_history_message(&mut conversation, &content, MessageKind::User, None)?;
@@ -1162,7 +1128,7 @@ mod tests {
             ..Limits::default()
         };
         assert!(select_turn_delta(&conversation, &current, true, None, limits).is_err());
-        let payload = file(agent, "source.json", "application/json")?;
+        let payload = file(agent, "source.json", "application/json", b"data")?;
         let checkpoint = crate::context::CanonicalContextCheckpoint {
             operation_id: crate::OperationId::new(),
             selection: ModelContextSelection {
@@ -1171,7 +1137,7 @@ mod tests {
                     conversation.messages[9_996].id,
                     conversation.messages[9_997].id,
                 ],
-                checkpoint: Some(file(agent, "previous-checkpoint.json", "application/json")?),
+                checkpoint: Some(file(agent, "previous-checkpoint.json", "application/json", b"data")?),
             },
             source: payload.clone(),
             retained: payload.clone(),
@@ -1247,38 +1213,24 @@ mod tests {
     {
         let agent = AgentId::new();
         let id = Uuid::new_v4();
-        let mut conversation = ConversationState::default();
-        conversation.bind(agent)?;
-        conversation.append(ConversationMessage {
-            id,
-            sequence: 1,
-            kind: MessageKind::User,
-            content: file(agent, "message.txt", "text/plain")?,
+        let attachment = Attachment { file: file(agent, "image.png", "image/png", b"data")?, label: None };
+        let bytes = crate::conversation::encode_attachment_manifest(&[attachment.clone()])?;
+        let mut message = ConversationMessage {
+            id, sequence: 1, kind: MessageKind::User,
+            content: file(agent, "message.txt", "text/plain", b"data")?,
             attachments: ReferencedAttachments::Manifest {
-                manifest: file(
-                    agent,
-                    "manifest.json",
-                    "application/vnd.acyclic.harness.attachments+json",
-                )?,
+                manifest: file(agent, "manifest.json", "application/vnd.acyclic.harness.attachments+json", &bytes)?,
                 item_count: 2,
             },
-            reply_to: None,
-            tool_call_id: None,
-            extensions: BTreeMap::new(),
-        }, &mut None)?;
+            reply_to: None, tool_call_id: None, extensions: BTreeMap::new(),
+        };
+        let mut conversation = ConversationState::default();
+        conversation.bind(agent)?;
+        conversation.append(message.clone(), &mut None)?;
         let selection = ModelContextSelection {
-            checkpoint: None,
-            conversation_revision: 1,
-            message_ids: vec![id],
+            checkpoint: None, conversation_revision: 1, message_ids: vec![id],
         };
-        let attachment = Attachment {
-            file: file(agent, "image.png", "image/png")?,
-            label: None,
-        };
-        let resolver = Resolver {
-            items: vec![attachment.clone()],
-            ..Resolver::default()
-        };
+        let resolver = Resolver { bytes, ..Resolver::default() };
         assert!(
             select_model_context(
                 &conversation,
@@ -1311,10 +1263,14 @@ mod tests {
             .is_err()
         );
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
-        let resolver = Resolver {
-            items: vec![attachment.clone(), attachment],
-            ..Resolver::default()
+        let bytes = crate::conversation::encode_attachment_manifest(&[attachment.clone(), attachment])?;
+        message.attachments = ReferencedAttachments::Manifest {
+            manifest: file(agent, "manifest.json", "application/vnd.acyclic.harness.attachments+json", &bytes)?, item_count: 2,
         };
+        let mut conversation = ConversationState::default();
+        conversation.bind(agent)?;
+        conversation.append(message, &mut None)?;
+        let resolver = Resolver { bytes, ..Resolver::default() };
         let projected =
             select_model_context(&conversation, (&conversation).logical_revision(), selection, &resolver, 256, 2, 128 * 1024, 2, None).await?;
         assert_eq!(projected.messages.len(), 1);
@@ -1325,18 +1281,7 @@ mod tests {
     #[tokio::test]
     async fn json_projection_checks_resolved_bytes_before_parsing() -> Result<()> {
         let agent = AgentId::new();
-        let reference = FileRef::new(
-            VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
-                "private".into(),
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(agent), &mut None
-            )?,
-            "tool.json".into(),
-            "v1".into(),
-            FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
-            "tool.json".into(), &mut None
-        )?;
+        let reference = file(agent, "tool.json", "application/json", b"{}")?;
         let oversized_len = 1_025;
         let resolver = Resolver {
             bytes: vec![0; oversized_len],
@@ -1363,7 +1308,7 @@ mod tests {
                 ..Default::default()
             },
             &acyclic_fs::CancellationToken::new(),
-        ).map_err(|cause| Error::NativeWork { cause, custody: None })
+        ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1374,34 +1319,25 @@ mod tests {
             native: AtomicUsize,
         }
         impl ContentResidencyVerifier for NativeResolver {
-        fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async { Err(Error::Unsupported("projection-only reader".into())) })
-        }
-
-            fn load_manifest<'a>(
-                &'a self, _: &'a FileRef, _: u32,
-            ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-                self.ordinary.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async { Ok(Vec::new()) })
+            fn supports_read(&self, _volume: &VolumeRef, io: Option<&crate::executor::PreparationIo>) -> Result<bool> {
+                if let Some(io) = io { io.check_cancellation()?; }
+                Ok(true)
             }
-            fn load_manifest_with_native_work<'a>(
-                &'a self, _: &'a FileRef, _: u32,
-                work: &'a acyclic_fs::NativeMaterializationWork,
-            ) -> Result<crate::NativeFutureBundle<'a, (Vec<Attachment>, acyclic_fs::NativeAllocation)>> {
-                crate::NativeFutureBundle::new(work, || async move {
-                    self.native.fetch_add(1, Ordering::SeqCst);
-                    let custody = work.retain_owned(0)
-                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    Ok((Vec::new(), custody))
+            fn read<'a>(&'a self, _: &'a FileRef, _: u64, io: Option<&'a crate::executor::PreparationIo>)
+                -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+                crate::conversation::BoundedContentFuture::new(io, || async move {
+                    let counter = if io.is_some_and(|io| io.uses_native_work()) { &self.native } else { &self.ordinary };
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(acyclic_stream::OwnedBytes::from_static(b"[]"))
                 })
             }
         }
         let agent = AgentId::new();
         let message = ConversationMessage {
             id: Uuid::new_v4(), sequence: 1, kind: MessageKind::User,
-            content: file(agent, "message.txt", "text/plain")?,
+            content: file(agent, "message.txt", "text/plain", b"data")?,
             attachments: ReferencedAttachments::Manifest {
-                manifest: file(agent, "manifest.json", "application/vnd.acyclic.harness.attachments+json")?,
+                manifest: file(agent, "manifest.json", "application/vnd.acyclic.harness.attachments+json", b"[]")?,
                 item_count: 1,
             },
             reply_to: None, tool_call_id: None, extensions: BTreeMap::new(),

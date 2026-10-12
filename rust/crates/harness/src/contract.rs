@@ -420,7 +420,7 @@ pub(crate) fn preparation_format(
                 if length > self.text.capacity() {
                     let growth = length.checked_sub(self.text.capacity())
                         .ok_or_else(|| Error::Invalid("schema diagnostic capacity underflow".into()))?;
-                    self.io.claim(growth as u64)?;
+                    self.io.retain_owned(growth as u64)?;
                     self.held += growth as u64;
                     self.io.allocation_attempt(growth as u64)?;
                     self.text.try_reserve_exact(length - self.text.len())
@@ -435,7 +435,7 @@ pub(crate) fn preparation_format(
                             Error::Allocation(cause)
                         })?;
                     let extra = self.text.capacity().saturating_sub(length) as u64;
-                    self.io.claim(extra)?;
+                    self.io.retain_owned(extra)?;
                     self.held += extra;
                 }
                 self.text.push_str(text);

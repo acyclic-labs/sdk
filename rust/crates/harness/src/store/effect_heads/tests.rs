@@ -49,7 +49,7 @@ async fn publish_lifecycle(
     let mut indexed = operations::IndexedPublication::new(
         reducer.authority(),
         &event,
-        crate::wire_codec::encode_event(reducer.authority(), &event)?,
+        crate::wire_codec::encode_event(reducer.authority(), &event, &mut None)?,
      &mut None)?;
     publication_with_work(
         client,
@@ -131,8 +131,8 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         1,
         1_000_000, &mut None)
     .await?;
-    assert_eq!(selected.head, None);
-    let exact = selected.consumed_bytes;
+    assert_eq!(selected.0, None);
+    let exact = selected.1;
     publish_lifecycle(&client, &mut reducer, 2).await?;
     assert_eq!(
         select_with_work(
@@ -143,7 +143,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
             1,
             exact, &mut None)
         .await?
-        .consumed_bytes,
+        .1,
         exact
     );
     assert!(matches!(
