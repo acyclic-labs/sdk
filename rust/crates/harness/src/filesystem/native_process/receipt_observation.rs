@@ -14,7 +14,7 @@ pub(super) fn receipt_path(
         bytes_copied: PREFIX.len() as u64,
         bytes_encoded: 36,
         items_examined: bytes.len() as u64,
-        ..WorkCounters::UNCHARGED
+        ..Default::default()
     };
     work.admit(completed)?;
     bytes[..PREFIX.len()].copy_from_slice(PREFIX);
@@ -141,7 +141,7 @@ fn decode(bytes: &[u8], io: &super::super::PreparationIo,
 ) -> Result<Receipt> {
     if bytes.len() > acyclic_stream::MAX_RECORD_BYTES { return Err(receipt_error("native receipt exceeds Stream limit")); }
     let decoded = io.decode_preparation::<Receipt>(bytes, crate::wire::ErrorCode::Storage)?;
-    let (receipt, mut payload) = decoded.into_native_parts()?;
+    let (receipt, mut payload) = crate::filesystem::native_decoded(decoded)?;
     payload.substitute(receipt_bytes(&receipt)?)?;
     custody.absorb(&mut payload)?;
     Ok(receipt)
@@ -159,15 +159,15 @@ pub(super) async fn read<P: StreamProvider>(
     let mut observer = Some(&mut history_io as &mut dyn crate::store::history::HistoryIo);
     let bounds = match crate::store::operations::bounds_with_work(&client, path, &mut observer).await? {
         Ok(bounds) => bounds,
-        Err(error) if matches!(error.source(), StreamError::NotFound) => return Ok(None),
-        Err(error) => return Err(error.into_error(&observer)),
+        Err(error) if matches!(crate::distributed::sdk_source(&error), StreamError::NotFound) => return Ok(None),
+        Err(error) => return Err(crate::distributed::sdk_error(error, &observer)),
     };
     check(work)?;
     if !(1..=2).contains(&bounds.tail) { return Err(receipt_error("invalid native receipt length")); }
     let stream = crate::store::operations::stream_with_work(&client, path, &mut observer)?;
     let mut records = crate::store::operations::read_records_with_work(
         &client, &stream.stream, 0, bounds.tail as u32, &mut observer,
-    ).await?.map_err(|error| error.into_error(&observer))?;
+    ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;
     check(work)?;
     let first = records.next(&mut observer).await?.ok_or(receipt_error("missing native launch receipt"))?;
     if first.sequence != 0 { return Err(receipt_error("native receipt starts after launch")); }
@@ -212,9 +212,9 @@ pub(super) async fn authenticate_core_launch<P: StreamProvider>(
     work: &NativeMaterializationWork,
 ) -> std::result::Result<(), Error> {
     let io = super::super::PreparationIo::from_native_work(work)?;
-    let cursor = reader.pin_with_work(0, Some(&mut io.history_io())).await?;
-    let state = reader.effect_with_work(&cursor, launch.dispatch.effect_id, authority.history_limits,
-        Some(&mut io.history_io())).await?
+    let cursor = reader.pin(0, Some(&mut io.history_io())).await?;
+    let state = reader.effect(&cursor, launch.dispatch.effect_id, authority.history_limits,
+        Some(&mut io.history_io())).await.map(|state| state.map(|(state, _)| state))?
         .ok_or(receipt_error("native receipt has no retained core effect"))?;
     if !examine(work, || state.request_digest == launch.dispatch.request_digest)?
         || !examine(work, || state.request == launch.plan.request)?

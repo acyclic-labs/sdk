@@ -5,7 +5,7 @@ use crate::{
     core::{Authority, AuthorityIssuer, Command, Snapshot},
     store::{HistoryCursor, HistoryReadLimits, HistoryReader, StreamAggregate},
 };
-use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits, StreamClient};
+use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits};
 use serde::Deserialize;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
@@ -48,8 +48,8 @@ impl From<BrowserMemoryLimits> for MemoryLimits {
 }
 
 impl BrowserHistoryOptions {
-    async fn connect(self) -> Result<(StreamClient<BrowserStream>, AuthorityIssuer), JsValue> {
-        self.authority.stream_path().map_err(js_error)?;
+    async fn connect(self) -> Result<(std::sync::Arc<BrowserStream>, AuthorityIssuer), JsValue> {
+        self.authority.stream_path(&mut None).map_err(js_error)?;
         let issuer =
             AuthorityIssuer::new(self.issuer_id, key_bytes(self.issuer_key)?, self.authority);
         let limits = BrowserStreamLimits {
@@ -60,7 +60,7 @@ impl BrowserHistoryOptions {
         let provider = BrowserStream::open(&self.database, limits)
             .await
             .map_err(|error| js_error(error.into()))?;
-        Ok((StreamClient::new(Arc::new(provider)), issuer))
+        Ok((Arc::new(provider), issuer))
     }
 }
 
@@ -77,7 +77,7 @@ impl WasmBrowserHistoryReader {
     pub async fn open_browser(options: JsValue) -> Result<WasmBrowserHistoryReader, JsValue> {
         let options: BrowserHistoryOptions = from_js(options)?;
         let (client, issuer) = options.connect().await?;
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let inner =
             HistoryReader::new(&client, verifier.audience(), verifier.clone()).map_err(js_error)?;
         Ok(Self { inner })
@@ -85,7 +85,7 @@ impl WasmBrowserHistoryReader {
 
     /// Captures a committed traversal boundary; subsequent appends are excluded.
     pub async fn pin(&self, after_revision: u64) -> Result<JsValue, JsValue> {
-        to_js(&self.inner.pin(after_revision).await.map_err(js_error)?)
+        to_js(&self.inner.pin(after_revision, None).await.map_err(js_error)?)
     }
 
     /// Runs the same bounded page and attestation checks as the native reader.
@@ -124,8 +124,8 @@ impl WasmBrowserHistoryReader {
         to_js(
             &self
                 .inner
-                .operation_event(operation)
-                .await
+                .operation_event(operation, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None)
+                .await.map(|(event, _)| event)
                 .map_err(js_error)?,
         )
     }
@@ -150,7 +150,7 @@ impl WasmBrowserAggregate {
         let schemas = schema_registry(schemas)?;
         let snapshot: Option<Snapshot> = snapshot.map(from_js).transpose()?;
         let (client, issuer) = options.connect().await?;
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let authority = verifier.audience().clone();
         let inner = if let Some(snapshot) = snapshot {
             StreamAggregate::open_from_snapshot(&client, authority, verifier, schemas, snapshot)
@@ -165,7 +165,7 @@ impl WasmBrowserAggregate {
     /// Publishes the event and archived-operation location in one existing commit.
     pub async fn execute(&mut self, command: JsValue) -> Result<JsValue, JsValue> {
         let command: Command = from_js(command)?;
-        to_js(&self.inner.execute(command).await.map_err(js_error)?)
+        to_js(&self.inner.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await.map_err(js_error)?)
     }
 
     /// Reconciles only the exact admitted command; no replacement dispatch is authored.
@@ -195,7 +195,7 @@ impl WasmBrowserAggregate {
 
     /// Captures the existing authenticated reducer projection.
     pub fn snapshot(&self) -> Result<JsValue, JsValue> {
-        to_js(&self.inner.reducer().snapshot().map_err(js_error)?)
+        to_js(&self.inner.reducer().snapshot(usize::MAX, &mut None).map(|(snapshot, _)| snapshot).map_err(js_error)?)
     }
 
     /// Binds an archival reader to this exact provider and owner verifier.

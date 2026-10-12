@@ -205,7 +205,7 @@ pub(crate) fn validate_effect_schema_bytes_with_work(
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
         let schema = decode.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
         drop(crate::contract::compile_json_schema(
-            &schema, "effect result", Some(&decode))?);
+            &schema.0, "effect result", Some(&decode))?);
         return Ok(());
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -236,17 +236,17 @@ pub(crate) fn validate_effect_result_bytes_with_work(
         let schema = decode.decode_preparation::<Value>(schema_bytes, crate::wire::ErrorCode::Storage)?;
         // Preserve schema admission before result parsing/allocation, as in the original validate_schema_bytes + validate_result_bytes sequence.
         drop(crate::contract::compile_json_schema(
-            &schema, "effect result", Some(&decode))?);
+            &schema.0, "effect result", Some(&decode))?);
         if result.descriptor().media_type() != "application/json" {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "effect result must be JSON content",
             });
         }
-        result.descriptor().verify_with_native_work(bytes, original)?;
+        result.descriptor().verify(bytes, work)?;
         let value = decode.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
         return crate::contract::validate_json_schema_value(
-            &schema, &value, "effect result", Some(&decode));
+            &schema.0, &value.0, "effect result", Some(&decode));
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     Err(Error::Unsupported("native effect result validation is unavailable".into()))
@@ -607,13 +607,13 @@ impl EffectRegistry {
                 validate_effect_result_bytes_with_work(
                     &effect.result_schema, &schema_bytes, result, &bytes, content.work())?;
             } else {
-                let bytes = resolver.read(result).await?;
-                let schema_bytes = resolver.read(&effect.result_schema).await?;
+                let bytes = resolver.read(result, result.descriptor().byte_length(), None)?.await?;
+                let schema_bytes = resolver.read(&effect.result_schema, effect.result_schema.descriptor().byte_length(), None)?.await?;
                 validate_effect_result_bytes_with_work(
                     &effect.result_schema, &schema_bytes, result, &bytes, work)?;
             }
         }
-        issuer.attest_effect_with_work(
+        issuer.attest_effect(
             effect_id, effect, observation.attempt_id, observation.status, work)
     }
 }

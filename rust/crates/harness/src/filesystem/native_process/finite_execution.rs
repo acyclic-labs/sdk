@@ -3,38 +3,12 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use crate::filesystem::native_execution::{NativeProcessNamespaceScopes, NativeViewPublicationError};
 use std::process::{Command, Stdio};
 
-struct NativePublicationSlot {
-    slot: Box<std::mem::MaybeUninit<NativeViewPublicationError>>,
-    failure_custody: Option<NativeAllocation>,
-    custody: NativeAllocation,
-}
-
-impl NativePublicationSlot {
-    fn new(work: &NativeMaterializationWork) -> Result<Self> {
-        let custody = work.claim(std::mem::size_of::<NativeViewPublicationError>() as u64)?;
-        let failure_custody = Some(work.retain_owned(0)?);
-        Ok(Self { slot: Box::new_uninit(), failure_custody, custody })
-    }
-
-    fn failure(&mut self, cause: Error, work: WorkCounters) -> NativeViewPublicationError {
-        NativeViewPublicationError {
-            cause, accounting_failure: None, work, destination: None, completed: Vec::new(), published: Vec::new(), diagnostic: None,
-            custody: self.failure_custody.take(),
-        }
-    }
-
-    fn retain(self, failure: NativeViewPublicationError) -> Error {
-        Error::NativePublication { failure: Box::write(self.slot, failure),
-            custody: Some(self.custody) }
-    }
-}
-
 #[inline(never)]
-pub(super) async fn execute<'a, P: StreamProvider + 'static>(
-    owner: &'a Arc<TaskJournalOwner<P>>, view: &'a dyn NativeProcessView<P>,
-    authority: &'a NativeProcessAuthority, request: &'a Arc<NativeProcessRequest>,
-    dispatch: &'a EffectDispatch, schema: &'a serde_json::Value,
-    supervisor: &'a Arc<NativeSupervisorControl>, original: &'a NativeMaterializationWork,
+pub(super) async fn execute<P: StreamProvider + 'static>(
+    owner: &Arc<TaskJournalOwner<P>>, view: &dyn NativeProcessView<P>,
+    authority: &NativeProcessAuthority, request: &Arc<NativeProcessRequest>,
+    dispatch: &EffectDispatch, schema: &serde_json::Value,
+    supervisor: &Arc<NativeSupervisorControl>, original: &NativeMaterializationWork,
 ) -> Result<(NativeExecution, NativeAllocation)> {
     finite_binding::require_view_family(view, original)?;
         let mut custody = Some(original.retain_owned(0)?);
@@ -49,7 +23,7 @@ pub(super) async fn execute<'a, P: StreamProvider + 'static>(
                     return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
                         reason: "native result reader has no original finite SDK engine" });
                 }
-                publication_slot = Some(NativePublicationSlot::new(original)?);
+                publication_slot = Some(crate::filesystem::native_execution::reserve_box::<NativeViewPublicationError>(original)?);
                 original.admit(WorkCounters { bytes_encoded: u64::from(request.maximum_result_bytes),
                     bytes_hashed: u64::from(request.maximum_result_bytes),
                     bytes_copied: u64::from(request.maximum_output_bytes),
@@ -74,7 +48,7 @@ pub(super) async fn execute<'a, P: StreamProvider + 'static>(
                 let bytes = io.encode(&captured, u64::from(request.maximum_result_bytes), true)?;
                 let decoded = io.decode_preparation::<serde_json::Value>(
                     &bytes, crate::wire::ErrorCode::Invalid)?;
-                crate::contract::validate_json_schema_value(schema, &decoded.value, "native process result", Some(&io))?;
+                crate::contract::validate_json_schema_value(schema, &decoded.0, "native process result", Some(&io))?;
                 drop(decoded);
                 bytes
 
@@ -111,8 +85,10 @@ pub(super) async fn execute<'a, P: StreamProvider + 'static>(
                     owner.verify_with_native_work(false, original).await?;
                     grants(owner, &request.view, original)?;
                     view.publish(owner, original)?.await
-                }.await.unwrap_or_else(|cause| Err(
-                    publication_slot.as_mut().expect("preadmitted failure slot").failure(cause, original.receipt())));
+                }.await.unwrap_or_else(|cause| Err(NativeViewPublicationError {
+                    cause, accounting_failure: None, work: original.receipt(), destination: None,
+                    completed: Vec::new(), published: Vec::new(), diagnostic: None, custody: None,
+                }));
                 let publication = match publication {
                     Ok(receipt) => {
                         let checked = async {
@@ -143,9 +119,11 @@ pub(super) async fn execute<'a, P: StreamProvider + 'static>(
                 if let Err(mut failure) = publication {
                     failure.diagnostic = Some(result);
                     let mut result_custody = custody.take().expect("original result custody");
-                    failure.custody.as_mut().expect("admitted original publication failure custody")
-                        .absorb(&mut result_custody).expect("same original admitted ledger");
-                    return Err(publication_slot.take().expect("preadmitted failure slot").retain(failure));
+                    if let Some(held) = failure.custody.as_mut() {
+                        held.absorb(&mut result_custody).expect("same original admitted ledger");
+                    } else { failure.custody = Some(result_custody); }
+                    let (slot, custody) = publication_slot.take().expect("preadmitted failure slot");
+                    return Err(Error::NativePublication { failure: Box::write(slot, failure), custody: Some(custody) });
                 }
             }
             Ok(if cleanup_completed {
@@ -407,7 +385,7 @@ mod supervisor_tests {
         let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget {
             allocation_operations: 1,
             peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes(),
-            ..acyclic_fs::WorkBudget::UNCHARGED
+            ..Default::default()
         }, &acyclic_fs::CancellationToken::new()).unwrap();
         let before = work.receipt();
         supervisor.settle_process(&work, &work).unwrap();

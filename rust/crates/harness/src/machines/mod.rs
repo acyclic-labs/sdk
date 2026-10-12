@@ -448,7 +448,7 @@ mod tests {
         let owner = VolumeOwner::Project("project".into());
         let history = ResourceRevision::History(StreamRef::new(
             ProviderRef::new("example", "stream", "2")?,
-            parent.stream_path()?.into_bytes(),
+            parent.stream_path(&mut None)?.into_bytes(),
             Some("0".into()),
         )?);
         let project = ResourceRevision::Project {

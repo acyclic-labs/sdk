@@ -43,7 +43,7 @@ impl SummaryForkSelection {
             || self.history_limits.maximum_events == 0
             || self.history_limits.maximum_bytes == 0
         {
-            return Err(super::fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+            return Err(super::boundary_error(work, crate::wire::ErrorCode::Invalid,
                 "summary fork selection is invalid"));
         }
         Ok(())
@@ -79,7 +79,7 @@ impl SummaryForkCapture {
         child_private: &VolumeRef,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let mut work = super::ForkValidationWork::new(work)?;
+        let mut work = super::CodecQuota::observed(work)?;
         self.selection.validate()?;
         if self
             .payloads

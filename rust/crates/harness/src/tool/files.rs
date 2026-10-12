@@ -709,7 +709,7 @@ pub(super) mod native {
     }
 
     pub(in crate::tool) fn public_path(path: &str, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        crate::conversation::validate_content_path_with_native_work(path, work)?;
+        crate::conversation::validate_content_path(path, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         if crate::conversation::is_internal_path(path) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized, reason: "file tools cannot access internal storage",
@@ -721,7 +721,7 @@ pub(super) mod native {
     pub(in crate::tool) fn bound<T: Serialize>(value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let diagnostic_bytes = crate::contract::sdk_json_diagnostic_bytes();
-        io.claim(diagnostic_bytes)?;
+        io.retain_owned(diagnostic_bytes)?;
         let custody = io.into_native_custody(diagnostic_bytes)?;
         struct Counter<'a> {
             remaining: u64,

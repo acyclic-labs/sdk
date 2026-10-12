@@ -16,7 +16,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<(HistoryCursor, acyclic_fs::NativeAllocation)> {
         let mut native_io = super::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let cursor = self.pin_with_work(after_revision, Some(&mut native_io)).await?;
+        let cursor = self.pin(after_revision, Some(&mut native_io)).await?;
         Ok((cursor, native_io.into_custody()))
     }
 
@@ -64,7 +64,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<(Option<crate::core::EffectState>, acyclic_fs::NativeAllocation)> {
         let mut native_io = super::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let state = self.effect_with_retained_quota(
+        let state = self.effect(
             cursor, effect, limits, Some(&mut native_io),
         ).await?.map(|(state, _)| state);
         native_io.return_staged_output()?;
@@ -81,7 +81,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         let mut work = HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            self.pin_with_work(after_revision, Some(&mut work)).await
+            self.pin(after_revision, Some(&mut work)).await
         }.await;
         work.finish(result)
     }
@@ -396,12 +396,10 @@ impl HistoryIo for HistoryWork<'_> {
         reference: &'a crate::conversation::FileRef,
     ) -> Result<super::HistoryContentFuture<'a, ()>> {
         let build = |work: &'a mut Self| async move {
-            let receipt = verifier.verify_measured(reference, reference.descriptor().byte_length(),
-                work.remaining()?, work.cancellation).await;
-            match receipt {
-                Ok(receipt) => work.receive_work(receipt.work),
-                Err(failure) => { let _ = work.receive_work(*failure.work); Err(failure.error) }
-            }
+            let io = crate::filesystem::PreparationIo::from_budget(work.remaining()?, work.cancellation)?;
+            let result = async { verifier.verify(reference, reference.descriptor().byte_length(), Some(&io))?.await }.await;
+            let received = work.receive_work(io.receipt());
+            result.and(received)
         };
         let frame_bytes = super::content_frame_bytes(&build);
         self.admit_owned(frame_bytes)?;
@@ -417,17 +415,14 @@ impl HistoryIo for HistoryWork<'_> {
         reference: &'a crate::conversation::FileRef,
     ) -> Result<super::HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
         let build = |work: &'a mut Self| async move {
-            let receipt = verifier.read_measured(reference, reference.descriptor().byte_length(),
-                work.remaining()?, work.cancellation).await;
-            match receipt {
-                Ok(receipt) => {
-                    let retained_bytes = receipt.value.retained_capacity().unwrap_or(0) as u64;
-                    work.receive_work(receipt.work)?;
-                    work.retain(retained_bytes)?;
-                    Ok((receipt.value, retained_bytes))
-                }
-                Err(failure) => { let _ = work.receive_work(*failure.work); Err(failure.error) }
-            }
+            let io = crate::filesystem::PreparationIo::from_budget(work.remaining()?, work.cancellation)?;
+            let result = async { verifier.read(reference, reference.descriptor().byte_length(), Some(&io))?.await }.await;
+            let received = work.receive_work(io.receipt());
+            let bytes = result?;
+            received?;
+            let retained_bytes = bytes.retained_capacity().unwrap_or(0) as u64;
+            work.retain(retained_bytes)?;
+            Ok((bytes, retained_bytes))
         };
         let frame_bytes = super::content_frame_bytes(&build);
         self.admit_owned(frame_bytes)?;

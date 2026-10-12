@@ -17,7 +17,7 @@ use crate::{
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, OwnedBytes, StreamClient, StreamError, StreamProvider,
+    AppendOutcome, IdempotencyKey as StreamKey, OwnedBytes, StreamError, StreamProvider,
 };
 use futures::TryStreamExt as _;
 use crate::store::history::HistoryIo as _;
@@ -95,7 +95,7 @@ impl Drop for WorkflowIdentities<'_> {
 
 /// One workflow's atomic transition ledger; Streams never carry state or command bodies.
 pub struct FilesystemWorkflowJournal<P, A, O> {
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     path: String,
     volume: VolumeRef,
@@ -215,14 +215,14 @@ where
 
     /// Binds a workflow identity and its private-volume grants.
     pub fn new(
-        stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
+        stream: std::sync::Arc<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
         volume: VolumeRef, verifier: AuthorityVerifier, scope: Scope, maximum_payload_bytes: u64,
     ) -> Result<Self> {
         Self::configure(stream, host, workflow_id, volume, verifier, scope, maximum_payload_bytes, None)
     }
 
     fn configure(
-        stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
+        stream: std::sync::Arc<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
         volume: VolumeRef, verifier: AuthorityVerifier, scope: Scope,
         maximum_payload_bytes: u64, io: Option<&PreparationIo>,
     ) -> Result<Self> {
@@ -294,7 +294,7 @@ where
         let bytes = self.read_bound_content(reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let record: WorkflowRecord = match io {
-            Some(io) => io.decode_preparation::<WorkflowRecord>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
+            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowRecord>(&bytes, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?,
         };
@@ -358,7 +358,7 @@ where
             .ok_or_else(|| observation_boundary(io, crate::wire::ErrorCode::Invalid,
                 "workflow replay vector ownership overflow"))? as u64;
         let vector_hold = if let Some(io) = io {
-            io.claim(vector_bytes)?;
+            io.retain_owned(vector_bytes)?;
             let hold = io.guard_owned(vector_bytes)?;
             io.allocation_attempt(vector_bytes)?;
             Some(hold)
@@ -376,7 +376,7 @@ where
             let reference_hold;
             let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
             let reference: FileRef = match io {
-                Some(io) => io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?.into_retained(),
+                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                     Error::Storage(format!("workflow reference is invalid: {error}"))
                 })?,
@@ -499,7 +499,7 @@ where
     }
 
     fn observation_stream<'a>(
-        stream: &StreamClient<P>, path: &str, io: Option<&'a PreparationIo>,
+        stream: &std::sync::Arc<P>, path: &str, io: Option<&'a PreparationIo>,
     ) -> Result<(acyclic_stream::Stream<P>, Option<super::DecodeReservation<'a>>)> {
         let held = if let Some(io) = io {
             let work = acyclic_fs::WorkCounters {
@@ -512,7 +512,7 @@ where
             io.charge(work)?;
             Some(hold)
         } else { None };
-        Ok((stream.stream(path).map_err(|error| Self::observation_stream_error(io, error))?, held))
+        Ok((acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), path).map_err(|error| Self::observation_stream_error(io, error))?, held))
     }
 
     fn observation_stream_error(io: Option<&PreparationIo>, source: StreamError) -> Error {
@@ -724,7 +724,7 @@ where
         let _reference_hold;
         let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
         let reference: FileRef = match io {
-            Some(io) => io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?.into_retained(),
+            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                 Error::Storage(format!("workflow admission reference is invalid: {error}"))
             })?,
@@ -750,7 +750,7 @@ where
         let bytes = self.read_bound_content(&reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let admission: WorkflowAdmission = match io {
-            Some(io) => io.decode_preparation::<WorkflowAdmission>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
+            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowAdmission>(&bytes, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
         };
@@ -1057,7 +1057,7 @@ where
             let _pinned;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let pinned: WorkflowAdmission = match io {
-                Some(io) => io.decode_preparation::<WorkflowAdmission>(&pinned_bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
+                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowAdmission>(&pinned_bytes, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&pinned_bytes)
                     .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
             };

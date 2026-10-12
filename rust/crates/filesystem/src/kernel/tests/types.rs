@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::kernel::Child;
 #[test]
 fn windows_names_validate_utf16_without_lossy_normalization()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -139,8 +140,8 @@ fn tree_page_validation_rejects_every_malformed_shape() -> Result<(), Box<dyn st
         Err(TreePageError::EmptyInternalPage)
     );
     assert_eq!(
-        TreePage::Internal(vec![TreeChild {
-            first_name: a.clone(),
+        TreePage::Internal(vec![Child {
+            first: a.clone(),
             page: digest_object(ObjectKind::Blob, [1; 32]),
         }])
         .validate(2),
@@ -148,12 +149,12 @@ fn tree_page_validation_rejects_every_malformed_shape() -> Result<(), Box<dyn st
     );
     assert_eq!(
         TreePage::Internal(vec![
-            TreeChild {
-                first_name: b,
+            Child {
+                first: b,
                 page: digest_object(ObjectKind::TreePage, [1; 32]),
             },
-            TreeChild {
-                first_name: a,
+            Child {
+                first: a,
                 page: digest_object(ObjectKind::TreePage, [2; 32]),
             },
         ])

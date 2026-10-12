@@ -69,9 +69,9 @@ try {
   const harness = await Harness.create({ authority: { kind: "conversation", id: "demand-browser" }, issuerId: "demand-issuer", issuerKey: new Uint8Array(32).fill(7) });
   const scheduler = new RequestScheduler({ concurrent: 2, requests: 4, bytes: 8192 });
   const body = new TextEncoder().encode("Pinned selective body\n");
-  const descriptor = harness.fileDescriptor(body, "text/plain");
+  const descriptor = harness.contracts.fileDescriptor(body, "text/plain");
   const volume = { provider: { namespace: "browser", family: "filesystem", version: "2" }, id: "demand", class: "project", owner: { kind: "project", id: "demand" } } as const;
-  const refs = Array.from({ length: 4 }, (_, i) => harness.validateFileRef({ volume, path: `messages/${i}`, version: "pinned-1", descriptor, display_name: `${i}` }));
+  const refs = Array.from({ length: 4 }, (_, i) => harness.contracts.validate("file_ref", { volume, path: `messages/${i}`, version: "pinned-1", descriptor, display_name: `${i}` }));
   const scope = harness.issueScope("body-read", [harness.volumeCapability(volume, "read")]);
   let reads = 0, transferred = 0, allocatedBytes = 0, mainThreadMs = 0;
   const source = {
@@ -87,7 +87,7 @@ try {
       const bytes = new Uint8Array(await response.arrayBuffer());
       const workStart = performance.now();
       assert(bytes.buffer.byteLength <= file.descriptor.byte_length, "actual backing allocation");
-      harness.verifyFileBytes(file, bytes);
+      harness.contracts.verifyFileBytes(file, bytes);
       transferred += bytes.byteLength;
       const value = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       allocatedBytes += bytes.byteLength + value.length * 2;
@@ -144,7 +144,7 @@ try {
   const baselineReads = reads - beforeBaselineReads;
   assert(coldBytes * 4 === baselineBytes && baselineReads === 4, "cold selective bound versus actual baseline");
   const beforeDeniedReads = reads;
-  const foreign = harness.validateFileRef({ ...selected, volume: { ...volume, id: "foreign" } });
+  const foreign = harness.contracts.validate("file_ref", { ...selected, volume: { ...volume, id: "foreign" } });
   const denied = await demand.read(foreign).catch(error => error);
   assert(denied instanceof Error && reads === beforeDeniedReads && demand.peek(foreign) === undefined,
     "foreign authority fetched or retained a body");
@@ -197,7 +197,7 @@ try {
   const restartedDatabase = sessionStorage.getItem(restartKey);
   const databaseName = restartedDatabase ?? `harness-cl3-${crypto.randomUUID()}`;
   const state = new IndexedDbClientStore({ databaseName, maximumCommands: 2, maximumBytes: 8192 });
-  const operationId = harness.identity("operation", "01010101-0101-0101-0101-010101010101") as OperationId;
+  const operationId = harness.contracts.validateIdentity("operation", "01010101-0101-0101-0101-010101010101") as OperationId;
   const authority = { kind: "conversation", id: "demand-browser" } as const;
   type Value = Readonly<{ content: FileRef }>;
   type Evidence = ClientObservation<Value>;

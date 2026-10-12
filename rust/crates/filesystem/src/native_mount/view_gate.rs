@@ -584,7 +584,7 @@ impl ViewGate {
                 result
             })?;
             if let Some(lease) = admitted { return Ok(lease); }
-            super::adapter::await_measured_lock_with_carrier(
+            super::adapter::await_lock(
                 notified, carrier, cancellation, lifetime,
             ).await?;
         }
@@ -726,7 +726,7 @@ impl ViewGate {
         cancellation: &crate::CancellationToken, lifetime: Option<&crate::CancellationToken>,
     ) -> Result<ViewWriteLease, MountSourceError> {
         carrier.with_work(|work| work.check()).map_err(super::lazy::mount_demand_error)?;
-        super::adapter::await_measured_lock_with_carrier(
+        super::adapter::await_lock(
             self.write_stable(expected), carrier, cancellation, lifetime,
         ).await?
     }

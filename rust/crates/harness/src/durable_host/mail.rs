@@ -65,7 +65,7 @@ fn encode<T: Serialize + ?Sized>(value: &T, maximum: u64, io: Option<&Preparatio
 fn decode<T: MailRecord>(bytes: &[u8], io: Option<&PreparationIo>) -> Result<T> {
     require_original(io)?;
     #[cfg(feature = "filesystem")]
-    if let Some(io) = io { return Ok(io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?.into_retained()); }
+    if let Some(io) = io { return Ok(crate::filesystem::retain_decoded(io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?)); }
     crate::contract::json_from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))
 }
 
@@ -74,7 +74,7 @@ fn validate_file(file: &FileRef, limits: crate::conversation::Limits, io: Option
     if let Some(io) = io {
         let work = io.original_native_work().ok_or_else(|| boundary(Some(io),
             crate::wire::ErrorCode::Unsupported, "mail file validation requires original native work"))?;
-        file.validate_with_native_work(work)?;
+        file.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
         if file.path().len() > limits.path_bytes || file.descriptor().byte_length() > limits.file_bytes {
             return Err(boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "mail file exceeds original admission limits"));
@@ -410,13 +410,13 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             let digest = *hash.finalize().as_bytes();
             drop(physical);
             let (key, held) = crate::distributed::digest_key(&digest, &mut work)?;
-            let mut request = crate::distributed::PreparedCommitRequest::new(key, held, &mut work);
-            request.push_condition(target)?;
-            request.push_condition(absent)?;
-            if let Some(condition) = owner_condition { request.push_condition(condition)?; }
-            request.append(mailbox.stream.path().clone(), bytes.clone())?;
-            request.append(intent.stream.path().clone(), location_bytes)?;
-            let (outcome, retained) = request.commit(&self.stream, Some(message), None, None, None).await?;
+            let mut request = crate::distributed::commit_request(key, held, &mut work);
+            crate::distributed::add_condition(&mut request, target)?;
+            crate::distributed::add_condition(&mut request, absent)?;
+            if let Some(condition) = owner_condition { crate::distributed::add_condition(&mut request, condition)?; }
+            crate::distributed::add_record(&mut request, mailbox.stream.path().clone(), bytes.clone())?;
+            crate::distributed::add_record(&mut request, intent.stream.path().clone(), location_bytes)?;
+            let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(message), None, None, None).await?;
             let committed = matches!(&outcome, CommitOutcome::Committed(_));
             drop(outcome);
             if let Some(observer) = work.as_deref_mut() { observer.release_owned(retained)?; }

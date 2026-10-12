@@ -275,7 +275,8 @@ impl KernelOwnedAllocation {
     }
 }
 
-pub(crate) enum KernelAccounting<'a> {
+#[doc(hidden)]
+pub enum KernelAccounting<'a> {
     Standalone {
         allocations: AllocationLedger,
         work: WorkCounters,

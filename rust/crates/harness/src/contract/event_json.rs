@@ -203,7 +203,6 @@ pub fn json_typed_diagnostic_owned_bytes(
     multiply_with_code(diagnostic_bytes(shape.input_bytes(), schema_label_bytes, native_code)?, 2, native_code)
 }
 
-
 const COMMON_DIAGNOSTIC_TEXT: &str = concat!(
     "unknown variant ``, expected one of unknown field ``, expected one of ",
     "duplicate field ``missing field ``invalid type: , expected ",

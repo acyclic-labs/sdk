@@ -105,31 +105,28 @@ impl Fixture {
             VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
         )?;
         self.host.create_volume(&private).await?;
-        let scope = self.issuer.root_for_agent(
-            AgentId::from_bytes([1; 16]),
-            "journal",
-            Capabilities::new([
+        let scope = self.issuer.issue("journal", &Capabilities::new([
                 private.capability(VolumeOperation::Read)?,
                 private.capability(VolumeOperation::Write)?,
                 self.volume.capability(VolumeOperation::Read)?,
-            ]),
-        );
+            ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
         Ok((private, scope))
     }
 
     fn journal(
         &self,
-        stream: acyclic_stream::StreamClient<acyclic_stream::MemoryStream>,
+        stream: std::sync::Arc<acyclic_stream::MemoryStream>,
         private: VolumeRef,
         scope: acyclic_harness::core::Scope,
     ) -> Result<TestJournal> {
         Ok(TestJournal::new(
             stream,
             self.host.clone(),
-            private,
-            self.issuer.verifier(),
-            scope,
-            32_768,
+            &private,
+            &self.issuer.verifier(&mut None).expect("verifier copy"),
+            &acyclic_harness::core::SchemaRegistry::new(),
+            &scope,
+            32_768, None,
         )?
         .with_input_verifier(self.reader.clone()))
     }
@@ -151,23 +148,19 @@ impl Fixture {
                 id: "test".into(),
             },
         );
-        let scope = issuer.root_for_agent(
-            agent,
-            "owner",
-            Capabilities::new([
+        let scope = issuer.issue("owner", &Capabilities::new([
                 volume.capability(VolumeOperation::Write)?,
                 volume.capability(VolumeOperation::Read)?,
                 volume.directory_read_capability("")?,
-            ]),
-        );
+            ]), Some(agent), None, &mut None).expect("scope proof");
         host.create_volume(&volume).await?;
         let writer =
-            ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+            ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(),
-            scope,
-            32_768,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &scope,
+            32_768, None,
         )?);
         Ok(Self {
             host,
@@ -348,16 +341,12 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
         Err(Error::Invalid(_))
     ));
     declaration.limits.entries = 64;
-    let scope = fixture.issuer.root_for_agent(
-        AgentId::from_bytes([1; 16]),
-        "denied",
-        Capabilities::default(),
-    );
+    let scope = fixture.issuer.issue("denied", &Capabilities::default(), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
     let denied = FilesystemContentVerifier::new(
         fixture.host.clone(),
-        fixture.issuer.verifier(),
-        scope,
-        32_768,
+        &fixture.issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        32_768, None,
     )?;
     assert!(matches!(
         declaration.capture(&denied).await,
@@ -535,7 +524,7 @@ async fn named_sources_with_wrong_file_kind_fail_explicitly() -> Result<()> {
 #[tokio::test]
 async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
     use acyclic_harness::{OperationId, executor::TurnInput};
-    use acyclic_stream::{MemoryStream, StreamClient};
+    use acyclic_stream::{MemoryStream};
     let fixture = Fixture::new().await?;
     fixture
         .put("AGENTS.md", b"original instructions", "root")
@@ -553,7 +542,7 @@ async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
     let declaration = fixture.declaration();
     let snapshot = declaration.capture(fixture.reader.as_ref()).await?;
     let (private, scope) = fixture.journal_volume().await?;
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let journal = fixture.journal(stream.clone(), private.clone(), scope.clone())?;
     let provider = Arc::new(CapturingModel::default());
     let original_executor = executor(snapshot.clone(), provider.clone())?;
