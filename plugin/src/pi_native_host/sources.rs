@@ -5,7 +5,7 @@ pub(crate) struct PiNativeLiveSource {
     pub(crate) view: Arc<PiNativeLiveView>,
     pub(crate) prepared: Arc<PreparedPiFork>,
     pub(crate) owner: Arc<TaskJournalOwner<LocalStream>>,
-    pub(crate) context: Arc<NativeTaskContext>,
+    pub(crate) context: Arc<TaskContext>,
     pub(crate) original_work: NativeMaterializationWork,
 }
 
@@ -191,7 +191,7 @@ impl PiNativeCommandHost {
     /// Uses the current original child owner; it never reclaims the parent, creates resources, re-admits the child, or captures a new source head.
     pub(crate) async fn hydrate_child(
         &self,
-        shared: &Arc<NativeTaskContext>,
+        shared: &Arc<TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>,
         fence: &LeaseFence,
         cancellation: &CancellationToken,
@@ -225,7 +225,7 @@ impl PiNativeCommandHost {
             work,
         )?;
         let plan = coordinator
-            .load_plan(shared.context(), original)
+            .load_plan(shared.as_ref(), original)
             .await?
             .ok_or_else(|| {
                 unauthorized("Pi cold child has no original immutable preparation plan")
@@ -375,7 +375,7 @@ impl PiNativeCommandHost {
             .verify(false, &mut Some(&mut native_work_io(&original_work)?))
             .await?;
         if effect.owner.task_id() != task
-            || effect.context.context().durable_task_id() != Some(task)
+            || effect.context.durable_task_id() != Some(task)
         {
             return Err(unauthorized(
                 "Pi live source differs from its original owner/context",
@@ -605,7 +605,7 @@ impl PiNativeCommandHost {
             })?;
             (bound, work)
         };
-        if bound.owner.task_id() != task || bound.context.context().durable_task_id() != Some(task)
+        if bound.owner.task_id() != task || bound.context.durable_task_id() != Some(task)
         {
             return Err(unauthorized(
                 "Pi invocation differs from its original native owner",

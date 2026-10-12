@@ -257,7 +257,7 @@ impl PiControlHost<'_> {
 
     async fn dispatch_workflow(
         &self,
-        context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: Arc<acyclic_harness::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -265,7 +265,6 @@ impl PiControlHost<'_> {
         reconcile: bool,
     ) -> acyclic_harness::Result<TaskCommandProgress> {
         let task = context
-            .context()
             .durable_task_id()
             .ok_or_else(|| boundary("Pi command has no original task"))?;
         let owner = pi_owner::PiOwnerConfig::load_readonly_with_native_work(
@@ -447,7 +446,7 @@ impl TaskCommandHost for PiControlHost<'_> {
     }
     fn execute_with_native_work<'a>(
         &'a self,
-        context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: Arc<acyclic_harness::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -459,7 +458,7 @@ impl TaskCommandHost for PiControlHost<'_> {
     }
     fn reconcile_with_native_work<'a>(
         &'a self,
-        context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: Arc<acyclic_harness::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,

@@ -17,7 +17,7 @@ use acyclic_harness::{
     executor::ExecutionJournal,
     filesystem::{FilesystemExecutionJournal, TaskCommandProgress},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
-    runtime::NativeTaskContext,
+    runtime::TaskContext,
     scheduler::LeaseFence,
     tool::ToolApprovalVerifier,
     workflow::WorkflowCommand,
@@ -178,7 +178,7 @@ pub(crate) async fn open_prepared_approval(
     runtime: &PiNativeRuntime,
     filesystem: &Arc<PiNativeFilesystem>,
     protected: &PiOwnerConfig,
-    context: &NativeTaskContext,
+    context: &TaskContext,
     owner: &TaskJournalOwner<LocalStream>,
     binding: &PiTaskBinding,
     descriptor: &PiPreparedApproval<
@@ -193,7 +193,6 @@ pub(crate) async fn open_prepared_approval(
     runtime.verify_owner_with_native_work(protected, work)?;
     protected.validate_root(binding, work)?;
     let (task, fence) = context
-        .context()
         .owned_task_binding_with_native_work(work)?;
     if task != protected.policy().root_task
         || owner.task_id() != task
@@ -211,7 +210,7 @@ pub(crate) async fn open_prepared_approval(
     let authority = protected.conversation_authority_with_native_work(
         binding.task_id,
         binding.agent_id,
-        context.context().scope().grants(),
+        context.scope().grants(),
         work,
     )?;
     let verifier = {
@@ -227,7 +226,7 @@ pub(crate) async fn open_prepared_approval(
     let journal = Journal::for_task_with_native_work(
         current,
         descriptor.operation,
-        context.context().id(),
+        context.id(),
         Arc::clone(filesystem),
         &protected.policy().journal,
         &storage.verifier,
@@ -755,7 +754,7 @@ pub(crate) async fn passive_status(
 impl<'a> crate::pi_selected_host::PiControlHost<'a> {
     pub(crate) async fn run_operator(
         &self,
-        context: Arc<NativeTaskContext>,
+        context: Arc<TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -763,7 +762,6 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         work: &NativeMaterializationWork,
     ) -> Result<TaskCommandProgress> {
         context
-            .context()
             .verify_original_execution_owner_with_native_work(work)?
             .await?;
         let (request, _request_custody) =
@@ -788,7 +786,6 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         };
         let root = self.protected.policy().root_task;
         let (task, current_fence) = context
-            .context()
             .owned_task_binding_with_native_work(work)?;
         if task != root
             || prepared.command.caller != root

@@ -29,23 +29,23 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
             .value;
         main.write_text("/src/main.rs", "fn main() {}\n").await?;
         let base = main.head(B, &cancel).await?.value;
-        main.fork(
+        main.fork::<_, _, crate::WorkspaceError>(
             "promote-first",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
-        main.fork(
+        main.fork::<_, _, crate::WorkspaceError>(
             "promote-second",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -71,7 +71,7 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new()
-                },
+                }, std::collections::BTreeMap::new(),
                 PublicationPermit::Unrestricted
             )
             .await?,
@@ -103,7 +103,7 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new()
-                },
+                }, std::collections::BTreeMap::new(),
                 PublicationPermit::Unrestricted
             )
             .await?,
@@ -131,24 +131,24 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
     main.write_text("/README.md", "base\n").await?;
     let base = main.head(B, &cancel).await?.value;
     let first = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "siblings-first",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
     let second = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "siblings-second",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -162,7 +162,7 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                },
+                }, std::collections::BTreeMap::new(),
                 PublicationPermit::Unrestricted,
             )
             .await?;
@@ -205,13 +205,13 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
     let mut forks = Vec::new();
     for (name, file) in [("fold-first", "a.rs"), ("fold-second", "b.rs")] {
         let fork = main
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 name,
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
                 PublicationPermit::Unrestricted,
                 B,
                 &cancel,
-                allow::<FsError>,
+                &mut allow::<FsError>,
             )
             .await?
             .value;
@@ -245,7 +245,7 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                },
+                }, std::collections::BTreeMap::new(),
                 PublicationPermit::Unrestricted,
             )
             .await?
@@ -292,13 +292,13 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
         ("file-fold-second", "second\n"),
     ] {
         let fork = main
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 name,
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
                 PublicationPermit::Unrestricted,
                 B,
                 &cancel,
-                allow::<FsError>,
+                &mut allow::<FsError>,
             )
             .await?
             .value;
@@ -315,7 +315,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
                     ApplyOptions {
                         if_target: plan.target_head(),
                         idempotency_key: IdempotencyKey::new(),
-                    },
+                    }, std::collections::BTreeMap::new(),
                     PublicationPermit::Unrestricted,
                 )
                 .await?
@@ -335,13 +335,13 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
     assert_eq!(outcomes, [Vec::new(), vec![Some("/other.rs".to_owned())]]);
 
     let fork = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "file-fold-third",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -352,7 +352,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
+            }, std::collections::BTreeMap::new(),
             PublicationPermit::Unrestricted,
         )
         .await?
@@ -438,14 +438,19 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
     }
     let base = main.head(B, &cancel).await?.value;
     let fork = |name: &'static str, base: &Generation<_, _>| {
-        main.fork(
-            name,
-            ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-            PublicationPermit::Unrestricted,
-            B,
-            &cancel,
-            allow::<FsError>,
-        )
+        let options = ForkOptions::from_generation(base.clone(), IdempotencyKey::new());
+        let main = &main;
+        let cancel = &cancel;
+        async move {
+            main.fork::<_, _, crate::WorkspaceError>(
+                name,
+                options,
+                PublicationPermit::Unrestricted,
+                B,
+                cancel,
+                &mut allow::<FsError>,
+            ).await
+        }
     };
     let first = fork("sibling-times-first", &base).await?.value;
     let second = fork("sibling-times-second", &base).await?.value;
@@ -477,7 +482,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                },
+                }, std::collections::BTreeMap::new(),
                 PublicationPermit::Unrestricted,
             )
             .await?;
@@ -535,7 +540,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
+            }, std::collections::BTreeMap::new(),
             PublicationPermit::Unrestricted,
         )
         .await?

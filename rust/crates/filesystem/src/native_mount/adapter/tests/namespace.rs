@@ -1,18 +1,5 @@
 fn metadata() -> FileMetadata {
-    FileMetadata {
-        posix_mode: crate::kernel::MetadataField::Unavailable,
-        posix_uid: crate::kernel::MetadataField::Unavailable,
-        posix_gid: crate::kernel::MetadataField::Unavailable,
-        posix_flags: crate::kernel::MetadataField::Unavailable,
-        windows_attributes: crate::kernel::MetadataField::Unavailable,
-        created_ns: crate::kernel::MetadataField::Unavailable,
-        modified_ns: crate::kernel::MetadataField::Unavailable,
-        accessed_ns: crate::kernel::MetadataField::Unavailable,
-        changed_ns: crate::kernel::MetadataField::Unavailable,
-        named_attributes: crate::kernel::MetadataField::Unavailable,
-        acl: crate::kernel::MetadataField::Unavailable,
-        security_descriptor: crate::kernel::MetadataField::Unavailable,
-    }
+    FileMetadata::default()
 }
 
 fn checkout_state(source: &MemorySource) -> (crate::GenerationId, bool) {
@@ -33,67 +20,52 @@ fn shared_sources(
 }
 
 #[test]
-fn creating_an_existing_path_fails() -> Result<(), Box<dyn std::error::Error>> {
-    let source = source(FilesystemProfile::Portable)?;
-    let path = native_test_path("once");
-    let stale = source.view_stamp().ok_or("ledger stamp")?;
-    source.create_file(&path, metadata())?;
-    assert!(matches!(
-        source.create_file(&path, metadata()),
-        Err(MountSourceError::AlreadyExists)
-    ));
-    assert!(matches!(
-        source.create_absent_file(&path, metadata(), stale),
-        Err(MountSourceError::AlreadyExists)
-    ));
-    source.sync()?;
-    assert!(matches!(
-        source.create_absent_file(&path, metadata(), stale),
-        Err(MountSourceError::AlreadyExists)
-    ));
-    Ok(())
-}
-
-#[test]
-fn created_handles_keep_identity_and_sparse_bytes() -> Result<(), Box<dyn std::error::Error>> {
-    let source = source(FilesystemProfile::Portable)?;
-    let (held, read, large) = (
-        native_test_path("held"),
-        native_test_path("read"),
-        native_test_path("large"),
-    );
-
-    let created = source.create_file(&held, metadata())?;
-    let file = source.open_created(&held, &created)?;
-    file.write_range(0, Bytes::from_static(b"first bytes"))?;
-    assert_eq!(file.lookup()?.node.logical_bytes, 11);
-    assert_eq!(file.read_up_to(0, 64)?.as_ref(), b"first bytes");
-    file.settle()?;
-    let applied = source.lookup(&held)?.ok_or("settled creation is absent")?;
-    assert_eq!(applied.node.file_id, created.node.file_id);
-    assert_eq!(applied.node.logical_bytes, 11);
-    assert_eq!(applied.metadata, file.lookup()?.metadata);
-
-    let created = source.create_file(&read, metadata())?;
-    let file = source.open_created(&read, &created)?;
-    file.write_range(4, Bytes::from_static(b"tail"))?;
-    let reopened = source.open_file(&read)?;
-    assert_eq!(reopened.read_up_to(0, 64)?.as_ref(), b"\0\0\0\0tail");
-    file.write_range(0, Bytes::from_static(b"head"))?;
-    assert_eq!(reopened.read_up_to(0, 64)?.as_ref(), b"headtail");
-
-    let created = source.create_file(&large, metadata())?;
-    let file = source.open_created(&large, &created)?;
-    let past = (1 << 20) + 1;
-    file.write_range(0, Bytes::from(vec![7_u8; past]))?;
-    assert_eq!(
-        source
-            .lookup(&large)?
-            .ok_or("large creation is absent")?
-            .node
-            .logical_bytes,
-        u64::try_from(past)?
-    );
+fn created_file_cases() -> Result<(), Box<dyn std::error::Error>> {
+    for (name, offset, bytes) in [
+        ("held", 0, Bytes::from_static(b"first bytes")),
+        ("read", 4, Bytes::from_static(b"tail")),
+        ("large", 0, Bytes::from(vec![7_u8; (1 << 20) + 1])),
+    ] {
+        let source = source(FilesystemProfile::Portable)?;
+        let work = capture_meter(boundary_budget(), source.cancellation())
+            .map_err(|failure| failure.error)?;
+        let path = native_test_path(name);
+        let created = source.create_file(&path, metadata(), None, &work)?;
+        let file = source.open_created(&path, &created)?;
+        file.write_range(offset, bytes.clone())?;
+        assert_eq!(
+            file.lookup()?.node.logical_bytes,
+            offset + bytes.len() as u64
+        );
+        assert_eq!(
+            source.lookup(&path)?.map(|entry| entry.node.file_id),
+            Some(created.node.file_id)
+        );
+        assert!(matches!(
+            source.create_file(&path, metadata(), None, &work),
+            Err(MountSourceError::AlreadyExists)
+        ));
+        if name != "large" {
+            let reopened = source.open_file(&path)?;
+            let mut expected = vec![0; offset as usize];
+            expected.extend_from_slice(&bytes);
+            assert_eq!(reopened.read_up_to(0, 64)?.as_ref(), expected);
+            if offset != 0 {
+                file.write_range(0, Bytes::from_static(b"head"))?;
+                assert_eq!(reopened.read_up_to(0, 64)?.as_ref(), b"headtail");
+            }
+            file.settle(&work)?;
+            assert_eq!(
+                source.lookup(&path)?.map(|entry| entry.metadata),
+                Some(file.lookup()?.metadata)
+            );
+        }
+        source.sync()?;
+        assert!(matches!(
+            source.create_file(&path, metadata(), None, &work),
+            Err(MountSourceError::AlreadyExists)
+        ));
+    }
     Ok(())
 }
 
@@ -352,66 +324,73 @@ fn observers_cannot_mutate_or_advance_their_checkout() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn native_mutation_invalidates_cache_without_rebinding_the_mount()
--> Result<(), Box<dyn std::error::Error>> {
-    let source = source(FilesystemProfile::Portable)?;
-    let binding = source.binding_epoch();
-    let created = native_test_path("new-file");
-    let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
-    source.create_file(&created, metadata())?;
-    assert_eq!(source.binding_epoch(), binding);
-    assert!(!source.unchanged_since(&created, None, stamp));
-    let _lease = source.acquire_binding_lease(binding)?;
-    Ok(())
-}
-
-#[test]
-fn view_changes_invalidate_exactly_the_lookups_they_change()
--> Result<(), Box<dyn std::error::Error>> {
-    let source = source(FilesystemProfile::Portable)?;
-    let directory = native_test_path("d");
-    let other = native_test_path("e");
-    let child = |parent: &MountPath, name: &str| {
-        let name = native_test_path(name);
-        parent.child(name.components()[0].clone())
-    };
-    let (a, b, c, x) = (
-        child(&directory, "a"),
-        child(&directory, "b"),
-        child(&directory, "c"),
-        child(&other, "x"),
-    );
-    let directory_id = source
-        .create_directory(&directory, metadata())?
-        .node
-        .file_id;
-    let other_id = source.create_directory(&other, metadata())?.node.file_id;
-    let a_id = source.create_file(&a, metadata())?.node.file_id;
-    let b_id = source.create_file(&b, metadata())?.node.file_id;
-    let x_id = source.create_file(&x, metadata())?.node.file_id;
-    let current = |stamp| {
-        [
-            source.unchanged_since(&directory, Some(directory_id), stamp),
-            source.unchanged_since(&a, Some(a_id), stamp),
-            source.unchanged_since(&b, Some(b_id), stamp),
-            source.unchanged_since(&c, None, stamp),
-            source.unchanged_since(&other, Some(other_id), stamp),
-            source.unchanged_since(&x, Some(x_id), stamp),
-        ]
-    };
-    let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
-    assert_eq!(current(stamp), [true; 6]);
-
-    source.write_range(&a, 0, Bytes::from_static(b"a"))?;
-    assert_eq!(current(stamp), [true, false, true, true, true, true]);
-
-    let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
-    source.create_file(&c, metadata())?;
-    assert_eq!(current(stamp), [false, true, true, false, true, true]);
-
-    let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
-    source.remove(&b, Some(b_id))?;
-    assert_eq!(current(stamp), [false, true, false, true, true, true]);
+fn namespace_invalidation_cases() -> Result<(), Box<dyn std::error::Error>> {
+    for (operation, expected) in [
+        ("write", [true, false, true, true, true, true]),
+        ("create", [false, true, true, false, true, true]),
+        ("remove", [false, true, false, true, true, true]),
+    ] {
+        let source = source(FilesystemProfile::Portable)?;
+        let work = capture_meter(boundary_budget(), source.cancellation())
+            .map_err(|failure| failure.error)?;
+        let d = native_test_path("d");
+        let e = native_test_path("e");
+        let a = d.child(native_test_path("a").components()[0].clone());
+        let b = d.child(native_test_path("b").components()[0].clone());
+        let c = d.child(native_test_path("c").components()[0].clone());
+        let x = e.child(native_test_path("x").components()[0].clone());
+        let alias = native_test_path("alias");
+        let d_id = source.create_directory(&d, metadata(), &work)?.node.file_id;
+        let e_id = source.create_directory(&e, metadata(), &work)?.node.file_id;
+        let a_id = source
+            .create_file(&a, metadata(), None, &work)?
+            .node
+            .file_id;
+        let b_id = source
+            .create_file(&b, metadata(), None, &work)?
+            .node
+            .file_id;
+        let x_id = source
+            .create_file(&x, metadata(), None, &work)?
+            .node
+            .file_id;
+        source.hard_link(&a, &alias, &work)?;
+        let checks = [
+            (&d, Some(d_id)),
+            (&a, Some(a_id)),
+            (&b, Some(b_id)),
+            (&c, None),
+            (&e, Some(e_id)),
+            (&x, Some(x_id)),
+        ];
+        let stamp = source.view_stamp().ok_or("view stamp")?;
+        let binding = source.binding_epoch();
+        assert!(
+            checks
+                .iter()
+                .all(|(path, id)| source.unchanged_since(path, *id, stamp))
+        );
+        match operation {
+            "write" => {
+                source
+                    .open_file(&a)?
+                    .write_range(0, Bytes::from_static(b"a"))?;
+                assert!(!source.unchanged_since(&alias, Some(a_id), stamp));
+            }
+            "create" => {
+                source.create_file(&c, metadata(), None, &work)?;
+            }
+            "remove" => {
+                source.remove(&b, Some(b_id), &work)?;
+            }
+            _ => unreachable!(),
+        }
+        for ((path, id), expected) in checks.into_iter().zip(expected) {
+            assert_eq!(source.unchanged_since(path, id, stamp), expected);
+        }
+        assert_eq!(source.binding_epoch(), binding);
+        let _lease = source.acquire_binding_lease(binding)?;
+    }
     Ok(())
 }
 
@@ -505,19 +484,6 @@ fn an_advance_records_exactly_what_it_changed() -> Result<(), Box<dyn std::error
             "a name the advance left alone stays cached"
         );
     }
-    Ok(())
-}
-
-#[test]
-fn a_write_through_one_name_invalidates_every_alias() -> Result<(), Box<dyn std::error::Error>> {
-    let source = source(FilesystemProfile::Portable)?;
-    let (first, alias) = (native_test_path("first"), native_test_path("alias"));
-    let file_id = source.create_file(&first, metadata())?.node.file_id;
-    source.hard_link(&first, &alias)?;
-    let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
-    let attached = source.open_file(&first)?;
-    attached.write_range(0, Bytes::from_static(b"shared"))?;
-    assert!(!source.unchanged_since(&alias, Some(file_id), stamp));
     Ok(())
 }
 

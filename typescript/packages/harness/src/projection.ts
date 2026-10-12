@@ -46,8 +46,8 @@ export interface ConversationProjectionOptions {
   /** Owner-mediated exact reads for structured tool artifacts. */
   readonly resolveFile?: (file: FileRef) => Promise<Uint8Array>;
   readonly maxRenderBytes?: number;
-  /** Optional additional owning-provider validation; never bypasses Rust. */
-  readonly validateMessage?: (message: ConversationState["messages"][number]) => ConversationState["messages"][number] | Promise<ConversationState["messages"][number]>;
+  /** Additional message bounds from the owning conversation host. */
+  readonly limits?: Limits;
 }
 
 export interface FileProjectionOptions {
@@ -133,9 +133,8 @@ export async function selectModelContext(
     const raw = byId.get(id);
     if (raw === undefined) throw new TypeError("selected conversation message is missing");
     const canonical = contracts.validate("conversation_message", raw, DEFAULT_LIMITS);
-    const owner = options.validateMessage === undefined ? canonical
-      : await options.validateMessage(canonical);
-    validated.set(id, contracts.validate("conversation_message", owner, DEFAULT_LIMITS));
+    validated.set(id, options.limits === undefined ? canonical
+      : contracts.validate("conversation_message", canonical, options.limits));
   }
   const projectedMessages = conversation.messages.map(message => validated.get(message.id) ?? message);
   const nativeConversation = { agent: conversation.agent, messages: projectedMessages };
