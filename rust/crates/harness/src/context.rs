@@ -161,7 +161,10 @@ impl CanonicalContextCheckpoint {
         };
         let mut unique = std::collections::BTreeSet::new();
         for id in &self.selection.message_ids {
-            context_checkpoint_step(io)?;
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+            }
             unique.insert(id);
         }
         if unique.len() != self.selection.message_ids.len() {
@@ -205,15 +208,6 @@ impl CanonicalContextCheckpoint {
         }
         Ok(())
     }
-}
-
-fn context_checkpoint_step(io: Option<&crate::executor::PreparationIo>) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
-    }
-    let _ = io;
-    Ok(())
 }
 
 /// Resolved view of one durable context revision. Stream retains only `content`.
@@ -760,7 +754,7 @@ fn clone_summary_native(
                 source_messages: summary.source_messages, source_digest: summary.source_digest,
                 output }), custody))
         }
-        None => Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?)),
+        None => Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::default())?)),
     }
 }
 
@@ -870,7 +864,7 @@ pub(super) fn context_contract_native<T: Serialize>(
     let private_labels = labels.checked_add(std::any::type_name::<T>().len() as u64 + 4)
         .ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context serializer diagnostic witness overflows" })?;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(0, private_labels)?;
-    let diagnostic = work.claim(diagnostic_bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+    let diagnostic = work.claim(diagnostic_bytes, 0, acyclic_fs::WorkCounters::default())?;
     let mut io = crate::store::history::native_work_io(work)?;
     let encoded = (|| {
         crate::contract::validate_json_byte_bound_native_trusted(value, bounds,
@@ -979,7 +973,7 @@ impl ContextSource for DurableContextProvider {
             crate::executor::with_history_io(Some(&io), |work| limits.validate(work))?;
             let tail = self.tail_revision(Some(&io)).await?;
             if tail == 0 {
-                return Ok((Vec::new(), work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?));
+                return Ok((Vec::new(), work.claim(0, 0, acyclic_fs::WorkCounters::default())?));
             }
             let record = self.revision_bounded(tail, limits, Some(&io)).await?;
             let retained = io.owned_bytes()?;
@@ -1199,7 +1193,7 @@ impl ContextStage for SourceStage {
         let owned = text_bytes.checked_add(3 * std::mem::size_of::<(String, Value)>() as u64)
             .ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context contract storage overflows" })?;
         // The original map convention retains typed entry slots; opaque std node/RSS layout is excluded.
-        let guard = work.claim(owned, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+        let guard = work.claim(owned, 0, acyclic_fs::WorkCounters::default())?;
         work.charge(acyclic_fs::WorkCounters { bytes_copied: text_bytes, allocation_operations: 6,
             ..acyclic_fs::WorkCounters::default() })?;
         Ok((self.contract_value(), guard))
@@ -1498,7 +1492,7 @@ pub(crate) fn copy_context(context: &Context, io: Option<&crate::executor::Prepa
 fn reserve_context_vec_native<T>(
     values: &mut Vec<T>, capacity: usize, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<acyclic_fs::NativeAllocation> {
-    let mut guard = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+    let mut guard = work.claim(0, 0, acyclic_fs::WorkCounters::default())?;
     if capacity <= values.capacity() { return Ok(guard); }
     let old = values.capacity();
     let bytes = capacity.checked_mul(std::mem::size_of::<T>())
@@ -1769,7 +1763,7 @@ impl ContextPipeline {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let (Some(io), Some(work)) = (io, native) {
                 // The operation observer retains the actual input payloads, not this zero transfer guard.
-                let guard = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+                let guard = work.claim(0, 0, acyclic_fs::WorkCounters::default())?;
                 let (next, guard) = stage.apply_native(input, (context, guard), limits, work)?.await?;
                 io.absorb_native_custody(guard)?;
                 context = next;
@@ -2250,9 +2244,9 @@ mod tests {
         }
     }
 
-    struct SourceLimitSpy(std::sync::Mutex<Vec<Limits>>);
+    struct LimitSpy(std::sync::Mutex<Vec<Limits>>);
 
-    impl ContextSource for SourceLimitSpy {
+    impl ContextSource for LimitSpy {
         fn load<'a>(
             &'a self,
             _: &'a ContextInput,
@@ -2270,9 +2264,7 @@ mod tests {
         }
     }
 
-    struct StageLimitSpy(std::sync::Mutex<Vec<Limits>>);
-
-    impl ContextStage for StageLimitSpy {
+    impl ContextStage for LimitSpy {
         fn name(&self) -> &str {
             "limit-spy"
         }
@@ -2311,8 +2303,8 @@ mod tests {
             render_bytes: 2_048,
             ..payload_limits()
         };
-        let source = Arc::new(SourceLimitSpy(std::sync::Mutex::new(Vec::new())));
-        let stage = Arc::new(StageLimitSpy(std::sync::Mutex::new(Vec::new())));
+        let source = Arc::new(LimitSpy(std::sync::Mutex::new(Vec::new())));
+        let stage = Arc::new(LimitSpy(std::sync::Mutex::new(Vec::new())));
         let pipeline = ContextPipeline::new([
             Arc::new(SourceStage::new(
                 "source",
@@ -2449,9 +2441,7 @@ mod tests {
         Ok(())
     }
 
-    struct RendererLimitSpy(std::sync::Mutex<Vec<Limits>>);
-
-    impl ContextRenderer for RendererLimitSpy {
+    impl ContextRenderer for LimitSpy {
         fn contract(&self) -> Value {
             serde_json::json!({"revision":"1"})
         }
@@ -2483,7 +2473,7 @@ mod tests {
             count: std::sync::atomic::AtomicUsize::new(0),
             payloads,
         });
-        let renderer = Arc::new(RendererLimitSpy(std::sync::Mutex::new(Vec::new())));
+        let renderer = Arc::new(LimitSpy(std::sync::Mutex::new(Vec::new())));
         let file = message(ModelRole::System, "0123456789")?
             .content
             .file_refs()
