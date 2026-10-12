@@ -370,7 +370,7 @@ pub struct ForkPreparationLimits {
 }
 
 /// Builds the creator request with the caller's optional accounting observer.
-pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     preparer: &FilesystemForkPreparer<A, O>, fork: &ForkRequest,
     preparation_task: TaskId, mut child: TaskAdmissionRecord, command: WorkflowCommand,
     limits: ForkPreparationLimits, source_checkpoint: Option<crate::conversation::FileRef>,

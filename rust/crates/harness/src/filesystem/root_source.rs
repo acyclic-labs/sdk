@@ -30,12 +30,15 @@ fn root_source_error(source: acyclic_fs::LazyWorkspaceError) -> Error {
 fn root_lazy_mutations<'a>(mutations: &'a [super::WorkspaceMutation])
     -> impl Iterator<Item = acyclic_fs::lazy_workspace::LazyWriteMutation<'a>> + Send + 'a
 {
-    mutations.iter().filter_map(|mutation: &'a super::WorkspaceMutation| match mutation {
-        super::WorkspaceMutation::CreateDirectory { path } =>
-            Some(acyclic_fs::lazy_workspace::LazyWriteMutation::CreateDirectory { path }),
-        super::WorkspaceMutation::PutFile { path, bytes } =>
-            Some(acyclic_fs::lazy_workspace::LazyWriteMutation::PutFile { path, bytes: bytes.clone() }),
-        super::WorkspaceMutation::Remove { .. } => None,
+    let mut mutations = mutations.iter();
+    std::iter::from_fn(move || loop {
+        match mutations.next()? {
+            super::WorkspaceMutation::CreateDirectory { path } =>
+                return Some(acyclic_fs::lazy_workspace::LazyWriteMutation::CreateDirectory { path }),
+            super::WorkspaceMutation::PutFile { path, bytes } =>
+                return Some(acyclic_fs::lazy_workspace::LazyWriteMutation::PutFile { path, bytes: bytes.clone() }),
+            super::WorkspaceMutation::Remove { .. } => {}
+        }
     })
 }
 
