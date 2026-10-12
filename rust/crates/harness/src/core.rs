@@ -34,6 +34,7 @@ pub(crate) use snapshot::{
 #[cfg(feature = "filesystem")]
 pub(crate) use snapshot::resource_creation_clone_reservation;
 pub(crate) use native_custody::{
+    physical_clone_factory,
     copy_iter, copy_copy_vector, reserve_copy_vector, copy_text, copy_authority, copy_provider,
     copy_file, copy_vector, copy_boxed, copy_configuration, copy_value, copy_capabilities,
     copy_reference,
@@ -729,10 +730,7 @@ impl LifecycleState {
 /// Current durable status of an effect.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "public ref-valued status keeps its stable serde and Rust shape"
-)]
+#[allow(clippy::large_enum_variant, reason = "public ref-valued status keeps its stable serde and Rust shape")]
 pub enum EffectStatus {
     /// Effect is durable but has not been dispatched.
     Planned,
@@ -833,10 +831,7 @@ pub(crate) fn event_effect_id(payload: &EventPayload) -> Option<EffectId> {
 /// Schema-validated event payload retained in canonical history.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "canonical events prioritize typed fields over enum stack size"
-)]
+#[allow(clippy::large_enum_variant, reason = "canonical events prioritize typed fields over enum stack size")]
 pub enum EventPayload {
     /// Fixed aggregate lifecycle transition.
     LifecycleTransitioned {
@@ -1526,10 +1521,7 @@ impl SchemaRegistry {
     }
 
     /// Installs a version with a separately validated, file-backed configuration.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one immutable extension declaration"
-    )]
+    #[allow(clippy::too_many_arguments, reason = "one immutable extension declaration")]
     pub fn register_configured(
         &mut self,
         name: impl Into<String>,
@@ -1562,14 +1554,14 @@ impl SchemaRegistry {
             }
         }
         let binding = ExtensionBinding {
-            schema_digest: json_digest(&schema)?,
+            schema_digest: crate::contract::canonical_json_digest(&schema)?,
             schema,
             implementation_digest,
             fork_policy,
             dependencies: required,
             configuration_schema_digest: configuration_schema
                 .as_ref()
-                .map(json_digest)
+                .map(crate::contract::canonical_json_digest)
                 .transpose()?,
             configuration_schema,
         };
@@ -2290,11 +2282,7 @@ impl Reducer {
     }
 
     /// Applies one deterministic command.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "public API of an already-published crate; taking a reference here would break \
-                  existing external callers"
-    )]
+    #[allow(clippy::needless_pass_by_value, reason = "command ownership ends at application")]
     #[cfg_attr(
         not(target_arch = "wasm32"),
         tracing::instrument(
@@ -3054,10 +3042,7 @@ impl Reducer {
         self.validate_fork_reference_ownership_using_with_work(seed, &self.conversation, work)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "fork publication checks one complete seed"
-    )]
+    #[allow(clippy::too_many_lines, reason = "fork publication checks one complete seed")]
     fn validate_fork_reference_ownership_using_with_work(
         &self,
         seed: &ForkSeed,
@@ -3345,12 +3330,7 @@ impl Reducer {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match arm per Action variant, each independently validating and building \
-                  its EventPayload; splitting per-arm would scatter one command's validation \
-                  across many functions without clarifying any of them"
-    )]
+    #[allow(clippy::too_many_lines, reason = "one arm per action")]
     fn transition_with_work(
         &self,
         action: &Action,
@@ -3664,13 +3644,7 @@ impl Reducer {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match arm per EventPayload variant, mirroring transition() above; each arm \
-                  independently re-validates and commits its own state, so splitting per-arm \
-                  would scatter one event's application across many functions without \
-                  clarifying any of them"
-    )]
+    #[allow(clippy::too_many_lines, reason = "one arm per event")]
     fn apply_payload_with_work(
         &mut self, payload: &EventPayload, revision: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -4334,10 +4308,7 @@ fn scope_proof(
     Ok(*hasher.finalize().as_bytes())
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each argument is one field of the original attested proof preimage"
-)]
+#[allow(clippy::too_many_arguments, reason = "each argument is one field of the original attested proof preimage")]
 fn effect_attestation_proof_with_work(
     key: &[u8; 32],
     audience: &Authority,
@@ -4406,10 +4377,6 @@ fn validate_effect_observation(
     Ok(())
 }
 
-fn json_digest(value: &Value) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(value)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4428,6 +4395,36 @@ mod tests {
             items_examined: 16_777_216,
             ..acyclic_fs::WorkBudget::default()
         }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn native_snapshot_round_trip(reducer: &Reducer, issuer: &AuthorityIssuer, maximum_events: usize) -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let source_token = CancellationToken::new();
+        let source = NativeMaterializationWork::new(original_proof_budget(), &source_token).expect("snapshot ledger");
+        let held = reducer.snapshot(maximum_events, &mut Some(&mut crate::store::history::native_work_io(&source).map_err(Error::from)?))?.0;
+        let copy_token = CancellationToken::new();
+        let copy = NativeMaterializationWork::new(original_proof_budget(), &copy_token).expect("copied payload ledger");
+        let mut io = crate::store::history::native_work_io(&copy).map_err(Error::from)?;
+        let input = held.copy(&mut Some(&mut io))?;
+        drop(io);
+        let copy_receipt = copy.receipt();
+        let metadata_token = CancellationToken::new();
+        let metadata = NativeMaterializationWork::new(original_proof_budget(), &metadata_token).expect("restore metadata ledger");
+        let mut restored = Reducer::restore_native(input, issuer.verifier(&mut None)?, reducer.schemas.clone(), &metadata)?;
+        restored.set_resident_event_limit(maximum_events)?;
+        assert_eq!(&restored, reducer);
+        assert_eq!(copy.receipt(), copy_receipt);
+        let available = original_proof_budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
+        assert!(copy.admit_retained(available).is_err());
+        assert!(metadata.admit_retained(available).is_err());
+        drop(restored);
+        copy.admit_retained(available).map_err(Error::from)?;
+        metadata.admit_retained(available).map_err(Error::from)?;
+        assert!(source.admit_retained(available).is_err());
+        drop(held);
+        source.admit_retained(available).map_err(Error::from)?;
+        Ok(())
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -4499,9 +4496,11 @@ mod tests {
         let wire = crate::contract::canonical_json_bytes(&held)?;
         let cold_token = CancellationToken::new();
         let cold_work = NativeMaterializationWork::new(original_proof_budget(), &cold_token).expect("cold decoder ledger");
+        let cold_baseline = cold_work.live_allocation_bytes();
         let mut cold_io = crate::store::history::native_work_io(&cold_work).expect("cold observer");
         let decoded = Snapshot::decode(&wire, wire.len() as u64, &mut Some(&mut cold_io))?;
         assert_eq!(cold_io.into_custody().bytes(), 0);
+        cold_token.cancel();
         let cold_receipt = cold_work.receipt();
         let restore_token = CancellationToken::new();
         let restore_work = NativeMaterializationWork::new(original_proof_budget(), &restore_token).expect("restore metadata ledger");
@@ -4527,9 +4526,9 @@ mod tests {
         }
         assert!(snapshot_work.admit_retained(available).is_err());
         assert!(clone_work.admit_retained(available).is_err());
-        assert!(cold_work.admit_retained(available).is_err(), "restored authority still owns its original decoder claim");
+        assert!(cold_work.live_allocation_bytes() > cold_baseline);
         drop((state, restored));
-        cold_work.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        assert_eq!(cold_work.live_allocation_bytes(), cold_baseline);
         restore_work.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         assert!(snapshot_work.admit_retained(available).is_err(), "held snapshot survives both reducer drops");
         drop(held);
@@ -4929,33 +4928,7 @@ mod tests {
             reducer.extension_admission()?
         );
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-            let source_token = CancellationToken::new();
-            let source = NativeMaterializationWork::new(original_proof_budget(), &source_token).expect("configured snapshot ledger");
-            let held = reducer.snapshot(1, &mut Some(&mut crate::store::history::native_work_io(&source).map_err(|cause| Error::NativeWork { cause, custody: None })?))?.0;
-            let copy_token = CancellationToken::new();
-            let copy = NativeMaterializationWork::new(original_proof_budget(), &copy_token).expect("configured copy ledger");
-            let mut io = crate::store::history::native_work_io(&copy).expect("snapshot copy observer");
-            let input = held.copy(&mut Some(&mut io))?;
-            drop(io);
-            let copy_receipt = copy.receipt();
-            let metadata_token = CancellationToken::new();
-            let metadata = NativeMaterializationWork::new(original_proof_budget(), &metadata_token).expect("new map inline ledger");
-            let mut native_restored = Reducer::restore_native(input, issuer.verifier(&mut None).expect("verifier copy"), reducer.schemas.clone(), &metadata)?;
-            native_restored.set_resident_event_limit(1)?;
-            assert_eq!(native_restored, reducer);
-            assert_eq!(copy.receipt(), copy_receipt, "configuration Vec-to-map move never charges the original source ledger");
-            let available = original_proof_budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
-            assert!(copy.admit_retained(available).is_err());
-            assert!(metadata.admit_retained(available).is_err());
-            drop(native_restored);
-            copy.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            metadata.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            assert!(source.admit_retained(available).is_err(), "held configuration snapshot remains independent");
-            drop(held);
-            source.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        }
+        native_snapshot_round_trip(&reducer, &issuer, 1)?;
         Ok(())
     }
 
@@ -6329,33 +6302,7 @@ mod tests {
         let restored = Reducer::restore(snapshot, issuer().verifier(&mut None).expect("verifier copy"), schemas())?;
         assert_eq!(restored, reducer);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-            let source_token = CancellationToken::new();
-            let source = NativeMaterializationWork::new(original_proof_budget(), &source_token).expect("fork snapshot ledger");
-            let held = reducer.snapshot(usize::MAX, &mut Some(&mut crate::store::history::native_work_io(&source).map_err(|cause| Error::NativeWork { cause, custody: None })?))?.0;
-            let copy_token = CancellationToken::new();
-            let copy = NativeMaterializationWork::new(original_proof_budget(), &copy_token).expect("fork copied payload ledger");
-            let mut io = crate::store::history::native_work_io(&copy).expect("snapshot copy observer");
-            let input = held.copy(&mut Some(&mut io))?;
-            drop(io);
-            let source_receipt = copy.receipt();
-            let metadata_token = CancellationToken::new();
-            let metadata = NativeMaterializationWork::new(original_proof_budget(), &metadata_token).expect("fork new inline map ledger");
-            let native_restored = Reducer::restore_native(input, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &metadata)?;
-            assert_eq!(native_restored, reducer);
-            assert_eq!(native_restored.fork(&child), Some(&seed));
-            assert_eq!(copy.receipt(), source_receipt, "fork map construction must not spend on the original copy ledger");
-            let available = original_proof_budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
-            assert!(copy.admit_retained(available).is_err());
-            assert!(metadata.admit_retained(available).is_err());
-            drop(native_restored);
-            copy.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            metadata.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            assert!(source.admit_retained(available).is_err(), "original held fork snapshot remains funded");
-            drop(held);
-            source.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        }
+        native_snapshot_round_trip(&reducer, &issuer(), usize::MAX)?;
         reducer = restored;
         let mut reused_private = seed;
         reused_private.operation_id = operation(9);

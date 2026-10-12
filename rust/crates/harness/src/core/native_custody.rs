@@ -198,21 +198,22 @@ fn copy_value_inner(
 }
 
 macro_rules! physical_clone_factory {
-    ($name:ident, $ty:ty, $copy:path) => {
+    ($name:ident, $ty:ty, $copy:path, $source:ident) => {
         pub(crate) fn $name(
-            source: &$ty, work: &mut Option<&mut dyn HistoryIo>,
+            $source: &$ty, work: &mut Option<&mut dyn HistoryIo>,
         ) -> Result<($ty, u64)> {
-            if work.is_none() { return Ok((source.clone(), 0)); }
+            if work.is_none() { return Ok(($source.clone(), 0)); }
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let output = $copy(source, &mut quota)?;
+            let output = $copy($source, &mut quota)?;
             let bytes = quota.retained();
             quota.transfer();
             Ok((output, bytes))
         }
     };
 }
-physical_clone_factory!(native_effect_clone_with_custody, EffectState, copy_effect);
-physical_clone_factory!(native_value_clone_with_custody, Value, copy_value);
+pub(crate) use physical_clone_factory;
+physical_clone_factory!(native_effect_clone_with_custody, EffectState, copy_effect, source);
+physical_clone_factory!(native_value_clone_with_custody, Value, copy_value, source);
 pub(crate) fn copy_boxed<T>(
     source: &T, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     copy: impl FnOnce(&T, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
@@ -266,9 +267,9 @@ pub(super) fn copy_resolution(
         id: source.id, expected_version: source.expected_version, outcome, detail,
     })
 }
-physical_clone_factory!(native_interaction_ticket_clone_with_custody, InteractionTicket, copy_ticket);
-physical_clone_factory!(native_interaction_resolution_clone_with_custody, InteractionResolution, copy_resolution);
-physical_clone_factory!(native_interaction_outcome_clone_with_custody, InteractionOutcome, copy_interaction_outcome);
+physical_clone_factory!(native_interaction_ticket_clone_with_custody, InteractionTicket, copy_ticket, source);
+physical_clone_factory!(native_interaction_resolution_clone_with_custody, InteractionResolution, copy_resolution, source);
+physical_clone_factory!(native_interaction_outcome_clone_with_custody, InteractionOutcome, copy_interaction_outcome, source);
 pub(crate) fn copy_capabilities(
     source: &Capabilities, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<Capabilities> {
@@ -403,8 +404,8 @@ pub(super) fn copy_event(
         payload: copy_payload(&source.payload, quota)?, attestation: source.attestation,
     })
 }
-physical_clone_factory!(native_event_clone_with_custody, Event, copy_event);
-physical_clone_factory!(native_effect_attestation_clone_with_custody, EffectAttestation, copy_observation);
+physical_clone_factory!(native_event_clone_with_custody, Event, copy_event, source);
+physical_clone_factory!(native_effect_attestation_clone_with_custody, EffectAttestation, copy_observation, source);
 
 /// Logical inline map/set payload, never an estimate of opaque allocator nodes.
 pub(super) fn retain_entry<T>(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {

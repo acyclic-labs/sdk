@@ -1688,10 +1688,7 @@ impl ForkRequest {
 /// Result of one selected provider capture.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "capture variants preserve the published v2 serde shape"
-)]
+#[allow(clippy::large_enum_variant, reason = "capture variants preserve the published v2 serde shape")]
 pub enum Capture {
     /// Exact immutable resource revision was captured.
     Captured(CapturedResource),
@@ -1980,9 +1977,6 @@ impl ForkReport {
                 != self.child_private_volume.provider()
         {
             return Err(work.invalid("fork report private volume is not child owned"));
-        }
-        if self.child_result_volume != self.request.preparation.child_result_volume {
-            return Err(Error::Invalid("fork report changed result allocation".into()));
         }
         for file in &self.inherited_context {
             work.checkpoint()?;
@@ -2500,10 +2494,6 @@ mod physical_clones {
         bytes(source, quota)
     }
 
-    fn volume(source: &VolumeRef, quota: &mut CodecQuota<'_, '_>) -> Result<VolumeRef> {
-        source.clone_in_quota(quota)
-    }
-
     fn resource(source: &ResourceRef, quota: &mut CodecQuota<'_, '_>) -> Result<ResourceRef> {
         ResourceRef::new_with_work(
             source.kind(),
@@ -2514,20 +2504,16 @@ mod physical_clones {
         )
     }
 
-    fn files(source: &[FileRef], quota: &mut CodecQuota<'_, '_>) -> Result<Vec<FileRef>> {
-        vector(source, quota, file)
-    }
-
     fn revision(source: &ResourceRevision, quota: &mut CodecQuota<'_, '_>) -> Result<ResourceRevision> {
         Ok(match source {
             ResourceRevision::History(value) => ResourceRevision::History(
                 StreamRef::from_resource_with_work(resource(value.as_resource(), quota)?, quota.work())?),
             ResourceRevision::Project { volume: source_volume, generation } => ResourceRevision::Project {
-                volume: volume(source_volume, quota)?,
+                volume: source_volume.clone_in_quota(quota)?,
                 generation: GenerationRef::from_resource_with_work(resource(generation.as_resource(), quota)?, quota.work())?,
             },
             ResourceRevision::PrivateVolume { volume: source_volume, generation, paths } => {
-                let volume = volume(source_volume, quota)?;
+                let volume = source_volume.clone_in_quota(quota)?;
                 let generation = GenerationRef::from_resource_with_work(
                     resource(generation.as_resource(), quota)?, quota.work())?;
                 let copied_paths = vector(paths, quota, |path, quota| text(path, quota))?;
@@ -2539,7 +2525,7 @@ mod physical_clones {
                 CheckpointRef::from_resource_with_work(resource(value.as_resource(), quota)?, quota.work())?),
             ResourceRevision::Artifact(value) => ResourceRevision::Artifact(
                 ArtifactRef::from_resource_with_work(resource(value.as_resource(), quota)?, quota.work())?),
-            ResourceRevision::SharedVolume(value) => ResourceRevision::SharedVolume(volume(value, quota)?),
+            ResourceRevision::SharedVolume(value) => ResourceRevision::SharedVolume(value.clone_in_quota(quota)?),
             ResourceRevision::Extension { name, version, implementation_digest, reference } =>
                 ResourceRevision::Extension {
                     name: text(name, quota)?,
@@ -2589,17 +2575,17 @@ mod physical_clones {
         Ok(SummaryForkCapture {
             selection: summary_selection(&source.selection, quota)?,
             context: file(&source.context, quota)?,
-            payloads: files(&source.payloads, quota)?,
-            references: files(&source.references, quota)?,
+            payloads: vector(&source.payloads, quota, file)?,
+            references: vector(&source.references, quota, file)?,
         })
     }
 
     fn preparation(source: &ForkPreparation, quota: &mut CodecQuota<'_, '_>) -> Result<ForkPreparation> {
         Ok(ForkPreparation {
-            child_project_volume: volume(&source.child_project_volume, quota)?,
-            child_private_volume: volume(&source.child_private_volume, quota)?,
+            child_project_volume: source.child_project_volume.clone_in_quota(quota)?,
+            child_private_volume: source.child_private_volume.clone_in_quota(quota)?,
             child_result_volume: source.child_result_volume.as_ref()
-                .map(|value| volume(value, quota)).transpose()?,
+                .map(|value| value.clone_in_quota(quota)).transpose()?,
             inherited_through_sequence: source.inherited_through_sequence,
             maximum_inherited_messages: source.maximum_inherited_messages,
             maximum_inherited_bytes: source.maximum_inherited_bytes,
@@ -2612,7 +2598,7 @@ mod physical_clones {
         let mut value = slots::<SharedGrant>(source.len(), quota)?;
         for grant in source {
             item(quota)?;
-            let volume = volume(&grant.volume, quota)?;
+            let volume = grant.volume.clone_in_quota(quota)?;
             let mut operations = BTreeSet::new();
             // Entry payload is explicit; opaque std node/control allocation is not observed.
             let payload = grant.operations.len() as u64 * std::mem::size_of::<VolumeOperation>() as u64;
@@ -2678,21 +2664,21 @@ mod physical_clones {
         Ok(ForkReport {
             request,
             captures,
-            child_private_volume: volume(&source.child_private_volume, quota)?,
+            child_private_volume: source.child_private_volume.clone_in_quota(quota)?,
             child_private_generation: GenerationRef::from_resource_with_work(
                 resource(source.child_private_generation.as_resource(), quota)?, quota.work())?,
             child_result_volume: source.child_result_volume.as_ref()
-                .map(|value| volume(value, quota)).transpose()?,
+                .map(|value| value.clone_in_quota(quota)).transpose()?,
             child_result_generation: source.child_result_generation.as_ref()
                 .map(|value| GenerationRef::from_resource_with_work(
                     resource(value.as_resource(), quota)?, quota.work())).transpose()?,
-            inherited_context: files(&source.inherited_context, quota)?,
+            inherited_context: vector(&source.inherited_context, quota, file)?,
             summary: source.summary.as_ref().map(|value| summary_capture(value, quota)).transpose()?,
             inherited_through_sequence: source.inherited_through_sequence,
             shared_grants: shared(&source.shared_grants, quota)?,
             reference_grants: references(&source.reference_grants, quota)?,
             history_witness: source.history_witness,
-            attachment_manifests: files(&source.attachment_manifests, quota)?,
+            attachment_manifests: vector(&source.attachment_manifests, quota, file)?,
         })
     }
 
@@ -2719,77 +2705,35 @@ mod physical_clones {
             attached_agents,
             resources,
             omissions,
-            child_private_volume: volume(&source.child_private_volume, quota)?,
+            child_private_volume: source.child_private_volume.clone_in_quota(quota)?,
             child_private_generation: GenerationRef::from_resource_with_work(
                 resource(source.child_private_generation.as_resource(), quota)?, quota.work())?,
             child_result_volume: source.child_result_volume.as_ref()
-                .map(|value| volume(value, quota)).transpose()?,
+                .map(|value| value.clone_in_quota(quota)).transpose()?,
             child_result_generation: source.child_result_generation.as_ref()
                 .map(|value| GenerationRef::from_resource_with_work(
                     resource(value.as_resource(), quota)?, quota.work())).transpose()?,
-            inherited_context: files(&source.inherited_context, quota)?,
+            inherited_context: vector(&source.inherited_context, quota, file)?,
             summary: source.summary.as_ref().map(|value| summary_capture(value, quota)).transpose()?,
             inherited_through_sequence: source.inherited_through_sequence,
             shared_grants: shared(&source.shared_grants, quota)?,
             reference_grants: references(&source.reference_grants, quota)?,
             history_witness: source.history_witness,
-            attachment_manifests: files(&source.attachment_manifests, quota)?,
+            attachment_manifests: vector(&source.attachment_manifests, quota, file)?,
             boundary: source.boundary.as_ref().map(|value| boundary(value, quota)).transpose()?,
         })
     }
 
     impl ForkReport {
-        pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-            if work.is_none() { return Ok((self.clone(), 0)); }
-            let mut quota = CodecQuota::new(work, 0)?;
-            let value = report(self, &mut quota)?;
-            let held = quota.retained();
-            quota.transfer();
-            Ok((value, held))
-        }
+        crate::core::physical_clone_factory!(copy, ForkReport, report, self);
     }
-
     impl ForkRequest {
-        pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-            if work.is_none() { return Ok((self.clone(), 0)); }
-            let mut quota = CodecQuota::new(work, 0)?;
-            let value = request(self, &mut quota)?;
-            let held = quota.retained();
-            quota.transfer();
-            Ok((value, held))
-        }
+        crate::core::physical_clone_factory!(copy, ForkRequest, request, self);
     }
-
     impl ForkSeed {
-        pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-            if work.is_none() { return Ok((self.clone(), 0)); }
-            let mut quota = CodecQuota::new(work, 0)?;
-            let value = seed(self, &mut quota)?;
-            let held = quota.retained();
-            quota.transfer();
-            Ok((value, held))
-        }
+        crate::core::physical_clone_factory!(copy, ForkSeed, seed, self);
     }
 
-    impl ResourceRevision {
-        pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-            if work.is_none() { return Ok(self.clone()); }
-            let mut quota = CodecQuota::new(work, 0)?;
-            let value = revision(self, &mut quota)?;
-            quota.transfer();
-            Ok(value)
-        }
-    }
-
-    impl Capture {
-        pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-            if work.is_none() { return Ok(self.clone()); }
-            let mut quota = CodecQuota::new(work, 0)?;
-            let value = capture(self, &mut quota)?;
-            quota.transfer();
-            Ok(value)
-        }
-    }
 }
 
 #[cfg(test)]

@@ -1509,29 +1509,6 @@ mod tests {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
-    fn native_cold_wire_restores_with_independent_metadata_after_source_cancellation() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let (reducer, issuer) = populated_fixture()?;
-        let bytes = crate::contract::canonical_json_bytes(&reducer.snapshot(usize::MAX, &mut None)?.0)?;
-        let source_token = CancellationToken::new();
-        let source = NativeMaterializationWork::new(native_budget(), &source_token).expect("source decoder ledger");
-        let mut io = crate::store::history::native_work_io(&source).expect("original decoder observer");
-        let snapshot = Snapshot::decode(&bytes, 4_194_304, &mut Some(&mut io))?;
-        assert_eq!(io.into_custody().bytes(), 0);
-        source_token.cancel();
-        let restore_token = CancellationToken::new();
-        let restore = NativeMaterializationWork::new(native_budget(), &restore_token).expect("independent restore ledger");
-        let restored = Reducer::restore_native(snapshot, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), &restore)?;
-        assert_eq!(restored, reducer);
-        assert!(restore.receipt().allocation_operations > 0);
-        drop(restored);
-        restore.admit_retained(native_budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
     fn native_original_cold_decoder_preserves_digest_and_issuer_mac_rejection() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
         let (reducer, issuer) = populated_fixture()?;
