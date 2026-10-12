@@ -972,8 +972,8 @@ where
                 }
                 with_live_session(&self.session, |session| session.flush_callbacks_with_meter(native_work))
                     .map_err(E::from)?;
-                let snapshot = self.source.import_selected_meter_guarded(
-                    destination, plan, operation, permit, native_work,
+                let snapshot = self.source.import_selected(
+                    destination, plan, operation, permit, super::adapter::NativeDemandCarrier::Native(native_work),
                     &cancellation, before_publication,
                 ).await?;
                 with_live_session(&self.session, |session| session.revalidate_with_meter(native_work))
