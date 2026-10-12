@@ -41,6 +41,20 @@ impl CoreLog {
         maximum_bytes: Option<u64>,
     ) -> Result<Option<T>, LocalCoreStateStoreError> {
         let key = T::key(id);
+        if maximum_bytes.is_none()
+            && matches!(key, RecordKey::LazyWorkspace(_))
+            && let Some(allocation) = &root._allocation
+        {
+            let work = allocation.work();
+            return self
+                .get_native_value(root, key, work, work.cancellation())?
+                .map(|owned| {
+                    T::from_value(owned.as_state())
+                        .cloned()
+                        .ok_or(LocalCoreStateStoreError::Integrity)
+                })
+                .transpose();
+        }
         if let Some(value) = self.residents().get(&key) {
             return match value {
                 Some(RecordValue::FlatContext(_)) | Some(RecordValue::FlatChildren(_)) => Ok(
@@ -50,11 +64,7 @@ impl CoreLog {
             };
         }
         let paths = key.paths(root)?;
-        let value = match maximum_bytes {
-            Some(maximum_bytes) => read_json_bounded::<Option<T>>(&paths.current, maximum_bytes)?,
-            None => read_json::<Option<T>>(&paths.current)?,
-        }
-        .flatten();
+        let value = read_json::<Option<T>>(&paths.current, maximum_bytes)?.flatten();
         self.residents()
             .insert(key, value.clone().map(T::into_value));
         Ok(value)

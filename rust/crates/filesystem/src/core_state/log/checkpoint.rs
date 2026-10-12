@@ -89,10 +89,7 @@ impl CoreLog {
             }
             writer.file.sync_all()?;
             crash_point("record flushed", self.flushed);
-            match work {
-                Some(work) => materialization_sync(&paths.directory, work)?,
-                None => sync_directory(&paths.directory)?,
-            }
+            paths.sync()?;
         }
         let mut reset = work
             .map(|work| {

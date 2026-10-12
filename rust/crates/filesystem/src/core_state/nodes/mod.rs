@@ -331,13 +331,6 @@ pub(super) fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyW
         LocalCoreStateStoreError::MaterializationInProgress => {
             Lazy::NativeRecordMaterializationInProgress
         }
-        LocalCoreStateStoreError::MaterializationWork(error) => match error {
-            crate::materializer::NativeTreeMaterializationError::Cancelled => Lazy::Cancelled,
-            crate::materializer::NativeTreeMaterializationError::Work(error) => {
-                Lazy::Demand(crate::DemandError::Work(error))
-            }
-            error => Lazy::NativeWork(error),
-        },
         LocalCoreStateStoreError::LazyWork(error) => error,
         LocalCoreStateStoreError::Integrity => Lazy::NativeRecordIntegrity,
         LocalCoreStateStoreError::NativeLedgerMismatch => Lazy::NativeLedgerMismatch,
@@ -428,13 +421,12 @@ impl LocalCoreStateStore {
                     .as_ref()
                     .expect("bound native work")
                     .work();
-                let paths = namespace.record(T::FAMILY, &T::address(id))?;
-                materialization_lock(paths, work, |paths| {
-                    let Some((wire, mut allocation)) =
-                        measured_read_record::<T::Wire>(&paths, work)?
-                    else {
+                let mut paths = namespace.record(T::FAMILY, &T::address(id))?;
+                with_lock(&mut paths, |paths| {
+                    let Some((wire, allocation)) = read_recoverable::<T::Wire>(paths)? else {
                         return Ok(None);
                     };
+                    let mut allocation = allocation.expect("native record allocation");
                     let value = T::from_wire(wire, work, &mut allocation)?;
                     allocation.substitute(value.owned_bytes())?;
                     let owned = NativeOwnedCoreState::from_parts(value, allocation);
@@ -503,11 +495,10 @@ impl LocalCoreStateStore {
                     .as_ref()
                     .expect("bound native work")
                     .work();
-                let paths = namespace.record(T::FAMILY, &T::address(id))?;
-                materialization_lock(paths, work, |paths| {
-                    if let Some((wire, mut allocation)) =
-                        measured_read_record::<T::Wire>(&paths, work)?
-                    {
+                let mut paths = namespace.record(T::FAMILY, &T::address(id))?;
+                with_lock(&mut paths, |paths| {
+                    if let Some((wire, allocation)) = read_recoverable::<T::Wire>(paths)? {
+                        let mut allocation = allocation.expect("native record allocation");
                         let existing = T::from_wire(wire, work, &mut allocation)?;
                         work.charge(crate::WorkCounters {
                             items_examined: 1,
@@ -517,7 +508,7 @@ impl LocalCoreStateStore {
                             return Err(LocalCoreStateStoreError::Integrity);
                         }
                     } else {
-                        measured_write_record(&paths, owned.as_state(), work)?;
+                        write_journaled(paths, owned.as_state())?;
                     }
                     Ok(owned)
                 })

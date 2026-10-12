@@ -30,7 +30,7 @@ pub(super) fn checked_packet<T>(
 ) -> Result<Owned<T>, Error> {
     // Keep the value-first tuple intact through every rejecting branch.
     let parts = owned.into_parts();
-    if !parts.1.matches_work(work) {
+    if !parts.1.work().shares_allocation_context(work) {
         return Err(Error::NativeLedgerMismatch);
     }
     if parts.1.bytes() != bytes(&parts.0)? {
@@ -41,7 +41,7 @@ pub(super) fn checked_packet<T>(
 
 fn transfer<T>(owned: Owned<T>, work: &Work, held: &mut NativeAllocation) -> Result<T, Error> {
     let (value, mut allocation) = owned.into_parts();
-    let result = if allocation.matches_work(work) {
+    let result = if allocation.work().shares_allocation_context(work) {
         held.absorb(&mut allocation).map_err(Error::from)
     } else {
         Err(Error::NativeLedgerMismatch)
@@ -125,42 +125,52 @@ fn clone_lineage(
     })
 }
 
+fn clone_roots<'a>(
+    roots: impl ExactSizeIterator<Item = (&'a crate::WorkspaceRootId, &'a WorkspaceContextRoot)>,
+    work: &Work,
+    held: &mut NativeAllocation,
+) -> Result<FlatMap<crate::WorkspaceRootId, WorkspaceContextRoot>, Error> {
+    let mut output = Vec::new();
+    reserve(&mut output, roots.len(), work, held)?;
+    for (id, root) in roots {
+        work.charge(crate::WorkCounters {
+            items_examined: 1,
+            ..Default::default()
+        })?;
+        root.source_path.to_str().ok_or(Error::Integrity)?;
+        if let Some(mount) = &root.mount_path {
+            mount.to_str().ok_or(Error::Integrity)?;
+        }
+        output.push((
+            *id,
+            WorkspaceContextRoot {
+                root_id: root.root_id,
+                source_path: path(&root.source_path, work, held)?,
+                workspace_id: root.workspace_id,
+                workspace_name: string(&root.workspace_name, work, held)?,
+                parent_workspace_id: root.parent_workspace_id,
+                mount_path: root
+                    .mount_path
+                    .as_deref()
+                    .map(|value| path(value, work, held))
+                    .transpose()?,
+            },
+        ));
+    }
+    Ok(FlatMap(output))
+}
+
 fn flatten_context(
     value: &WorkspaceContext,
     work: &Work,
     held: &mut NativeAllocation,
 ) -> Result<FlatWorkspaceContext, Error> {
-    let mut roots = Vec::new();
-    reserve(&mut roots, value.roots.len(), work, held)?;
-    for (id, root) in &value.roots {
-        work.charge(crate::WorkCounters {
-            items_examined: 1,
-            ..Default::default()
-        })?;
-        let source = root.source_path.to_str().ok_or(Error::Integrity)?;
-        let mount = root
-            .mount_path
-            .as_deref()
-            .map(|path| path.to_str().ok_or(Error::Integrity))
-            .transpose()?;
-        roots.push((
-            *id,
-            FlatWorkspaceContextRoot {
-                root_id: root.root_id,
-                source_path: string(source, work, held)?,
-                workspace_id: root.workspace_id,
-                workspace_name: string(&root.workspace_name, work, held)?,
-                parent_workspace_id: root.parent_workspace_id,
-                mount_path: mount.map(|path| string(path, work, held)).transpose()?,
-            },
-        ));
-    }
     Ok(FlatWorkspaceContext {
         version: value.version,
         revision: value.revision,
         context_id: value.context_id,
         parent_context_id: value.parent_context_id,
-        roots: FlatMap(roots),
+        roots: clone_roots(value.roots.iter(), work, held)?,
         state: value.state,
     })
 }
@@ -170,36 +180,18 @@ fn clone_flat_context(
     work: &Work,
     held: &mut NativeAllocation,
 ) -> Result<FlatWorkspaceContext, Error> {
-    let mut roots = Vec::new();
-    reserve(&mut roots, value.roots.0.len(), work, held)?;
-    for (id, root) in &value.roots.0 {
-        work.charge(crate::WorkCounters {
-            items_examined: 1,
-            ..Default::default()
-        })?;
-        roots.push((
-            *id,
-            FlatWorkspaceContextRoot {
-                root_id: root.root_id,
-                source_path: string(&root.source_path, work, held)?,
-                workspace_id: root.workspace_id,
-                workspace_name: string(&root.workspace_name, work, held)?,
-                parent_workspace_id: root.parent_workspace_id,
-                mount_path: root
-                    .mount_path
-                    .as_deref()
-                    .map(|value| string(value, work, held))
-                    .transpose()?,
-            },
-        ));
-    }
-    measured_order(&mut roots, work)?;
+    let mut roots = clone_roots(
+        value.roots.0.iter().map(|(id, root)| (id, root)),
+        work,
+        held,
+    )?;
+    measured_order(&mut roots.0, work)?;
     Ok(FlatWorkspaceContext {
         version: value.version,
         revision: value.revision,
         context_id: value.context_id,
         parent_context_id: value.parent_context_id,
-        roots: FlatMap(roots),
+        roots,
         state: value.state,
     })
 }
@@ -208,24 +200,7 @@ pub(super) fn canonical_ids(
     values: &mut Vec<WorkspaceContextId>,
     work: &Work,
 ) -> Result<(), Error> {
-    for index in 1..values.len() {
-        let mut position = index;
-        while position != 0 {
-            work.charge(crate::WorkCounters {
-                items_examined: 1,
-                ..Default::default()
-            })?;
-            if values[position - 1] <= values[position] {
-                break;
-            }
-            work.charge(crate::WorkCounters {
-                bytes_copied: (3 * std::mem::size_of::<WorkspaceContextId>()) as u64,
-                ..Default::default()
-            })?;
-            values.swap(position - 1, position);
-            position -= 1;
-        }
-    }
+    sort_records(values, work, Ord::cmp)?;
     let mut index = 1;
     while index < values.len() {
         work.charge(crate::WorkCounters {
@@ -295,9 +270,7 @@ pub(super) fn clone_native_record_value(
         }
         RecordValue::ChildCount(value) => RecordValue::ChildCount(*value),
         RecordValue::ChildIndex(value) => RecordValue::ChildIndex(*value),
-        RecordValue::LazyWorkspace(value) => {
-            RecordValue::LazyWorkspace(clone_native_lazy_state(value, work)?)
-        }
+        RecordValue::LazyWorkspace(value) => RecordValue::LazyWorkspace(value.clone()),
     };
     held.substitute(native_record_owned_bytes(&value, work)?)?;
     Ok(Owned::from_parts(value, held))
@@ -330,33 +303,11 @@ pub(super) fn native_flat_context_owned_bytes(
     context: &FlatWorkspaceContext,
     work: &Work,
 ) -> Result<u64, Error> {
-    let mut bytes = context
-        .roots
-        .0
-        .capacity()
-        .checked_mul(std::mem::size_of::<(
-            crate::WorkspaceRootId,
-            FlatWorkspaceContextRoot,
-        )>())
-        .ok_or_else(overflow)? as u64;
-    for (_, root) in &context.roots.0 {
-        work.charge(crate::WorkCounters {
-            items_examined: 1,
-            ..Default::default()
-        })?;
-        bytes = bytes
-            .checked_add(root.source_path.capacity() as u64)
-            .and_then(|bytes| bytes.checked_add(root.workspace_name.capacity() as u64))
-            .and_then(|bytes| {
-                bytes.checked_add(
-                    root.mount_path
-                        .as_ref()
-                        .map_or(0, |path| path.capacity() as u64),
-                )
-            })
-            .ok_or_else(overflow)?;
-    }
-    Ok(bytes)
+    roots_owned_bytes(
+        context.roots.0.capacity(),
+        context.roots.0.iter().map(|(_, root)| root),
+        work,
+    )
 }
 
 fn read<T: DeserializeOwned>(
@@ -468,32 +419,15 @@ pub(super) fn load_native_context(
         RecordValue::Context(value) => value,
         RecordValue::FlatContext(value) => {
             let mut roots = BTreeMap::new();
-            // Keep the old flat backing and its funding until conversion ends.
-            for (id, root) in &value.roots.0 {
+            for (id, root) in value.roots.0 {
                 check(work, cxl)?;
-                // Only compiled logical entries are known at the public ABI;
-                // opaque std tree backing is excluded, never its deep payload.
                 let mut entry = work.claim(
                     std::mem::size_of::<(crate::WorkspaceRootId, WorkspaceContextRoot)>() as u64,
                     0,
                     crate::WorkCounters::UNCHARGED,
                 )?;
                 held.absorb(&mut entry)?;
-                roots.insert(
-                    *id,
-                    WorkspaceContextRoot {
-                        root_id: root.root_id,
-                        source_path: path(Path::new(&root.source_path), work, &mut held)?,
-                        workspace_id: root.workspace_id,
-                        workspace_name: string(&root.workspace_name, work, &mut held)?,
-                        parent_workspace_id: root.parent_workspace_id,
-                        mount_path: root
-                            .mount_path
-                            .as_deref()
-                            .map(|value| path(Path::new(value), work, &mut held))
-                            .transpose()?,
-                    },
-                );
+                roots.insert(id, root);
             }
             let context = WorkspaceContext {
                 version: value.version,
@@ -503,7 +437,6 @@ pub(super) fn load_native_context(
                 roots,
                 state: value.state,
             };
-            drop(value);
             let bytes = native_context_owned_bytes(&context, work)?;
             held.substitute(bytes)?;
             context
@@ -535,15 +468,21 @@ pub(super) fn native_context_owned_bytes(
     context: &WorkspaceContext,
     work: &Work,
 ) -> Result<u64, Error> {
-    let mut bytes = context
-        .roots
-        .len()
+    roots_owned_bytes(context.roots.len(), context.roots.values(), work)
+}
+
+fn roots_owned_bytes<'a>(
+    capacity: usize,
+    roots: impl Iterator<Item = &'a WorkspaceContextRoot>,
+    work: &Work,
+) -> Result<u64, Error> {
+    let mut bytes = capacity
         .checked_mul(std::mem::size_of::<(
             crate::WorkspaceRootId,
             WorkspaceContextRoot,
         )>())
         .ok_or_else(overflow)? as u64;
-    for root in context.roots.values() {
+    for root in roots {
         work.charge(crate::WorkCounters {
             items_examined: 1,
             ..Default::default()

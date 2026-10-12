@@ -207,24 +207,9 @@ fn empty_bucket(
 
 fn put_buckets(change: &mut Change, mut buckets: Vec<Bucket>, work: &Work) -> Result<(), Error> {
     // Match ordinary BTreeMap iteration order without allocating another map.
-    for index in 1..buckets.len() {
-        let mut position = index;
-        while position > 0 {
-            work.charge(crate::WorkCounters {
-                items_examined: 1,
-                ..Default::default()
-            })?;
-            if buckets[position - 1].parent <= buckets[position].parent {
-                break;
-            }
-            work.charge(crate::WorkCounters {
-                bytes_copied: (3 * std::mem::size_of::<Bucket>()) as u64,
-                ..Default::default()
-            })?;
-            buckets.swap(position - 1, position);
-            position -= 1;
-        }
-    }
+    sort_records(&mut buckets, work, |left, right| {
+        left.parent.cmp(&right.parent)
+    })?;
     for bucket in buckets {
         let parent = bucket.parent;
         let count = (!bucket.children.is_empty())
@@ -323,131 +308,28 @@ pub(in crate::core_state) fn compare_native_context(
     cxl: &CancellationToken,
 ) -> Result<bool, Error> {
     check(work, cxl)?;
-    let replacement = checked_packet(replacement, work, |context| {
-        native_context_owned_bytes(context, work)
-    })?;
-    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let mut replacements = Vec::new();
-    reserve(&mut replacements, 1, work, &mut held)?;
-    let replacement = transfer(replacement, work, &mut held)?;
-    replacements.push(replacement);
-    compare_native_contexts(
-        root,
-        log,
-        &[(id, expected)],
-        Owned::from_parts(replacements, held),
-        false,
-        work,
-        cxl,
-    )
-}
-
-pub(in crate::core_state) fn compare_native_contexts(
-    root: &Namespace,
-    log: &mut CoreLog,
-    expected: &[(WorkspaceContextId, u64)],
-    replacements: Owned<Vec<WorkspaceContext>>,
-    exact: bool,
-    work: &Work,
-    cxl: &CancellationToken,
-) -> Result<bool, Error> {
-    check(work, cxl)?;
-    let replacements = checked_packet(replacements, work, |contexts| {
-        let mut bytes = contexts
-            .capacity()
-            .checked_mul(std::mem::size_of::<WorkspaceContext>())
-            .ok_or_else(overflow)? as u64;
-        for context in contexts {
-            bytes = bytes
-                .checked_add(native_context_owned_bytes(context, work)?)
-                .ok_or_else(overflow)?;
-        }
-        Ok(bytes)
-    })?;
-    let mut after_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let mut after = transfer(replacements, work, &mut after_allocation)?;
-    if exact && live_ids(root, log, work, cxl)?.as_state().len() != expected.len() {
+    let current = load_native_context(root, log, id, work, cxl)?;
+    if current
+        .as_ref()
+        .map_or(0, |record| record.as_state().revision)
+        != expected
+        || replacement.as_state().context_id != id
+    {
         return Ok(false);
-    }
-    let mut before_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let mut before = Vec::new();
-    reserve(&mut before, expected.len(), work, &mut before_allocation)?;
-    for (id, revision) in expected {
-        let current = load_native_context(root, log, *id, work, cxl)?;
-        if current
-            .as_ref()
-            .map_or(0, |value| value.as_state().revision)
-            != *revision
-        {
-            return Ok(false);
-        }
-        before.push((*id, current));
-    }
-    // Stable insertion sort plus remove-earlier duplicates reproduces collect
-    // into the ordinary BTreeMap (last replacement for a key wins).
-    for index in 1..after.len() {
-        let mut position = index;
-        while position != 0 {
-            work.charge(crate::WorkCounters {
-                items_examined: 1,
-                ..Default::default()
-            })?;
-            if after[position - 1].context_id <= after[position].context_id {
-                break;
-            }
-            work.charge(crate::WorkCounters {
-                bytes_copied: (3 * std::mem::size_of::<WorkspaceContext>()) as u64,
-                ..Default::default()
-            })?;
-            after.swap(position - 1, position);
-            position -= 1;
-        }
-    }
-    let mut index = 1;
-    while index < after.len() {
-        work.charge(crate::WorkCounters {
-            items_examined: 1,
-            ..Default::default()
-        })?;
-        if after[index - 1].context_id == after[index].context_id {
-            work.charge(crate::WorkCounters {
-                bytes_copied: ((after.len() - index) * std::mem::size_of::<WorkspaceContext>())
-                    as u64,
-                ..Default::default()
-            })?;
-            let removed_bytes = native_context_owned_bytes(&after[index - 1], work)?;
-            drop(after.remove(index - 1));
-            after_allocation.release(removed_bytes)?;
-        } else {
-            index += 1;
-        }
-    }
-    for record in &after {
-        let mut found = false;
-        for (id, _) in expected {
-            work.charge(crate::WorkCounters {
-                items_examined: 1,
-                ..Default::default()
-            })?;
-            if *id == record.context_id {
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            return Ok(false);
-        }
     }
     if !index_ready(root, log, work, cxl)? {
         rebuild_index(root, log, work, cxl)?;
     }
+    let old_parent = current
+        .as_ref()
+        .and_then(|record| record.as_state().parent_context_id);
+    let new_parent = replacement.as_state().parent_context_id;
+    let old_id = current
+        .as_ref()
+        .map_or(id, |record| record.as_state().context_id);
     let mut bucket_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut buckets = Vec::new();
-    for parent in before
-        .iter()
-        .filter_map(|(_, record)| record.as_ref()?.as_state().parent_context_id)
-        .chain(after.iter().filter_map(|record| record.parent_context_id))
-    {
+    for parent in old_parent.into_iter().chain(new_parent) {
         if bucket_position(&buckets, parent, work)?.is_some() {
             continue;
         }
@@ -479,25 +361,7 @@ pub(in crate::core_state) fn compare_native_contexts(
             allocation: held,
         });
     }
-    for replacement in &after {
-        let mut old_parent = None;
-        let mut old_id = replacement.context_id;
-        for (id, record) in &before {
-            work.charge(crate::WorkCounters {
-                items_examined: 1,
-                ..Default::default()
-            })?;
-            if *id == replacement.context_id {
-                if let Some(record) = record {
-                    old_parent = record.as_state().parent_context_id;
-                    old_id = record.as_state().context_id;
-                }
-                break;
-            }
-        }
-        if old_parent == replacement.parent_context_id {
-            continue;
-        }
+    if old_parent != new_parent {
         if let Some(parent) = old_parent {
             if let Some(index) = bucket_position(&buckets, parent, work)? {
                 let bucket = &mut buckets[index];
@@ -521,28 +385,20 @@ pub(in crate::core_state) fn compare_native_contexts(
                     })?;
                     bucket.children.remove(position);
                 }
-                // Keep this affected parent even when its last child leaves.
-                // put_buckets emits the canonical absence/count afterimages.
             }
         }
-        if let Some(parent) = replacement.parent_context_id {
+        if let Some(parent) = new_parent {
             let index = empty_bucket(&mut buckets, parent, work, &mut bucket_allocation)?;
-            add_child(&mut buckets[index], replacement.context_id, work)?;
+            add_child(&mut buckets[index], id, work)?;
         }
     }
-    drop(before);
-    drop(before_allocation);
+    drop(current);
     let mut change = Change::new(work)?;
-    for record in after {
-        let bytes = native_context_owned_bytes(&record, work)?;
-        let allocation = after_allocation.split_off(bytes)?;
-        let key = RecordKey::Context(record.context_id);
-        let public = Owned::from_parts(RecordValue::Context(record), allocation);
-        let flat = clone_native_record_value(public.as_state(), work, cxl)?;
-        drop(public);
-        change.put_owned(key, flat, work)?;
-    }
-    drop(after_allocation);
+    let (record, allocation) = replacement.into_parts();
+    let public = Owned::from_parts(RecordValue::Context(record), allocation);
+    let flat = clone_native_record_value(public.as_state(), work, cxl)?;
+    drop(public);
+    change.put_owned(RecordKey::Context(id), flat, work)?;
     put_buckets(&mut change, buckets, work)?;
     drop(bucket_allocation);
     cxl.check()
@@ -577,7 +433,9 @@ mod tests {
             .expect_err("delta-only funding would wrongly accept");
         assert!(matches!(
             error,
-            Error::MaterializationWork(NativeError::Work(_))
+            Error::LazyWork(crate::LazyWorkspaceError::Demand(crate::DemandError::Work(
+                _
+            )))
         ));
         assert_eq!(values, [11, 13]);
         assert_eq!(values.capacity(), 2);

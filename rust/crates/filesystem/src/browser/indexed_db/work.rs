@@ -1,16 +1,24 @@
 use super::*;
 
+pub(super) fn admit(
+    context: &crate::AuthorityWork<'_>,
+    delta: WorkCounters,
+) -> Result<WorkCounters, AuthorityStoreError> {
+    context.check()?;
+    let work = context.work.checked_add(delta)?;
+    work.verify(context.budget)?;
+    Ok(work)
+}
+
+pub(super) fn charge(
+    context: &mut crate::AuthorityWork<'_>,
+    delta: WorkCounters,
+) -> Result<(), AuthorityStoreError> {
+    context.work = admit(context, delta)?;
+    Ok(())
+}
+
 impl crate::AuthorityWork<'_> {
-    pub(super) fn admit(&self, delta: WorkCounters) -> Result<WorkCounters, AuthorityStoreError> {
-        self.check()?;
-        let work = self.work.checked_add(delta)?;
-        work.verify(self.budget)?;
-        Ok(work)
-    }
-    pub(super) fn charge(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
-        self.work = self.admit(delta)?;
-        Ok(())
-    }
     pub(super) async fn get(
         &self,
         tx: &Transaction<'_>,
@@ -36,10 +44,10 @@ impl crate::AuthorityWork<'_> {
         key: &str,
         length: usize,
     ) -> Result<Option<Vec<u8>>, AuthorityStoreError> {
-        self.admit(authority_fixed_read_work(length))?;
+        admit(self, authority_fixed_read_work(length))?;
         let value = self.get(tx, store, key).await?;
         let Some(value) = value else {
-            self.charge(authority_fixed_read_work(0))?;
+            charge(self, authority_fixed_read_work(0))?;
             return Ok(None);
         };
         let value = value
@@ -48,7 +56,7 @@ impl crate::AuthorityWork<'_> {
         if value.length() as usize != length {
             return Err(corrupt("invalid fixed record length"));
         }
-        self.charge(authority_fixed_read_work(length))?;
+        charge(self, authority_fixed_read_work(length))?;
         Ok(Some(value.to_vec()))
     }
     pub(super) async fn head(
@@ -127,7 +135,7 @@ impl crate::AuthorityWork<'_> {
             .dyn_into::<Blob>()
             .map_err(|_| corrupt("invalid Blob"))
     }
-    pub(super) async fn bytes(
+    pub(super) async fn blob_bytes(
         &self,
         blob: &Blob,
         length: u64,
@@ -148,10 +156,13 @@ impl crate::AuthorityWork<'_> {
         Ok(array.to_vec())
     }
     pub(super) async fn commit(&mut self, tx: Transaction<'_>) -> Result<(), AuthorityStoreError> {
-        self.charge(WorkCounters {
-            durability_operations: 1,
-            ..Default::default()
-        })?;
+        charge(
+            self,
+            WorkCounters {
+                durability_operations: 1,
+                ..Default::default()
+            },
+        )?;
         tx.commit().await.map_err(backend)
     }
 }

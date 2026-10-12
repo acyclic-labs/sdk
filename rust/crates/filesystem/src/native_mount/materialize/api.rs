@@ -38,12 +38,12 @@ where
         .split_off((std::mem::size_of::<F>()) as u64)
         .map_err(materialize_native_error)
         .map_err(|error| (E::from(error), receipt.custody.work().receipt()))?;
-    let meter = Arc::clone(receipt.custody.work().native_read_meter());
+    let meter = receipt.custody.work().clone();
     let mut future = in_heap(move || create(receipt));
     let result = future.as_mut().await;
     drop(future);
     drop(custody);
-    let work = meter.lock().work;
+    let work = meter.receipt();
     match result {
         Ok(mut receipt) => {
             receipt.work = work;
@@ -168,11 +168,7 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
-    let cancellation = receipt
-        .custody
-        .work()
-        .native_read_meter()
-        .with_original_leaf(|original| original.cancellation().clone());
+    let cancellation = receipt.custody.work().cancellation().clone();
     let cancellation = &cancellation;
     let reader = match &source {
         GenerationSource::Standalone(checkout) => {
@@ -616,7 +612,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
     }
     let native_work = crate::NativeMaterializationWork::new(budget, cancellation)
         .map_err(|(error, work)| OperationFailure::new(materialize_native_error(error), work))?;
-    let work = Arc::clone(native_work.native_read_meter());
+    let work = Arc::clone(&native_work.state);
     let result = async {
         validate_bounds(options)?;
         let allocation_work = native_work.clone();

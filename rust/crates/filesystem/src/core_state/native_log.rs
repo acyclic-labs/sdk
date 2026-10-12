@@ -101,27 +101,4 @@ impl CoreLog {
         }
         Ok((found, !dirty))
     }
-
-    pub(super) fn get_lazy_measured(
-        &mut self,
-        root: &Namespace,
-        id: WorkspaceId,
-        work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<Option<LazyWorkspaceState>, LocalCoreStateStoreError> {
-        self.get_native_value(
-            root,
-            RecordKey::LazyWorkspace(id),
-            work,
-            work.cancellation(),
-        )?
-        .map(|owned| {
-            let (value, allocation) = owned.into_parts();
-            let _allocation = allocation;
-            match value {
-                RecordValue::LazyWorkspace(value) => Ok(value),
-                _ => Err(LocalCoreStateStoreError::Integrity),
-            }
-        })
-        .transpose()
-    }
 }

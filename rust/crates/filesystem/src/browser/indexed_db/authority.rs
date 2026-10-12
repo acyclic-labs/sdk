@@ -73,34 +73,30 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             return crate::async_storage::first_record(self, authority, commit, context, guard)
                 .await;
         }
-        let result: Result<bool, AuthorityStoreError> = async {
-            let io = &mut *context;
-            io.check()?;
-            let tx = transaction(&self.database, AUTHORITY_STORES, TransactionMode::Readwrite)
-                .map_err(backend)?;
-            if io
-                .fixed(&tx, AUTHORITY_HEADS, &authority_key(authority), HEAD_BYTES)
-                .await?
-                .is_some()
-            {
-                drop(tx);
-                return crate::async_storage::first_record(
-                    self,
-                    authority,
-                    commit,
-                    io,
-                    None::<&mut ()>,
-                )
-                .await
-                .map_err(|e| e.into_error(std::convert::identity));
-            }
-            self.first(io, &tx, authority, commit).await?;
-            io.commit(tx).await?;
-            Ok(true)
+
+        let io = &mut *context;
+        io.check()?;
+        let tx = transaction(&self.database, AUTHORITY_STORES, TransactionMode::Readwrite)
+            .map_err(backend)?;
+        if io
+            .fixed(&tx, AUTHORITY_HEADS, &authority_key(authority), HEAD_BYTES)
+            .await?
+            .is_some()
+        {
+            drop(tx);
+            return Ok(crate::async_storage::first_record(
+                self,
+                authority,
+                commit,
+                io,
+                None::<&mut ()>,
+            )
+            .await
+            .map_err(|e| e.into_error(std::convert::identity))?);
         }
-        .await;
-        let value = result?;
-        Ok(value)
+        self.first(io, &tx, authority, commit).await?;
+        io.commit(tx).await?;
+        Ok(true)
     }
     async fn fork_workspace<G: crate::AuthorityGuard>(
         &self,
@@ -112,52 +108,48 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         if guard.is_some() || permit != PublicationPermit::Unrestricted {
             return crate::async_storage::workspace_fork(self, fork, permit, context, guard).await;
         }
-        let result: Result<WorkspaceForkOutcome, AuthorityStoreError> = async {
-            let io = &mut *context;
-            io.check()?;
-            let tx = transaction(&self.database, AUTHORITY_STORES, TransactionMode::Readwrite)
-                .map_err(backend)?;
-            if fork
-                .lineage
-                .is_some_and(|s| s.lineage == GenerationFork::PublishedPrefix)
-                || io
-                    .fixed(
-                        &tx,
-                        AUTHORITY_HEADS,
-                        &authority_key(fork.retention),
-                        HEAD_BYTES,
-                    )
-                    .await?
-                    .is_some()
-                || io
-                    .fixed(
-                        &tx,
-                        AUTHORITY_HEADS,
-                        &authority_key(fork.destination),
-                        HEAD_BYTES,
-                    )
-                    .await?
-                    .is_some()
-            {
-                drop(tx);
-                return crate::async_storage::workspace_fork(
-                    self,
-                    fork,
-                    permit,
-                    io,
-                    None::<&mut ()>,
+
+        let io = &mut *context;
+        io.check()?;
+        let tx = transaction(&self.database, AUTHORITY_STORES, TransactionMode::Readwrite)
+            .map_err(backend)?;
+        if fork
+            .lineage
+            .is_some_and(|s| s.lineage == GenerationFork::PublishedPrefix)
+            || io
+                .fixed(
+                    &tx,
+                    AUTHORITY_HEADS,
+                    &authority_key(fork.retention),
+                    HEAD_BYTES,
                 )
-                .await
-                .map_err(|e| e.into_error(std::convert::identity));
-            }
-            self.first(io, &tx, fork.retention, fork.retained).await?;
-            self.first(io, &tx, fork.destination, fork.creation).await?;
-            io.commit(tx).await?;
-            Ok(WorkspaceForkOutcome::Committed)
+                .await?
+                .is_some()
+            || io
+                .fixed(
+                    &tx,
+                    AUTHORITY_HEADS,
+                    &authority_key(fork.destination),
+                    HEAD_BYTES,
+                )
+                .await?
+                .is_some()
+        {
+            drop(tx);
+            return Ok(crate::async_storage::workspace_fork(
+                self,
+                fork,
+                permit,
+                io,
+                None::<&mut ()>,
+            )
+            .await
+            .map_err(|e| e.into_error(std::convert::identity))?);
         }
-        .await;
-        let value = result?;
-        Ok(value)
+        self.first(io, &tx, fork.retention, fork.retained).await?;
+        self.first(io, &tx, fork.destination, fork.creation).await?;
+        io.commit(tx).await?;
+        Ok(WorkspaceForkOutcome::Committed)
     }
 
     async fn create_authority<G: crate::AuthorityGuard>(
@@ -168,19 +160,19 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         mut guard: Option<&mut G>,
     ) -> Result<CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
         crate::async_storage::seal(guard.as_deref_mut(), context).await?;
-        let result: Result<CreateAuthorityOutcome, AuthorityStoreError> = async {
-            let io = &mut *context;
-            io.check()?;
-            let tx = transaction(&self.database, AUTHORITY_STORES, TransactionMode::Readwrite)
-                .map_err(backend)?;
-            let key = authority_key(authority);
-            if let Some(bytes) = io.fixed(&tx, AUTHORITY_HEADS, &key, HEAD_BYTES).await? {
-                let head = decode_head(&bytes).map_err(corrupt)?;
-                io.gate(&tx, authority).await?;
-                return Ok(CreateAuthorityOutcome::Existing(head));
-            }
+        let io = &mut *context;
+        io.check()?;
+        let tx = transaction(&self.database, AUTHORITY_STORES, TransactionMode::Readwrite)
+            .map_err(backend)?;
+        let key = authority_key(authority);
+        let value = if let Some(bytes) = io.fixed(&tx, AUTHORITY_HEADS, &key, HEAD_BYTES).await? {
+            let head = decode_head(&bytes).map_err(corrupt)?;
+            io.gate(&tx, authority).await?;
+            drop(tx);
+            CreateAuthorityOutcome::Existing(head)
+        } else {
             let head = Head::genesis(epoch);
-            io.charge(authority_fixed_write_work(HEAD_BYTES + GATE_BYTES, 2))?;
+            work::charge(io, authority_fixed_write_work(HEAD_BYTES + GATE_BYTES, 2))?;
             io.insert(
                 &tx,
                 AUTHORITY_HEADS,
@@ -197,10 +189,8 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             )
             .await?;
             io.commit(tx).await?;
-            Ok(CreateAuthorityOutcome::Created(head))
-        }
-        .await;
-        let value = result?;
+            CreateAuthorityOutcome::Created(head)
+        };
         if matches!(value, CreateAuthorityOutcome::Existing(_)) {
             crate::async_storage::seal(guard.as_deref_mut(), context).await?;
         }
@@ -229,110 +219,115 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         mut guard: Option<&mut G>,
     ) -> Result<(AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
         crate::async_storage::seal(guard.as_deref_mut(), context).await?;
-        let result: Result<AppendOutcome, AuthorityStoreError> = async {
-            let GuardedAppend {
-                authority_id: authority,
-                epoch,
-                expected,
-                commit,
-                permit,
-            } = request;
-            let io = &mut *context;
-            io.check()?;
-            self.validate(&commit)?;
-            let tx = transaction(&self.database, AUTHORITY_STORES, TransactionMode::Readwrite)
-                .map_err(backend)?;
-            let actual = io.head(&tx, authority).await?;
-            if epoch != actual.epoch {
-                return Ok(AppendOutcome::Fenced {
+
+        let GuardedAppend {
+            authority_id: authority,
+            epoch,
+            expected,
+            commit,
+            permit,
+        } = request;
+        let io = &mut *context;
+        io.check()?;
+        self.validate(&commit)?;
+        let tx = transaction(&self.database, AUTHORITY_STORES, TransactionMode::Readwrite)
+            .map_err(backend)?;
+        let actual = io.head(&tx, authority).await?;
+        if epoch != actual.epoch {
+            return Ok((
+                AppendOutcome::Fenced {
                     actual_epoch: actual.epoch,
-                });
-            }
-            if let Some(bytes) = io
-                .fixed(
-                    &tx,
-                    AUTHORITY_OPERATIONS,
-                    &operation_key(authority, commit.operation_id),
-                    OPERATION_BYTES,
-                )
-                .await?
-            {
-                let op = decode_operation(&bytes).map_err(corrupt)?;
-                if op.fingerprint != commit.fingerprint {
-                    return Ok(AppendOutcome::IdempotencyConflict {
-                        committed_fingerprint: op.fingerprint,
-                    });
-                }
-                io.charge(authority_fixed_read_work(0))?;
-                let blob = io
-                    .blob(&tx, AUTHORITY_COMMITS, &commit_key(authority, op.sequence))
-                    .await?;
-                drop(tx);
-                let durable = self.decode(io, authority, &blob, 0).await?;
-                if durable.operation_id != commit.operation_id
-                    || durable.sequence != op.sequence
-                    || durable.fingerprint != op.fingerprint
-                {
-                    return Err(corrupt("operation index does not match commit"));
-                }
-                return Ok(AppendOutcome::AlreadyCommitted(durable));
-            }
-            if expected != actual {
-                return Ok(AppendOutcome::Conflict { actual });
-            }
-            let gate = io.gate(&tx, authority).await?;
-            let admitted = match permit {
-                PublicationPermit::Unrestricted => gate.active.is_none(),
-                PublicationPermit::Reservation {
-                    operation_id,
-                    gate_tail,
-                    expected: reserved,
-                } => {
-                    gate.tail == gate_tail
-                        && gate.active == Some(OperationId::from_bytes(operation_id))
-                        && reserved == expected
-                }
-                PublicationPermit::Lease {
-                    authority_id,
-                    workspace_id,
-                    lease_id,
-                    expires_at_millis,
-                } => {
-                    let workspace = crate::WorkspaceId::from_bytes(workspace_id);
-                    let snapshot = self.window(io, &tx, workspace).await?;
-                    let active = match snapshot {
-                        Some(crate::OperationWindowSnapshot {
-                            phase: crate::OperationWindowPhase::Active { leases, .. },
-                            ..
-                        }) => leases
-                            .get(&crate::OperationLeaseId::from_bytes(lease_id))
-                            .is_some_and(|lease| lease.expires_at_millis == expires_at_millis),
-                        _ => false,
-                    };
-                    let now = js_sys::Date::now()
-                        .to_string()
-                        .parse::<u64>()
-                        .map_err(backend)?;
-                    gate.active.is_none()
-                        && authority_id == authority.into_bytes()
-                        && crate::kernel::volume_authority_id(workspace.volume_id()) == authority
-                        && active
-                        && now < expires_at_millis
-                }
-            };
-            if !admitted {
-                return Ok(AppendOutcome::Fenced {
-                    actual_epoch: actual.epoch,
-                });
-            }
-            let (durable, bytes) = self.prepare(io, authority, actual, commit)?;
-            self.write(&io, &tx, authority, &durable, &bytes).await?;
-            io.commit(tx).await?;
-            Ok(AppendOutcome::Committed(durable))
+                },
+                None,
+            ));
         }
-        .await;
-        let value = result?;
-        Ok((value, None))
+        if let Some(bytes) = io
+            .fixed(
+                &tx,
+                AUTHORITY_OPERATIONS,
+                &operation_key(authority, commit.operation_id),
+                OPERATION_BYTES,
+            )
+            .await?
+        {
+            let op = decode_operation(&bytes).map_err(corrupt)?;
+            if op.fingerprint != commit.fingerprint {
+                return Ok((
+                    AppendOutcome::IdempotencyConflict {
+                        committed_fingerprint: op.fingerprint,
+                    },
+                    None,
+                ));
+            }
+            work::charge(io, authority_fixed_read_work(0))?;
+            let blob = io
+                .blob(&tx, AUTHORITY_COMMITS, &commit_key(authority, op.sequence))
+                .await?;
+            drop(tx);
+            let durable = self.decode(io, authority, &blob, 0).await?;
+            if durable.operation_id != commit.operation_id
+                || durable.sequence != op.sequence
+                || durable.fingerprint != op.fingerprint
+            {
+                return Err(corrupt("operation index does not match commit").into());
+            }
+            return Ok((AppendOutcome::AlreadyCommitted(durable), None));
+        }
+        if expected != actual {
+            return Ok((AppendOutcome::Conflict { actual }, None));
+        }
+        let gate = io.gate(&tx, authority).await?;
+        let admitted = match permit {
+            PublicationPermit::Unrestricted => gate.active.is_none(),
+            PublicationPermit::Reservation {
+                operation_id,
+                gate_tail,
+                expected: reserved,
+            } => {
+                gate.tail == gate_tail
+                    && gate.active == Some(OperationId::from_bytes(operation_id))
+                    && reserved == expected
+            }
+            PublicationPermit::Lease {
+                authority_id,
+                workspace_id,
+                lease_id,
+                expires_at_millis,
+            } => {
+                let workspace = crate::WorkspaceId::from_bytes(workspace_id);
+                let snapshot = self.window(io, &tx, workspace).await?;
+                let active = match snapshot {
+                    Some(crate::OperationWindowSnapshot {
+                        phase: crate::OperationWindowPhase::Active { leases, .. },
+                        ..
+                    }) => leases
+                        .get(&crate::OperationLeaseId::from_bytes(lease_id))
+                        .is_some_and(|lease| lease.expires_at_millis == expires_at_millis),
+                    _ => false,
+                };
+                let now = js_sys::Date::now()
+                    .to_string()
+                    .parse::<u64>()
+                    .map_err(backend)?;
+                gate.active.is_none()
+                    && authority_id == authority.into_bytes()
+                    && crate::kernel::volume_authority_id(workspace.volume_id()) == authority
+                    && active
+                    && now < expires_at_millis
+            }
+        };
+        if !admitted {
+            return Ok((
+                AppendOutcome::Fenced {
+                    actual_epoch: actual.epoch,
+                },
+                None,
+            ));
+        }
+        let (durable, bytes) = self.prepare(io, authority, actual, commit)?;
+        self.write(&io, &tx, authority, &durable, &bytes).await?;
+        io.commit(tx).await?;
+        Ok((AppendOutcome::Committed(durable), None))
     }
     async fn reserve_publication(
         &self,
@@ -367,7 +362,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .tail
             .checked_add(1)
             .ok_or_else(|| backend("publication gate exhausted"))?;
-        io.charge(authority_fixed_write_work(GATE_BYTES, 1))?;
+        work::charge(io, authority_fixed_write_work(GATE_BYTES, 1))?;
         io.set(
             &tx,
             AUTHORITY_GATES,
@@ -409,7 +404,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .tail
             .checked_add(1)
             .ok_or_else(|| backend("publication gate exhausted"))?;
-        io.charge(authority_fixed_write_work(GATE_BYTES, 1))?;
+        work::charge(io, authority_fixed_write_work(GATE_BYTES, 1))?;
         io.set(
             &tx,
             AUTHORITY_GATES,
@@ -451,10 +446,13 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             epoch: Epoch::new(epoch).map_err(backend)?,
             ..actual
         };
-        io.charge(WorkCounters {
-            authority_records_appended: 1,
-            ..authority_fixed_write_work(HEAD_BYTES, 1)
-        })?;
+        work::charge(
+            io,
+            WorkCounters {
+                authority_records_appended: 1,
+                ..authority_fixed_write_work(HEAD_BYTES, 1)
+            },
+        )?;
         io.set(
             &tx,
             AUTHORITY_HEADS,
@@ -471,41 +469,36 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         operation: OperationId,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Option<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
-        let result: Result<Option<DurableCommit>, AuthorityStoreError> = async {
-            let io = &mut *context;
-            io.check()?;
-            let tx = transaction(&self.database, AUTHORITY_STORES, TransactionMode::Readonly)
-                .map_err(backend)?;
-            io.head(&tx, authority).await?;
-            let Some(bytes) = io
-                .fixed(
-                    &tx,
-                    AUTHORITY_OPERATIONS,
-                    &operation_key(authority, operation),
-                    OPERATION_BYTES,
-                )
-                .await?
-            else {
-                return Ok(None);
-            };
-            let op = decode_operation(&bytes).map_err(corrupt)?;
-            io.charge(authority_fixed_read_work(0))?;
-            let blob = io
-                .blob(&tx, AUTHORITY_COMMITS, &commit_key(authority, op.sequence))
-                .await?;
-            drop(tx);
-            let durable = self.decode(io, authority, &blob, 0).await?;
-            if durable.operation_id != operation
-                || durable.sequence != op.sequence
-                || durable.fingerprint != op.fingerprint
-            {
-                return Err(corrupt("operation index does not match commit"));
-            }
-            Ok(Some(durable))
+        let io = &mut *context;
+        io.check()?;
+        let tx = transaction(&self.database, AUTHORITY_STORES, TransactionMode::Readonly)
+            .map_err(backend)?;
+        io.head(&tx, authority).await?;
+        let Some(bytes) = io
+            .fixed(
+                &tx,
+                AUTHORITY_OPERATIONS,
+                &operation_key(authority, operation),
+                OPERATION_BYTES,
+            )
+            .await?
+        else {
+            return Ok((None, None));
+        };
+        let op = decode_operation(&bytes).map_err(corrupt)?;
+        work::charge(io, authority_fixed_read_work(0))?;
+        let blob = io
+            .blob(&tx, AUTHORITY_COMMITS, &commit_key(authority, op.sequence))
+            .await?;
+        drop(tx);
+        let durable = self.decode(io, authority, &blob, 0).await?;
+        if durable.operation_id != operation
+            || durable.sequence != op.sequence
+            || durable.fingerprint != op.fingerprint
+        {
+            return Err(corrupt("operation index does not match commit"));
         }
-        .await;
-        let value = result?;
-        Ok((value, None))
+        Ok((Some(durable), None))
     }
     async fn replay(
         &self,
@@ -514,99 +507,99 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         limit: ReplayLimit,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
-        let result: Result<Vec<DurableCommit>, AuthorityStoreError> = async {
-            if limit.records == 0 || limit.payload_bytes == 0 {
-                return Err((AuthorityStoreError::InvalidReplayLimit));
-            }
-            if limit.records > 4096 {
-                return Err((AuthorityStoreError::Rejected(
-                    "browser replay page exceeds 4096 records".to_owned(),
-                )));
-            }
-            let io = &mut *context;
-            io.check()?;
-            let tx = transaction(
-                &self.database,
-                &[AUTHORITY_HEADS, AUTHORITY_COMMITS],
-                TransactionMode::Readonly,
-            )
-            .map_err(backend)?;
-            let head = io.head(&tx, authority).await?;
-            if after > head.sequence {
-                return Err(backend("replay cursor is ahead of head"));
-            }
-            if after == head.sequence {
-                return Ok(Vec::new());
-            }
-            let count = (head.sequence.get() - after.get()).min(u64::from(limit.records))
-                + u64::from(after != Sequence::GENESIS);
-            let start = after.get() + u64::from(after == Sequence::GENESIS);
-            let handles = count * size_of::<(Sequence, Blob)>() as u64;
-            io.charge(WorkCounters {
+        if limit.records == 0 || limit.payload_bytes == 0 {
+            return Err((AuthorityStoreError::InvalidReplayLimit));
+        }
+        if limit.records > 4096 {
+            return Err((AuthorityStoreError::Rejected(
+                "browser replay page exceeds 4096 records".to_owned(),
+            )));
+        }
+        let io = &mut *context;
+        io.check()?;
+        let tx = transaction(
+            &self.database,
+            &[AUTHORITY_HEADS, AUTHORITY_COMMITS],
+            TransactionMode::Readonly,
+        )
+        .map_err(backend)?;
+        let head = io.head(&tx, authority).await?;
+        if after > head.sequence {
+            return Err(backend("replay cursor is ahead of head"));
+        }
+        if after == head.sequence {
+            return Ok((Vec::new(), None));
+        }
+        let count = (head.sequence.get() - after.get()).min(u64::from(limit.records))
+            + u64::from(after != Sequence::GENESIS);
+        let start = after.get() + u64::from(after == Sequence::GENESIS);
+        let handles = count * size_of::<(Sequence, Blob)>() as u64;
+        work::charge(
+            io,
+            WorkCounters {
                 allocation_operations: 1,
                 peak_allocation_bytes: handles,
                 ..Default::default()
-            })?;
-            let mut blobs = Vec::new();
-            blobs.try_reserve_exact(count as usize).map_err(backend)?;
-            let mut payload_bytes = 0;
-            for offset in 0..count {
-                let sequence = Sequence::new(start + offset);
-                io.charge(authority_fixed_read_work(0))?;
-                let blob = io
-                    .blob(&tx, AUTHORITY_COMMITS, &commit_key(authority, sequence))
-                    .await?;
-                let payload = self.payload(&blob)?;
-                if sequence != after {
-                    if payload_bytes + payload > limit.payload_bytes {
-                        if payload_bytes == 0 {
-                            return Err((AuthorityStoreError::ReplayRecordTooLarge {
-                                observed: payload,
-                                maximum: limit.payload_bytes,
-                            }));
-                        }
-                        break;
+            },
+        )?;
+        let mut blobs = Vec::new();
+        blobs.try_reserve_exact(count as usize).map_err(backend)?;
+        let mut payload_bytes = 0;
+        for offset in 0..count {
+            let sequence = Sequence::new(start + offset);
+            work::charge(io, authority_fixed_read_work(0))?;
+            let blob = io
+                .blob(&tx, AUTHORITY_COMMITS, &commit_key(authority, sequence))
+                .await?;
+            let payload = self.payload(&blob)?;
+            if sequence != after {
+                if payload_bytes + payload > limit.payload_bytes {
+                    if payload_bytes == 0 {
+                        return Err((AuthorityStoreError::ReplayRecordTooLarge {
+                            observed: payload,
+                            maximum: limit.payload_bytes,
+                        }));
                     }
-                    payload_bytes += payload;
+                    break;
                 }
-                blobs.push((sequence, blob));
+                payload_bytes += payload;
             }
-            drop(tx);
-            let mut retained = blobs.capacity() as u64 * size_of::<(Sequence, Blob)>() as u64
-                + blobs.len() as u64 * size_of::<DurableCommit>() as u64;
-            io.charge(WorkCounters {
+            blobs.push((sequence, blob));
+        }
+        drop(tx);
+        let mut retained = blobs.capacity() as u64 * size_of::<(Sequence, Blob)>() as u64
+            + blobs.len() as u64 * size_of::<DurableCommit>() as u64;
+        work::charge(
+            io,
+            WorkCounters {
                 allocation_operations: 1,
                 peak_allocation_bytes: retained,
                 ..Default::default()
-            })?;
-            let mut output = Vec::new();
-            output.try_reserve_exact(blobs.len()).map_err(backend)?;
-            let mut previous = crate::Digest::ZERO;
-            for (sequence, blob) in blobs {
-                let encoded = self.payload(&blob)? + COMMIT_PREFIX_BYTES as u64;
-                let commit = self.decode(io, authority, &blob, retained).await?;
-                if commit.sequence != sequence {
-                    return Err(corrupt("commit sequence does not match key"));
-                }
-                if sequence == after {
-                    previous = commit.digest;
-                    continue;
-                }
-                if commit.previous_digest != previous {
-                    return Err(corrupt("discontinuous authority chain"));
-                }
+            },
+        )?;
+        let mut output = Vec::new();
+        output.try_reserve_exact(blobs.len()).map_err(backend)?;
+        let mut previous = crate::Digest::ZERO;
+        for (sequence, blob) in blobs {
+            let encoded = self.payload(&blob)? + COMMIT_PREFIX_BYTES as u64;
+            let commit = self.decode(io, authority, &blob, retained).await?;
+            if commit.sequence != sequence {
+                return Err(corrupt("commit sequence does not match key"));
+            }
+            if sequence == after {
                 previous = commit.digest;
-                retained += encoded;
-                output.push(commit);
+                continue;
             }
-            if output.last().is_some_and(|c| c.sequence == head.sequence) && previous != head.digest
-            {
-                return Err(corrupt("head digest does not match terminal commit"));
+            if commit.previous_digest != previous {
+                return Err(corrupt("discontinuous authority chain"));
             }
-            Ok(output)
+            previous = commit.digest;
+            retained += encoded;
+            output.push(commit);
         }
-        .await;
-        let value = result?;
-        Ok((value, None))
+        if output.last().is_some_and(|c| c.sequence == head.sequence) && previous != head.digest {
+            return Err(corrupt("head digest does not match terminal commit"));
+        }
+        Ok((output, None))
     }
 }

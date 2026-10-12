@@ -25,7 +25,7 @@ impl CoreLog {
                     work,
                 ) {
                     Ok(file) => {
-                        materialization_sync(&paths.directory, work)?;
+                        paths.sync()?;
                         file
                     }
                     Err(crate::materializer::NativeTreeMaterializationError::Io(error))
@@ -226,7 +226,7 @@ impl CoreLog {
             >(frame, work)
             {
                 Ok(frame) => frame,
-                Err(error @ LocalCoreStateStoreError::MaterializationWork(_)) => return Err(error),
+                Err(error @ LocalCoreStateStoreError::LazyWork(_)) => return Err(error),
                 Err(_) => return Err(native_corrupt_log(paths)?),
             };
             // The decoded frame's physical allocations precede their guard's drop.

@@ -106,7 +106,7 @@ async fn stock_native_lineage_preserves_original_resource_and_durable_restart() 
         .expect("exact record");
     assert_eq!(loaded.as_state(), &value);
     let parts = loaded.into_parts();
-    assert!(parts.1.matches_work(&work));
+    assert!(parts.1.work().shares_allocation_context(&work));
     drop(parts);
     assert!(
         !WorkspaceLineageStore::compare_and_swap_with_native_work(
@@ -201,11 +201,9 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
         .expect_err("original cancellation");
     assert!(matches!(
         error.0,
-        crate::lineage::WorkspaceLineageError::Store(
-            LocalCoreStateStoreError::MaterializationWork(
-                NativeTreeMaterializationError::Cancelled
-            )
-        )
+        crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
+            crate::LazyWorkspaceError::Cancelled
+        ))
     ));
     assert_eq!(work.receipt(), before);
     assert!(!store.root().exists());
@@ -236,9 +234,9 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
             .expect_err("real original read boundary");
     assert!(matches!(
         error.0,
-        crate::workspace_context::WorkspaceContextError::Store(
-            LocalCoreStateStoreError::MaterializationWork(NativeTreeMaterializationError::Work(_))
-        )
+        crate::workspace_context::WorkspaceContextError::Store(LocalCoreStateStoreError::LazyWork(
+            crate::LazyWorkspaceError::Demand(crate::DemandError::Work(_))
+        ))
     ));
     assert_eq!(tight_work.receipt().source_bytes_read, 7);
     let original =
@@ -252,7 +250,7 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
         .expect("context");
     assert_eq!(loaded.as_state(), &value);
     let mut parts = loaded.into_parts();
-    assert!(parts.1.matches_work(&work));
+    assert!(parts.1.work().shares_allocation_context(&work));
     assert_eq!(
         parts.1.bytes(),
         native_records::native_context_owned_bytes(&parts.0, &work).expect("actual capacities")
@@ -339,7 +337,7 @@ async fn intact_corrupt_native_log_retains_exact_error_path_custody() {
         )) => {
             let owned = (path, allocation);
             assert_eq!(owned.1.bytes(), owned.0.capacity() as u64);
-            assert!(owned.1.matches_work(&work));
+            assert!(owned.1.work().shares_allocation_context(&work));
             assert_eq!(owned.0, paths.current);
             drop(owned);
         }

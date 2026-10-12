@@ -241,8 +241,8 @@ impl IndexedDbAuthorityStore {
         let encoded = payload + COMMIT_PREFIX_BYTES as u64;
         let mut delta = authority_commit_read_work(encoded, payload);
         delta.peak_allocation_bytes += retained;
-        io.charge(delta)?;
-        let bytes = io.bytes(blob, encoded).await?;
+        work::charge(io, delta)?;
+        let bytes = io.blob_bytes(blob, encoded).await?;
         decode_commit_owned(authority, bytes, self.maximum_payload_bytes).map_err(corrupt)
     }
     async fn window(
@@ -251,7 +251,7 @@ impl IndexedDbAuthorityStore {
         tx: &Transaction<'_>,
         workspace: crate::WorkspaceId,
     ) -> Result<Option<crate::OperationWindowSnapshot>, AuthorityStoreError> {
-        io.charge(authority_fixed_read_work(0))?;
+        work::charge(io, authority_fixed_read_work(0))?;
         let Some(value) = io
             .get(
                 tx,
@@ -273,13 +273,16 @@ impl IndexedDbAuthorityStore {
                 maximum,
             }));
         }
-        io.charge(WorkCounters {
-            bytes_copied: length,
-            allocation_operations: length + 1,
-            peak_allocation_bytes: length * 128,
-            items_examined: length,
-            ..Default::default()
-        })?;
+        work::charge(
+            io,
+            WorkCounters {
+                bytes_copied: length,
+                allocation_operations: length + 1,
+                peak_allocation_bytes: length * 128,
+                items_examined: length,
+                ..Default::default()
+            },
+        )?;
         let snapshot: crate::OperationWindowSnapshot =
             serde_json::from_slice(&array.to_vec()).map_err(corrupt)?;
         if !snapshot.is_valid_for(workspace) {
@@ -299,18 +302,21 @@ impl IndexedDbAuthorityStore {
         let payload = commit.payload.len() as u64;
         let encoded = payload + COMMIT_PREFIX_BYTES as u64;
         let fixed = (HEAD_BYTES + OPERATION_BYTES) as u64;
-        io.charge(WorkCounters {
-            authority_records_appended: 1,
-            authority_bytes_written: payload,
-            backend_write_operations: 3,
+        work::charge(
+            io,
+            WorkCounters {
+                authority_records_appended: 1,
+                authority_bytes_written: payload,
+                backend_write_operations: 3,
 
-            bytes_hashed: payload,
-            bytes_copied: encoded * 2 + fixed,
-            bytes_encoded: encoded + fixed,
-            allocation_operations: 6,
-            peak_allocation_bytes: encoded * 3 + fixed * 2,
-            ..Default::default()
-        })?;
+                bytes_hashed: payload,
+                bytes_copied: encoded * 2 + fixed,
+                bytes_encoded: encoded + fixed,
+                allocation_operations: 6,
+                peak_allocation_bytes: encoded * 3 + fixed * 2,
+                ..Default::default()
+            },
+        )?;
         let digest = authority_commit_digest(
             authority,
             actual.epoch,
@@ -380,10 +386,13 @@ impl IndexedDbAuthorityStore {
         commit: ProposedCommit,
     ) -> Result<(), AuthorityStoreError> {
         self.validate(&commit)?;
-        io.charge(WorkCounters {
-            durability_operations: 0,
-            ..authority_fixed_write_work(GATE_BYTES, 1)
-        })?;
+        work::charge(
+            io,
+            WorkCounters {
+                durability_operations: 0,
+                ..authority_fixed_write_work(GATE_BYTES, 1)
+            },
+        )?;
         io.insert(
             tx,
             AUTHORITY_GATES,
@@ -458,7 +467,7 @@ impl IndexedDbObjectStore {
         blob: &Blob,
         length: u64,
     ) -> Result<ObjectRead, ObjectStoreError> {
-        let bytes = OwnedBytes::from(io.bytes(blob, length).await.map_err(object_error)?);
+        let bytes = OwnedBytes::from(io.blob_bytes(blob, length).await.map_err(object_error)?);
         if object_digest(id.kind, &bytes) != id.digest {
             return Err((ObjectStoreError::Corrupt));
         }

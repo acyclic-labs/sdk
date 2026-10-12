@@ -327,19 +327,8 @@ pub(super) struct FlatWorkspaceContext {
     pub(super) revision: u64,
     pub(super) context_id: WorkspaceContextId,
     pub(super) parent_context_id: Option<WorkspaceContextId>,
-    pub(super) roots: FlatMap<crate::WorkspaceRootId, FlatWorkspaceContextRoot>,
+    pub(super) roots: FlatMap<crate::WorkspaceRootId, crate::WorkspaceContextRoot>,
     pub(super) state: crate::workspace_context::WorkspaceContextState,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct FlatWorkspaceContextRoot {
-    pub(super) root_id: crate::WorkspaceRootId,
-    pub(super) source_path: String,
-    pub(super) workspace_id: WorkspaceId,
-    pub(super) workspace_name: String,
-    pub(super) parent_workspace_id: Option<WorkspaceId>,
-    pub(super) mount_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -485,7 +474,7 @@ impl Change {
             if !value.matches(key) {
                 return Err(LocalCoreStateStoreError::Integrity);
             }
-            if !allocation.matches_work(work) {
+            if !allocation.work().shares_allocation_context(work) {
                 drop(value);
                 return Err(LocalCoreStateStoreError::NativeLedgerMismatch);
             }
