@@ -10078,7 +10078,7 @@ mod tests {
         let data = Box::new(*b"retained");
         let demand = crate::demand::NativeSourceWork::from_native_materialization_work(&job).original_demand_work()
             .allocation_work();
-        assert!(demand.source_execution_view().is_none());
+        assert!(demand.execution.is_none());
         let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(
             job.reserve_work(crate::WorkCounters {
                 items_examined: 1, ..crate::WorkCounters::UNCHARGED
