@@ -1386,10 +1386,10 @@ pub(crate) async fn import_native_project(
     } else {
         (async {
             let cancellation = cancellation;
-            let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
-                native_work,
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: native_work,
                 cancellation,
-            )?;
+            };
             destination_workspace
                 .import_selected(
                     checkpoint,
@@ -1397,7 +1397,7 @@ pub(crate) async fn import_native_project(
                     plan.1,
                     operation,
                     permit,
-                    &accounting,
+                    &mut accounting,
                     move |original: &acyclic_fs::NativeMaterializationWork| {
                         let publication_guard = std::sync::Arc::clone(&publication_guard);
                         let original = original.clone();
