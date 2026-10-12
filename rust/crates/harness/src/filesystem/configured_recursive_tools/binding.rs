@@ -10,8 +10,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         if admission.parent.is_some() {
             let inspection = runtime.inspect_source(task, task).await?;
             if inspection.project()?.volume != caller.project
-                || context.scope().current_created_authority(&mut None)? != Some(caller.owner.authority())
-                || context.scope().current_created_private_volume(&mut None)? != Some(&caller.private_volume)
+                || context.scope().current_created_content(&mut None)?.and_then(|binding| binding.authority.as_ref()) != Some(caller.owner.authority())
+                || context.scope().current_created_content(&mut None)?.map(|binding| &binding.volume) != Some(&caller.private_volume)
                 || inspection.volumes().iter().filter(|snapshot| snapshot.volume == caller.private_volume).count() != 1
                 || caller.result_volume.as_ref().is_some_and(|result|
                     inspection.volumes().iter().filter(|snapshot| &snapshot.volume == result).count() != 1) {
@@ -163,8 +163,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 result += usize::from(caller.result_volume.as_ref() == Some(&snapshot.volume));
             }
             if project != 1 || scratch != 1 || (caller.result_volume.is_some() && result != 1)
-                || context.scope().current_created_authority(&mut None)? != Some(caller.owner.authority())
-                || context.scope().current_created_private_volume(&mut None)? != Some(&caller.private_volume) {
+                || context.scope().current_created_content(&mut None)?.and_then(|binding| binding.authority.as_ref()) != Some(caller.owner.authority())
+                || context.scope().current_created_content(&mut None)?.map(|binding| &binding.volume) != Some(&caller.private_volume) {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native source binding differs from authenticated current allocation" });
             }

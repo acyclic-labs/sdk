@@ -1612,7 +1612,7 @@ impl StockExecutor {
         policy: Option<Arc<dyn ToolPolicy>>,
     ) -> Result<Self> {
         if let Some(policy) = &policy {
-            validate_policy_identity(&policy.identity())?;
+            validate_policy_identity(&policy.identity(), None)?;
         }
         self.policy_identity = policy.as_ref().map(|policy| policy.identity());
         self.tool_scope = scope;
@@ -3281,14 +3281,15 @@ impl StockExecution<'_> {
                                 TaskId::from_bytes(operation_id.into_bytes()),
                                 |(_, task, _)| *task,
                             );
-                            let (approval_operation, request) = tool_approval_request(
+                            let ((approval_operation, request), _prompt_custody) = tool_approval_request(
                                 task,
                                 self.stock.policy_identity.as_ref().ok_or_else(|| {
                                     Error::Conflict("stock policy identity is missing".into())
                                 })?,
                                 &tool.definition,
                                 &invocation,
-                                prompt,
+                                (prompt, None),
+                                None,
                             )?;
                             let approval =
                                 crate::durable_host::task_interaction_id(task, approval_operation);
@@ -4199,20 +4200,17 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         Some(io) if io.original_native_work().is_some() => {
             let before = io.owned_bytes()?;
-            let (cursor, custody) = history
-                .pin_with_native_work(
-                    0,
-                    io.original_native_work()
-                        .expect("native branch retains original work"),
-                )
-                .await?;
-            io.absorb_native_custody(custody)?;
+            let mut observer = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(
+                io.original_native_work().expect("native branch retains original work"),
+            )?);
+            let cursor = history.pin(0, Some(&mut observer)).await?;
+            io.absorb_native_custody(observer.into_custody()?)?;
             _committed_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
             cursor
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let mut read_work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(io.remaining()?, io.cancellation())?);
             let result = async {
                 read_work.preflight()?;
                 history.pin(0, Some(&mut read_work)).await
@@ -4257,10 +4255,8 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         Some(io) if io.original_native_work().is_some() => {
             let before = io.owned_bytes()?;
-            let mut observer = |work| crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)(
-                io.original_native_work()
-                    .expect("native branch retains original work"),
-            )?;
+            let mut observer = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(io.original_native_work()
+                    .expect("native branch retains original work"))?);
             let selection = history
                 .operation_event(
                     envelope.operation_id,
@@ -4275,7 +4271,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let mut read_work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(io.remaining()?, io.cancellation())?);
             let result = async {
                 read_work.preflight()?;
                 history
@@ -4406,10 +4402,8 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         Some(io) if io.original_native_work().is_some() => {
             let before = io.owned_bytes()?;
-            let mut observer = |work| crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)(
-                io.original_native_work()
-                    .expect("native branch retains original work"),
-            )?;
+            let mut observer = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(io.original_native_work()
+                    .expect("native branch retains original work"))?);
             let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
             let records = history
                 .conversation_range(

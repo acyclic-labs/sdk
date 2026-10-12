@@ -778,12 +778,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             Some(io) => {
                 let mut borrowed = io.history_io();
                 self.verify(true, &mut Some(&mut borrowed)).await?;
-                let (bytes, retained) = crate::store::history::HistoryIo::read_content(
+                let bytes = crate::store::history::HistoryIo::read_content(
                     &mut borrowed,
                     reader.as_ref(),
                     file,
                 )?
                 .await?;
+                let retained = bytes.retained_capacity().unwrap_or(0) as u64;
+                #[cfg(not(target_arch = "wasm32"))]
+                let retained = if io.original_native_work().is_some() { 0 } else { retained };
                 bytes_hold = Some(io.guard_owned(retained)?);
                 crate::store::history::HistoryIo::hashed_bytes(&mut borrowed, bytes.len() as u64)?;
                 bytes
@@ -3207,6 +3210,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         )?;
         let (bytes, byte_retained) =
             crate::store::operations::owned_bytes_from_retained_vec(encoded, custody.work())?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let byte_retained = if custody.work().as_deref().is_some_and(|io| io.original_native_work().is_some()) { 0 } else { byte_retained };
         custody.adopt(byte_retained)?;
         loop {
             self.verify_owner(task, fence, false, custody.work())
@@ -5765,7 +5770,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Ok(self);
         }
         let identity = policy.identity();
-        crate::runtime::validate_policy_identity(&identity)?;
+        crate::runtime::validate_policy_identity(&identity, None)?;
         self.policy_binding = Some(identity);
         self.policy = Some(policy);
         Ok(self)
@@ -6216,17 +6221,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let (bytes, byte_retained) = match custody.work().as_deref_mut() {
+        let bytes = match custody.work().as_deref_mut() {
             Some(io) => io.read_content(self.reader.as_ref(), reference)?.await?,
-            None => (
-                acyclic_stream::OwnedBytes::from(
-                    self.reader
-                        .read(reference, reference.descriptor().byte_length(), None)?
-                        .await?,
-                ),
-                0,
-            ),
+            None => self.reader.read(reference, reference.descriptor().byte_length(), None)?.await?,
         };
+        let byte_retained = if custody.work().is_some() { bytes.retained_capacity().unwrap_or(0) as u64 } else { 0 };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let byte_retained = if custody.work().as_deref().is_some_and(|io| io.original_native_work().is_some()) { 0 } else { byte_retained };
         custody.adopt(byte_retained)?;
         reference.descriptor().verify(&bytes, custody.work())?;
         let (value, retained) = match custody.work().as_deref_mut() {

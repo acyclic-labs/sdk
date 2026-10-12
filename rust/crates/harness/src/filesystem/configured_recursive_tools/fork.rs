@@ -31,7 +31,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         let authority = caller.owner.authority().clone();
         let authority_verifier = verifier(&caller.owner)?;
-        let mut open_work = crate::store::HistoryWork::new(self.config.content_budget, cancellation);
+        let mut open_work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(self.config.content_budget, cancellation)?);
         let pinned = async {
             open_work.preflight()?;
             StreamAggregate::open(&self.stream, authority, authority_verifier, SchemaRegistry::default(), None, self.config.history_limits, crate::store::DEFAULT_TERMINAL_EFFECTS, Some(intent.request.parent_revision), &mut Some(&mut open_work)).await

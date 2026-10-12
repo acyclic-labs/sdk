@@ -60,7 +60,13 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
     options: &MaterializeOptions,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
+) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>>
+where
+    for<'a> &'a PinnedReader<A, O>: Send,
+    for<'a> &'a MaterializeOptions: Send,
+    for<'a> &'a CancellationToken: Send,
+    for<'a> &'a [NamespacePath]: Send,
+{
     validate_bounds(options).map_err(OperationFailure::before_work)?;
     if paths.is_empty() || (paths.len() != 1 && paths.iter().any(|path| path.is_root())) {
         return Err(OperationFailure::before_work(
@@ -167,6 +173,10 @@ where
     E: From<MaterializeError>,
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
+    for<'a> &'a PinnedReader<A, O>: Send,
+    for<'a> &'a MaterializeOptions: Send,
+    for<'a> &'a CancellationToken: Send,
+    for<'a> &'a [NamespacePath]: Send,
 {
     let cancellation = receipt
         .custody

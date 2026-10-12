@@ -54,10 +54,10 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     )?;
     let mut reader_io = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?;
     let reader = crate::store::HistoryReader::new(stream, &audience, &verifier.0, &mut Some(&mut reader_io))?;
-    let reader_custody = reader_io.into_custody()?;
-    let event = reader.operation_event_bounded_with_native_work(
-        operation, limits.file_bytes, work,
+    let event = reader.operation_event(
+        operation, limits.file_bytes, &mut Some(&mut reader_io),
     ).await?;
+    let reader_custody = reader_io.into_custody()?;
     let original_revision = match event.0.as_ref() {
         None => None,
         Some(event) => match &event.payload {
@@ -77,10 +77,12 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     drop(event);
     drop(reader);
     drop(reader_custody);
-    let mut aggregate = crate::store::StreamAggregate::open_with_native_work(
-        stream, audience,
-        verifier.0, crate::core::SchemaRegistry::new(), work,
-    ).await?;
+    let mut aggregate_io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
+    let mut aggregate = (crate::store::StreamAggregate::open(
+        stream, audience, verifier.0, crate::core::SchemaRegistry::new(), None,
+        crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS,
+        None, &mut Some(&mut aggregate_io),
+    ).await?, aggregate_io.into_custody()?);
     aggregate.0.set_limits(limits)?;
     if original_revision.is_none()
         && aggregate.0.reducer().conversation().and_then(|state| state.agent).is_some()

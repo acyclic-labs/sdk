@@ -8,6 +8,28 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
         std::result::Result<T, E>,
         std::result::Result<(), WorkspaceError>,
     );
+    type OwnedOutput<T> = Self::Output<T, WorkspaceError>;
+    fn finish_owned<T>(
+        &self,
+        result: std::result::Result<(T, acyclic_fs::kernel::KernelOwnedAllocation), acyclic_fs::FsError>,
+        accounting: &acyclic_fs::kernel::KernelAccounting<'_>,
+    ) -> Self::OwnedOutput<T> {
+        let result = result.and_then(|(value, allocation)| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let acyclic_fs::kernel::KernelOwnedAllocation::NativeOriginal(mut incoming) = allocation {
+                let PreparationIo::Native { custody, .. } = self else {
+                    drop(value);
+                    return Err(acyclic_fs::NativeTreeMaterializationError::InvalidLayout.into());
+                };
+                if let Err(cause) = custody.lock().unwrap_or_else(std::sync::PoisonError::into_inner).absorb(&mut incoming) {
+                    drop(value);
+                    return Err(cause.into());
+                }
+            }
+            Ok(value)
+        }).map_err(WorkspaceError::from);
+        self.finish(result, accounting)
+    }
     fn accounting<'a>(
         &'a self,
         cancellation: &'a CancellationToken,
@@ -245,7 +267,7 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
         );
         let (result, recorded) = host
             .filesystem
-            .create_workspace_with_operation(
+            .create_workspace_with_operation::<_, _, WorkspaceError>(
                 name,
                 acyclic_fs::VolumeConfig::portable(lifecycle),
                 acyclic_fs::OperationId::from_bytes(operation_key(key, Some(io))?.into_bytes()),
@@ -581,24 +603,8 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
             .map_err(LazyError::WorkspaceCause)?;
     }
     let (result, recorded) = generation.pin(label, io, io.cancellation()).await;
-    match result {
-        Ok(_) => recorded.map_err(LazyError::WorkspaceCause),
-        Err(source) => {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.original_native_work().is_some() {
-                return Err(LazyError::NativeWorkspaceCause(
-                    acyclic_fs::lazy_workspace::NativeLazyWorkspaceCause {
-                        source,
-                        custody: None,
-                    },
-                ));
-            }
-            match recorded {
-                Ok(()) => Err(LazyError::WorkspaceCause(source)),
-                Err(accounting) => Err(LazyError::WorkspacePrefixFailure { source, accounting }),
-            }
-        }
-    }
+    recorded.map_err(LazyError::WorkspaceCause)?;
+    result.map(|_| ()).map_err(LazyError::WorkspaceCause)
 }
 
 pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(

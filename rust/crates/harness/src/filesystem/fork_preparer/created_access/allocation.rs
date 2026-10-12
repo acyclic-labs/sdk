@@ -33,7 +33,7 @@ async fn birth<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let result = match io.original_native_work() {
         Some(work) => host
             .filesystem
-            .workspace_for_creation_operation_with_native_work(
+            .workspace_for_creation_operation(
                 &name,
                 config,
                 operation,
@@ -41,7 +41,7 @@ async fn birth<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 io.cancellation(),
             )
             .await
-            .map_err(|(source, custody)| Error::NativeWorkspace { source, custody }),
+            .map_err(Error::from),
         None => io.receive(
             host.filesystem
                 .workspace_for_creation_operation(
@@ -243,15 +243,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             );
             self.host
                 .filesystem
-                .create_workspace_with_operation_with_native_work(
+                .create_workspace_with_operation::<_, (), WorkspaceError>(
                     name,
                     acyclic_fs::VolumeConfig::portable(lifecycle),
                     operation,
                     work,
                     work.cancellation(),
+                    None,
                 )
                 .await
-                .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                .map_err(Error::from)?;
             match bounded_io::read(
                 &self.host,
                 &journal,

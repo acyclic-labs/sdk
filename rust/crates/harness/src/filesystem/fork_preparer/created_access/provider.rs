@@ -209,7 +209,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             let (request, request_custody) = request.copy(work)?;
             metadata.absorb_native_custody(request_custody)?;
             let audience = metadata.clone_authority(root.audience())?;
-            receipt_custody = metadata.into_custody();
+            receipt_custody = metadata.into_custody()?;
             Ok((
                 RootBootstrapContentReceipt {
                     request,

@@ -473,22 +473,23 @@ where
                 host = host.with_policy(policy.clone(), Some(work))?;
             }
             let host = host.into_native_shared(work)?;
-            let harness = AgentHarness::with_policy_with_native_work(
-                tasks,
-                tools,
-                resumable_tools,
-                scope,
+            let copied_tools = tools.clone_with_native_work(work)?;
+            io.absorb_native_custody(copied_tools.1)?;
+            let copied_resumable = resumable_tools.clone_with_native_work(work)?;
+            io.absorb_native_custody(copied_resumable.1)?;
+            let copied_scope = scope.clone_with_native_work(work)?;
+            io.absorb_native_custody(copied_scope.1)?;
+            let harness = crate::runtime::Bindings {
+                tasks: tasks.clone_with_native_work(work)?,
+                tools: copied_tools.0,
+                resumable_tools: copied_resumable.0,
+                scope: copied_scope.0,
                 concurrency,
-                Some(host.clone()),
-                None,
-                Some(ContentBindings {
-                    reader,
-                    writer: None,
-                }),
-                None,
-                policy.clone(),
-                work,
-            )?;
+                durable_host: Some(host.clone()),
+                content: Some(ContentBindings { reader, writer: None }),
+                policy: policy.clone(),
+                ..crate::runtime::Bindings::local()
+            }.build(Some(&io))?;
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
             let volume = volume.copy(&mut Some(&mut io.history_io()))?;
             let verifier = verifier.copy(&mut Some(&mut io.history_io()))?;
@@ -582,7 +583,7 @@ where
             policy: policy.clone(),
             ..crate::runtime::Bindings::local()
         }
-        .build()?;
+        .build(None)?;
         Self::from_host(
             stream,
             harness,
@@ -816,18 +817,18 @@ where
         }
         #[cfg(not(target_arch = "wasm32"))]
         let (operation, digest) = match io {
-            Some(io) => crate::runtime::tool_approval_binding_with_native_work(
+            Some(io) => crate::runtime::tool_approval_binding(
                 task,
                 &identity,
                 definition,
                 invocation,
-                io.original_native_work().expect("native approval IO"),
+                Some(io.original_native_work().expect("native approval IO")),
             )?,
-            None => crate::runtime::tool_approval_binding(task, &identity, definition, invocation)?,
+            None => crate::runtime::tool_approval_binding(task, &identity, definition, invocation, None)?,
         };
         #[cfg(target_arch = "wasm32")]
         let (operation, digest) =
-            crate::runtime::tool_approval_binding(task, &identity, definition, invocation)?;
+            crate::runtime::tool_approval_binding(task, &identity, definition, invocation, None)?;
         if let Some(io) = io {
             let hashed = acyclic_fs::WorkCounters {
                 bytes_hashed: b"harness/v2/task-interaction\0".len() as u64 + 32,
@@ -1089,7 +1090,7 @@ where
                         call_id,
                         name,
                         arguments,
-                        Some(io.original_native_work().expect("native approval IO")),
+                        io.original_native_work().expect("native approval IO"),
                     )?,
                     _ => crate::tool::ToolInvocation::for_model_call(
                         operation, step, call_id, name, arguments, None,
@@ -1729,7 +1730,8 @@ where
     pub async fn open_task(&self, task: TaskId, fence: LeaseFence) -> Result<ResumableTaskSession> {
         let journal = self.workflow_journal(task, fence.clone()).await?;
         self.harness
-            .open_registered_task(task, fence, journal)
+            .open_registered_task(task, &fence, journal,
+                #[cfg(not(target_arch = "wasm32"))] None)
             .await
     }
 
@@ -1752,7 +1754,7 @@ where
             .workflow_journal_with_native_work(task, fence, work)
             .await?;
         self.harness
-            .open_registered_task_with_native_work(task, fence, journal, context, work)
+            .open_registered_task(task, fence, journal, Some(context))
             .await
     }
 
