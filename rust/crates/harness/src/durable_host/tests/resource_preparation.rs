@@ -2,7 +2,6 @@ use super::*;
 use crate::resource_preparation::ResourcePreparationRequest;
 use crate::resources::{ResourceKind, ResourceRef};
 use crate::runtime::TaskSpawner as _;
-use crate::wire::ErrorCode;
 
 #[tokio::test]
 async fn preparation_binds_admitted_parent_input_budget_and_current_lease() -> Result<()> {
@@ -53,7 +52,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let (identity, machine, tasks, machines) =
         test_registries::<Value>(implementation, schema.clone(), schema.clone())?;
     let mut host = CoordinatorTaskHost::new(
-        DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?,
+        DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?,
         stream.clone(),
         payloads.clone(),
         payloads,

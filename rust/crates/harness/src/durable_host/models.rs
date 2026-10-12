@@ -70,7 +70,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .map(|(record, _)| record)?;
         let (scope, _) = self.authenticated_scope_with_work(&admission, work).await?;
         if !admission.grants.contains("model:generate") {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "task scope lacks model:generate",
@@ -127,7 +127,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             blake3::Hash::from(lease_digest)
         )
         .map_err(|_| {
-            admission_boundary(
+            guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "model dispatch key formatting failed",

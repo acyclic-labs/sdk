@@ -196,7 +196,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .parent
                 != Some(parent)
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "cancellation requires an authorized direct child",

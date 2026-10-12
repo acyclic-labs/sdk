@@ -206,7 +206,7 @@ impl<P: StreamProvider> crate::runtime::TaskStateProvider for CoordinatorTaskHos
                     "unfenced custom mail requires explicit mail and file grants".into(),
                 ));
             }
-            let bytes = self
+            let (bytes, _) = self
                 .mail_bytes(sender, recipient, message_id, payload, None)
                 .await?;
             self.publish_mail(sender, recipient, message_id, bytes, None, None, None)

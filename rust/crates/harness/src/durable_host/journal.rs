@@ -179,7 +179,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<()> {
         let conflict = |reason| {
             crate::executor::with_history_io(io, |work| {
-                admission_boundary(work, crate::wire::ErrorCode::Conflict, reason)
+                guarded_boundary(work, crate::wire::ErrorCode::Conflict, reason)
             })
         };
         if record.prior.machine != self.workflow.initial.machine {
@@ -246,7 +246,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             io.check_cancellation()?;
         }
         if self.is_readonly() {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "historical READ custody cannot prepare a journal write",
@@ -306,7 +306,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             && let Some(binding) = access.current_content(work)?
         {
             if binding.binding.writer.is_none() {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Unauthorized,
                     "current created scratch has no WRITE custody",
@@ -478,7 +478,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             io.check_cancellation()?;
         }
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "execution record exceeds canonical Stream byte bound",
@@ -541,7 +541,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     )> {
         use acyclic_stream::CommitCondition;
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "owned journal record exceeds the canonical byte bound",
@@ -674,7 +674,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 };
                 match invalid {
                     None => Ok(true),
-                    Some(reason) => Err(admission_boundary(
+                    Some(reason) => Err(guarded_boundary(
                         received.work(),
                         crate::wire::ErrorCode::Storage,
                         reason,

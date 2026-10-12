@@ -74,7 +74,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         {
             return Ok(WorkPull::Unresolved {
                 lease,
-                error: admission_boundary(
+                error: guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Conflict,
                     "retained task reservation requires reconciliation",
@@ -118,7 +118,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if operation.spec != lease.operation
             || operation.reservation.as_ref() != Some(&lease.reservation)
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &mut work,
                 crate::wire::ErrorCode::Conflict,
                 "worker lease differs from retained admission",
@@ -195,34 +195,19 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let key = IdempotencyKey::new(text)?;
         let outcome = match outcome {
             Outcome::Succeeded(value) => {
-                if work.is_some() {
-                    let validator = crate::contract::compile_json_schema(
-                        &admission.output_schema,
-                        "task output",
-                        work,
-                    )?;
-                    if !validator.is_valid(&value) {
-                        return Err(admission_boundary(
-                            work,
-                            crate::wire::ErrorCode::Invalid,
-                            "task output failed validation",
-                        ));
-                    }
-                } else {
-                    crate::contract::validate_json_schema_value(
-                        &admission.output_schema,
-                        &value,
-                        "task output",
-                        &mut None,
-                    )?;
-                }
+                crate::contract::validate_json_schema_value(
+                    &admission.output_schema,
+                    &value,
+                    "task output",
+                    work,
+                )?;
                 let bytes = crate::store::history::canonical_bytes_with_work(
                     &value,
                     admission.limits.file_bytes,
                     work,
                 )?;
                 if bytes.len() as u64 > admission.limits.file_bytes {
-                    return Err(admission_boundary(
+                    return Err(guarded_boundary(
                         work,
                         crate::wire::ErrorCode::Invalid,
                         "task result exceeds admitted file limit",
@@ -396,7 +381,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .await
             .map(|(record, _)| record)?;
         let deadline = admission.run_limits.deadline_epoch_ms.ok_or_else(|| {
-            admission_boundary(
+            guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "task has no admitted deadline",
@@ -406,7 +391,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             io.check_cancellation()?;
         }
         if self.clock.now_unix_millis() < deadline {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Conflict,
                 "task deadline has not elapsed",
@@ -432,7 +417,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             if state.reservation.as_ref().is_none_or(|reservation| {
                 reservation.id != fence.reservation_id || reservation.placement != fence.placement
             }) {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Conflict,
                     "deadline observer does not own the current reservation",

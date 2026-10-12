@@ -18,14 +18,14 @@ impl Verification {
         }
         if let Some((remaining_work, remaining_bytes)) = self.remaining.as_mut() {
             *remaining_work = remaining_work.checked_sub(units).ok_or_else(|| {
-                admission_boundary(
+                guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Invalid,
                     "project source verification exceeds work bound",
                 )
             })?;
             *remaining_bytes = remaining_bytes.checked_sub(bytes).ok_or_else(|| {
-                admission_boundary(
+                guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Invalid,
                     "project source verification exceeds byte bound",
@@ -51,7 +51,7 @@ impl<P: StreamProvider> CreatedTaskPublicationLease<P> {
             work,
         )?;
         let fence = self.fence.as_ref().ok_or_else(|| {
-            admission_boundary(
+            guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Conflict,
                 "created resource task has no current execution owner",
@@ -163,7 +163,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .retained_declaration_with_work(operation, work)
             .await?
             .ok_or_else(|| {
-                admission_boundary(
+                guarded_boundary(
                     work,
                     crate::wire::ErrorCode::NotFound,
                     "project source admission is missing",
@@ -251,7 +251,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             remaining: None,
         };
         let access = self
-            .verify_created_access(admission, &mut verification, work)
+            .created_receipts(admission, &mut verification, work)
             .await;
         let visited_bytes =
             (verification.path.capacity() * std::mem::size_of::<OperationId>()) as u64;
@@ -259,8 +259,19 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if let Some(io) = work.as_deref_mut() {
             io.release_owned(visited_bytes)?;
         }
+        let access = access?
+            .map(|(mut receipts, origin)| {
+                crate::resource_preparation::CreatedResourceAccess::consume(
+                    admission,
+                    &mut receipts,
+                    origin,
+                    work,
+                )
+                .map(|(access, _)| access)
+            })
+            .transpose()?;
         self.root_scope
-            .with_created_access_with_work(admission, access?, work)
+            .with_created_access_with_work(admission, access, work)
     }
 
     pub(super) fn reserve_proof_slots<T>(
@@ -279,7 +290,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .checked_sub(values.capacity())
             .and_then(|slots| slots.checked_mul(std::mem::size_of::<T>()))
             .ok_or_else(|| {
-                admission_boundary(
+                guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Invalid,
                     "resource proof vector ownership overflows",
@@ -298,7 +309,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let retained = (values.capacity() - old)
             .checked_mul(std::mem::size_of::<T>())
             .ok_or_else(|| {
-                admission_boundary(
+                guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Invalid,
                     "resource proof vector ownership overflows",
@@ -326,13 +337,18 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(false)
     }
 
-    pub(super) fn verify_created_access<'a, 'b>(
+    pub(super) fn created_receipts<'a, 'b>(
         &'a self,
         admission: &'a TaskAdmissionRecord,
         verification: &'a mut Verification,
         work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
     ) -> impl std::future::Future<
-        Output = Result<Option<crate::resource_preparation::CreatedResourceAccess>>,
+        Output = Result<
+            Option<(
+                Vec<crate::resource_preparation::CreatedResourceReceipt>,
+                Option<OperationId>,
+            )>,
+        >,
     > + acyclic_stream::ProviderTask
     + 'a {
         async move {
@@ -347,20 +363,25 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .cloned()
             {
                 return crate::NativeFutureBundle::new(&native, || {
-                    self.verify_created_access_body(admission, verification, work)
+                    self.created_receipts_body(admission, verification, work)
                 })?
                 .await;
             }
-            Box::pin(self.verify_created_access_body(admission, verification, work)).await
+            Box::pin(self.created_receipts_body(admission, verification, work)).await
         }
     }
 
-    pub(super) async fn verify_created_access_body(
+    pub(super) async fn created_receipts_body(
         &self,
         admission: &TaskAdmissionRecord,
         verification: &mut Verification,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Option<crate::resource_preparation::CreatedResourceAccess>> {
+    ) -> Result<
+        Option<(
+            Vec<crate::resource_preparation::CreatedResourceReceipt>,
+            Option<OperationId>,
+        )>,
+    > {
         use crate::wire::ErrorCode;
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
@@ -369,7 +390,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Ok(None);
         }
         if Self::proof_contains(&verification.path, &admission.operation_id, work)? {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 ErrorCode::Unauthorized,
                 "resource preparation proof is cyclic",
@@ -379,7 +400,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         verification.path.push(admission.operation_id);
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
         let parent = admission.parent.ok_or_else(|| {
-            admission_boundary(
+            guarded_boundary(
                 custody.work(),
                 ErrorCode::Unauthorized,
                 "created resource admission has no parent",
@@ -404,7 +425,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 }
             }
             let provider = selected.ok_or_else(|| {
-                admission_boundary(
+                guarded_boundary(
                     custody.work(),
                     ErrorCode::Unsupported,
                     "resource proof verifier is not bound",
@@ -432,15 +453,25 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 || !request.child.resource_proofs.contains(proof)
                 || !preparation.grants.contains(&request.creation_grant)
             {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     proof_custody.work(),
                     ErrorCode::Unauthorized,
                     "resource proof differs from admitted preparation",
                 ));
             }
             let preparation_access = self
-                .verify_created_access(&preparation, verification, proof_custody.work())
-                .await?;
+                .created_receipts(&preparation, verification, proof_custody.work())
+                .await?
+                .map(|(mut receipts, origin)| {
+                    crate::resource_preparation::CreatedResourceAccess::consume(
+                        &preparation,
+                        &mut receipts,
+                        origin,
+                        proof_custody.work(),
+                    )
+                    .map(|(access, _)| access)
+                })
+                .transpose()?;
             let (preparation_scope, scope_held) = self.root_scope.with_created_access_with_work(
                 &preparation,
                 preparation_access,
@@ -451,7 +482,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 io.release_owned(scope_held)?;
             }
             let preparation_parent = preparation.parent.ok_or_else(|| {
-                admission_boundary(
+                guarded_boundary(
                     proof_custody.work(),
                     ErrorCode::Unauthorized,
                     "resource preparation has no original parent",
@@ -464,7 +495,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             if !original_parent.grants.contains(&request.creation_grant)
                 || !preparation.grants.is_subset_of(&original_parent.grants)
             {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     proof_custody.work(),
                     ErrorCode::Unauthorized,
                     "creation authority was not narrowed from the parent",
@@ -474,7 +505,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let mut origin_distance = 0;
             if inherited {
                 if !parent_admission.resource_proofs.contains(proof) {
-                    return Err(admission_boundary(
+                    return Err(guarded_boundary(
                         proof_custody.work(),
                         ErrorCode::Unauthorized,
                         "created resource proof is not inherited from the parent",
@@ -492,7 +523,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 drop(original_child);
                 proof_custody.relinquish(held)?;
                 if !matches {
-                    return Err(admission_boundary(
+                    return Err(guarded_boundary(
                         proof_custody.work(),
                         ErrorCode::Unauthorized,
                         "created resource origin admission changed",
@@ -517,7 +548,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 if prepared.cancellation_requested
                     || !matches!(prepared.outcome, Some(Outcome::Succeeded(_)))
                 {
-                    return Err(admission_boundary(
+                    return Err(guarded_boundary(
                         proof_custody.work(),
                         ErrorCode::Unauthorized,
                         "resource preparation did not succeed",
@@ -541,7 +572,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                             break;
                         }
                         if Self::proof_contains(&lineage, &operation, lineage_custody.work())? {
-                            return Err(admission_boundary(
+                            return Err(guarded_boundary(
                                 lineage_custody.work(),
                                 ErrorCode::Conflict,
                                 "indexed operation lineage is cyclic",
@@ -560,7 +591,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         cursor = state.spec.parent.as_ref().map(|link| link.operation_id);
                     }
                     if !found {
-                        return Err(admission_boundary(
+                        return Err(guarded_boundary(
                             lineage_custody.work(),
                             ErrorCode::Unauthorized,
                             "resource proof belongs to another child lineage",
@@ -616,7 +647,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         proof_custody.work(),
                     )?
             {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     proof_custody.work(),
                     ErrorCode::Unauthorized,
                     "resource allocation provenance changed",
@@ -635,12 +666,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             receipts.push(receipt);
         }
         verification.path.pop();
-        let (access, _) = crate::resource_preparation::CreatedResourceAccess::consume(
-            admission,
-            &mut receipts,
-            current_default.map(|(_, origin)| origin),
-            custody.work(),
-        )?;
-        Ok(Some(access))
+        Ok(Some((receipts, current_default.map(|(_, origin)| origin))))
     }
 }

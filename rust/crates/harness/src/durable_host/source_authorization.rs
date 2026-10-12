@@ -1,7 +1,6 @@
 use super::resources::Verification;
 use super::*;
 use crate::source_authorization::{ProjectSourceAuthorization, ProjectSourceReadHandle};
-use crate::wire::ErrorCode;
 
 impl<P: StreamProvider> TaskJournalOwner<P> {
     /// Restores an authorization retained by the original caller.
@@ -48,7 +47,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let binding = context.owned_task_binding_with_native_work(native)?;
             self.require_mail_scope_with_native_work(context.scope(), native)?;
             if binding != (self.task_id, &self.fence) {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     &work,
                     crate::wire::ErrorCode::Unauthorized,
                     "project source restoration lacks its original owner",
@@ -59,7 +58,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             || context.scope().grants() != &self.input_grants
             || authorization.caller_admission_digest != self.original_admission_digest
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "project source restoration lacks its original owner",
@@ -67,7 +66,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let cancellation = self.invocation_cancellation.as_ref();
         if io.is_some() && cancellation.is_none() {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "project source restoration requires original cancellation",
@@ -153,7 +152,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             work.remaining()?;
         }
         let cancellation = self.invocation_cancellation.as_ref().ok_or_else(|| {
-            admission_boundary(
+            guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "selected project read requires actual invocation cancellation",
@@ -172,7 +171,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         };
         check()?;
         if handle.authorization().caller_admission_digest != self.original_admission_digest {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "selected project read differs from its original admission",
@@ -210,7 +209,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 work,
             )?;
             if state.cancellation_requested {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Unauthorized,
                     "project source graph is cancelled",
@@ -223,7 +222,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
                     }
                     if operation == anchor {
-                        return Err(admission_boundary(
+                        return Err(guarded_boundary(
                             work,
                             crate::wire::ErrorCode::Unauthorized,
                             "project source graph is cyclic",
@@ -233,7 +232,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     if steps == run {
                         anchor = operation;
                         run = run.checked_mul(2).ok_or_else(|| {
-                            admission_boundary(
+                            guarded_boundary(
                                 work,
                                 crate::wire::ErrorCode::Invalid,
                                 "project source graph depth overflows",
@@ -289,13 +288,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Ok(allowed);
         }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let access = self
-            .verify_created_access(source, budget, quota.work())
-            .await;
+        let access = self.created_receipts(source, budget, quota.work()).await;
         let path = std::mem::take(&mut budget.path);
         quota.adopt((path.capacity() * std::mem::size_of::<OperationId>()) as u64)?;
         drop(path);
-        let access = access?;
+        let access = access?
+            .map(|(mut receipts, origin)| {
+                crate::resource_preparation::CreatedResourceAccess::consume(
+                    source,
+                    &mut receipts,
+                    origin,
+                    quota.work(),
+                )
+                .map(|(access, _)| access)
+            })
+            .transpose()?;
         let selected = access.as_ref().is_some_and(|access| {
             access
                 .content
@@ -327,7 +334,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .as_ref()
                 .is_some_and(|command| command.operation_id != record.operation_id)
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "project source differs from original preparation caller or bounds",
@@ -362,7 +369,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
         };
         if !payload_matches {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "project source differs from the retained preparation payload",
@@ -402,7 +409,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         record.verify_scope_with_work(&self.verifier, quota.work())?;
         if &record.owner != self.verifier.audience() || record.caller_task != parent {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "project source differs from original caller or owning coordinator",
@@ -426,7 +433,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .deadline_epoch_ms
                 .is_some_and(|deadline| self.clock.now_unix_millis() >= deadline)
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "project source original caller changed or expired",
@@ -441,7 +448,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .await?
                 != record.graph_root
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "project source retained graph changed",
@@ -456,7 +463,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .await?
             && record.source_task != record.graph_root
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "project source retained creator evidence changed",

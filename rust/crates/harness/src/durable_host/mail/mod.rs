@@ -9,7 +9,6 @@ use crate::store::{
     history::{HistoryIo, canonical_bytes_with_work},
     operations,
 };
-use crate::wire::ErrorCode;
 use acyclic_stream::{CommitCondition, CommitOutcome};
 #[cfg(not(feature = "filesystem"))]
 use serde::de::DeserializeOwned as MailRecord;
@@ -230,7 +229,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             .await
     }
 
-    async fn prepare_mail(
+    pub(super) async fn mail_bytes(
         &self,
         sender: TaskId,
         recipient: TaskId,
@@ -280,19 +279,6 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         };
         let bytes = encode(&event, acyclic_stream::MAX_RECORD_BYTES as u64, io)?;
         Ok((bytes, event.payload))
-    }
-
-    pub(super) async fn mail_bytes(
-        &self,
-        sender: TaskId,
-        recipient: TaskId,
-        message: OperationId,
-        payload: FileRef,
-        io: Option<&PreparationIo>,
-    ) -> Result<OwnedBytes> {
-        self.prepare_mail(sender, recipient, message, payload, io)
-            .await
-            .map(|(bytes, _)| bytes)
     }
 
     /// Publishes mail under the sender's exact uncancelled lease.
@@ -358,7 +344,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         )
         .await?;
         let (bytes, payload) = self
-            .prepare_mail(owner.task_id, recipient, message, payload, io)
+            .mail_bytes(owner.task_id, recipient, message, payload, io)
             .await?;
         self.publish_mail(
             owner.task_id,
@@ -407,7 +393,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let mut work: Observer<'_> = None;
         self.verify_mail_owner(sender, Some(fence), owner.as_ref(), true, &mut work)
             .await?;
-        let bytes = self
+        let (bytes, _) = self
             .mail_bytes(sender, recipient, message, payload, io)
             .await?;
         let retained = self
@@ -677,7 +663,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             &mut work,
         )?;
         let mut records =
-            match operations::read_records(&self.stream, &location.0, 0, 2, &mut work).await? {
+            match operations::read_records(&self.stream, location.0.path(), 0, 2, &mut work).await?
+            {
                 Ok(records) => records,
                 Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(false),
                 Err(error) => return Err(sdk_error(error, &work)),
@@ -728,7 +715,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         )?;
         let mut originals = match operations::read_records(
             &self.stream,
-            &mailbox.0,
+            mailbox.0.path(),
             retained.sequence,
             1,
             &mut work,

@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) async fn create(
+    backend: &Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
     filesystem: &Arc<MemoryFilesystem>,
     payload: &VolumeRef,
     work: &acyclic_fs::NativeMaterializationWork,
@@ -31,8 +32,7 @@ pub(super) async fn create(
         );
         let name = volume.storage_name(&mut Some(&mut io))?;
         let name_custody = io.into_custody()?;
-        let initial = filesystem
-            .filesystem
+        let initial = backend
             .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
                 &name,
                 config,

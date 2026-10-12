@@ -3,6 +3,7 @@
 use crate::contract::capability;
 #[cfg(feature = "filesystem")]
 use crate::scheduler::LeaseFence;
+use crate::store::guarded_boundary;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::store::history::HistoryIo as _;
 use crate::{
@@ -131,29 +132,6 @@ fn worker_key_with_work(
     )
     .expect("writing into String");
     IdempotencyKey::new(key)
-}
-
-fn admission_boundary(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
-    code: crate::wire::ErrorCode,
-    reason: &'static str,
-) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work
-        .as_deref()
-        .and_then(|io| io.original_native_work())
-        .is_some()
-    {
-        return Error::NativeBoundary { code, reason };
-    }
-    match code {
-        crate::wire::ErrorCode::Storage => Error::Storage(reason.into()),
-        crate::wire::ErrorCode::NotFound => Error::NotFound(reason.into()),
-        crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
-        crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
-        crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
-        _ => Error::Invalid(reason.into()),
-    }
 }
 
 /// Stream-backed admission and observation for one durable owner.

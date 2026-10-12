@@ -57,7 +57,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 slot.revision != revision || slot.waiting_command != waiting_command
             })
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Conflict,
                 "workflow suspension receipt is no longer current",
@@ -210,7 +210,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let admission = self.admission_with_work(operation, work).await?;
         admission.limits.validate_file(&input, &mut None)?;
         if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "task cannot read its command wake",
@@ -267,7 +267,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             if input.path().len() > admission.limits.path_bytes
                 || input.descriptor().byte_length() > admission.limits.file_bytes
             {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     &mut work,
                     crate::wire::ErrorCode::Invalid,
                     "workflow resume input exceeds original task limits",
@@ -276,7 +276,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         admission.limits.validate_file(&input, &mut None)?;
         if !crate::runtime::read_granted_with_work(&admission.grants, &input, &mut work)? {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &mut work,
                 crate::wire::ErrorCode::Unauthorized,
                 "task cannot read its workflow resume input",
@@ -372,7 +372,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         admission.limits.validate_file(&input, &mut None)?;
         if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "task cannot read its retained workflow input",

@@ -2,7 +2,6 @@ mod batch;
 
 use super::*;
 use crate::runtime::{DurableTaskHost, TaskSpawner};
-use crate::wire::ErrorCode;
 use crate::{
     AgentId, Capabilities, GroupId,
     conversation::{FileDescriptor, Limits, VolumeClass, VolumeOwner, VolumeRef},

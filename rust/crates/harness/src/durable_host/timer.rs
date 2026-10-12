@@ -38,7 +38,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             io.check_cancellation()?;
         }
         if deadline_unix_ms == 0 {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 custody.work(),
                 crate::wire::ErrorCode::Invalid,
                 "timer deadline is invalid",
@@ -46,7 +46,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let (task, fence) = owner.task_binding();
         if !owner.input_grants.contains("timer:wait") {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 custody.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "task scope lacks timer:wait",
@@ -200,7 +200,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         while after < tail {
             let mut page = crate::store::operations::read_records(
                 &self.stream,
-                &stream.0,
+                stream.0.path(),
                 after,
                 (tail - after).min(64) as u32,
                 work,
@@ -211,14 +211,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             while let Some(record) = page.next(work).await? {
                 count += 1;
                 if count > 64 {
-                    return Err(admission_boundary(
+                    return Err(guarded_boundary(
                         work,
                         crate::wire::ErrorCode::Storage,
                         "invalid timer replay page",
                     ));
                 }
                 if record.sequence != after || after >= tail {
-                    return Err(admission_boundary(
+                    return Err(guarded_boundary(
                         work,
                         crate::wire::ErrorCode::Storage,
                         "timer replay sequence differs",
@@ -228,7 +228,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     Some(io) => {
                         let (value, owned) = io.decode_json_value(&record.value)?;
                         let decoded = TimerEvent::deserialize(&value).map_err(|_| {
-                            admission_boundary(
+                            guarded_boundary(
                                 &mut Some(&mut *io),
                                 crate::wire::ErrorCode::Storage,
                                 "timer replay record is invalid",
@@ -245,7 +245,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 };
                 drop(record);
                 if event.task_id != task || event.deadline_unix_ms == 0 {
-                    return Err(admission_boundary(
+                    return Err(guarded_boundary(
                         work,
                         crate::wire::ErrorCode::Conflict,
                         "timer history belongs to another task",
@@ -253,7 +253,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 }
                 if event.operation_id == operation {
                     if found || event.deadline_unix_ms != deadline_unix_ms {
-                        return Err(admission_boundary(
+                        return Err(guarded_boundary(
                             work,
                             crate::wire::ErrorCode::Conflict,
                             "timer identity reused",
@@ -264,7 +264,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 after += 1;
             }
             if count == 0 {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Storage,
                     "invalid timer replay page",

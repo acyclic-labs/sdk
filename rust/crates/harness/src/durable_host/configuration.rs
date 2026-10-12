@@ -26,7 +26,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             capability::OPERATION_CANCEL,
         ] {
             if !owner_scope.capabilities().contains(capability) {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     &work,
                     crate::wire::ErrorCode::Unauthorized,
                     "owner scope lacks a required operation capability",
@@ -34,7 +34,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
         }
         if !root_scope.grants().is_subset_of(owner_scope.capabilities()) {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "runtime grants exceed the signed owner scope",
@@ -181,7 +181,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = None;
         if !self.resource_creation.is_empty() {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &observer,
                 crate::wire::ErrorCode::Conflict,
                 "resource creation registry is already configured",
@@ -193,7 +193,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .iter()
                 .any(|bound| bound.provider() == provider.provider())
             {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     &observer,
                     crate::wire::ErrorCode::Invalid,
                     "resource creation provider is registered twice",

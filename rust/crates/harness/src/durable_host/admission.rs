@@ -12,7 +12,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let loaded = self.read_json(reference, work).await;
         let (value, held) = match loaded {
             Err(Error::NotFound(_)) if retained => {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Storage,
                     "committed task admission content is missing",
@@ -88,7 +88,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .await?
                 .is_none()
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "created resource admission requires the current parent execution fence",
@@ -117,7 +117,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 }
             }
             if !granted {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Unauthorized,
                     "parent scope lacks the exact descendant grant",
@@ -128,7 +128,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             extensions.validate(work)?;
         }
         if scope.extensions() != self.root_scope.extensions() {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Conflict,
                 "task extensions differ from owner bindings",
@@ -144,25 +144,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             admission.policy == self.policy.as_ref().map(|policy| policy.identity())
         };
         if !matches {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Conflict,
                 "task admission policy differs from owner",
             ));
         }
         if admission.execution.is_some() {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unsupported,
                 "local durable host cannot admit a remote execution route",
             ));
         }
-        if admission.machine.name != admission.task.name
-            || admission.machine.version != admission.task.version
-            || admission.machine.digest == [0; 32]
-            || self.machines.resolve(&admission.machine, work)?.is_none()
-        {
-            return Err(admission_boundary(
+        if self.machines.resolve(&admission.machine, work)?.is_none() {
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "task and machine identities disagree",
@@ -182,7 +178,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             work,
         )?;
         if bytes.len() as u64 > scope.limits().file_bytes {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "durable task admission exceeds its file limit",
@@ -204,7 +200,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .admission_bytes_match(&retained.state, &bytes, true, work)
                 .await?
             {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Conflict,
                     "task admission changed on retry",
@@ -225,7 +221,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .admission_bytes_match(&state, &bytes, false, work)
                 .await?
             {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Storage,
                     "staged task admission changed before publication",
@@ -397,7 +393,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         .created_grants()
                         .is_some_and(|created| created.contains(grant))
                 {
-                    return Err(admission_boundary(
+                    return Err(guarded_boundary(
                         quota.work(),
                         crate::wire::ErrorCode::Unauthorized,
                         "runtime scope cannot widen ancestor authority",

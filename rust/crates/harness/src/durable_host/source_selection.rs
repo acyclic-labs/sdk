@@ -6,7 +6,6 @@ use crate::source_authorization::{
     ProjectSourceAuthorization, ProjectSourceReadHandle, ProjectSourceSnapshot,
     RootProjectSourceContext, RootProjectSourceProvider,
 };
-use crate::wire::ErrorCode;
 
 impl<P: StreamProvider> TaskJournalOwner<P> {
     /// Authorizes a bounded selection under the current owner and configured policy.
@@ -57,7 +56,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let native = io
             .map(|io| {
                 io.original_native_work().ok_or_else(|| {
-                    admission_boundary(
+                    guarded_boundary(
                         quota.work(),
                         crate::wire::ErrorCode::Unsupported,
                         "project source requires original native work",
@@ -87,14 +86,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             || maximum_bytes == u64::MAX
             || operation_id == self.operation_id()
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "project source bounds or original owner differs",
             ));
         }
         let cancellation = self.invocation_cancellation.as_ref().ok_or_else(|| {
-            admission_boundary(
+            guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "project source requires actual invocation cancellation",
@@ -119,7 +118,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         };
         quota.adopt(verifier_held)?;
         if verifier != self.host.verifier {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "project source signer differs from installed owner",
@@ -132,7 +131,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if snapshot.project.class() != crate::conversation::VolumeClass::Project
             || snapshot.project.provider() != snapshot.generation.as_resource().provider()
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "source selection is not one provider's project generation",
@@ -155,7 +154,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             quota.work(),
         )? != self.original_admission_digest
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "original project source caller admission changed",
@@ -176,7 +175,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .await?
             != graph_root
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "project source belongs to another actual session graph",
@@ -192,7 +191,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             || remaining_work == 0
             || remaining_bytes == 0
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "project source has no bounded authenticated creator",

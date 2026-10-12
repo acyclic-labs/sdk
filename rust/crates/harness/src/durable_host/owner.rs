@@ -344,7 +344,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 })
                 .is_some_and(|binding| binding.binding.writer.is_none())
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "created volume has no retained WRITE custody",
@@ -354,7 +354,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if self.readonly_original.is_some()
             && operation == crate::conversation::VolumeOperation::Write
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "historical READ owner cannot authorize namespace WRITE",
@@ -372,38 +372,13 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     .as_ref()
                     .is_some_and(|access| access.grants.contains(&grant)))
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "task scope lacks required volume grant",
             ));
         }
         Ok(())
-    }
-
-    /// Obtains the original currently selected scratch allocation.
-    pub fn child_scratch_creation_proof(
-        &self,
-    ) -> Result<crate::resource_preparation::ChildScratchCreationProof> {
-        let access = self
-            .input_created
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("task has no created scratch allocation".into()))?;
-        let binding = access
-            .current_content(&mut None)?
-            .ok_or_else(|| Error::Unauthorized("task has no current scratch allocation".into()))?;
-        let proof = binding.scratch_creation.as_ref().ok_or_else(|| {
-            Error::Unauthorized("current scratch is not a verified filesystem allocation".into())
-        })?;
-        if proof.original_task() != self.task_id
-            || Some(proof.agent()) != self.input_agent
-            || proof.volume() != &binding.volume
-        {
-            return Err(Error::Unauthorized(
-                "scratch allocation belongs to another original task".into(),
-            ));
-        }
-        Ok(proof.clone())
     }
 
     pub(crate) fn require_interaction_grant(
@@ -414,7 +389,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             io.check_cancellation()?;
         }
         if !self.input_grants.contains(capability::INTERACTION_ROUTE) {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "task scope lacks interaction:route",
@@ -439,7 +414,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if verifier.audience() != self.host.verifier.audience()
             || maximum_payload_bytes > self.input_limits.file_bytes
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "journal storage exceeds admitted task authority or limits",
@@ -548,7 +523,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             io.check_cancellation()?;
         }
         if !self.input_grants.contains(capability::EFFECT_RUN) {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "task scope lacks effect:run",
@@ -565,14 +540,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             }
         }
         if !permitted {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "task scope lacks the effect provider grant",
             ));
         }
         if planning && !self.input_grants.contains(capability::EFFECT_PLAN) {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "task scope lacks effect:plan",
@@ -601,7 +576,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             if file.path().len() > self.input_limits.path_bytes
                 || file.descriptor().byte_length() > self.input_limits.file_bytes
             {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     &work,
                     crate::wire::ErrorCode::Invalid,
                     "execution input file exceeds original task limits",
@@ -619,7 +594,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     None => false,
                 });
         if !allowed {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "original task cannot read the execution input file",

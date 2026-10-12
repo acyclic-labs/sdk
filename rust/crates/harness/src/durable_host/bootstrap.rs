@@ -18,7 +18,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             io.check_cancellation()?;
         }
         if !self.input_grants.contains(capability::CONVERSATION_BIND) {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "task scope lacks conversation:bind",
@@ -36,14 +36,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
         if !self.input_grants.contains(capability::FORK_PUBLISH) {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "task scope lacks fork:publish",
             ));
         }
         self.input_agent.ok_or_else(|| {
-            admission_boundary(
+            guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "task has no authenticated current agent",
@@ -80,7 +80,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 || proof.bind_operation() != operation
                 || proof.intent_digest() != intent
             {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Conflict,
                     "root binding audience, operation or intent changed",
@@ -106,7 +106,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let choice = (operation, intent, audience_digest);
         if let Err(choice) = state.pending.set(choice) {
             if state.pending.get() != Some(&choice) {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Conflict,
                     "root binding publication choice changed",
@@ -363,14 +363,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             || proof.fence() != &self.fence
             || agent != Some(proof.agent())
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "root binding proof belongs to another owner or lease",
             ));
         }
         let state = self.root_binding.as_ref().ok_or_else(|| {
-            admission_boundary(
+            guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "owner has no root binding cache",
@@ -382,7 +382,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 .proof
                 .get()
                 .ok_or_else(|| {
-                    admission_boundary(
+                    guarded_boundary(
                         &work,
                         crate::wire::ErrorCode::Conflict,
                         "root binding cache is unavailable",
@@ -393,7 +393,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 || retained.bind_operation() != proof.bind_operation()
                 || retained.intent_digest() != proof.intent_digest()
             {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     &work,
                     crate::wire::ErrorCode::Conflict,
                     "root binding audience, operation or intent changed",
@@ -422,7 +422,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             None => None,
         }
         .ok_or_else(|| {
-            admission_boundary(
+            guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "current caller has no authenticated publication audience",
@@ -430,7 +430,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         })?;
         crate::core::inspect_metadata(&(audience, parent), work)?;
         if audience != parent {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "fork parent differs from the current caller audience",
@@ -496,7 +496,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             || declaration.owner_scope.agent() != Some(binding.agent())
             || self.owner_scope.agent() != Some(binding.agent())
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &mut observer,
                 crate::wire::ErrorCode::Unauthorized,
                 "bootstrap binding differs from its canonical original root reservation",
@@ -508,7 +508,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &mut observer,
         )?;
         if digest != binding.admission_digest() {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &mut observer,
                 crate::wire::ErrorCode::Unauthorized,
                 "bootstrap root input differs from its protected original workflow",
@@ -577,7 +577,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(RuntimeScope, u64)> {
         if task.into_bytes() != operation.into_bytes() {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "task identity does not match its admission",
@@ -616,7 +616,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let admission_bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
             .checked_add(admission.logical_owned_bytes()?)
             .ok_or_else(|| {
-                admission_boundary(
+                guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Invalid,
                     "resumed admission custody overflows",

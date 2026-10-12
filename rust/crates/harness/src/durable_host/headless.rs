@@ -1,6 +1,5 @@
 //! Selected resource metadata from the existing authenticated allocation receipts.
 use super::*;
-use crate::wire::ErrorCode;
 use crate::{
     conversation::{VolumeClass, VolumeRef},
     resources::GenerationRef,
@@ -70,171 +69,90 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Vec<TaskVolumeSnapshot>, u64)> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let (admission, retained) = self
+        let (admission, held) = self
             .read_retained_admission_counted(
                 OperationId::from_bytes(task.into_bytes()),
                 quota.work(),
             )
             .await?;
-        quota.adopt(retained)?;
-        let (scope, retained) = self
-            .authenticated_scope_with_work(&admission, quota.work())
-            .await?;
-        quota.adopt(retained)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let native = quota
-            .work()
-            .as_deref()
-            .and_then(|io| io.original_native_work())
-            .cloned();
-        let current_private = scope
-            .current_created_content(quota.work())?
-            .map(|binding| &binding.volume);
-        let Some(current_private) = current_private else {
+        quota.adopt(held)?;
+        let mut verification = resources::Verification {
+            path: Vec::new(),
+            remaining: None,
+        };
+        let receipts = self
+            .created_receipts(&admission, &mut verification, quota.work())
+            .await;
+        quota.adopt((verification.path.capacity() * std::mem::size_of::<OperationId>()) as u64)?;
+        drop(verification);
+        let Some((mut receipts, origin)) = receipts? else {
             return Ok((Vec::new(), 0));
         };
-        let mut current_origin = None;
         let mut snapshots = Vec::new();
-        for proof in &admission.resource_proofs {
-            if let Some(io) = quota.work().as_deref_mut() {
-                io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
-            }
-            let (preparation, retained) = self
-                .read_retained_admission_counted(
-                    OperationId::from_bytes(proof.preparation.into_bytes()),
-                    quota.work(),
-                )
-                .await?;
-            quota.adopt(retained)?;
-            let (request, retained) = crate::resource_preparation::ResourcePreparationRequest::from_borrowed_value_with_work(
-                &preparation.input, quota.work())?;
-            quota.adopt(retained)?;
-            let provider = self
-                .resource_creation
-                .iter()
-                .find(|provider| provider.provider() == &proof.provider)
-                .ok_or_else(|| {
-                    admission_boundary(
-                        quota.work(),
-                        crate::wire::ErrorCode::Unsupported,
-                        "resource proof verifier is not bound",
-                    )
-                })?;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let verified = match native.as_ref() {
-                Some(native) => {
-                    let (receipt, custody) = provider
-                        .verify_with_native_work(&request, proof, native)?
-                        .await?;
-                    if !custody.work().shares_allocation_context(native) {
-                        drop(receipt);
-                        return Err(admission_boundary(
-                            quota.work(),
-                            crate::wire::ErrorCode::Unauthorized,
-                            "volume receipt has foreign native custody",
-                        ));
-                    }
-                    (receipt, Some(custody))
-                }
-                None => (provider.verify(&request, proof).await?, None),
-            };
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let receipt = &verified.0;
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let receipt = provider.verify(&request, proof).await?;
-            if receipt.resource != proof.resource || receipt.evidence != proof.evidence {
-                return Err(admission_boundary(
-                    quota.work(),
-                    crate::wire::ErrorCode::Unauthorized,
-                    "volume receipt differs from admitted proof",
-                ));
+        for receipt in &receipts {
+            if Some(receipt.origin.intended_child) != origin {
+                continue;
             }
             for content in &receipt.content {
-                let mut allocated = false;
-                for operation in &receipt.operations {
-                    if let Some(io) = quota.work().as_deref_mut() {
-                        io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
-                    }
-                    allocated |= match operation {
-                        crate::resource_preparation::CreatedResourceOperation::ReadVolume(
-                            volume,
-                        )
-                        | crate::resource_preparation::CreatedResourceOperation::WriteVolume(
-                            volume,
-                        ) => volume == &content.volume,
-                        _ => false,
-                    };
+                if let Some(io) = quota.work().as_deref_mut() {
+                    io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
                 }
-                if !allocated
-                    || !matches!(
-                        content.volume.class(),
-                        VolumeClass::Project | VolumeClass::AgentPrivate
-                    )
-                {
+                if !matches!(
+                    content.volume.class(),
+                    VolumeClass::Project | VolumeClass::AgentPrivate
+                ) {
                     continue;
-                }
-                let origin = receipt.origin.intended_child;
-                if content.default_writer && &content.volume == current_private {
-                    if current_origin.is_some_and(|current| current != origin) {
-                        return Err(admission_boundary(
-                            quota.work(),
-                            crate::wire::ErrorCode::Unauthorized,
-                            "current actor allocation origin is ambiguous",
-                        ));
-                    }
-                    current_origin = Some(origin);
                 }
                 let volume = content.volume.copy(quota.work())?;
                 quota.adopt(volume.logical_owned_bytes()?)?;
                 let generation = copy_generation(&receipt.allocation_generation, quota.work())?;
                 quota.adopt(generation.logical_owned_bytes()?)?;
-                let snapshot = (origin, TaskVolumeSnapshot { volume, generation });
-                if !Self::proof_contains(&snapshots, &snapshot, quota.work())? {
-                    let retained = Self::reserve_proof_slots(&mut snapshots, quota.work())?;
-                    quota.adopt(retained)?;
-                    snapshots.push(snapshot);
-                }
+                let held = Self::reserve_proof_slots(&mut snapshots, quota.work())?;
+                quota.adopt(held)?;
+                snapshots.push(TaskVolumeSnapshot { volume, generation });
             }
         }
-        let origin = current_origin.ok_or_else(|| {
-            admission_boundary(
-                quota.work(),
-                crate::wire::ErrorCode::Unauthorized,
-                "current actor allocation receipt is absent",
-            )
-        })?;
-        let mut selected = Vec::new();
-        let mut retained = 0_u64;
-        for (allocation, snapshot) in snapshots {
-            if allocation == origin
-                && (snapshot.volume.class() == VolumeClass::Project
-                    || &snapshot.volume == current_private)
-            {
-                let slots = Self::reserve_proof_slots(&mut selected, quota.work())?;
-                quota.adopt(slots)?;
-                retained = retained
-                    .checked_add(slots)
-                    .and_then(|bytes| {
-                        bytes.checked_add(snapshot.volume.logical_owned_bytes().ok()?)
-                    })
+        let (access, _) = crate::resource_preparation::CreatedResourceAccess::consume(
+            &admission,
+            &mut receipts,
+            origin,
+            quota.work(),
+        )?;
+        let (scope, held) = self.root_scope.with_created_access_with_work(
+            &admission,
+            Some(access),
+            quota.work(),
+        )?;
+        quota.adopt(held)?;
+        let current = scope
+            .current_created_content(quota.work())?
+            .map(|binding| &binding.volume);
+        snapshots.retain(|snapshot| {
+            current.is_some_and(|private| {
+                snapshot.volume.class() == VolumeClass::Project || &snapshot.volume == private
+            })
+        });
+        let retained = snapshots.iter().try_fold(
+            (snapshots.capacity() * std::mem::size_of::<TaskVolumeSnapshot>()) as u64,
+            |bytes, snapshot| {
+                bytes
+                    .checked_add(snapshot.volume.logical_owned_bytes()?)
                     .and_then(|bytes| {
                         bytes.checked_add(snapshot.generation.logical_owned_bytes().ok()?)
                     })
                     .ok_or_else(|| {
-                        admission_boundary(
+                        guarded_boundary(
                             quota.work(),
                             crate::wire::ErrorCode::Invalid,
                             "volume snapshot output custody overflows",
                         )
-                    })?;
-                selected.push(snapshot);
-            }
-        }
-        // Selected payloads move into the caller's original output claim.
+                    })
+            },
+        )?;
         drop(scope);
         drop(admission);
         quota.replace(retained)?;
         quota.transfer();
-        Ok((selected, retained))
+        Ok((snapshots, retained))
     }
 }

@@ -16,7 +16,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .as_mut()
             .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         if !owner.original_host_binding_matches(self) {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "parcel owner belongs to another host",
@@ -25,7 +25,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         owner.verify_read_access(&mut work).await?;
         let (receiver, _) = owner.task_binding();
         if item.task_id != receiver || item.sequence == 0 {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "parcel recipient or sequence differs",
@@ -51,7 +51,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .map_err(|error| crate::distributed::sdk_error(error, &work))?
                 .tail;
         let index = tail.checked_sub(1).ok_or_else(|| {
-            admission_boundary(
+            guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "parcel receive checkpoint is absent",
@@ -68,14 +68,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             command
         } else {
             let results = latest.input["commands"].as_array().ok_or_else(|| {
-                admission_boundary(
+                guarded_boundary(
                     &work,
                     crate::wire::ErrorCode::Unauthorized,
                     "parcel receive result is not committed",
                 )
             })?;
             let [result] = results.as_slice() else {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     &work,
                     crate::wire::ErrorCode::Unauthorized,
                     "parcel must consume one receive result",
@@ -97,14 +97,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     .map_err(|error| Error::Invalid(error.to_string()))?,
             };
             if result["operation_id"] != operation || result["value"] != exact {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     &work,
                     crate::wire::ErrorCode::Unauthorized,
                     "parcel differs from the committed receive result",
                 ));
             }
             let prior_index = latest.prior.revision.checked_sub(1).ok_or_else(|| {
-                admission_boundary(
+                guarded_boundary(
                     &work,
                     crate::wire::ErrorCode::Unauthorized,
                     "parcel receive outbox is absent",
@@ -114,7 +114,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .read_mail_workflow_record(owner, &workflow, prior_index, io)
                 .await?;
             let [command] = prior.transition.commands.as_slice() else {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     &work,
                     crate::wire::ErrorCode::Unauthorized,
                     "parcel requires a sole receive outbox",
@@ -124,7 +124,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 || command.kind != crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND
                 || prior.next != latest.prior
             {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     &work,
                     crate::wire::ErrorCode::Unauthorized,
                     "parcel receive operation differs",
@@ -142,7 +142,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             io,
         )?;
         if selection.after.checked_add(1) != Some(item.sequence) {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "parcel cursor differs from the retained receive",
@@ -151,7 +151,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mailbox = self.mailbox(receiver)?;
         let mut records = crate::store::operations::read_records(
             &self.stream,
-            &mailbox,
+            mailbox.path(),
             item.sequence - 1,
             1,
             &mut work,
@@ -159,14 +159,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         .await?
         .map_err(|error| crate::distributed::sdk_error(error, &work))?;
         let record = records.next(&mut work).await?.ok_or_else(|| {
-            admission_boundary(
+            guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "parcel source is absent",
             )
         })?;
         if records.next(&mut work).await?.is_some() {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "parcel source is absent",
@@ -183,7 +183,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             || mail::encode(&event, acyclic_stream::MAX_RECORD_BYTES as u64, io)?.as_ref()
                 != record.value.as_ref()
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "parcel differs from its retained mailbox item",
@@ -212,7 +212,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 &mut work,
             )?
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "custom parcel requires recipient file authority",
@@ -229,7 +229,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             )
             .await?
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "parcel has no original atomic receipt",
@@ -254,19 +254,24 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut work = observer
             .as_mut()
             .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let mut records =
-            crate::store::operations::read_records(&self.stream, workflow, index, 1, &mut work)
-                .await?
-                .map_err(|error| crate::distributed::sdk_error(error, &work))?;
+        let mut records = crate::store::operations::read_records(
+            &self.stream,
+            workflow.path(),
+            index,
+            1,
+            &mut work,
+        )
+        .await?
+        .map_err(|error| crate::distributed::sdk_error(error, &work))?;
         let record = records.next(&mut work).await?.ok_or_else(|| {
-            admission_boundary(
+            guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "parcel workflow record is absent",
             )
         })?;
         if records.next(&mut work).await?.is_some() {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,
                 "parcel workflow record is absent",
@@ -278,7 +283,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             || mail::encode(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, io)?.as_ref()
                 != record.value.as_ref()
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Storage,
                 "parcel workflow reference differs",
@@ -296,7 +301,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         envelope.validate(io)?;
         if envelope.prior.revision != index || envelope.next.revision != index + 1 {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Storage,
                 "parcel workflow revision differs",
@@ -336,7 +341,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         payload.validate(work)?;
         admission.limits.validate_file(payload, work)?;
         if !crate::runtime::read_granted_with_work(&admission.grants, payload, work)? {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
                 "mail donor cannot read its payload",

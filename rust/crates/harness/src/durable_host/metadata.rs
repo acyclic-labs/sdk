@@ -9,7 +9,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<(Value, u64)> {
         reference.validate(work)?;
         if reference.descriptor().media_type() != "application/json" {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "durable task payload is not JSON",
@@ -52,7 +52,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         drop(bytes);
         quota.relinquish(byte_claim)?;
         if !matches {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Invalid,
                 "durable task payload is not canonical JSON",
@@ -195,7 +195,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .retained_declaration_with_work(operation_id, work)
             .await?
             .ok_or_else(|| {
-                admission_boundary(work, crate::wire::ErrorCode::NotFound, "task admission")
+                guarded_boundary(work, crate::wire::ErrorCode::NotFound, "task admission")
             })?;
         let bytes = if work.is_some() {
             spec.logical_owned_bytes()?
@@ -234,7 +234,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 other => other?,
             };
             if retained != limits {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Conflict,
                     "retained session ceilings differ from owner bindings",
@@ -245,7 +245,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             self.read_json(&spec.state, work)
                 .await
                 .map_err(|error| match error {
-                    Error::NotFound(_) => admission_boundary(
+                    Error::NotFound(_) => guarded_boundary(
                         work,
                         crate::wire::ErrorCode::Storage,
                         "committed task admission content is missing",
@@ -254,7 +254,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 })?;
         let (admission, added) = TaskAdmissionRecord::from_canonical_value(value, work)?;
         let held = held.checked_add(added).ok_or_else(|| {
-            admission_boundary(
+            guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "task admission custody overflows",
@@ -268,14 +268,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let actual = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
                 .checked_add(admission.logical_owned_bytes()?)
                 .ok_or_else(|| {
-                    admission_boundary(
+                    guarded_boundary(
                         work,
                         crate::wire::ErrorCode::Invalid,
                         "task admission custody overflows",
                     )
                 })?;
             let retired = held.checked_sub(actual).ok_or_else(|| {
-                admission_boundary(
+                guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Invalid,
                     "task admission producer custody is undersized",
@@ -294,7 +294,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             admission.policy == self.policy.as_ref().map(|policy| policy.identity())
         };
         if !policy_matches {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Conflict,
                 "durable task policy differs from its admission",
@@ -304,7 +304,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             extensions.validate(work)?;
         }
         if admission.extensions.as_ref() != self.root_scope.extensions() {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Conflict,
                 "retained task extensions differ from owner bindings",
@@ -335,7 +335,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .resolve(&admission.machine, &mut None)?
                 .is_none()
         {
-            return Err(admission_boundary(
+            return Err(guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Conflict,
                 "durable task admission disagrees with its declaration",

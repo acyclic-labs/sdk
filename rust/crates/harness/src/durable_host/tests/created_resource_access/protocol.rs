@@ -38,7 +38,32 @@ async fn created_context_reopens_and_attenuates_without_root_authority() -> Resu
         context.read_file(&file).await?.as_ref(),
         b"created private bytes"
     );
-    let reopened = fixture.runtime(crate::tool::ToolRegistry::default())?;
+    let reopened = NativeCustomerRuntime::open(
+        fixture.stream.clone(),
+        fixture.filesystem.clone(),
+        &VolumeRef::new(
+            fixture.filesystem_provider.clone(),
+            "scheduler".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
+            &mut None,
+        )?,
+        &fixture.host.verifier,
+        &fixture.host.owner_scope,
+        &fixture.root_scope,
+        &fixture.host.tasks,
+        &fixture.host.machines,
+        &crate::tool::ToolRegistry::default(),
+        fixture.host.session_limits.unwrap(),
+        16,
+        fixture.root_scope.limits().file_bytes,
+        fixture.host.clock.clone(),
+        None,
+        &[fixture.filesystem_creator.clone()],
+        &crate::durable_tool::ResumableToolRegistry::default(),
+        None,
+    )
+    .await?;
     let reservation = fixture.host.observe_task(task).await?.reservation.unwrap();
     let reopened = reopened.task_context(task, (&reservation).into()).await?;
     assert_eq!(

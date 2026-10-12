@@ -22,7 +22,8 @@ impl CreationFixture {
             "2".into(),
             &mut None,
         )?;
-        let filesystem = FilesystemHost::new(Fs::memory(), &filesystem_provider, None)?;
+        let backend = Fs::memory();
+        let filesystem = FilesystemHost::new(backend.clone(), &filesystem_provider, None)?;
         let payload = VolumeRef::new(
             filesystem_provider.clone(),
             "scheduler".into(),
@@ -32,7 +33,7 @@ impl CreationFixture {
         )?;
         #[cfg(not(target_arch = "wasm32"))]
         let original_root_births = if let Some(work) = native {
-            Some(super::roots::create(&filesystem, &payload, work).await?)
+            Some(super::roots::create(&backend, &filesystem, &payload, work).await?)
         } else {
             filesystem.create_volume(&payload).await?;
             None
@@ -103,21 +104,6 @@ impl CreationFixture {
             },
             &mut None,
         )?;
-        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
-            filesystem.clone(),
-            &payload,
-            &verifier,
-            &signed,
-            root_scope.limits().file_bytes,
-            None,
-        )?);
-        let reader = FilesystemContentVerifier::new(
-            filesystem.clone(),
-            &verifier,
-            &signed,
-            root_scope.limits().file_bytes,
-            None,
-        )?;
         let schema = serde_json::json!({"type":"object"});
         let (task, machine, tasks, machines) = test_registries::<Value>(
             Arc::new(super::machine::CreatedControlMachine {
@@ -144,37 +130,33 @@ impl CreationFixture {
         };
         #[cfg(target_arch = "wasm32")]
         let filesystem_creator = Arc::new(creator);
-        let host = Arc::new(
-            CoordinatorTaskHost::new(
-                DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?,
-                stream.clone(),
-                payloads,
-                reader,
-                &authority,
-                signed,
-                verifier,
-                root_scope.clone(),
-                tasks.clone(),
-                machines,
-                Arc::new(SystemUnixMillisClock),
-                None,
-            )?
-            .with_session_limits(
-                crate::scheduler::SessionLimits {
-                    active_tasks: 16,
-                    total_tasks: 32,
-                    depth: 4,
-                    model_steps: 4,
-                },
-                None,
-            )?
-            .with_resource_creation_providers(&[filesystem_creator.clone()], None)?,
-        );
-        let mut bindings = Bindings::local();
-        bindings.tasks = tasks;
-        bindings.scope = root_scope.clone();
-        bindings.durable_host = Some(host.clone());
-        let harness = bindings.build()?;
+        let runtime = NativeCustomerRuntime::open(
+            stream.clone(),
+            filesystem.clone(),
+            &payload,
+            &verifier,
+            &signed,
+            &root_scope,
+            &tasks,
+            &machines,
+            &crate::tool::ToolRegistry::default(),
+            crate::scheduler::SessionLimits {
+                active_tasks: 16,
+                total_tasks: 32,
+                depth: 4,
+                model_steps: 4,
+            },
+            16,
+            root_scope.limits().file_bytes,
+            Arc::new(SystemUnixMillisClock),
+            None,
+            &[filesystem_creator.clone()],
+            &crate::durable_tool::ResumableToolRegistry::default(),
+            None,
+        )
+        .await?;
+        let host = runtime.task_host().clone();
+        let harness = runtime.harness().clone();
         let worker = crate::distributed::Worker {
             id: "created-worker".into(),
             available: Default::default(),

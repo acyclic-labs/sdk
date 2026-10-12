@@ -162,9 +162,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         request.validate()?;
         if request.execution.is_some()
             || request.policy != self.policy.as_ref().map(|policy| policy.identity())
-            || request.machine.name != request.task.name
-            || request.machine.version != request.task.version
-            || request.machine.digest == [0; 32]
             || self
                 .machines
                 .resolve(&request.machine, &mut None)?

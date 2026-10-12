@@ -58,7 +58,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let declaration = match &original {
             Some((declaration, original_fence)) => {
                 if declaration.operation_id != operation || *original_fence != fence.as_ref() {
-                    return Err(admission_boundary(
+                    return Err(guarded_boundary(
                         work,
                         crate::wire::ErrorCode::Unauthorized,
                         "original READ reservation differs from its protected native preparation",
@@ -70,7 +70,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 self.retained_declaration_with_work(operation, work)
                     .await?
                     .ok_or_else(|| {
-                        admission_boundary(work, crate::wire::ErrorCode::NotFound, "task admission")
+                        guarded_boundary(work, crate::wire::ErrorCode::NotFound, "task admission")
                     })?,
             ),
         };
@@ -94,7 +94,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Some(agent) => Some(agent),
             None if input_is_root => {
                 if declared_agent != self.owner_scope.agent() {
-                    return Err(admission_boundary(
+                    return Err(guarded_boundary(
                         work,
                         crate::wire::ErrorCode::Unauthorized,
                         "root current actor differs from original declaration",

@@ -134,6 +134,13 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "preparation producer requires its original native observer",
             });
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let source_io = native
+            .as_ref()
+            .map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let source_io: Option<crate::filesystem::PreparationIo> = None;
         if let Some(observer) = work.as_deref_mut() {
             observer.retain_owned(
                 (std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>()
@@ -151,36 +158,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             quota.adopt(input.capacity() as u64)?;
             request.validate(quota.work())?;
             if let Some(checkpoint) = &request.source_checkpoint {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(native) = native.as_ref() {
-                    self.validate_input_file(
-                        checkpoint,
-                        Some(&crate::filesystem::PreparationIo::from_native_work(native)?),
-                    )?;
-                } else {
-                    self.validate_input_file(checkpoint, None)?;
-                }
-                #[cfg(target_arch = "wasm32")]
-                self.validate_input_file(checkpoint, None)?;
+                self.validate_input_file(checkpoint, source_io.as_ref())?;
             }
             if self.is_readonly() {
                 self.verify_read_access(quota.work()).await?;
             } else {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(native) = native.as_ref() {
-                    self.verify(
-                        false,
-                        &mut Some(
-                            &mut crate::filesystem::PreparationIo::from_native_work(native)
-                                .map(crate::store::HistoryWork::new)?,
-                        ),
-                    )
-                    .await?;
-                } else {
-                    self.verify(false, &mut None).await?;
-                }
-                #[cfg(target_arch = "wasm32")]
-                self.verify(false, &mut None).await?;
+                self.verify(false, quota.work()).await?;
             }
             self.host
                 .coordinator
@@ -197,7 +180,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 let extent = (std::mem::size_of::<crate::runtime::TaskAdmissionRecord>() as u64)
                     .checked_add(admission.logical_owned_bytes()?)
                     .ok_or_else(|| {
-                        admission_boundary(
+                        guarded_boundary(
                             quota.work(),
                             crate::wire::ErrorCode::Unauthorized,
                             "preparation admission ownership overflows",
@@ -212,7 +195,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             )?;
             quota.adopt(retained.capacity() as u64)?;
             let parent = admission.parent.ok_or_else(|| {
-                admission_boundary(
+                guarded_boundary(
                     quota.work(),
                     crate::wire::ErrorCode::Unauthorized,
                     "resource preparation requires an admitted parent",
@@ -223,7 +206,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     .checked_mul(request.child.resource_proofs.len() as u64)
                     .and_then(|comparisons| comparisons.checked_add(1))
                     .ok_or_else(|| {
-                        admission_boundary(
+                        guarded_boundary(
                             &Some(&mut *observer),
                             crate::wire::ErrorCode::Invalid,
                             "preparation identity comparison work overflows",
@@ -242,7 +225,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 })
                 || !self.input_grants.contains(&request.creation_grant)
             {
-                return Err(admission_boundary(
+                return Err(guarded_boundary(
                     quota.work(),
                     crate::wire::ErrorCode::Unauthorized,
                     "resource request differs from its admitted input, parent or creation authority",
@@ -259,13 +242,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             }
             (parent, *blake3::hash(&input).as_bytes())
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let source_io = native
-            .as_ref()
-            .map(crate::filesystem::PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(target_arch = "wasm32")]
-        let source_io: Option<crate::filesystem::PreparationIo> = None;
         let project_source = self
             .host
             .seal_prepared_project_source(&request, parent_task, source_io.as_ref())
