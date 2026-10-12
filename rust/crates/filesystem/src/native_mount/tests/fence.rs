@@ -367,7 +367,7 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
     let mut readiness = Vec::new();
     for ordinal in 0..2 {
         let ready = temporary.path().join(format!("ready-{ordinal}"));
-        let child = acyclic_native_runtime::spawn_process_tree(
+        let child = acyclic_native_runtime::ProcessTree::spawn(
             std::process::Command::new(&executable)
                 .args([
                     "--exact",
@@ -413,7 +413,7 @@ fn destination_ownership_is_reclaimed_after_process_death() -> Result<(), Box<dy
     let destination = temporary.path().join("mount");
     let ready = temporary.path().join("ready");
     std::fs::create_dir(&destination)?;
-    let child = acyclic_native_runtime::spawn_process_tree(
+    let child = acyclic_native_runtime::ProcessTree::spawn(
         std::process::Command::new(std::env::current_exe()?)
             .args([
                 "--exact",

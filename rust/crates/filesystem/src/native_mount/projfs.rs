@@ -7170,7 +7170,7 @@ mod tests {
             $h.Close()";
         let ready = root.path().join("ready");
         let go = root.path().join("go");
-        let mut editor = acyclic_native_runtime::spawn_process_tree(
+        let mut editor = acyclic_native_runtime::ProcessTree::spawn(
             std::process::Command::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command", script])
                 .env("ACYCLIC_FS_TEST_FILE", &file)
@@ -7322,7 +7322,7 @@ mod tests {
     }
 
     fn powershell(script: &str) -> std::io::Result<acyclic_native_runtime::ProcessTree> {
-        acyclic_native_runtime::spawn_process_tree(
+        acyclic_native_runtime::ProcessTree::spawn(
             std::process::Command::new("powershell.exe").args([
                 "-NoProfile",
                 "-NonInteractive",

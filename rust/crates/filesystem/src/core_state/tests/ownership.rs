@@ -100,7 +100,7 @@ fn owner_excludes_other_processes_until_it_dies() -> Result<(), Box<dyn std::err
     drop(owner);
 
     let ready = directory.path().join("ready");
-    let mut child = acyclic_native_runtime::spawn_process_tree(
+    let mut child = acyclic_native_runtime::ProcessTree::spawn(
         ownership_child(&root)?.env("ACYCLIC_CORE_STATE_CHILD_READY", &ready),
     )?;
     let deadline = Instant::now() + Duration::from_secs(10);
