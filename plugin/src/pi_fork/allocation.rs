@@ -175,7 +175,13 @@ impl<'a> PiForkCoordinator<'a> {
                 )
                 .await?;
             source
-                .validate_snapshot_with_native_work(plan.frozen, work)
+                .validate_snapshot(
+                    plan.frozen,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work,
+                        cancellation: work.cancellation(),
+                    },
+                )
                 .await
                 .map_err(crate::pi_fork_host::native_lazy_error)?;
             return Ok(Some(
@@ -375,7 +381,13 @@ impl<'a> PiForkCoordinator<'a> {
         )
         .await?;
         source
-            .validate_snapshot_with_native_work(plan.frozen, work)
+            .validate_snapshot(
+                plan.frozen,
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: work.cancellation(),
+                },
+            )
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
         let preparer = restored.0.preparer;

@@ -513,7 +513,13 @@ impl<'a> PiForkCoordinator<'a> {
         let seed_value = seed.into_seed(&mut Some(&mut seed_io))?;
         let _seed_custody = seed_io.into_custody()?;
         source
-            .validate_snapshot_with_native_work(plan.frozen, work)
+            .validate_snapshot(
+                plan.frozen,
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: work.cancellation(),
+                },
+            )
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
         let filesystem: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =

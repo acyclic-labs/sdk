@@ -319,7 +319,13 @@ impl<'a> PiForkCoordinator<'a> {
         )
         .await?;
         source
-            .validate_snapshot_with_native_work(frozen, work)
+            .validate_snapshot(
+                frozen,
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: work.cancellation(),
+                },
+            )
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
         let request = source_binding.0.request;

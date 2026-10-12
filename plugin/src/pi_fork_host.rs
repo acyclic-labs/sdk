@@ -336,7 +336,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         };
         if let Some(plan) = plan {
             source
-                .validate_snapshot_with_native_work(plan.frozen, work)
+                .validate_snapshot(
+                    plan.frozen,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work,
+                        cancellation: work.cancellation(),
+                    },
+                )
                 .await
                 .map_err(crate::pi_fork_host::native_lazy_error)?;
             return Ok((source, plan.frozen, None));
@@ -345,7 +351,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let frozen = if command.commit.source_task == self.protected.policy().root_task {
             if let Some(frozen) = command.root_source {
                 source
-                    .validate_snapshot_with_native_work(frozen, work)
+                    .validate_snapshot(
+                        frozen,
+                        &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                            work,
+                            cancellation: work.cancellation(),
+                        },
+                    )
                     .await
                     .map_err(crate::pi_fork_host::native_lazy_error)?;
                 frozen
@@ -426,7 +438,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                         invalid("Pi undispatched source lost its actual first native companion")
                     })?;
                 source
-                    .validate_snapshot_with_native_work(frozen, work)
+                    .validate_snapshot(
+                        frozen,
+                        &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                            work,
+                            cancellation: work.cancellation(),
+                        },
+                    )
                     .await
                     .map_err(crate::pi_fork_host::native_lazy_error)?;
                 frozen
@@ -883,7 +901,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             }
             actual
                 .workspace
-                .validate_snapshot_with_native_work(observed.snapshot, work)
+                .validate_snapshot(
+                    observed.snapshot,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work,
+                        cancellation: work.cancellation(),
+                    },
+                )
                 .await
                 .map_err(crate::pi_fork_host::native_lazy_error)?;
             return ready(
