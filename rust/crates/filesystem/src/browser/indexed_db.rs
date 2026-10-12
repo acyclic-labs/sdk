@@ -78,10 +78,17 @@ struct ObjectBatchState {
     budget: WorkBudget,
 }
 
-fn strict_transaction_options() -> TransactionOptions {
-    let mut options = TransactionOptions::new();
-    options.set_durability(TransactionDurability::Strict);
-    options
+fn transaction<'a>(
+    database: &'a Database, stores: &[&str], mode: TransactionMode,
+) -> Result<Transaction<'a>, indexed_db_futures::error::Error> {
+    match mode {
+        TransactionMode::Readonly => database.transaction(stores).build(),
+        _ => {
+            let mut options = TransactionOptions::new();
+            options.set_durability(TransactionDurability::Strict);
+            database.transaction(stores).with_mode(mode).with_options(options).build()
+        }
+    }
 }
 
 /// Browser database initialization failures.
@@ -1039,24 +1046,6 @@ impl IndexedDbAuthorityStore {
         Ok(())
     }
 
-    /// Opens the one transaction that creates authorities with their first records.
-    fn first_record_transaction(
-        &self,
-        work: WorkCounters,
-    ) -> Result<Transaction<'_>, AuthorityFailure> {
-        self.database
-            .transaction([
-                AUTHORITY_HEADS,
-                AUTHORITY_COMMITS,
-                AUTHORITY_OPERATIONS,
-                AUTHORITY_GATES,
-            ])
-            .with_mode(TransactionMode::Readwrite)
-            .with_options(strict_transaction_options())
-            .build()
-            .map_err(|error| Self::backend(error, work))
-    }
-
     /// Whether `authority` already exists, read in `transaction`.
     async fn authority_exists(
         transaction: &Transaction<'_>,
@@ -1146,10 +1135,7 @@ impl IndexedDbAuthorityStore {
             .try_reserve_exact(usize::try_from(count).map_err(|error| Self::backend(error, work))?)
             .map_err(|error| Self::backend(error, work))?;
         work = allocation_work;
-        let transaction = self
-            .database
-            .transaction(AUTHORITY_COMMITS)
-            .build()
+        let transaction = transaction(&self.database, &[AUTHORITY_COMMITS], TransactionMode::Readonly)
             .map_err(|error| Self::backend(error, work))?;
         let mut returned_payload_bytes = 0_u64;
         for offset in 0..count {
@@ -1374,10 +1360,7 @@ impl crate::OperationWindowStore for IndexedDbAuthorityStore {
         &self,
         workspace: crate::WorkspaceId,
     ) -> Result<Option<crate::OperationWindowSnapshot>, Self::Error> {
-        let transaction = self
-            .database
-            .transaction([OPERATION_WINDOWS])
-            .build()
+        let transaction = transaction(&self.database, &[OPERATION_WINDOWS], TransactionMode::Readonly)
             .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
         self.read_window(&transaction, workspace, WorkCounters::default(), None)
             .await
@@ -1407,12 +1390,7 @@ impl crate::OperationWindowStore for IndexedDbAuthorityStore {
         serde_json::to_writer(&mut encoder, &replacement)
             .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
         let encoded = encoder.bytes;
-        let transaction = self
-            .database
-            .transaction([OPERATION_WINDOWS])
-            .with_mode(TransactionMode::Readwrite)
-            .with_options(strict_transaction_options())
-            .build()
+        let transaction = transaction(&self.database, &[OPERATION_WINDOWS], TransactionMode::Readwrite)
             .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
         if self
             .read_window(&transaction, workspace, WorkCounters::default(), None)
@@ -1489,7 +1467,8 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
         let work = authority_fixed_read_work(HEAD_BYTES);
         Self::admit(work, budget)?;
-        let transaction = self.first_record_transaction(work)?;
+        let transaction = transaction(&self.database, &[AUTHORITY_HEADS, AUTHORITY_COMMITS, AUTHORITY_OPERATIONS, AUTHORITY_GATES], TransactionMode::Readwrite)
+            .map_err(|error| Self::backend(error, work))?;
         if Self::authority_exists(&transaction, authority, cancellation, work).await? {
             drop(transaction);
             let appended =
@@ -1524,7 +1503,8 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .checked_add(authority_fixed_read_work(HEAD_BYTES))
             .map_err(|error| AuthorityFailure::new(error.into(), WorkCounters::default()))?;
         Self::admit(work, budget)?;
-        let transaction = self.first_record_transaction(work)?;
+        let transaction = transaction(&self.database, &[AUTHORITY_HEADS, AUTHORITY_COMMITS, AUTHORITY_OPERATIONS, AUTHORITY_GATES], TransactionMode::Readwrite)
+            .map_err(|error| Self::backend(error, work))?;
         if published_prefix
             || Self::authority_exists(&transaction, fork.retention, cancellation, work).await?
             || Self::authority_exists(&transaction, fork.destination, cancellation, work).await?
@@ -1607,12 +1587,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
         let read_admission = authority_fixed_read_work(HEAD_BYTES);
         Self::admit(read_admission, budget)?;
-        let transaction = self
-            .database
-            .transaction([AUTHORITY_HEADS, AUTHORITY_GATES])
-            .with_mode(TransactionMode::Readwrite)
-            .with_options(strict_transaction_options())
-            .build()
+        let transaction = transaction(&self.database, &[AUTHORITY_HEADS, AUTHORITY_GATES], TransactionMode::Readwrite)
             .map_err(|error| Self::backend(error, read_admission))?;
         let key = authority_key(authority_id);
         let existing = {
@@ -1673,10 +1648,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
         let work = authority_fixed_read_work(HEAD_BYTES);
         Self::admit(work, budget)?;
-        let transaction = self
-            .database
-            .transaction(AUTHORITY_HEADS)
-            .build()
+        let transaction = transaction(&self.database, &[AUTHORITY_HEADS], TransactionMode::Readonly)
             .map_err(|error| Self::backend(error, work))?;
         let value = Self::read_head(
             &transaction,
@@ -1730,18 +1702,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         let payload_bytes = self.payload_bytes(&commit, WorkCounters::default())?;
         let work = authority_fixed_read_work(HEAD_BYTES);
         Self::admit(work, budget)?;
-        let transaction = self
-            .database
-            .transaction([
-                AUTHORITY_HEADS,
-                AUTHORITY_COMMITS,
-                AUTHORITY_OPERATIONS,
-                AUTHORITY_GATES,
-                OPERATION_WINDOWS,
-            ])
-            .with_mode(TransactionMode::Readwrite)
-            .with_options(strict_transaction_options())
-            .build()
+        let transaction = transaction(&self.database, &[ AUTHORITY_HEADS, AUTHORITY_COMMITS, AUTHORITY_OPERATIONS, AUTHORITY_GATES, OPERATION_WINDOWS, ], TransactionMode::Readwrite)
             .map_err(|error| Self::backend(error, work))?;
         let key = authority_key(authority_id);
         let actual = Self::read_head(&transaction, &key, cancellation, work).await?;
@@ -1831,12 +1792,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .checked_add(authority_fixed_read_work(GATE_BYTES))
             .map_err(|error| AuthorityFailure::before_work(error.into()))?;
         Self::admit(read_work, budget)?;
-        let transaction = self
-            .database
-            .transaction([AUTHORITY_HEADS, AUTHORITY_GATES])
-            .with_mode(TransactionMode::Readwrite)
-            .with_options(strict_transaction_options())
-            .build()
+        let transaction = transaction(&self.database, &[AUTHORITY_HEADS, AUTHORITY_GATES], TransactionMode::Readwrite)
             .map_err(|error| Self::backend(error, read_work))?;
         let key = authority_key(authority_id);
         let actual = Self::read_head(&transaction, &key, cancellation, read_work).await?;
@@ -1904,12 +1860,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
         let read_work = authority_fixed_read_work(GATE_BYTES);
         Self::admit(read_work, budget)?;
-        let transaction = self
-            .database
-            .transaction(AUTHORITY_GATES)
-            .with_mode(TransactionMode::Readwrite)
-            .with_options(strict_transaction_options())
-            .build()
+        let transaction = transaction(&self.database, &[AUTHORITY_GATES], TransactionMode::Readwrite)
             .map_err(|error| Self::backend(error, read_work))?;
         let key = authority_key(reservation.authority_id);
         let gate = Self::read_gate(&transaction, &key, cancellation, read_work).await?;
@@ -1981,12 +1932,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
         let read_work = authority_fixed_read_work(HEAD_BYTES);
         Self::admit(read_work, budget)?;
-        let transaction = self
-            .database
-            .transaction(AUTHORITY_HEADS)
-            .with_mode(TransactionMode::Readwrite)
-            .with_options(strict_transaction_options())
-            .build()
+        let transaction = transaction(&self.database, &[AUTHORITY_HEADS], TransactionMode::Readwrite)
             .map_err(|error| Self::backend(error, read_work))?;
         let key = authority_key(authority_id);
         let actual = Self::read_head(&transaction, &key, cancellation, read_work).await?;
@@ -2044,10 +1990,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
         let head_work = authority_fixed_read_work(HEAD_BYTES);
         Self::admit(head_work, budget)?;
-        let transaction = self
-            .database
-            .transaction([AUTHORITY_HEADS, AUTHORITY_COMMITS, AUTHORITY_OPERATIONS])
-            .build()
+        let transaction = transaction(&self.database, &[AUTHORITY_HEADS, AUTHORITY_COMMITS, AUTHORITY_OPERATIONS], TransactionMode::Readonly)
             .map_err(|error| Self::backend(error, head_work))?;
         Self::read_head(
             &transaction,
@@ -2116,12 +2059,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         let mut existing = Vec::new();
         existing.try_reserve_exact(writes.len())
             .map_err(|error| Self::backend(error, work))?;
-        let transaction = self
-            .database
-            .transaction([OBJECTS, OBJECT_METADATA])
-            .with_mode(TransactionMode::Readwrite)
-            .with_options(strict_transaction_options())
-            .build()
+        let transaction = transaction(&self.database, &[OBJECTS, OBJECT_METADATA], TransactionMode::Readwrite)
             .map_err(|error| Self::backend(error, work))?;
         let mut added = false;
         for write in writes {
@@ -2204,10 +2142,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         work.verify(budget)
             .map_err(|error| ObjectFailure::before_work(error.into()))?;
         let key = Self::key(object_id);
-        let transaction = self
-            .database
-            .transaction([OBJECTS, OBJECT_METADATA])
-            .build()
+        let transaction = transaction(&self.database, &[OBJECTS, OBJECT_METADATA], TransactionMode::Readonly)
             .map_err(|error| Self::backend(error, work))?;
         let length = {
             let metadata = transaction
@@ -2301,10 +2236,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         admission
             .verify(budget)
             .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        let transaction = self
-            .database
-            .transaction([OBJECTS, OBJECT_METADATA])
-            .build()
+        let transaction = transaction(&self.database, &[OBJECTS, OBJECT_METADATA], TransactionMode::Readonly)
             .map_err(|error| Self::backend(error, work))?;
         let objects = transaction
             .object_store(OBJECTS)

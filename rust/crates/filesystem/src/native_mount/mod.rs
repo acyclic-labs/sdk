@@ -2199,13 +2199,16 @@ enum DriverSession {
 
 macro_rules! with_driver {
     ($driver:expr, $session:ident, $operation:expr, $unsupported:expr $(,)?) => {
+        with_driver!($driver, $session, $operation, $operation, $unsupported)
+    };
+    ($driver:expr, $session:ident, $operation:expr, $windows:expr, $unsupported:expr $(,)?) => {
         match $driver {
             #[cfg(target_os = "linux")]
             DriverSession::Fuse($session) => $operation,
             #[cfg(target_os = "macos")]
             DriverSession::DarwinMount($session) => $operation,
             #[cfg(target_os = "windows")]
-            DriverSession::ProjFs($session) => $operation,
+            DriverSession::ProjFs($session) => $windows,
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
             DriverSession::Unsupported => $unsupported,
         }
@@ -3188,7 +3191,7 @@ impl NativeMountSession {
     pub(crate) fn flush_callbacks(&self) -> Result<(), NativeMountError> {
         match self.driver.as_ref() {
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(),
+            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(None),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Some(_) => Ok(()),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -3203,7 +3206,7 @@ impl NativeMountSession {
     ) -> Result<(), NativeMountError> {
         match self.driver.as_ref() {
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.flush_callbacks_with_meter(work),
+            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(Some(work)),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Some(_) => Ok(()),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -3221,7 +3224,7 @@ impl NativeMountSession {
     ) -> Result<(), NativeMountError> {
         let driver = self.driver.as_ref()
             .ok_or_else(|| NativeMountError::Io(std::io::ErrorKind::NotConnected.into()))?;
-        with_driver!(driver, session, session.revalidate_with_meter(work), Err(NativeMountError::UnsupportedTarget))
+        with_driver!(driver, session, session.revalidate_with_meter(work), session.revalidate(Some(work)), Err(NativeMountError::UnsupportedTarget))
     }
 
     /// Drops the kernel's cached entry/attributes for one mount-relative path (leading `/` optional).
@@ -3235,7 +3238,7 @@ impl NativeMountSession {
     pub fn revalidate(&self) -> Result<(), NativeMountError> {
         let driver = self.driver.as_ref()
             .ok_or_else(|| NativeMountError::Driver("session is stopped".to_owned()))?;
-        with_driver!(driver, session, session.revalidate(), Ok(()))
+        with_driver!(driver, session, session.revalidate(), session.revalidate(None), Ok(()))
     }
 
     /// Takes the operation of every request the FUSE session served so far.
@@ -3310,8 +3313,8 @@ impl NativeMountSession {
             let mut changed = false;
             if let Some(driver) = self.driver.as_mut() {
                 match &work {
-                    NativeSessionStopWork::Meter(meter) => with_driver!(&mut *driver, session, session.stop_with_meter(meter), Err(NativeMountError::UnsupportedTarget))?,
-                    NativeSessionStopWork::AcceptedWait(wait) => with_driver!(&mut *driver, session, session.stop_with_cleanup_wait(wait), Err(NativeMountError::UnsupportedTarget))?,
+                    NativeSessionStopWork::Meter(meter) => with_driver!(&mut *driver, session, session.stop_with_meter(meter), session.stop(meter.native_materialization_work().cancellation()), Err(NativeMountError::UnsupportedTarget))?,
+                    NativeSessionStopWork::AcceptedWait(wait) => with_driver!(&mut *driver, session, session.stop_with_cleanup_wait(wait), session.stop(wait), Err(NativeMountError::UnsupportedTarget))?,
                 }
                 self.namespace_detach_confirmed = with_driver!(&*driver, session, session.namespace_detach_confirmed(), false);
                 self.namespace_control_pending = false;
