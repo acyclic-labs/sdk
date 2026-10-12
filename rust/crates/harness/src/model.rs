@@ -11,16 +11,11 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 
 #[cfg(feature = "filesystem")]
 pub(crate) const fn model_serde_diagnostic_label_bytes() -> u64 {
-    const LABEL_BYTES: u64 = {
-        let labels = ["ModelPrefix", "version", "parent", "binding_digest", "message_digest",
-            "total_messages", "messages", "ModelRequestManifest", "version", "request_digest",
-            "wire_bytes", "binding_digest", "message_digests"];
-        let mut bytes = crate::contract::preparation_serde_diagnostic_label_bytes();
-        let mut index = 0;
-        while index < labels.len() { bytes += labels[index].len() as u64 + 4; index += 1; }
-        bytes
-    };
-    LABEL_BYTES
+    crate::contract::preparation_serde_diagnostic_label_bytes() + concat!(
+        "ModelPrefix", "version", "parent", "binding_digest", "message_digest", "total_messages",
+        "messages", "ModelRequestManifest", "version", "request_digest", "wire_bytes",
+        "binding_digest", "message_digests",
+    ).len() as u64 + 13 * 4
 }
 
 #[cfg(feature = "filesystem")]
@@ -1899,31 +1894,6 @@ pub struct ModelDispatch {
     pub request_digest: [u8; 32],
 }
 
-/// Durable identity and observed prefix of one interrupted model attempt.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ModelAttempt {
-    /// Owning turn execution.
-    pub operation_id: OperationId,
-    /// Zero-based stock-executor step.
-    pub step: u32,
-    /// Canonical digest of the complete model request.
-    pub request_digest: [u8; 32],
-    /// Durable event prefix already observed.
-    pub observed: Vec<ModelEvent>,
-}
-
-impl ModelAttempt {
-    /// Returns the same identity supplied when the attempt was first dispatched.
-    #[must_use]
-    pub const fn dispatch(&self) -> ModelDispatch {
-        ModelDispatch {
-            operation_id: self.operation_id,
-            step: self.step,
-            request_digest: self.request_digest,
-        }
-    }
-}
-
 /// An actual concrete stream box admitted before invoking its builder.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeModelStream<'a> {
@@ -2074,9 +2044,10 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
 
     /// Continues or reconciles an interrupted run without starting another model request.
     fn reconcile<'a>(
-        &'a self,
-        attempt: ModelAttempt,
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>>;
+        &'a self, _dispatch: ModelDispatch, _observed: &'a [ModelEvent],
+    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 #[cfg(test)]

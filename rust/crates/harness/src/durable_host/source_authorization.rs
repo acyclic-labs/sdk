@@ -429,7 +429,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             match state.spec.parent {
                 Some(parent) => operation = parent.operation_id,
                 None => {
-                    coordinator.scheduler().session_limits(operation, &mut None)?.validate()?;
+                    coordinator.scheduler().session_limits(operation, &mut None)?.validate(&mut None)?;
                     return Ok(TaskId::from_bytes(operation.into_bytes()));
                 }
             }
@@ -528,7 +528,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 Some(parent) => operation = parent.operation_id,
                 None => {
                     coordinator.scheduler().session_limits(operation, &mut observer)?
-                        .validate_with_work(&mut observer)?;
+                        .validate(&mut observer)?;
                     return Ok(TaskId::from_bytes(operation.into_bytes()));
                 }
             }

@@ -26,7 +26,7 @@ use acyclic_harness::{
     },
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     model::{
-        FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
+        FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent,
         ModelMessage, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
     },
     resources::ProviderRef,
@@ -343,9 +343,7 @@ impl ModelProvider for CapturingModel {
         })]))
     }
 
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 impl ModelProvider for TextModel {
@@ -365,9 +363,7 @@ impl ModelProvider for TextModel {
         ]))
     }
 
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 #[tokio::test]

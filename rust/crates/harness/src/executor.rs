@@ -8,7 +8,7 @@ use crate::{
     conversation::{Attachment, FileRef, Limits, VolumeClass},
     interaction::{Interaction, InteractionOutcome},
     model::{
-        Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
+        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
         ModelProvider, ModelRequest, ModelRole,
     },
     projection::SelectedModelContext,
@@ -2393,33 +2393,22 @@ impl StockExecution<'_> {
         let model_events = if replay_completed {
             replayed_model
         } else if started {
-            let ordinary_attempt = || -> Result<ModelAttempt> {
-                let observed = replayed_model.clone();
-                Ok(ModelAttempt {
-                    operation_id: purpose.attempt_operation_with_io(input.operation_id, self.io())?,
-                    step,
-                    request_digest,
-                    observed,
-                })
+            let dispatch = crate::model::ModelDispatch {
+                operation_id: purpose.attempt_operation_with_io(input.operation_id, self.io())?,
+                step, request_digest,
             };
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let continuation = if let Some(work) = self.native_work() {
                 let (continuation, custody) = self.provider.reconcile_with_native_work(
-                    crate::model::ModelDispatch {
-                        operation_id: purpose.attempt_operation_with_io(input.operation_id, self.io())?,
-                        step,
-                        request_digest,
-                    },
-                    &replayed_model, work,
+                    dispatch, &replayed_model, work,
                 )?.await?;
-                io.expect("native stock session retains its original IO")
-                    .absorb_native_custody(custody)?;
+                io.expect("native stock session retains its original IO").absorb_native_custody(custody)?;
                 continuation
             } else {
-                self.provider.reconcile(ordinary_attempt()?).await?
+                self.provider.reconcile(dispatch, &replayed_model).await?
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let continuation = self.provider.reconcile(ordinary_attempt()?).await?;
+            let continuation = self.provider.reconcile(dispatch, &replayed_model).await?;
             let Some(mut continuation) = continuation else {
                 return Err(Error::Indeterminate(input.operation_id));
             };
@@ -4670,10 +4659,7 @@ mod tests {
             ]))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            attempt: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             Box::pin(async move {
                 if !self.interrupt_summary {
                     return Ok(None);
@@ -4682,10 +4668,10 @@ mod tests {
                     self.dispatches
                         .lock()
                         .unwrap()
-                        .contains(&attempt.dispatch())
+                        .contains(&dispatch)
                 );
                 assert_eq!(
-                    attempt.observed,
+                    observed,
                     vec![ModelEvent::Content {
                         delta: "partial-".into()
                     }]
@@ -5233,12 +5219,7 @@ mod tests {
             Box::pin(stream::iter(events))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            async { Ok(None) }.boxed()
-        }
+
     }
 
     struct FakeModel {
@@ -5487,12 +5468,7 @@ mod tests {
             Box::pin(stream::iter(events))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            async { Ok(None) }.boxed()
-        }
+
     }
 
     struct RecoverableModel {
@@ -5542,19 +5518,16 @@ mod tests {
             ))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            attempt: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             assert!(
                 self.dispatches
                     .lock()
                     .unwrap()
-                    .contains(&attempt.dispatch())
+                    .contains(&dispatch)
             );
             self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
             async move {
-                if attempt.observed
+                if observed
                     != vec![
                         ModelEvent::Content {
                             delta: "partial-".into(),
@@ -6257,12 +6230,7 @@ mod tests {
                 metadata: Value::Null,
             })]))
         }
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            Box::pin(async { Ok(None) })
-        }
+
     }
 
     struct OnceStage(AtomicUsize);
@@ -6655,11 +6623,8 @@ mod tests {
             ))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            attempt: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            self.0.reconcile(attempt)
+        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            self.0.reconcile(dispatch, observed)
         }
     }
 
@@ -8073,10 +8038,7 @@ mod tests {
                     })
                 }))
             }
-            fn reconcile<'a>(
-                &'a self,
-                _: ModelAttempt,
-            ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
                 Box::pin(async { Err(Error::Unsupported("completed attempts must replay".into())) })
             }
         }

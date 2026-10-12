@@ -9,7 +9,7 @@ use crate::fork::{
     ForkSelection, ResourceRevision, StreamHistoryForkVerifier, SummaryForkSelection,
     prepare_summary_fork_context,
 };
-use crate::model::{ModelAttempt, ModelDispatch, ModelEvent, PreparedModelRequest};
+use crate::model::{ModelDispatch, ModelEvent, PreparedModelRequest};
 use crate::resources::StreamRef;
 use crate::store::{HistoryReadLimits, HistoryReader};
 use std::sync::Mutex;
@@ -70,7 +70,7 @@ impl ModelProvider for SummaryModel {
             }),
         ]))
     }
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "fixture attempts settle immediately".into(),

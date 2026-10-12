@@ -1258,7 +1258,7 @@ mod tests {
     use crate::conversation::ContentGrant;
     use crate::{
         Outcome,
-        model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
+        model::{Model, ModelEvent, ModelProvider, ModelRequest},
         runtime::{TaskDefinition, TaskRegistry},
     };
     use futures::{
@@ -1655,12 +1655,7 @@ mod tests {
             ]))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            Box::pin(async { Ok(None) })
-        }
+
     }
 
     async fn run_admitted_file_case<F, Fut>(
@@ -1715,11 +1710,8 @@ mod tests {
             self.0.generate(request, dispatch)
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            attempt: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            self.0.reconcile(attempt)
+        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            self.0.reconcile(dispatch, observed)
         }
     }
 
@@ -2124,12 +2116,7 @@ mod tests {
             }
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            Box::pin(async { Ok(None) })
-        }
+
     }
 
     #[tokio::test]

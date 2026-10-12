@@ -33,7 +33,7 @@ use acyclic_harness::{
         FilesystemHost, FilesystemTaskRuntime,
     },
     model::{
-        FileProjectionPolicy, ImageDetail, Model, ModelAttempt, ModelContent, ModelContentPart,
+        FileProjectionPolicy, ImageDetail, Model, ModelContent, ModelContentPart,
         ModelDataPart, ModelDispatch, ModelEvent, ModelMessage, ModelProvider, ModelRequest,
         ModelRole, NativeConfigurationBinding, NativeMediaIntent, NativeMediaPolicy,
         PreparedModelRequest, ToolResultContent,
@@ -433,28 +433,25 @@ impl ModelProvider for MockAdapter {
             Ok(event)
         }))
     }
-    fn reconcile<'a>(
-        &'a self,
-        attempt: ModelAttempt,
-    ) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, dispatch: acyclic_harness::model::ModelDispatch, observed: &'a [acyclic_harness::model::ModelEvent]) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         self.reconciles.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             let receipts = self
                 .receipts
                 .lock()
                 .map_err(|_| Error::Storage("fixture receipt lock".into()))?;
-            let Some((dispatch, events)) =
-                receipts.get(&(attempt.operation_id.into_bytes(), attempt.step))
+            let Some((recorded, events)) =
+                receipts.get(&(dispatch.operation_id.into_bytes(), dispatch.step))
             else {
                 return Ok(None);
             };
-            if dispatch.request_digest != attempt.request_digest
-                || !events.starts_with(&attempt.observed)
+            if recorded.request_digest != dispatch.request_digest
+                || !events.starts_with(observed)
             {
                 return Err(Error::Conflict("fixture original attempt differs".into()));
             }
             let remaining = events
-                .get(attempt.observed.len()..)
+                .get(observed.len()..)
                 .ok_or_else(|| Error::Conflict("fixture observed prefix exceeds receipt".into()))?;
             Ok(Some(remaining.to_vec()))
         })

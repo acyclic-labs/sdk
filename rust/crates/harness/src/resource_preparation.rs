@@ -36,11 +36,7 @@ pub struct ResourceCreationProofRef {
 
 impl ResourceCreationProofRef {
     /// Validates reference structure without authenticating provider evidence.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    pub(crate) fn validate(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {

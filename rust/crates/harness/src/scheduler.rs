@@ -60,11 +60,7 @@ pub struct SessionLimits {
 
 impl SessionLimits {
     /// Rejects empty or inconsistent session ceilings.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    pub(crate) fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         observe(work)?;
@@ -539,7 +535,7 @@ impl Scheduler {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.validate_declaration(spec, work)?;
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         self.validate_session_configuration(
             spec.operation_id, spec.parent.is_some(), false, limits, work,
         )
@@ -763,7 +759,7 @@ impl Scheduler {
         match event {
             SchedulerEvent::Declared { spec } => self.validate_declaration(spec, work)?,
             SchedulerEvent::SessionConfigured { limits, .. } => {
-                limits.validate_with_work(work)?;
+                limits.validate(work)?;
                 let operation = self.validated_operation(primary, work)?;
                 self.validate_session_configuration(
                     primary, operation.spec.parent.is_some(),

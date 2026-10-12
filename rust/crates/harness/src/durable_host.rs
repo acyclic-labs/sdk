@@ -1575,7 +1575,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             #[cfg(target_arch = "wasm32")]
             self.verify(false, &mut None).await?;
             self.host.coordinator.lock().await.scheduler()
-                .session_limits(self.operation_id(), &mut None)?.validate_with_work(quota.work())?;
+                .session_limits(self.operation_id(), &mut None)?.validate(quota.work())?;
             let admission = self.host.admission_with_work(self.operation_id(), quota.work()).await?;
             if quota.work().is_some() {
                 let extent = (std::mem::size_of::<crate::runtime::TaskAdmissionRecord>() as u64)
@@ -4598,7 +4598,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     /// Requires these immutable shared ceilings for every root admitted by this host.
     pub fn with_session_limits(mut self, limits: crate::scheduler::SessionLimits) -> Result<Self> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         self.session_limits = Some(limits);
         Ok(self)
     }
@@ -4646,7 +4646,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 reason: "session configuration differs from original host work" });
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        limits.validate_with_work(&mut Some(&mut io.history_io()))?;
+        limits.validate(&mut Some(&mut io.history_io()))?;
         self.session_limits = Some(limits);
         Ok(self)
     }

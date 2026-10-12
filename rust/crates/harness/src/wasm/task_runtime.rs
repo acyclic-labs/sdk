@@ -14,7 +14,7 @@ use crate::{
         FilesystemHost, FilesystemSchedulerPayloadStore, FilesystemTaskRuntime, StockTurnMachine,
         TaskWakeCursor, TaskWorkerAttempt, TaskWorkerOutcome,
     },
-    model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
     runtime::{DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry},
     scheduler::SessionLimits,
@@ -466,12 +466,15 @@ impl ModelProvider for HostModel {
         ))
     }
 
-    fn reconcile<'a>(
-        &'a self,
-        attempt: ModelAttempt,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async move {
-            let attempt = to_js(&attempt)
+            #[derive(serde::Serialize)]
+            struct AttemptWire<'a> {
+                #[serde(flatten)]
+                dispatch: crate::model::ModelDispatch,
+                observed: &'a [crate::model::ModelEvent],
+            }
+            let attempt = to_js(&AttemptWire { dispatch, observed })
                 .map_err(|_| Error::Invalid("model attempt encoding failed".into()))?;
             let pending = self
                 .reconcile

@@ -27,7 +27,7 @@ use acyclic_harness::fork::{
 };
 use acyclic_harness::merge::{ProjectJoinOutcome, ProjectWorkspaceProvider};
 use acyclic_harness::model::{
-    FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
+    FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent,
     ModelMessage, ModelPrefix, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
 };
 use acyclic_harness::resources::{ProviderRef, StreamRef};
@@ -91,9 +91,7 @@ impl ModelProvider for PrefixModel {
         }));
         Box::pin(futures::stream::iter(events))
     }
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 #[allow(
