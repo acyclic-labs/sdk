@@ -6,41 +6,13 @@ pub(super) struct PreparedCheckoutRoots {
     pub(super) producer: Option<Arc<ProofDataCustody>>, pub(super) working_control: Option<ProofDataClaim>,
 }
 
-pub(super) static UNBOUNDED_CHECKOUT_CANCELLATION: std::sync::LazyLock<CancellationToken> =
-    std::sync::LazyLock::new(CancellationToken::new);
-
 /// Sealed proof merge for the private candidate adoption fence. The snapshots
 #[cfg(feature = "native-mount")]
 pub(crate) struct PreparedCandidateAdoption {
-    pub(super) dependencies: CheckoutDependencies, pub(super) live: CheckoutDependencies, pub(super) candidate: CheckoutDependencies, pub(super) retained_bytes: u64,
+    pub(super) dependencies: CheckoutDependencies, pub(super) live: CheckoutDependencies, pub(super) candidate: CheckoutDependencies,
 }
 
-#[cfg(feature = "native-mount")]
-impl PreparedCandidateAdoption { pub(crate) const fn retained_bytes(&self) -> u64 { self.retained_bytes } }
-
 impl<A, O> Checkout<A, O> {
-
-    /// Replaces this checkout with `candidate`, a private candidate begun
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn adopt_candidate(&mut self, base: &Self, candidate: Self) -> bool {
-        let Ok(receipt) = self.prepare_candidate_adoption(
-            base, &candidate, WorkBudget::UNBOUNDED, &UNBOUNDED_CHECKOUT_CANCELLATION,
-        ) else {
-            return false;
-        };
-        let Some(prepared) = receipt.value else { return false; };
-        self.adopt_prepared_candidate(base, candidate, prepared)
-    }
-
-
-    /// Whether [`Self::adopt_candidate`] would adopt `candidate`.
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn admits_candidate(&self, base: &Self, candidate: &Self) -> bool {
-        self.prepare_candidate_adoption(
-            base, candidate, WorkBudget::UNBOUNDED, &UNBOUNDED_CHECKOUT_CANCELLATION,
-        ).is_ok_and(|receipt| receipt.value.is_some())
-    }
-
 
     /// Prepares the exact candidate proof under the original caller's limits.
     #[cfg(feature = "native-mount")]
@@ -51,7 +23,6 @@ impl<A, O> Checkout<A, O> {
         let result = self.prepare_candidate_adoption_with_accounting(base, candidate, &mut accounting);
         budget.finish(result, &accounting)
     }
-
 
     #[cfg(feature = "native-mount")]
     pub(super) fn prepare_candidate_adoption_with_accounting(
@@ -67,14 +38,8 @@ impl<A, O> Checkout<A, O> {
         let Some(dependencies) = candidate.merged_with_accounting(&live, producer, accounting)? else {
             return Ok(None);
         };
-        let retained_bytes = if dependencies.same_capture(&candidate) { 0 } else {
-            dependencies.logical_data().2.checked_add(
-                CheckoutDependencies::empty_logical_owned_bytes() as u64,
-            ).ok_or(WorkError::Overflow)?
-        };
-        Ok(Some(PreparedCandidateAdoption { dependencies, live, candidate, retained_bytes }))
+        Ok(Some(PreparedCandidateAdoption { dependencies, live, candidate }))
     }
-
 
     /// Installs only the proof sealed by preparation. Both snapshots retain
     #[cfg(feature = "native-mount")]
@@ -93,7 +58,6 @@ impl<A, O> Checkout<A, O> {
         *self = candidate;
         true
     }
-
 
     #[cfg(feature = "native-mount")]
     pub(super) fn candidate_base_unchanged(&self, base: &Self) -> bool {
@@ -127,7 +91,6 @@ impl<A, O> Checkout<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     pub(crate) fn private_candidate<W: FsWork>(
         &self, budget: W, cancellation: &CancellationToken,
     ) -> W::Output<Self, FsError> {
@@ -135,7 +98,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let result = self.private_candidate_with_accounting(&mut accounting, cancellation);
         budget.finish(result, &accounting)
     }
-
 
     pub(super) fn checkout_custody(
         accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -155,7 +117,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .map_err(crate::collection::handle_allocation_error)?;
         Ok(Arc::new(ProofDataCustody::default()))
     }
-
 
     pub(super) fn private_candidate_with_accounting(
         &self,
@@ -221,18 +182,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(self.replica_with_roots(dependencies, self.mode, base_root, root))
     }
 
-
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         self.proof_owned_bytes
             + crate::foundation::usize_to_u64(self.base_root.parents.capacity() * size_of::<GenerationId>())
             + self.root.logical_owned_bytes()
     }
 
-
     pub(crate) fn private_control_custody(&self) -> Arc<crate::kernel::ProofDataCustody> {
         Arc::clone(&self.dependencies.data_custody)
     }
-
 
     pub(super) fn root_control_claim(
         root: &GenerationRoot,
@@ -243,7 +201,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             None => Ok(crate::kernel::ProofDataClaim::default()),
         }
     }
-
 
     pub(super) fn prepare_root_replacement(
         &self, base: &GenerationRoot, working: &GenerationRoot,
@@ -280,7 +237,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(PreparedCheckoutRoots { base, held, producer, working_control: None })
     }
 
-
     /// Transfers only the authenticated working root's already-paid parent
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn prepare_root_working_control_with_native_work(
@@ -304,7 +260,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
     }
 
-
     pub(super) fn install_root_replacement(
         &mut self,
         generation: ObjectId,
@@ -320,7 +275,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.dependencies.base_root_control = prepared.base.1;
     }
 
-
     pub(crate) fn proof_data_bytes(
         &self, accounting: &mut KernelAccounting<'_>,
     ) -> Result<u64, FsError> {
@@ -329,7 +283,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         proof.dependencies.logical_data().2.checked_add(proof.observed_data_bytes)
             .ok_or(FsError::Work(WorkError::Overflow))
     }
-
 
     #[cfg(feature = "native-mount")]
     pub(crate) fn into_unpublishable_capture_candidate(mut self) -> Self {
@@ -341,7 +294,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.authority_head = None;
         self
     }
-
 
     /// Constructs an observing alias with independently admitted roots.
     #[cfg(feature = "native-mount")]
@@ -394,7 +346,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget.finish(result, &accounting)
     }
 
-
     /// Constructs an isolated read-only candidate.
     #[cfg(feature = "native-mount")]
     pub(crate) fn inspector<W: FsWork>(
@@ -407,7 +358,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         });
         budget.finish(result, &accounting)
     }
-
 
     pub(super) fn replica_with_roots(
         &self,

@@ -38,7 +38,6 @@ impl<A, O> Clone for PinnedReader<A, O> {
 
 impl<A, O> Checkout<A, O> {
 
-
     /// Creates an immutable reader for this checkout's current private candidate.
     #[must_use]
     pub fn snapshot_reader(&self) -> PinnedReader<A, O> {
@@ -49,7 +48,6 @@ impl<A, O> Checkout<A, O> {
         }
     }
 
-
     /// Creates an immutable reader for a pinned checkout.
     pub fn pinned_reader(&self) -> Result<PinnedReader<A, O>, FsError> {
         if self.tracks_observations() {
@@ -57,7 +55,6 @@ impl<A, O> Checkout<A, O> {
         }
         Ok(self.snapshot_reader())
     }
-
 
     /// Funds only the legacy readonly root copy. It keeps standalone query
     #[cfg(not(target_arch = "wasm32"))]
@@ -75,7 +72,6 @@ impl<A, O> Checkout<A, O> {
         let root = PinnedReaderRoot::FundedOwned(Arc::new(carrier));
         Ok(PinnedReader { volume: self.volume.clone(), generation_root: self.generation_root, root, })
     }
-
 
     /// Clones only the registered original readonly roots and their exact hold.
     #[cfg(not(target_arch = "wasm32"))]
@@ -96,7 +92,6 @@ impl<A, O> Checkout<A, O> {
         let root = PinnedReaderRoot::NativeCheckout(Arc::new((roots, allocation)));
         Ok(PinnedReader { volume: self.volume.clone(), generation_root: self.generation_root, root, })
     }
-
 
     /// Consumes an original-native checkout into a cheap cloneable readonly
     #[cfg(not(target_arch = "wasm32"))]
@@ -124,11 +119,9 @@ impl<A, O> PinnedReader<A, O> {
         GenerationId::new(self.generation_root.digest)
     }
 
-
     /// Immutable volume limits authenticated by the reader's constructor.
     #[must_use]
     pub const fn volume_config(&self) -> VolumeConfig { self.volume.config }
-
 
     /// Checks retained original custody without admitting work or granting rights.
     #[cfg(not(target_arch = "wasm32"))]

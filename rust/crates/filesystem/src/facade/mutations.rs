@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     pub(super) async fn capture_mutation_dependencies_with_accounting(
         &self, operations: &[Mutation], accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -102,7 +101,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(dependencies)
     }
 
-
     pub(super) fn mutation_region_name_bytes(region: &DependencyRegion) -> u64 {
         match region {
             DependencyRegion::DirectoryName { name, .. }
@@ -110,7 +108,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             _ => 0,
         }
     }
-
 
     pub(super) fn mutation_dependency_bytes(
         values: &Vec<Dependency>,
@@ -125,7 +122,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         Ok(bytes)
     }
-
 
     pub(super) fn append_mutation_dependencies(
         destination: &mut crate::kernel::Owned<Vec<Dependency>>,
@@ -149,7 +145,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         incoming.retire(accounting)
     }
-
 
     pub(super) fn subsume_mutation_record_dependencies(
         regions: &mut Vec<(Option<FileRecord>, DependencyRegion)>,
@@ -201,7 +196,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         records.retire(accounting)
     }
 
-
     /// Atomically applies one ordered mutation batch to this private checkout.
     pub async fn mutate(
         &mut self,
@@ -224,7 +218,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .await
     }
 
-
     pub(super) async fn mutate_candidate(
         &mut self,
         operations: Vec<Mutation>,
@@ -237,7 +230,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ).await;
         measured(result, &accounting)
     }
-
 
     /// Transfers an already-paid operation vector to the canonical candidate
     pub(crate) async fn mutate_owned_with_accounting(
@@ -268,7 +260,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             operations.value, Some(&mut operations.allocation), accounting, cancellation,
         ).await
     }
-
 
     pub(super) async fn mutate_candidate_with_accounting(
         &mut self,
@@ -401,7 +392,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(())
     }
 
-
     pub(super) fn mutation_input_owned_bytes(
         operations: &Vec<Mutation>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -414,7 +404,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         Ok(bytes)
     }
-
 
     pub(super) async fn observe_identity_regions_with_accounting(
         &mut self, regions: [Option<DependencyRegion>; 2],
@@ -457,9 +446,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         result
     }
 
-
-
-
     pub(super) async fn observe_base_regular_range_with_accounting(
         &mut self, file_id: FileId, range: ByteRange,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -479,7 +465,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         readonly_cleanup_standalone(accounting, before, 0)?;
         result
     }
-
 
     pub(super) async fn observe_base_metadata_ids_with_accounting(
         &mut self, file_ids: &[FileId],
@@ -541,7 +526,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         readonly_cleanup_standalone(accounting, before, 0)?;
         result
     }
-
 
     pub(super) fn extend_observations_with_accounting(
         &mut self,
