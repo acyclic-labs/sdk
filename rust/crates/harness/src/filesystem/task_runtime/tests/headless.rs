@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::TaskStateProvider;
+use crate::runtime::{TaskStateProvider, TaskSpawner as _};
 use crate::conversation::{ContentGrant, FileRef};
 
 async fn runtime(fixture: &Fixture) -> Result<Runtime> {
@@ -64,7 +64,7 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
     let second = owner.list(&project, "src", "src", &old_generation, Some("a.txt"), 1).await?;
     assert_eq!(second.entries[0].name, "b.txt");
     let (_, bytes) = owner.read_path(&project, "src", "src/a.txt", &old_generation).await?;
-    assert_eq!(bytes, b"old");
+    assert_eq!(bytes.as_ref(), b"old");
     assert!(owner.diff(&old, &current).await?);
     assert!(!owner.diff(&old, &old).await?);
     assert_eq!(owner.read_file(&scratch).await?.as_ref(), b"scratch".as_ref());
@@ -224,9 +224,9 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let cancellation = acyclic_fs::CancellationToken::new();
     let workspace = fs.open_workspace(project.storage_name(&mut None)?, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .await.map_err(|e| Error::Storage(e.to_string()))?.value;
-    ContentGrant::verify(&fixture.issuer.verifier(), &fixture.signed, &project, VolumeOperation::Write, u64::MAX, &mut None)?;
+    ContentGrant::verify(&fixture.issuer.verifier(&mut None)?, &fixture.signed, &project, VolumeOperation::Write, u64::MAX, &mut None)?;
     let restricted = fixture.issuer.issue("read-only", &Capabilities::new([project.capability(VolumeOperation::Read, &mut None)?]), Some(agent), None, &mut None).expect("scope proof");
-    assert!(ContentGrant::verify(&fixture.issuer.verifier(), &restricted, &project, VolumeOperation::Write, u64::MAX, &mut None).is_err());
+    assert!(ContentGrant::verify(&fixture.issuer.verifier(&mut None)?, &restricted, &project, VolumeOperation::Write, u64::MAX, &mut None).is_err());
     put(&fixture, &project, "src/a.txt", b"old", "restore-old").await?;
     let selected = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation).await.map_err(|e| Error::Storage(e.to_string()))?.value;
     put(&fixture, &project, "src/a.txt", b"new", "restore-new").await?;
@@ -262,7 +262,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let child_authority = Authority { kind: AggregateKind::Conversation, id: "restore-new-conversation".into() };
     let child_project = VolumeRef::new(project.provider().clone(), "restore-child".into(), VolumeClass::Project, project.owner().clone(), &mut None)?;
     let child_private = VolumeRef::new(project.provider().clone(), "restore-child".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent), &mut None)?;
-    let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), history.reducer().copy(&mut None)?, issuer.verifier(), signed.clone(),
+    let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), history.reducer().copy(&mut None)?, issuer.verifier(&mut None)?, signed.clone(),
         project.clone(), stream_provider.clone(), reader,
         None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;
@@ -285,7 +285,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         "conversation:bind".into(), child_private.capability(VolumeOperation::Read, &mut None)?, child_private.capability(VolumeOperation::Write, &mut None)?,
         child_project.capability(VolumeOperation::Read, &mut None)?, child_project.capability(VolumeOperation::Write, &mut None)?,
     ]), Some(child_agent), None, &mut None).expect("scope proof");
-    let mut child = StreamAggregate::open(&fixture.stream, child_authority, child_issuer.verifier(), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
+    let mut child = StreamAggregate::open(&fixture.stream, child_authority, child_issuer.verifier(&mut None)?, SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
         .with_fork_verifier(forks);
     let seed = child.spawn_from_report(&mut history, report, signed, child_scope).await?;
     assert_eq!(seed.parent, authority);

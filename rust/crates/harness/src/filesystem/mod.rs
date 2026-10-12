@@ -4377,7 +4377,7 @@ mod tests {
         assert_eq!(
             host.read(&reference, Some(&updated), "/hello.txt", 16)
                 .await?,
-            Bytes::from_static(b"hello")
+            Bytes::from_static(b"hello").into()
         );
         assert!(matches!(
             host.apply(
@@ -4489,11 +4489,11 @@ mod tests {
         assert_ne!(first.version(), second.version());
         assert_eq!(
             host.read_content(&first, &read, 16).await?,
-            Bytes::from_static(b"one")
+            Bytes::from_static(b"one").into()
         );
         assert_eq!(
             host.read_content(&second, &read, 16).await?,
-            Bytes::from_static(b"two")
+            Bytes::from_static(b"two").into()
         );
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -4578,7 +4578,7 @@ mod tests {
             )
             .await?;
         assert_eq!(pinned, second);
-        assert_eq!(delegated_bytes, b"two");
+        assert_eq!(delegated_bytes.as_ref(), b"two");
         host.put_content(
             &volume,
             &write,
@@ -4615,7 +4615,7 @@ mod tests {
             )
             .await?;
         assert_eq!(old_ref, second);
-        assert_eq!(old_bytes, b"two");
+        assert_eq!(old_bytes.as_ref(), b"two");
         assert!(
             delegated_reader
                 .list_private_directory(&volume, "messages", "elsewhere", None, None, 10)
@@ -4673,7 +4673,7 @@ mod tests {
             volume.clone(),
             first.path(),
             first.version(),
-            FileDescriptor::new([0; 32], 3, "text/plain")?,
+            FileDescriptor::new([0; 32], 3, "text/plain".into())?,
             first.display_name(),
          &mut None)?;
         assert!(host.read_content(&wrong_digest, &read, 16).await.is_err());
@@ -4792,7 +4792,7 @@ mod tests {
         missing.content = FileRef::new(
             volume,
             "messages/missing.txt".into(),
-            file.version(),
+            file.version().into(),
             file.descriptor().clone(),
             "missing.txt".into(),
          &mut None)?;
@@ -4815,7 +4815,7 @@ mod tests {
             file: FileRef::new(
                 file.volume().clone(),
                 "attachments/missing.bin".into(),
-                file.version(),
+                file.version().into(),
                 file.descriptor().clone(),
                 "missing.bin".into(),
              &mut None)?,

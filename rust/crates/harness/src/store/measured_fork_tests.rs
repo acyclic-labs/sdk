@@ -494,7 +494,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         .expect("independent original bootstrap READ query");
     owner.authenticated_root_binding_for_read_with_native_work(&bootstrap, &query).await?;
     let mut substituted_root = original_root.clone();
-    substituted_root.arguments = serde_json::json!({"substituted_original_root": true});
+    substituted_root.input = serde_json::json!({"substituted_original_root": true});
     let before = query.receipt();
     assert!(matches!(owner.verify_root_bootstrap_context_with_native_work(
         &substituted_root, bootstrap.binding(), &query,
@@ -683,15 +683,15 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
                     6 => {
                         let mut duplicate = b"{\"revision\":64,".to_vec();
                         duplicate.extend_from_slice(&records[0][1..]);
-                        records[0] = Bytes::from(duplicate);
+                        records[0] = Bytes::from(duplicate).into();
                         continue;
                     }
                     _ => {}
                 }
-                records[0] = Bytes::from(crate::contract::canonical_json_bytes(&location)?);
+                records[0] = Bytes::from(crate::contract::canonical_json_bytes(&location)?).into();
             } else if mode == 7 && path.as_str() == authority().stream_path(&mut None)? {
                 event.attestation[0] ^= 1;
-                records[0] = Bytes::from(crate::wire_codec::encode_event(&authority(), &event, &mut None)?);
+                records[0] = Bytes::from(crate::wire_codec::encode_event(&authority(), &event, &mut None)?).into();
             }
         }
         let detached = if mode == 8 {

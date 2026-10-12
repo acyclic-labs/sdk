@@ -1640,7 +1640,7 @@ mod tests {
         let generation = fixture.filesystem.resolve(&journal).await?.generation;
         fixture.filesystem.apply(&journal, Some(&generation), &[
             super::super::super::WorkspaceMutation::PutFile {
-                path: "/root-bootstrap.json".into(), bytes: b"superseded protected bootstrap".to_vec(),
+                path: "/root-bootstrap.json".into(), bytes: b"superseded protected bootstrap".to_vec().into(),
             },
         ], &IdempotencyKey::new("supersede-genuine-original-root-bootstrap")?).await?;
         assert!(policy.verify_with_native_work(context(), &selection, &work)?.await.is_err());

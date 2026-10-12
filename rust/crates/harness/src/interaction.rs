@@ -984,7 +984,7 @@ mod tests {
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([8; 16])),
              &mut None)?,
-            path,
+            path.into(),
             "immutable-1".into(),
             FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
             "interaction.json".into(),

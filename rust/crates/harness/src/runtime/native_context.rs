@@ -626,7 +626,7 @@ mod tests {
 
     fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializationWork> {
         NativeMaterializationWork::new(BUDGET, cancellation)
-            .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })
+            .map_err(|failure| Error::NativeWork { cause: failure.0, custody: None })
     }
 
     #[tokio::test]

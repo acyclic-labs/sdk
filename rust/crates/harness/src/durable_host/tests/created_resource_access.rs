@@ -221,7 +221,7 @@ impl SandboxCreator {
         let sandbox_generation = self.filesystem.apply(
             &workspace,
             None,
-            &[WorkspaceMutation::PutFile { path: "/manifest.json".into(), bytes: payload }],
+            &[WorkspaceMutation::PutFile { path: "/manifest.json".into(), bytes: payload.into() }],
             &IdempotencyKey::new("sandbox-manifest")?,
         ).await?;
         preparation.verify_creation().await?;
@@ -254,7 +254,7 @@ impl SandboxCreator {
         let generation = self.filesystem.apply(
             &evidence,
             None,
-            &[WorkspaceMutation::PutFile { path: "/allocation.json".into(), bytes }],
+            &[WorkspaceMutation::PutFile { path: "/allocation.json".into(), bytes: bytes.into() }],
             &IdempotencyKey::new("sandbox-allocation")?,
         ).await?;
         preparation.verify_creation().await?;
@@ -422,9 +422,9 @@ impl CreationFixture {
                 (project, acyclic_fs::OperationId::from_bytes([177; 16]), b"original project import".as_slice()),
                 (payload_volume.clone(), acyclic_fs::OperationId::from_bytes([178; 16]), b"original root private".as_slice()),
             ] {
-                let name_custody;
-                let (name, custody) = volume.storage_name_with_native_work(work)?;
-                name_custody = custody;
+                let mut name_io = crate::store::history::native_work_io(work)?;
+                let name = volume.storage_name(&mut Some(&mut name_io))?;
+                let name_custody = name_io.into_custody();
                 let initial = fs.create_workspace_with_operation_with_native_work(
                     &name, config, operation, work, work.cancellation(),
                 ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
@@ -434,7 +434,7 @@ impl CreationFixture {
                     initial_generation.digest().into_bytes().to_vec(), None)?;
                 let selected = filesystem.apply(&workspace, Some(&initial_ref), &[WorkspaceMutation::PutFile {
                     path: "/root.txt".into(), bytes: contents.to_vec().into(),
-                }], &IdempotencyKey::new(format!("original-root-import-{}", operation))?).await?;
+                }], &IdempotencyKey::new(format!("original-root-import-{}", uuid::Uuid::from_bytes(operation.into_bytes())))?).await?;
                 let selected_generation = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(
                     selected.as_resource().key().try_into().map_err(|_| Error::Invalid("fixture generation size".into()))?,
                 ));
@@ -828,7 +828,6 @@ impl CreationFixture {
             child: Authority { kind: AggregateKind::Conversation, id: "created-fork-child".into() },
             child_agent, attached_agents: Vec::new(),
             preparation: ForkPreparation {
-                child_result_volume: None,
                 child_project_volume: project.clone(), child_private_volume: private.clone(),
                 child_result_volume: result.clone(),
                 summary: None, inherited_through_sequence: 0, maximum_inherited_messages: 1,
@@ -993,7 +992,7 @@ async fn created_content_reauthenticates_allocation_provenance_on_every_io() -> 
     fixture.filesystem.apply(
         &claim, None,
         &[WorkspaceMutation::PutFile {
-            path: "/claim.json".into(), bytes: crate::contract::canonical_json_bytes(&allocation)?,
+            path: "/claim.json".into(), bytes: crate::contract::canonical_json_bytes(&allocation)?.into(),
         }],
         &IdempotencyKey::new("corrupt-created-content-claim")?,
     ).await?;
@@ -1203,7 +1202,7 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
         .map_err(|error| Error::Storage(error.to_string()))?;
     record["role"] = serde_json::json!("scratch");
     fixture.filesystem.apply(&claim,None,&[WorkspaceMutation::PutFile {
-        path:"/claim.json".into(),bytes:crate::contract::canonical_json_bytes(&record)?,
+        path:"/claim.json".into(),bytes:crate::contract::canonical_json_bytes(&record)?.into(),
     }],&IdempotencyKey::new("corrupt-result-role")?).await?;
     assert!(context.stage_artifact(
         OperationId::from_bytes([112;16]),"artifacts/after-corruption.txt",b"must not publish",
@@ -1516,7 +1515,7 @@ async fn native_admission_json_metadata_denial_precedes_reader_and_hash() -> Res
         .expect("original acknowledged declaration");
     let original = declaration.state;
     let descriptor = crate::conversation::FileDescriptor::new(
-        *original.descriptor().sha256(), original.descriptor().byte_length(), "text/plain",
+        *original.descriptor().sha256(), original.descriptor().byte_length(), "text/plain".into(),
     )?;
     let reference = FileRef::new(
         original.volume().clone(), original.path(), original.version(), descriptor, original.display_name(),
@@ -1673,7 +1672,7 @@ async fn native_stock_source_provenance_and_cancelled_preparation_are_not_author
             _ => source["task_origin"]["admission_digest"] = serde_json::to_value([0u8; 32]).unwrap(),
         }
         fixture.filesystem.apply(&claim, None, &[WorkspaceMutation::PutFile {
-            path: "/claim.json".into(), bytes: crate::contract::canonical_json_bytes(&source)?,
+            path: "/claim.json".into(), bytes: crate::contract::canonical_json_bytes(&source)?.into(),
         }], &IdempotencyKey::new("native-corrupt-source-provenance")?).await?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();

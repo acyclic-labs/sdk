@@ -58,8 +58,8 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let workspace = workspace_ref(fixture.filesystem_provider.clone(), &project.storage_name(&mut None)?)?;
     let initial_generation = fixture.filesystem.resolve(&workspace).await?.generation;
     let generation = fixture.filesystem.apply(&workspace, Some(&initial_generation), &[
-        crate::filesystem::WorkspaceMutation::PutFile { path:"/selected.txt".into(), bytes:b"frozen selected".to_vec() },
-        crate::filesystem::WorkspaceMutation::PutFile { path:"/second.txt".into(), bytes:b"second".to_vec() },
+        crate::filesystem::WorkspaceMutation::PutFile { path:"/selected.txt".into(), bytes:b"frozen selected".to_vec().into() },
+        crate::filesystem::WorkspaceMutation::PutFile { path:"/second.txt".into(), bytes:b"second".to_vec().into() },
     ], &IdempotencyKey::new("source-inspection-files")?).await?;
     let parent_project = VolumeRef::new(fixture.filesystem_provider.clone(), "parent-project".into(), VolumeClass::Project,
         VolumeOwner::Project("created-project".into()), &mut None)?;
@@ -230,7 +230,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     }
     let inspected = runtime.inspect_project_source(&context, owner.clone(), handle.clone(), operation, child, &snapshot, budget).await?;
     let (selected_file, selected_bytes) = inspected.read_path(&project, "", "selected.txt", &generation).await?;
-    assert_eq!(selected_bytes, b"frozen selected");
+    assert_eq!(selected_bytes.as_ref(), b"frozen selected");
     assert!(matches!(context.read_file(&selected_file).await, Err(Error::Unauthorized(_))));
     assert_eq!(inspected.read_file(&selected_file).await?.as_ref(), b"frozen selected".as_ref());
     assert!(!inspected.diff(&selected_file, &selected_file).await?);
@@ -306,10 +306,10 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         ProjectSourceSnapshot {project:project.clone(),generation:generation.clone(),native_snapshot:None},
         1_000_000, 128 * 1_024 * 1_024).await?;
     let advanced = fixture.filesystem.apply(&workspace, Some(&generation), &[
-        crate::filesystem::WorkspaceMutation::PutFile { path:"/selected.txt".into(), bytes:b"new mutable head".to_vec() },
+        crate::filesystem::WorkspaceMutation::PutFile { path:"/selected.txt".into(), bytes:b"new mutable head".to_vec().into() },
     ], &IdempotencyKey::new("source-inspection-advanced-head")?).await?;
     assert_ne!(advanced, generation);
-    assert_eq!(inspected.read_path(&project, "", "selected.txt", &generation).await?.1, b"frozen selected");
+    assert_eq!(inspected.read_path(&project, "", "selected.txt", &generation).await?.1.as_ref(), b"frozen selected");
     assert_eq!(fixture.filesystem.resolve(&workspace).await?.generation, advanced);
     let mut foreign_root = fixture.admission(124, serde_json::json!({}));
     foreign_root.parent = None;

@@ -1848,7 +1848,7 @@ mod tests {
     fn interaction_file(path: &str, bytes: &[u8]) -> Result<FileRef> {
         FileRef::new(
             content()?.volume().clone(),
-            path,
+            path.into(),
             "generation-1".into(),
             FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
             "interaction.json".into(),
@@ -1969,10 +1969,10 @@ mod tests {
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let reference = FileRef::new(
                     self.volume.clone(),
-                    path,
+                    path.into(),
                     "generation-1".into(),
                     FileDescriptor::from_bytes(bytes, media_type, &mut None)?,
-                    display_name,
+                    display_name.into(),
                  &mut None)?;
                 self.files.insert(&reference, bytes)?;
                 Ok((reference, None))
@@ -3585,7 +3585,7 @@ mod tests {
             &Action::OpenInteraction { ticket: ticket.clone() }, &mut Some(&mut io)).await?;
         native.admit_retained(available)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let missing = FileRef::new(volume, "interactions/missing.json".into(), reference.version(),
+        let missing = FileRef::new(volume, "interactions/missing.json".into(), reference.version().into(),
             FileDescriptor::from_bytes(br#"{"type":"question","value":"yes"}"#, "application/json", &mut None)?,
             "missing.json".into(), &mut None)?;
         let error = aggregate.validate_interaction_part_with_work(

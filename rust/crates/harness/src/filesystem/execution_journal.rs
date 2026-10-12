@@ -2559,7 +2559,7 @@ mod tests {
             journal.path(target)?
                 .append_batch(
                     vec![Bytes::from(serde_json::to_vec(&wire)
-                        .map_err(|error| Error::Invalid(error.to_string()))?)],
+                        .map_err(|error| Error::Invalid(error.to_string()))?).into()],
                     Some(0),
                     None,
                 )

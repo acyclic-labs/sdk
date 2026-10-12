@@ -113,8 +113,8 @@ async fn exact_edit_uses_source_generation_and_rejects_ambiguous_overlap() -> Re
     assert!(fixture.host.edit_text(&source, &read, &write, &ExactTextReplacement { old_text: "aa".into(), new_text: "b".into() }, 64, &IdempotencyKey::new("ambiguous-edit")?).await.is_err());
     let changed = fixture.host.put_content(&fixture.private, &write, "scratch/value.txt", b"user", "text/plain", "value.txt", 64, &IdempotencyKey::new("user-edit")?).await?;
     assert!(matches!(fixture.host.edit_text(&source, &read, &write, &ExactTextReplacement { old_text: "aaa".into(), new_text: "child".into() }, 64, &IdempotencyKey::new("stale-exact-edit")?).await, Err(Error::Conflict(_))));
-    assert_eq!(fixture.host.read_content(&changed, &read, 64).await?, b"user");
-    assert_eq!(fixture.host.read_content(&source, &read, 64).await?, b"aaa");
+    assert_eq!(fixture.host.read_content(&changed, &read, 64).await?.as_ref(), b"user");
+    assert_eq!(fixture.host.read_content(&source, &read, 64).await?.as_ref(), b"aaa");
     Ok(())
 }
 

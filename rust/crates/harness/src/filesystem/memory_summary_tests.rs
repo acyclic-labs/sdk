@@ -133,7 +133,7 @@ async fn sealed_summary_preparation(
     let signed = issuer.issue("summary-preparation", &grants, Some(agent), None, &mut None).expect("scope proof");
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?
         .with_run_limits(crate::runtime::TaskRunLimits {
-            concurrency: Some(4), max_steps: Some(4), deadline_unix_millis: None,
+            concurrency: Some(4), max_steps: Some(4), deadline_epoch_ms: None,
         }, &mut None)?;
     let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(storage.host.clone(), &(payload_volume), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?);
     let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?);

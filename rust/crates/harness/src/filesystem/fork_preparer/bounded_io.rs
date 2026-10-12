@@ -1633,7 +1633,7 @@ mod tests {
         let volume = VolumeRef::new(provider, "owned".into(), VolumeClass::Project,
             VolumeOwner::Project("ordinary-owner-control".into()), &mut None)?;
         let initial = host.create_volume(&volume).await?;
-        let mutations = [WorkspaceMutation::PutFile { path: "/file".into(), bytes: b"owned".to_vec() }];
+        let mutations = [WorkspaceMutation::PutFile { path: "/file".into(), bytes: b"owned".to_vec().into() }];
         let cancellation = CancellationToken::new();
         let denied_io = PreparationIo::from_budget(acyclic_fs::performance::work_budget(100_000, 16_000_000), &cancellation)?;
         let denied = publish_generation(
@@ -1663,7 +1663,7 @@ mod tests {
     async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() -> Result<()> {
         let provider = crate::resources::ProviderRef::new("source-read-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
-        let project = |name: &str| VolumeRef::new(provider.clone(), name, VolumeClass::Project,
+        let project = |name: &str| VolumeRef::new(provider.clone(), name.into(), VolumeClass::Project,
             VolumeOwner::Project("source-read-control".into()), &mut None);
         let source = project("selected")?;
         let caller = project("caller")?;
@@ -1672,10 +1672,10 @@ mod tests {
         let initial = host.create_volume(&source).await?;
         let caller_head = host.create_volume(&caller).await?;
         let selected_generation = host.apply(&initial.workspace, Some(&initial.generation),
-            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"selected".to_vec() }],
+            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"selected".to_vec().into() }],
             &IdempotencyKey::new("selected-generation")?).await?;
         let wrong_generation = host.apply(&caller_head.workspace, Some(&caller_head.generation),
-            &[WorkspaceMutation::PutFile { path: "/other.txt".into(), bytes: b"other-source".to_vec() }],
+            &[WorkspaceMutation::PutFile { path: "/other.txt".into(), bytes: b"other-source".to_vec().into() }],
             &IdempotencyKey::new("other-source-generation")?).await?;
         let issuer = AuthorityIssuer::new("source-read-control", [41; 32], Authority {
             kind: AggregateKind::Conversation, id: "caller".into(),
@@ -1697,7 +1697,7 @@ mod tests {
             None).await.is_err());
         assert!(host.resolve(&denied_ref).await.is_err());
         let later_generation = host.apply(&initial.workspace, Some(&selected_generation),
-            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"later".to_vec() }],
+            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"later".to_vec().into() }],
             &IdempotencyKey::new("later-generation")?).await?;
         let forked = fork(&host, &source, &selected_read, &selected_generation, &child,
             None, &IdempotencyKey::new("pinned-selected-fork")?, None, None,
@@ -1705,7 +1705,7 @@ mod tests {
             None).await?;
         assert_eq!(host.read(&forked.workspace, Some(&forked.generation), "/value.txt", 32).await?.as_ref(), b"selected");
         host.apply(&forked.workspace, Some(&forked.generation),
-            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"child".to_vec() }],
+            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"child".to_vec().into() }],
             &IdempotencyKey::new("isolated-child-edit")?).await?;
         assert_eq!(host.resolve(&initial.workspace).await?.generation, later_generation);
         assert_eq!(host.read(&initial.workspace, None, "/value.txt", 32).await?.as_ref(), b"later");
