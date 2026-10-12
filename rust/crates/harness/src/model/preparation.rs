@@ -63,24 +63,14 @@ pub(crate) fn vec_with_capacity<T>(capacity: usize, io: Option<&PreparationIo>) 
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            if bytes == 0 {
-                work.remaining()?;
-                return Ok(values);
-            }
-            let mut custody = work.claim(
-                bytes,
-                u64::from(bytes != 0),
-                acyclic_fs::WorkCounters::UNCHARGED,
-            )?;
-            values
-                .try_reserve_exact(capacity)
-                .map_err(Error::Allocation)?;
-            let completed =
-                custody.reconcile_capacity(slots(values.capacity(), std::mem::size_of::<T>())?);
-            io.absorb_native_custody(custody)?;
-            completed?;
-            return Ok(values);
+        if let Some(original) = io.original_native_work() {
+            return with_history_io(Some(io), |work| {
+                let mut quota = CodecQuota::new(work, 0)?;
+                let values = crate::core::reserve_copy_vector(capacity, &mut quota)?;
+                original.remaining()?;
+                quota.transfer();
+                Ok(values)
+            });
         }
         io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;

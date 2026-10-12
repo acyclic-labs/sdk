@@ -122,7 +122,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             };
             if command.operation_id != receive_operation
                 || command.kind != crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND
-                || prior.next != latest.prior
+                || prior.checkpoint()? != (&latest.prior.machine, latest.prior.revision, &latest.prior.state)
             {
                 return Err(admission_boundary(
                     &work,
@@ -295,7 +295,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
         };
         envelope.validate(io)?;
-        if envelope.prior.revision != index || envelope.next.revision != index + 1 {
+        if envelope.prior.revision != index {
             return Err(admission_boundary(
                 &work,
                 crate::wire::ErrorCode::Storage,

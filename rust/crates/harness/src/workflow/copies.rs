@@ -86,10 +86,8 @@ copy!(
     Ok(Self {
         operation_id: self.operation_id,
         idempotency_key: IdempotencyKey(copy_text(&self.idempotency_key.0, quota)?),
-        input_digest: self.input_digest,
         prior: self.prior.copy_fields(quota)?,
         input: copy_value(&self.input, quota)?,
         transition: self.transition.copy_fields(quota)?,
-        next: self.next.copy_fields(quota)?,
     })
 );

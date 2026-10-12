@@ -108,10 +108,7 @@ impl MachineRegistry {
         for (identity, machine) in &self.0 {
             copied.insert(identity.copy_fields(&mut quota)?, Arc::clone(machine));
         }
-        work.remaining().map_err(|cause| Error::NativeWork {
-            cause,
-            custody: None,
-        })?;
+        work.remaining()?;
         quota.transfer();
         drop(quota);
         Ok((Self(copied), observer.into_custody()?))
@@ -359,8 +356,10 @@ impl MachineRegistry {
                     Cow::Borrowed(&record.input)
                 };
             let (next, transition, retained, _) = self.step(checkpoint, input, io)?;
-            if next != record.next || transition != record.transition {
-                return Err(error(
+            if record.checkpoint()? != (&next.machine, next.revision, &next.state)
+                || transition != record.transition
+            {
+                return Err(stock_boundary(
                     io,
                     Conflict,
                     "workflow history disagrees with its pinned machine",

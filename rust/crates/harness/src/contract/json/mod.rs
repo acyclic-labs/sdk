@@ -86,8 +86,6 @@ pub enum JsonValueSchema {
     WorkflowAdmission,
     /// The machine checkpoint state.
     MachineCheckpoint,
-    /// Native projected tool invocation's arguments.
-    ProjectedToolInvocation,
     /// Tool-result JSON value, gated by its kind.
     ToolResultContent,
     /// Resource payload, child admission schemas and source native snapshot.

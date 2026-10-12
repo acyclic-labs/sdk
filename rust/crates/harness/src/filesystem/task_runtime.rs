@@ -2043,21 +2043,28 @@ where
         )?;
         #[cfg(not(target_arch = "wasm32"))]
         let retained = if let Some(io) = io {
-            let work = io.original_native_work().ok_or_else(|| {
+            let _work = io.original_native_work().ok_or_else(|| {
                 observed::boundary(
                     Some(io),
                     crate::wire::ErrorCode::Unsupported,
                     "native wake admission requires original observer",
                 )
             })?;
-            let (retained, custody) = journal.admission_with_native_work(work)?.await?;
+            let (retained, custody) = journal.admission(Some(io))?.await?;
+            let Some(custody) = custody else {
+                drop(retained);
+                return Err(Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                    custody: None,
+                });
+            };
             io.absorb_native_custody(custody)?;
             retained
         } else {
-            journal.admission().await?
+            journal.admission(None)?.await?.0
         };
         #[cfg(target_arch = "wasm32")]
-        let retained = journal.admission().await?;
+        let retained = journal.admission(None)?.await?.0;
         let retained = retained.ok_or_else(|| {
             observed::boundary(
                 io,
@@ -2079,8 +2086,9 @@ where
             ));
         }
         let record = journal.observe_transition(slot.revision, io).await?;
-        if record.next.revision != slot.revision
-            || record.next.machine != admission.machine
+        let checkpoint = record.checkpoint()?;
+        if checkpoint.1 != slot.revision
+            || checkpoint.0 != &admission.machine
             || !matches!(record.transition.status, MachineStatus::Suspended)
         {
             return Err(observed::boundary(

@@ -224,7 +224,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let proof = self.host.machines.step(
             &record.prior, std::borrow::Cow::Borrowed(&record.input), None,
         )?;
-        if proof.0 != record.next || proof.1 != record.transition {
+        if record.checkpoint()? != (&proof.0.machine, proof.0.revision, &proof.0.state) || proof.1 != record.transition {
             return Err(conflict("workflow transition differs from pinned machine"));
         }
         if let crate::workflow::MachineStatus::Completed { value } = &proof.1.status {

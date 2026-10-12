@@ -130,13 +130,10 @@ impl ValueInspector {
             (Node::Schema(JsonValueSchema::ModelEvent), b"metadata") => {
                 (Node::Schema(JsonValueSchema::Root), gate(1))
             }
-            (Node::Schema(JsonValueSchema::ProjectedToolInvocation), b"arguments") => {
-                (Node::Schema(JsonValueSchema::Root), scope)
-            }
             (Node::Schema(JsonValueSchema::WorkflowRecord), b"input") => {
                 (Node::Schema(JsonValueSchema::Root), scope)
             }
-            (Node::Schema(JsonValueSchema::WorkflowRecord), b"prior" | b"next") => {
+            (Node::Schema(JsonValueSchema::WorkflowRecord), b"prior") => {
                 (Node::StateRecord, scope)
             }
             (Node::Schema(JsonValueSchema::WorkflowRecord), b"transition") => {

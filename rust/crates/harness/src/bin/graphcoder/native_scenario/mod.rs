@@ -3,7 +3,7 @@
 mod case;
 mod producer;
 use crate::native::{AuthorityBinding, Config, Files, ForkSourceConfig, Runtime};
-use crate::native_tools::{NativeToolCaller, NativeToolFork, NativeToolMerge};
+use crate::native_tools::{NativeToolCaller, NativeToolFork};
 use crate::native_writeback::NativePublicationConfig;
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
@@ -15,10 +15,11 @@ use acyclic_harness::{
     distributed::{WorkLease, WorkPull, Worker},
     executor::TurnOutput,
     filesystem::{
-        FORK_PREPARE_TASK_COMMAND_KIND, FilesystemContentVerifier, FilesystemForkVerifier,
-        FilesystemHost, FilesystemProjectMergeVerifier, ForkPreparationLimits, ForkToolArguments,
-        MODEL_TASK_COMMAND_KIND, ModelTaskCommand, RecursiveForkConfig, RecursiveSourceSnapshot,
-        StreamHistoryForkVerifier, fork_preparation_request, recursive_fork_source, workspace_ref,
+        ConfiguredRecursiveMerge, FORK_PREPARE_TASK_COMMAND_KIND, FilesystemContentVerifier,
+        FilesystemForkVerifier, FilesystemHost, FilesystemProjectMergeVerifier,
+        ForkPreparationLimits, ForkToolArguments, MODEL_TASK_COMMAND_KIND, ModelTaskCommand,
+        RecursiveForkConfig, RecursiveSourceSnapshot, StreamHistoryForkVerifier,
+        fork_preparation_request, recursive_fork_source, workspace_ref,
     },
     fork::{CompositeForkVerifier, ForkReport},
     model::ModelContent,

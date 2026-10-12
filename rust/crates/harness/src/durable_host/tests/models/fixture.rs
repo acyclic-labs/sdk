@@ -238,7 +238,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
                 |_| Ok(()),
             )
             .await?;
-        let record = workflow.replay(0, 1).await?.pop().unwrap();
+        let record = workflow.replay(0, 1, None)?.await?.0.pop().unwrap();
         assert_eq!(
             workflow
                 .commit(0, record.idempotency_key.clone(), record.clone())
@@ -246,7 +246,6 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             record
         );
         let mut wrong = record.clone();
-        wrong.next.state = serde_json::json!(1);
         wrong.transition.state = serde_json::json!(1);
         assert!(
             workflow
@@ -561,7 +560,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             ));
         }
         assert!(old_owner.verify(false, &mut None).await.is_err());
-        let record = workflow.replay(0, 1).await?.pop().unwrap();
+        let record = workflow.replay(0, 1, None)?.await?.0.pop().unwrap();
         assert!(
             workflow
                 .commit(0, record.idempotency_key.clone(), record.clone())
@@ -792,7 +791,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         cold.append(attempt, "settlement-69", &observation, None)?
             .await?;
         assert_eq!(cold.replay(attempt, 64, 64).await?.len(), 11);
-        let record = replacement_workflow.replay(0, 1).await?.pop().unwrap();
+        let record = replacement_workflow.replay(0, 1, None)?.await?.0.pop().unwrap();
         assert!(
             replacement_workflow
                 .commit(0, record.idempotency_key.clone(), record)
