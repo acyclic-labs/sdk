@@ -177,7 +177,7 @@ where
         #[cfg(target_arch = "wasm32")]
         let cancelled = self.host.cancellation_requested(task, None).await?;
         if cancelled {
-            self.settle_observed(task, fence, Outcome::Cancelled, io).await?;
+            self.task_host().settle_task(task, fence, Outcome::Cancelled, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
             Ok(WorkerTurn::Completed { task })
         } else { Ok(WorkerTurn::Reconciling) }
     }
