@@ -167,8 +167,8 @@ async fn sealed_summary_preparation(
         Arc::new(acyclic_stream::SystemUnixMillisClock),
     )?.with_session_limits(crate::scheduler::SessionLimits {
         active_tasks: 4, total_tasks: 4, depth: 2, model_steps: 4,
-    })?.with_resource_creation_provider(Arc::new(
-        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), issuer)?))?);
+    })?.with_resource_creation_providers(vec![Arc::new(
+        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), issuer)?)])?);
     let admission = |operation_id, parent, input| TaskAdmissionRecord {
         resource_proofs: Vec::new(), operation_id, task: identity.clone(), machine: machine.clone(),
         input, input_schema: schema.clone(), output_schema: schema.clone(), parent,
