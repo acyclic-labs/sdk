@@ -92,7 +92,7 @@ pub(crate) use types::lowercase_unicode_with_accounting;
 pub use attribute::{
     AttributeClass, AttributeEntry, AttributeError, AttributeName, AttributePage, attribute_page_id, decode_attribute_page, encode_attribute_page};
 pub use attribute_access::{
-    AttributeBatchLookup, AttributeLookup, AttributeLookupError, AttributeLookupFailure, lookup_attribute, lookup_attribute_async, lookup_attributes, lookup_attributes_async};
+    AttributeBatchLookup, AttributeLookup, AttributeLookupError, AttributeLookupFailure, lookup_attribute, lookup_attributes};
 pub(crate) use attribute_access::{
     lookup_attribute_async_with_accounting};
 pub use attribute_list::{
@@ -123,7 +123,7 @@ pub use extent::{
 pub use extent_clone::{
     ExtentCloneError, ExtentCloneFailure, ExtentCloneReceipt, ExtentCloneRequest, clone_extent_range};
 pub use extent_mutation::{
-    ExtentMutation, ExtentMutationError, ExtentMutationFailure, ExtentMutationOptions, ExtentMutationReceipt, apply_extent_mutations, apply_extent_mutations_async};
+    ExtentMutation, ExtentMutationError, ExtentMutationFailure, ExtentMutationReceipt, apply_extent_mutations};
 pub use file_read::{
     FileRangeRead, FileRangeReadError, FileRangeReadFailure, FileRangeRequest, read_file_range_async};
 pub(crate) use file_read::{
