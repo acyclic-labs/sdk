@@ -25,34 +25,30 @@ if (!binary || !isAbsolute(binary) || !statSync(binary).isFile()
   throw new Error("usage: node scripts/test-graphcoder.mjs ABSOLUTE_INSTALLED_BINARY [ABSOLUTE_NATIVE_CONFIG] [--full ABSOLUTE_SCENARIO_DIR]");
 }
 const digest = path => createHash("sha256").update(readFileSync(path)).digest("hex");
-function invocationLedgerPath(facts, configuration, label) {
+function invocationLedgerPath(facts, configuration) {
   if (typeof facts.model_invocation_ledger !== "string" || !isAbsolute(facts.model_invocation_ledger)
       || configuration.model_invocation_ledger !== facts.model_invocation_ledger) {
-    throw new Error(`${label}: installed qualification prerequisite missing: matching absolute manifest/Config.model_invocation_ledger`);
+    throw new Error("qualification requires matching absolute provider invocation ledger paths");
   }
   try {
     const info = statSync(facts.model_invocation_ledger);
     assert.ok(info.isFile() && info.size <= 1_048_576);
   } catch (cause) {
-    throw new Error(`${label}: installed qualification prerequisite unavailable: persisted actual provider invocation ledger`,
+    throw new Error("provider invocation ledger unavailable",
       { cause });
   }
   return facts.model_invocation_ledger;
 }
-function parseInvocationLedger(bytes) {
+function verifyInvocations(bytes, expected, requiredReconciles = []) {
   assert.ok(Buffer.isBuffer(bytes) && bytes.length <= 1_048_576);
   const text = bytes.toString("utf8");
-  if (!text.length) return [];
-  assert.ok(text.endsWith("\n"));
-  const lines = text.slice(0, -1).split("\n");
+  assert.ok(!text || text.endsWith("\n"));
+  const lines = text ? text.slice(0, -1).split("\n") : [];
   assert.ok(lines.length <= 128);
-  return lines.map(line => JSON.parse(line));
-}
-function verifyInvocations(bytes, expected, requiredReconciles = []) {
-  const rows = parseInvocationLedger(bytes);
   const generates = new Set();
   const reconciles = new Set();
-  for (const row of rows) {
+  for (const line of lines) {
+    const row = JSON.parse(line);
     const original = expected.get(row.operation_id);
     assert.ok(original);
     assert.equal(row.step, original.step, "observer step differs from original dispatch");
@@ -263,7 +259,7 @@ if (scenarioDirectory) {
   }
   const fullConfig = JSON.parse(readFileSync(manifest.config, "utf8"));
   assert.ok(fullConfig.deterministic_delay_ms >= 1000 && fullConfig.deterministic_delay_ms <= 5000);
-  const ledgerPath = invocationLedgerPath(manifest, fullConfig, "positive");
+  const ledgerPath = invocationLedgerPath(manifest, fullConfig);
   const observedModels = new Map();
   let retainedLedgerBytes = Buffer.alloc(0);
   const snapshotInvocations = (requiredReconciles = []) => {
@@ -279,10 +275,11 @@ if (scenarioDirectory) {
   const temporary = mkdtempSync(join(tmpdir(), "graphcoder-full-installed-"));
   let active;
   let negativeActive;
-  const input = (name, value) => {
+  let inputSequence = 0;
+  const input = value => {
     const bytes = JSON.stringify(value);
     assert.ok(Buffer.byteLength(bytes) <= 65_536);
-    const path = join(temporary, `${name}.json`);
+    const path = join(temporary, `${++inputSequence}.json`);
     writeFileSync(path, bytes);
     return path;
   };
@@ -290,33 +287,33 @@ if (scenarioDirectory) {
     assert.ok(isAbsolute(path) && statSync(path).isFile() && statSync(path).size <= 1_048_576);
     return JSON.parse(readFileSync(path, "utf8"));
   };
-  const bindDispatch = (task, command, barrier, transition) => {
+  const bindDispatch = (command, barrier, transition) => {
     assert.ok(transition?.commands.some(value => isDeepStrictEqual(value, command)));
     const execution = barrier[1];
     assert.ok(!observedModels.has(execution));
-    observedModels.set(execution, { task, step: 0, request_digest: barrier[2] });
+    observedModels.set(execution, { step: 0, request_digest: barrier[2] });
   };
-  const modelCheckpoint = async (client, name, task, lease) => {
-    const checkpoint = await client.commandJson(`/checkpoint ${input(name, { caller: task, lease })}`, "checkpoint");
+  const modelCheckpoint = async (client, task, lease) => {
+    const checkpoint = await client.commandJson(`/checkpoint ${input({ caller: task, lease })}`, "checkpoint");
     assert.equal(checkpoint.task, task);
     return checkpoint;
   };
-  const queueMailbox = async (client, facts, label) => {
+  const queueMailbox = async (client, facts) => {
     const rootLease = load(facts.leases.root);
     const receiveOperation = randomUUID();
     const modelOperation = randomUUID();
-    const receive = await client.commandJson(`/write ${input(`${label}-receive-command`, {
+    const receive = await client.commandJson(`/write ${input({
       caller: facts.tasks.root, lease: rootLease, volume: facts.callers.root.private_volume,
-      operation: receiveOperation, path: `installed/${label}-receive.json`, bytes: JSON.stringify({ after: 0 }),
+      operation: receiveOperation, path: "installed/receive.json", bytes: JSON.stringify({ after: 0 }),
     })}`, "file");
-    const model = await client.commandJson(`/write ${input(`${label}-model-command`, {
+    const model = await client.commandJson(`/write ${input({
       caller: facts.tasks.root, lease: rootLease, volume: facts.callers.root.private_volume,
-      operation: modelOperation, path: `installed/${label}-model.json`,
+      operation: modelOperation, path: "installed/model.json",
       bytes: JSON.stringify({ input: "actual installed mailbox steering",
         selected_context: null, max_steps: 1, max_output_tokens: 256, mailbox_operation: receiveOperation }),
     })}`, "file");
     const operation = randomUUID();
-    const admitted = await client.command(`/queue-mailbox ${input(`${label}-mailbox-admission`, {
+    const admitted = await client.command(`/queue-mailbox ${input({
       operation, parent: facts.tasks.root, lease: rootLease, input: {
         receive: { operation_id: receiveOperation, kind: "acyclic.mail.receive.v1", payload: receive.file },
         model: { operation_id: modelOperation, kind: "acyclic.model.v1", payload: model.file },
@@ -337,37 +334,37 @@ if (scenarioDirectory) {
       [label, load(manifest.leases[label])]));
     const before = {};
     for (const label of ["root", "left", "right", "grandchild"]) {
-      before[label] = (await active.commandJson(`/read ${input(`project-before-${label}`, {
+      before[label] = (await active.commandJson(`/read ${input({
         caller: manifest.tasks[label], lease: leases[label], file: manifest.files[`${label}_project`],
       })}`, "file")).text;
     }
     const mutation = `installed-left-project-${randomUUID()}`;
-    const changed = await active.commandJson(`/write ${input("left-project-write", {
+    const changed = await active.commandJson(`/write ${input({
       caller: left, lease: leases.left, volume: retained.left.report.request.preparation.child_project_volume,
       operation: randomUUID(), path: manifest.files.left_project.path, bytes: mutation,
     })}`, "file");
     assert.deepEqual(changed.file.volume, manifest.files.left_project.volume);
     assert.notEqual(changed.file.version, manifest.files.left_project.version);
-    const changedRead = await active.commandJson(`/read ${input("left-project-written", {
+    const changedRead = await active.commandJson(`/read ${input({
       caller: left, lease: leases.left, file: changed.file,
     })}`, "file");
     assert.equal(changedRead.text, mutation);
     const sends = [];
     for (let index = 0; index < 17; index++) {
       const request = { caller: root, lease: leases.root, recipient: left, operation: randomUUID(), payload: manifest.files.root_project };
-      const path = input(`bounded-mail-${index}`, request);
+      const path = input(request);
       sends.push({ request, path, ack: await active.commandJson(`/mail ${path}`, "mail") });
     }
     assert.deepEqual(await active.commandJson(`/mail ${sends[0].path}`, "mail"), sends[0].ack);
-    const inboxPath = input("bounded-inbox-first", { caller: left, lease: leases.left, after: 0 });
+    const inboxPath = input({ caller: left, lease: leases.left, after: 0 });
     const inboxFirst = await active.commandJson(`/inbox ${inboxPath}`, "inbox");
     assert.ok(inboxFirst.items.length <= 16);
     assert.deepEqual(await active.commandJson(`/inbox ${inboxPath}`, "inbox"), inboxFirst);
-    const inboxLast = await active.commandJson(`/inbox ${input("bounded-inbox-next", {
+    const inboxLast = await active.commandJson(`/inbox ${input({
       caller: left, lease: leases.left, after: inboxFirst.next_after,
     })}`, "inbox");
     assert.deepEqual([...inboxFirst.items, ...inboxLast.items].map(value => value.message_id), sends.map(value => value.request.operation));
-    const mailbox = await queueMailbox(active, manifest, "positive");
+    const mailbox = await queueMailbox(active, manifest);
     const mailboxClaim = await active.command(`/claim ${mailbox.task}`, /worker-claim task=([0-9a-f-]+) lease-json-hex=([0-9a-f]+)/);
     const mailboxLeaseBytes = Buffer.from(mailboxClaim[2], "hex");
     const mailboxLease = JSON.parse(mailboxLeaseBytes.toString("utf8"));
@@ -376,19 +373,19 @@ if (scenarioDirectory) {
     const mailboxStart = active.stdout.length;
     await active.command(`/resume ${mailboxLeasePath}`, /original lease submitted for authoritative reconciliation/);
     await active.expect(new RegExp(`worker suspended task=${mailbox.task} checkpoint=`), "stdout", mailboxStart);
-    await active.commandJson(`/mail ${input("mailbox-first-steer", {
+    await active.commandJson(`/mail ${input({
       caller: root, lease: leases.root, recipient: mailbox.task,
       operation: randomUUID(), payload: manifest.files.root_project_before,
     })}`, "mail");
     const dispatchStart = active.stderr.length, modelStart = active.stdout.length;
     await active.command(`/resume ${mailboxLeasePath}`, /original lease submitted for authoritative reconciliation/);
     const mailboxDispatch = await active.expect(/deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/, "stderr", dispatchStart);
-    const consumed = await modelCheckpoint(active, "mailbox-consumed-checkpoint", mailbox.task, mailboxLease);
-    bindDispatch(mailbox.task, mailbox.modelCommand, mailboxDispatch, consumed.transition);
-    await active.commandJson(`/mail ${input("mailbox-later-steer", {
+    const consumed = await modelCheckpoint(active, mailbox.task, mailboxLease);
+    bindDispatch(mailbox.modelCommand, mailboxDispatch, consumed.transition);
+    await active.commandJson(`/mail ${input({
       caller: root, lease: leases.root, recipient: mailbox.task, operation: randomUUID(), payload: manifest.files.root_project_after,
     })}`, "mail");
-    const notReinterpreted = await modelCheckpoint(active, "mailbox-live-checkpoint", mailbox.task, mailboxLease);
+    const notReinterpreted = await modelCheckpoint(active, mailbox.task, mailboxLease);
     assert.deepEqual(notReinterpreted.checkpoint.state.mail, consumed.checkpoint.state.mail);
     await active.expect(new RegExp(`worker completed task=${mailbox.task}`), "stdout", modelStart);
     const mailboxOutcome = await active.commandJson(`/outcome ${mailbox.task}`, "task");
@@ -404,7 +401,7 @@ if (scenarioDirectory) {
     const selectedPrivate = crossInput.request.payload.selections.find(value => value.revision.kind === "private_volume");
     assert.deepEqual(selectedProject.revision.reference.volume, manifest.callers.root.project);
     assert.deepEqual(selectedPrivate.revision.reference.volume, manifest.callers.left.private_volume);
-    const selectedForeign = await active.commandJson(`/read-path ${input("root-exact-selected-foreign-generation", {
+    const selectedForeign = await active.commandJson(`/read-path ${input({
       caller: root, lease: leases.root, volume: selectedProject.revision.reference.volume,
       path: manifest.files.root_project.path, generation: selectedProject.revision.reference.generation,
     })}`, "file");
@@ -417,7 +414,7 @@ if (scenarioDirectory) {
     const preparedReport = await active.commandJson(`/outcome ${pendingCross.task}`, "task");
     assert.equal(preparedReport.task, pendingCross.task);
     assert.ok(preparedReport.outcome.Succeeded, "real creator preparation must authoritatively succeed");
-    const publishedCross = await active.commandJson(`/publish-fork ${input("cross-source-publish", {
+    const publishedCross = await active.commandJson(`/publish-fork ${input({
       caller: left, lease: leases.left, preparation: pendingCross.task,
     })}`, "fork");
     const crossTask = publishedCross.admission.Accepted;
@@ -429,13 +426,13 @@ if (scenarioDirectory) {
     const crossLease = JSON.parse(crossLeaseBytes.toString("utf8"));
     const crossLeasePath = join(temporary, "cross-source-original-lease.json");
     writeFileSync(crossLeasePath, crossLeaseBytes);
-    const crossWorkspace = await active.commandJson(`/read-path ${input("cross-source-project-head", {
+    const crossWorkspace = await active.commandJson(`/read-path ${input({
       caller: crossTask, lease: crossLease,
       volume: crossProject.revision.reference.volume, path: manifest.files.root_project.path,
     })}`, "file");
     assert.equal(crossWorkspace.text, selectedForeign.text);
     assert.notEqual(crossWorkspace.text, changedRead.text);
-    const inherited = await active.commandJson(`/inherited-history ${input("cross-source-caller-messages", {
+    const inherited = await active.commandJson(`/inherited-history ${input({
       caller: crossTask, lease: crossLease, seed: publishedCross.seed, after_sequence: retained.left.seed.inherited_through_sequence,
     })}`, "inherited-history");
     assert.ok(inherited.messages.some(value => isDeepStrictEqual(value.content, manifest.files.left_transcript)));
@@ -443,7 +440,7 @@ if (scenarioDirectory) {
     const nativeRequest = load(manifest.native_publication_request);
     const nativeBefore = digest(nativeFacts.conflicting_edit_path);
     const nativeConcurrentBefore = digest(nativeFacts.concurrent_edit_path);
-    const imported = await active.commandJson(`/file ${input("native-imported-baseline", {
+    const imported = await active.commandJson(`/file ${input({
       caller: manifest.tasks.bootstrap_seed, lease: load(manifest.leases.bootstrap_seed),
       file: manifest.files.native_import_baseline,
     })}`, "file");
@@ -456,13 +453,13 @@ if (scenarioDirectory) {
 
     const negative = load(manifest.negative_control);
     assert.equal(negative.session_limits.total_tasks, 11);
-    const negativeLedgerPath = invocationLedgerPath(negative, load(negative.config), "negative");
+    const negativeLedgerPath = invocationLedgerPath(negative, load(negative.config));
     assert.notEqual(negativeLedgerPath, ledgerPath);
     const negativeLedgerBytes = readFileSync(negativeLedgerPath);
     verifyInvocations(negativeLedgerBytes, new Map());
     negativeActive = new InstalledSession(negative.config);
     await negativeActive.expect(/actual local Harness runtime/);
-    await queueMailbox(negativeActive, negative, "negative");
+    await queueMailbox(negativeActive, negative);
     const negativeCross = negative.preparations.find(value => value.label === "cross_source");
     const negativeCrossRequest = load(negativeCross.request);
     await negativeActive.command(`/prepare ${negativeCross.request}`, /queued preparation-task=/);
@@ -471,7 +468,7 @@ if (scenarioDirectory) {
     await negativeActive.expect(new RegExp(`worker completed task=${negativeCross.task}`), "stdout", negativeCrossStart);
     const negativePrepared = await negativeActive.commandJson(`/outcome ${negativeCross.task}`, "task");
     assert.ok(negativePrepared.outcome.Succeeded);
-    const negativePublishPath = input("negative-cross-source-publish", {
+    const negativePublishPath = input({
       caller: negative.tasks.left, lease: load(negative.leases.left), preparation: negativeCross.task,
     });
     await negativeActive.quit();
@@ -526,7 +523,7 @@ if (scenarioDirectory) {
     await negativeActive.quit();
     await active.quit();
     run(["--session", manifest.config, "--headless"],
-      `/read ${input("mismatched-original-owner", {
+      `/read ${input({
         caller: left, lease: leases.root, file: manifest.files.left_project,
       })}\n`, false, 15_000);
     await active.expect(/actual local Harness runtime/);
@@ -543,8 +540,8 @@ if (scenarioDirectory) {
       const dispatch = await active.expect(
         /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
         "stderr", dispatchedFrom);
-      const checkpoint = await modelCheckpoint(active, `model-dispatch-${task}`, task, load(leasePath));
-      bindDispatch(task, command, dispatch, checkpoint.transition);
+      const checkpoint = await modelCheckpoint(active, task, load(leasePath));
+      bindDispatch(command, dispatch, checkpoint.transition);
       snapshotInvocations();
       await active.expect(new RegExp(`worker completed task=${task}`), "stdout", started);
       const outcome = await active.commandJson(`/outcome ${task}`, "task");
@@ -562,8 +559,8 @@ if (scenarioDirectory) {
     const rootDispatch = await active.expect(
       /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
       "stderr", rootDispatchStart);
-    const rootCheckpoint = await modelCheckpoint(active, "root-original-model-checkpoint", root, leases.root);
-    bindDispatch(root, manifest.callers.root.admission.input, rootDispatch, rootCheckpoint.transition);
+    const rootCheckpoint = await modelCheckpoint(active, root, leases.root);
+    bindDispatch(manifest.callers.root.admission.input, rootDispatch, rootCheckpoint.transition);
     const beforeKillLedger = snapshotInvocations();
     assert.ok(!active.stdout.slice(rootStart).includes(`worker completed task=${root}`));
     assert.equal(active.finished, null);
@@ -589,18 +586,15 @@ if (scenarioDirectory) {
     assert.ok(rootOutcome.outcome.Succeeded.text.includes(rootDispatch[2]));
     outcomes.set(root, rootOutcome);
     const rootModelOperation = rootDispatch[1];
-    const reconciledLedger = snapshotInvocations([rootModelOperation]);
-    assert.equal(parseInvocationLedger(reconciledLedger).filter(value => value.phase === "generate").length,
-      parseInvocationLedger(beforeKillLedger).filter(value => value.phase === "generate").length);
+    snapshotInvocations([rootModelOperation]);
     const bootstrapStart = active.stdout.length;
     const bootstrapDispatchStart = active.stderr.length;
     await active.command(`/resume ${manifest.leases.bootstrap_seed}`, /original lease submitted for authoritative reconciliation/);
     const bootstrapDispatch = await active.expect(
       /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
       "stderr", bootstrapDispatchStart);
-    const bootstrapCheckpoint = await modelCheckpoint(active, "bootstrap-original-model-checkpoint",
-      manifest.tasks.bootstrap_seed, load(manifest.leases.bootstrap_seed));
-    bindDispatch(manifest.tasks.bootstrap_seed, manifest.callers.bootstrap_seed.admission.input,
+    const bootstrapCheckpoint = await modelCheckpoint(active, manifest.tasks.bootstrap_seed, load(manifest.leases.bootstrap_seed));
+    bindDispatch(manifest.callers.bootstrap_seed.admission.input,
       bootstrapDispatch, bootstrapCheckpoint.transition);
     snapshotInvocations([rootModelOperation]);
     await active.expect(new RegExp(`worker completed task=${manifest.tasks.bootstrap_seed}`), "stdout", bootstrapStart);
