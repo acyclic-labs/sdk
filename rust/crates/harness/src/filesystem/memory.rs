@@ -461,7 +461,7 @@ impl ToolExecutor for LocalListFilesTool {
                         .map_err(Error::from)?;
                     Ok((Some(output.0), output.1))
                 }
-                None => Ok((None, work.retain_owned(std::mem::size_of::<Option<ToolResult>>() as u64)
+                None => Ok((None, work.claim(std::mem::size_of::<Option<ToolResult>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(Error::from)?)),
             }
         })

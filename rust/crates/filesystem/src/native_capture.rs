@@ -51,7 +51,7 @@ impl NativeViewBaseline {
         read_only: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>, crate::NativeTreeMaterializationError> {
-        let allocation = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let allocation = work.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(std::sync::Arc::new(Self {
             root_identity, read_only, _allocation: Some(allocation),
         }))
@@ -716,12 +716,12 @@ async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: AsyncObjectSt
         ? {
             return Err(CaptureError::InvalidOptions);
         }
-        let mut receipt = CaptureReceipt::default();
+        let receipt = CaptureReceipt::default();
         let candidate = checkout.private_candidate(&meter.native, &cancellation)?;
         (receipt, candidate, unique)
     };
     let observed = observe_unique_paths(unique, &source_root, &cancellation, meter)?;
-    let mut states = lookup_capture_states(&mut candidate, observed, batch_size, meter).await?;
+    let states = lookup_capture_states(&mut candidate, observed, batch_size, meter).await?;
     let mut host_links = CaptureMap::new();
     let states_bytes = states.capacity() as u64 * std::mem::size_of::<CapturePathState>() as u64;
     let mut states = states.into_iter();
@@ -860,8 +860,8 @@ pub(crate) fn capture_runtime_meter_owner(
     if !capture.owns_native_work(native) {
         return Err(crate::NativeTreeMaterializationError::InvalidLayout);
     }
-    let header = native.claim(std::mem::size_of::<CapturedRuntimeReadMeter>() as u64)?;
-    let base = native.runtime_meter_owner();
+    let header = native.claim(std::mem::size_of::<CapturedRuntimeReadMeter>() as u64, u64::from((std::mem::size_of::<CapturedRuntimeReadMeter>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
+    let base = native.runtime_meter();
     Ok(std::sync::Arc::new(CapturedRuntimeReadMeter {
         base, _header: header, _capture: std::sync::Arc::clone(capture),
     }))
@@ -933,7 +933,7 @@ fn native_device_control_in_scope(
     code: u32, input: &[u8], output: &mut [u8], scope: &CaptureWorkScope,
 ) -> Result<usize, DemandError> {
     acyclic_native_runtime::device_control_in_place(
-        file, code, input, output, Some((scope.native.runtime_meter(), acyclic_native_runtime::NativeOperationKind::Read)),
+        file, code, input, output, Some((scope.native.runtime_meter().as_ref(), acyclic_native_runtime::NativeOperationKind::Read)),
     ).map_err(|error| scope.native.native_read_meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error)))
 }
@@ -1031,7 +1031,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let expected_identity = options.expected_root_identity;
     let worker = meter.native.clone();
     let capture = std::sync::Arc::clone(meter.custody.as_ref().expect("capture scope is live"));
-    let task_meter = meter.native.runtime_meter_owner();
+    let task_meter = meter.native.runtime_meter();
     let task = acyclic_native_runtime::run_blocking_io(move || {
         let worker = CaptureWorkScope { native: worker, custody: None };
         let result = (|| {
@@ -2872,7 +2872,7 @@ mod shared_watch_capture_tests {
         let native = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
         let original = native.original_demand_work();
-        let meter = Arc::clone(original.meter());
+        let meter = Arc::clone(&original.state);
         *binding.lock().expect("fixture binding") = Some(Arc::clone(&meter));
         let limits = checkout.volume_config().limits;
         let path = NamespacePath::from_portable(
@@ -3655,7 +3655,7 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
         let logical_bytes = metadata.len();
         let ranges = allocated_data_ranges(
             &file, 0, logical_bytes, maximum_extent_spans, &mut meter.source(),
-            |work| work.original_arc().lock().remaining(),
+            |work| work.original.lock().remaining(),
             #[cfg(windows)]
             |file, code, input, output, _work| {
                 native_device_control_in_scope(file, code, input, output, meter)
@@ -4152,7 +4152,7 @@ fn native_positional_file_measured(
     file: std::fs::File,
     scope: &CaptureWorkScope,
 ) -> Result<acyclic_native_runtime::NativeFile, CaptureError> {
-    let meter = scope.native.runtime_meter_owner();
+    let meter = scope.native.runtime_meter();
     #[cfg(windows)]
     let result = unsafe {
         acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))

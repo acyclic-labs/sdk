@@ -99,8 +99,8 @@ where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
     ).await?;
     drop(schema.0);
     drop(schema.1);
-    let plan_custody = work.retain_owned(
-        (ROOT_ALLOCATION_PROVIDER.len() + ROOT_ALLOCATION_EFFECT.len()) as u64,
+    let plan_custody = work.claim(
+        (ROOT_ALLOCATION_PROVIDER.len() + ROOT_ALLOCATION_EFFECT.len()) as u64, 0, acyclic_fs::WorkCounters::UNCHARGED,
     ).map_err(native_error)?;
     let plan = TaskEffectPlan {
         provider: ROOT_ALLOCATION_PROVIDER.to_owned(), guarantee: EffectGuarantee::AtMostOnce,

@@ -12,7 +12,7 @@ description = "Shared terminal observability for first-party gRPC clients"
 default = ["runtime"]
 runtime = ["dep:http-body", "dep:pin-project-lite", "dep:tonic", "dep:tracing"]
 codegen = ["dep:syn", "dep:prettyplease"]
-test-support = ["dep:tracing", "dep:tracing-subscriber", "dep:tokio", "dep:rcgen", "dep:tempfile"]
+test-support = ["dep:http-body", "dep:tonic", "dep:tracing", "dep:tracing-subscriber", "dep:tokio", "tokio/time", "dep:rcgen", "dep:tempfile"]
 
 [dependencies]
 syn = { version = "=3.0.6", features = ["full", "visit"], optional = true }

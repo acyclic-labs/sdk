@@ -85,7 +85,7 @@ impl RequestId {
     fn fresh_with_native_work(
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Self, acyclic_fs::NativeAllocation)> {
-        let allocation = work.claim(36).map_err(|cause| acyclic_harness::Error::NativeWork {
+        let allocation = work.claim(36, 1, acyclic_fs::WorkCounters::UNCHARGED).map_err(|cause| acyclic_harness::Error::NativeWork {
             cause, custody: None,
         })?;
         let mut text = String::new();

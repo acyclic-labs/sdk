@@ -240,7 +240,7 @@ impl Collection {
             holds.slots.push(Slot { held: Some(held), next_free: None });
             id
         };
-        Hold { collection: Arc::clone(self), id, slot_quota: KernelOwnedAllocation::Standalone }
+        Hold { collection: Arc::clone(self), id, _slot_quota: KernelOwnedAllocation::Standalone }
     }
 
     fn register_measured(
@@ -338,7 +338,7 @@ impl Collection {
             holds.slots.push(Slot { held: Some(held), next_free: None });
             id
         };
-        Ok(Hold { collection: Arc::clone(self), id, slot_quota })
+        Ok(Hold { collection: Arc::clone(self), id, _slot_quota: slot_quota })
     }
 
     pub(crate) fn hold_record_with_accounting(
@@ -353,15 +353,7 @@ impl Collection {
         )).transpose()
     }
 
-    /// Keeps what a detached file's `record` reaches for as long as the
-    /// returned hold lives.
-    pub(crate) fn hold_record(
-        collection: Option<&Arc<Self>>,
-        record: crate::kernel::FileRecord,
-        config: crate::model::VolumeConfig,
-    ) -> Option<Hold> {
-        collection.map(|collection| collection.register(Held::Record { record, config }))
-    }
+
 }
 
 impl Collecting {
@@ -408,7 +400,7 @@ pub(crate) struct Hold {
     collection: Arc<Collection>,
     id: usize,
     // Last: Drop removes the actual held payload before this exclusive quota.
-    slot_quota: KernelOwnedAllocation,
+    _slot_quota: KernelOwnedAllocation,
 }
 
 impl Hold {
@@ -440,7 +432,7 @@ impl Drop for Hold {
 }
 
 /// A checkout's base and working roots, which a collection treats as live.
-/// They change only through [`Self::set`] and [`Self::set_working`], which
+/// They change only through [`Self::set_prepared_root`] and [`Self::set_working`], which
 /// keep the registration exact.
 pub(crate) struct CheckoutRoots {
     base: ObjectId,
@@ -666,22 +658,6 @@ impl CheckoutRoots {
     /// The generation the checkout is based on.
     pub(crate) const fn base(&self) -> ObjectId {
         self.base
-    }
-
-    /// The same roots, registered again for a replica of the checkout.
-    pub(crate) fn replicate(&self) -> Self {
-        Self::new(
-            self.hold.as_ref().map(|hold| &hold.collection),
-            self.config,
-            self.base,
-            self.working.clone(),
-        )
-    }
-
-    /// Rebases the checkout onto `base` with the working tree `working`.
-    pub(crate) fn set(&mut self, base: ObjectId, working: GenerationRoot) {
-        self.base = base;
-        self.set_working(working);
     }
 
     /// Replaces the working tree.

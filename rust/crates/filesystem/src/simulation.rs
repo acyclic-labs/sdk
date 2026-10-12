@@ -1333,7 +1333,7 @@ fn altered_read_data(
         #[cfg(not(target_arch = "wasm32"))]
         KernelOwnedAllocation::NativeOriginal(allocation) => {
             let original = accounting.native_work().ok_or(ObjectStoreError::Corrupt)?;
-            OwnedBytes::from_vec_with_guard(bytes, allocation, original.runtime_meter_owner())
+            OwnedBytes::from_vec_with_guard(bytes, allocation, original.runtime_meter())
                 .map_err(|failure| match failure.into_error() {
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) =>
                         crate::FsError::from(original.runtime_error(error)),
@@ -1674,7 +1674,7 @@ mod native_write_controls {
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
         let baseline = work.live_allocation_bytes();
-        let mut custody = work.claim(4).expect("payload capacity");
+        let mut custody = work.claim(4, 1, crate::WorkCounters::UNCHARGED).expect("payload capacity");
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(4).expect("payload buffer");
         bytes.extend_from_slice(b"body");

@@ -126,9 +126,13 @@ impl<'a> PublicationAccounting<'a> {
     }
 
     fn retain(&mut self, bytes: u64) -> Result<(), crate::FsError> {
-        if let Self::Standalone { retained, .. } = self {
-            *retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
-            self.remaining()?;
+        match self {
+            Self::Standalone { retained, .. } => {
+                *retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
+                self.remaining()?;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native(_) => {}
         }
         Ok(())
     }
@@ -605,8 +609,10 @@ where
     };
     // Field order keeps the concrete proof data physically ahead of its guard.
     let mut output = ProvenPublication { proof, guard };
-    if let PublicationProofGuard::Standalone(guard) = &output.guard {
-        accounting.retain(guard.retained_bytes()).map_err(E::from)?;
+    match &output.guard {
+        PublicationProofGuard::Standalone(guard) => accounting.retain(guard.retained_bytes()).map_err(E::from)?,
+        #[cfg(not(target_arch = "wasm32"))]
+        PublicationProofGuard::Native(_) => {}
     }
     if output.proof.root.volume_id != request.volume_id {
         return Err(E::from(crate::FsError::Publication(PublicationError::VolumeMismatch {
@@ -847,7 +853,7 @@ fn prepare_publication_commit(
             )?;
             cancellation.check()?;
             original.admit(WorkCounters::UNCHARGED)?;
-            let control = original.claim(super::allocation::bytes_owner_control_bytes::<NativePublicationPayload>()?)?;
+            let control = { let claim_bytes = super::allocation::bytes_owner_control_bytes::<NativePublicationPayload>()?; original.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
             let (payload, fingerprint) = built;
             let super::persistent_point::Owned { value: payload, allocation, .. } = payload;
             let super::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
