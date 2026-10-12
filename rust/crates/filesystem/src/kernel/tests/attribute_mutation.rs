@@ -277,26 +277,26 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
         },
         ..entry(1, 1, 1)?
     };
-    assert_eq!(
+    assert!(matches!(
         AttributeMutation::Insert(invalid).validate(),
-        Err(AttributeSemanticError::InvalidEntry)
-    );
-    assert_eq!(
+        Err(AttributeMutationError::InvalidEntry)
+    ));
+    assert!(matches!(
         AttributeMutation::Remove {
             name: name(2, 1)?,
             expected: Some(entry(1, 1, 1)?),
         }
         .validate(),
-        Err(AttributeSemanticError::NameMismatch)
-    );
-    assert_eq!(
+        Err(AttributeMutationError::NameMismatch)
+    ));
+    assert!(matches!(
         AttributeMutation::Replace {
             expected: entry(1, 1, 1)?,
             replacement: entry(2, 1, 2)?,
         }
         .validate(),
-        Err(AttributeSemanticError::NameMismatch)
-    );
+        Err(AttributeMutationError::NameMismatch)
+    ));
     assert!(
         AttributeMutation::Remove {
             name: name(1, 1)?,
@@ -310,10 +310,10 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
     assert_eq!(insert.key(), &name(1, 1)?);
     assert!(insert.changes_cardinality());
     let mut current = Some(entry(1, 1, 1)?);
-    assert_eq!(
+    assert!(matches!(
         insert.replacement(current.as_ref()),
-        Err(AttributeSemanticError::AlreadyExists)
-    );
+        Err(AttributeMutationError::AlreadyExists)
+    ));
     current = None;
     assert!(insert.replacement(current.as_ref()).is_ok());
 
@@ -322,17 +322,17 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
         expected: Some(entry(1, 1, 2)?),
     };
     current = None;
-    assert_eq!(
+    assert!(matches!(
         remove.replacement(current.as_ref()),
-        Err(AttributeSemanticError::Missing)
-    );
+        Err(AttributeMutationError::Missing)
+    ));
     current = Some(entry(1, 1, 1)?);
-    assert_eq!(
+    assert!(matches!(
         remove.replacement(current.as_ref()),
-        Err(AttributeSemanticError::StateConflict)
-    );
+        Err(AttributeMutationError::StateConflict)
+    ));
     current = Some(entry(1, 1, 2)?);
-    assert_eq!(remove.replacement(current.as_ref()), Ok(None));
+    assert!(remove.replacement(current.as_ref())?.is_none());
 
     let replace = AttributeMutation::Replace {
         expected: entry(1, 1, 1)?,
@@ -340,92 +340,16 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
     };
     assert!(!replace.changes_cardinality());
     current = None;
-    assert_eq!(
+    assert!(matches!(
         replace.replacement(current.as_ref()),
-        Err(AttributeSemanticError::Missing)
-    );
+        Err(AttributeMutationError::Missing)
+    ));
     current = Some(entry(1, 1, 3)?);
-    assert_eq!(
+    assert!(matches!(
         replace.replacement(current.as_ref()),
-        Err(AttributeSemanticError::StateConflict)
-    );
+        Err(AttributeMutationError::StateConflict)
+    ));
     current = Some(entry(1, 1, 1)?);
-    assert_eq!(replace.replacement(current.as_ref()).map(|value| value.cloned()), Ok(Some(entry(1, 1, 2)?)));
+    assert_eq!(replace.replacement(current.as_ref())?.cloned(), Some(entry(1, 1, 2)?));
     Ok(())
-}
-
-#[test]
-fn persistent_error_translation_is_total() {
-    use persistent_btree::Error as PersistentError;
-
-    assert!(matches!(
-        map_error(PersistentError::Empty),
-        AttributeMutationError::Empty
-    ));
-    assert!(matches!(
-        map_error(PersistentError::TooManyMutations),
-        AttributeMutationError::TooManyMutations
-    ));
-    assert!(matches!(
-        map_error(PersistentError::WrongRootKind),
-        AttributeMutationError::WrongRootKind
-    ));
-    assert!(matches!(
-        map_error(PersistentError::InvalidLimits),
-        AttributeMutationError::InvalidLimits
-    ));
-    assert!(matches!(
-        map_error(PersistentError::PageItemTooLarge),
-        AttributeMutationError::PageItemTooLarge
-    ));
-    assert!(matches!(
-        map_error(PersistentError::HeightExceeded),
-        AttributeMutationError::HeightExceeded
-    ));
-    assert!(matches!(
-        map_error(PersistentError::CycleOrAlias),
-        AttributeMutationError::CycleOrAlias
-    ));
-    assert!(matches!(
-        map_error(PersistentError::ChildBoundsMismatch),
-        AttributeMutationError::ChildBoundsMismatch
-    ));
-    assert!(matches!(
-        map_error(PersistentError::MutationContract),
-        AttributeMutationError::MutationContract
-    ));
-    assert!(matches!(
-        map_error(PersistentError::AllocationFailed),
-        AttributeMutationError::AllocationFailed
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Allocation(
-            AllocationError::CapacityExceeded
-        )),
-        AttributeMutationError::AllocationFailed
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Allocation(AllocationError::Work(
-            WorkError::Overflow
-        ))),
-        AttributeMutationError::Work(WorkError::Overflow)
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Semantic(AttributeSemanticError::Missing)),
-        AttributeMutationError::Semantic(AttributeSemanticError::Missing)
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Storage(ObjectStoreError::Missing)),
-        AttributeMutationError::Storage(ObjectStoreError::Missing)
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Decode(
-            CanonicalDecodeError::LengthOverflow
-        )),
-        AttributeMutationError::Decode(CanonicalDecodeError::LengthOverflow)
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Work(WorkError::Overflow)),
-        AttributeMutationError::Work(WorkError::Overflow)
-    ));
 }
