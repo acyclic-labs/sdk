@@ -1,5 +1,43 @@
 use super::*;
 
+#[cfg(all(feature = "local", feature = "native-mount"))]
+pub(super) fn native_absolute_string(
+    path: &str,
+    work: &NativeMaterializationWork,
+) -> Result<(String, NativeAllocation), NativeTreeMaterializationError> {
+    work.display(&format_args!("/{path}"))
+}
+
+pub(super) fn push_buffer<T>(
+    values: &mut Vec<T>,
+    value: T,
+    allocation: &mut NativeAllocation,
+) -> Result<(), NativeTreeMaterializationError> {
+    if values.len() == values.capacity() {
+        let capacity = values
+            .capacity()
+            .checked_mul(2)
+            .and_then(|size| size.checked_add(1))
+            .ok_or(crate::WorkError::Overflow)?;
+        let before = values.capacity();
+        let mut growth = allocation.work().claim(
+            owned_size(capacity - before, std::mem::size_of::<T>())?,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?;
+        let reserved = values.try_reserve_exact(capacity - values.len());
+        let reconciled = growth.reconcile_capacity(owned_size(
+            values.capacity() - before,
+            std::mem::size_of::<T>(),
+        )?);
+        allocation.absorb(&mut growth)?;
+        reserved.map_err(NativeTreeMaterializationError::AllocationFailed)?;
+        reconciled?;
+    }
+    values.push(value);
+    Ok(())
+}
+
 pub(super) fn owned_size(
     count: usize,
     width: usize,

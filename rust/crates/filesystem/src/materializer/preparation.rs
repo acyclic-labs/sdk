@@ -17,6 +17,72 @@ impl<E> NativeStageUncertainty<E> {
         self.cause.as_ref().as_ref().expect("staging failure")
     }
 }
+
+#[cfg(feature = "native-mount")]
+impl<S: MaterializationJournalStore>
+    JournaledMaterializer<S, Arc<NativeTreeMaterializationBackend>>
+{
+    pub(super) async fn reset_stage<E, F, Fut>(
+        &self,
+        journal: MaterializationJournal,
+        relative: &str,
+        before_effect: &mut F,
+    ) -> Result<(MaterializationJournal, crate::NativeRootIdentity), E>
+    where
+        E: From<MaterializationError<S::Error, NativeTreeMaterializationError>>
+            + From<NativeStageUncertainty<E>>,
+        F: FnMut() -> Fut + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
+    {
+        let work = self.backend.work();
+        let allocation = work
+            .claim(
+                std::mem::size_of::<Option<E>>() as u64,
+                u64::from(std::mem::size_of::<Option<E>>() != 0),
+                crate::WorkCounters::UNCHARGED,
+            )
+            .map_err(|error| E::from(MaterializationError::Backend(error)))?;
+        let mut cause = Box::new(None);
+        before_effect().await?;
+        self.verify_allocation(&journal).await.map_err(E::from)?;
+        if self
+            .load(journal.plan.operation_id)
+            .await
+            .map_err(E::from)?
+            .as_ref()
+            != Some(&journal)
+        {
+            return Err(E::from(MaterializationError::PlanConflict));
+        }
+        let last_durable_work = journal.work;
+        let completion = self
+            .store
+            .prepare_action(journal)
+            .await
+            .map_err(|error| E::from(MaterializationError::Store(error)))?;
+        let result = async {
+            let identity = self
+                .backend
+                .reset_target_directory(relative)
+                .await
+                .map_err(|error| E::from(MaterializationError::Backend(error)))?;
+            let journal = completion
+                .await
+                .map_err(|error| E::from(MaterializationError::Store(error)))?;
+            Ok((journal, identity))
+        }
+        .await;
+        result.map_err(|error| {
+            *cause = Some(error);
+            E::from(NativeStageUncertainty {
+                cause,
+                last_durable_work,
+                observed_work: work.receipt(),
+                _allocation: allocation,
+            })
+        })
+    }
+}
 impl<E: std::fmt::Display> std::fmt::Display for NativeStageUncertainty<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "native staging completion uncertain: {}", self.cause())

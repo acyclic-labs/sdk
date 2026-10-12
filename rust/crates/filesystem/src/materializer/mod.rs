@@ -44,6 +44,8 @@ native_modules! {
     pub paths;
     pub witness;
     pub metadata;
+    pub directories;
+    pub(crate) directory_preparation;
 }
 #[cfg(not(target_arch = "wasm32"))]
 mod reservation_meter;
@@ -59,7 +61,31 @@ type NativeWitness = (Option<NativeFingerprint>, Option<NativeFingerprint>);
     feature = "native-mount",
     not(target_arch = "wasm32")
 ))]
+mod preflight;
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
 mod publication;
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+use preflight::*;
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+mod planning;
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+use planning::*;
 #[cfg(all(
     feature = "local",
     feature = "native-mount",

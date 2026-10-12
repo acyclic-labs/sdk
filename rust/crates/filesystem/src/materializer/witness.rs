@@ -78,6 +78,14 @@ pub(super) fn decode_native_metadata(
 ))]
 pub(super) fn encode_native_metadata(
     metadata: &crate::WorkspaceMetadata,
-) -> Result<Vec<u8>, NativeTreeMaterializationError> {
-    serde_json::to_vec(metadata).map_err(|_| NativeTreeMaterializationError::InvalidLayout)
+    work: &NativeMaterializationWork,
+) -> Result<(Vec<u8>, NativeAllocation), NativeTreeMaterializationError> {
+    let mut writer = ImageWriter::new(work)?;
+    serde_json::to_writer(&mut writer, metadata).map_err(|_| {
+        writer
+            .failure
+            .take()
+            .unwrap_or(NativeTreeMaterializationError::InvalidLayout)
+    })?;
+    Ok((writer.bytes, writer.allocation))
 }
