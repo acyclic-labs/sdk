@@ -19,8 +19,6 @@ where
         let original = NativeMaterializationWork::new(capture_budget, cancellation)
             .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?;
         let work = &original;
-        let native_original = None;
-        super::super::adapter::validate_native_source_io_binding(work, native_original)?;
         if !options.destination.is_absolute() {
             return Err(MountLifecycleError::NativePolicy(
                 "native working-set root must be absolute",
@@ -54,7 +52,7 @@ where
                     mount.0 = mount.0.subdirectory(text);
                     mount.1.absorb(&mut custody)?;
                 }
-                mount.0 = mount.0.native_context(work, None, native_original);
+                mount.0 = mount.0.native_context(work, None, None);
                 exact
                     .prepare_native_working_set(&mount.0, options, capture_budget, cancellation)
                     .await
@@ -69,7 +67,6 @@ where
     pub(super) async fn prepare_authored_mount_source(
         &self,
         options: &MountOptions,
-        expected_generation: Option<GenerationId>,
         callback_guard: Option<&Arc<dyn super::super::NativeMountCallbackGuard>>,
         work: &NativeMaterializationWork,
         native_original: Option<&NativeMaterializationWork>,
@@ -83,22 +80,7 @@ where
     > {
         super::super::adapter::validate_native_source_io_binding(work, native_original)?;
         let cancellation = work.cancellation();
-        if let Some(expected) = expected_generation
-            && self.workspace().head(work, cancellation).await?.id() != expected
-        {
-            return Err(WorkspaceError::StaleGeneration.into());
-        }
-        let probe = self
-            .workspace()
-            .checkout(
-                GenerationSelector::Head,
-                CheckoutMode::read_only_pinned(),
-                work,
-                cancellation,
-            )
-            .await?;
-        let config = probe.volume_config();
-        drop(probe);
+        let config = self.workspace().volume_config();
         let mut accounting =
             crate::kernel::allocation::KernelAccounting::native(work, cancellation);
         let root = crate::workspace::customer_path_with_accounting(
@@ -138,9 +120,6 @@ where
             return Err(WorkspaceError::NotDirectory.into());
         }
         if let LazyLookup::Source(node) = &selected {
-            if expected_generation.is_some() {
-                return Err(WorkspaceError::StaleGeneration.into());
-            }
             let expected_source = self.source_file_id(&node.file_identity, &mut accounting)?;
             work.charge(crate::WorkCounters {
                 bytes_hashed: (b"acyclic-fs-lazy-mount-root-v1\0".len()
@@ -174,38 +153,16 @@ where
         };
         let checkout = self
             .workspace()
-            .checkout(
-                expected_generation.map_or(GenerationSelector::Head, GenerationSelector::Exact),
-                mode,
-                work,
-                cancellation,
-            )
+            .checkout(GenerationSelector::Head, mode, work, cancellation)
             .await?;
-        let shared = SharedCheckout::with_publication_meter(checkout, options.publication, work)?;
-        let root_custody = match root.1 {
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) => custody,
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
-                return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
-            }
-        };
-        let source = CheckoutMountSource::new_at_meter(
-            shared,
-            config,
-            root.0,
-            root_custody,
+        let source = options::checkout_source(
+            checkout,
+            root,
+            options.publication,
             work,
             native_original,
+            callback_guard,
         )?;
-        let source = match callback_guard {
-            Some(guard) => source.with_native_callback_guard(guard.clone()),
-            None => source,
-        }
-        .into_arc_meter(work)?;
-        if let Some(expected) = expected_generation
-            && self.workspace().head(work, cancellation).await?.id() != expected
-        {
-            return Err(WorkspaceError::StaleGeneration.into());
-        }
         Ok((source, self.workspace().id().volume_id(), root_text))
     }
 
@@ -215,19 +172,17 @@ where
         destination: impl AsRef<Path>,
         options: MountOptions,
     ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
-        let standalone;
         let work = if let Some(work) = options.work.as_ref() {
             work.clone()
         } else {
             acyclic_native_runtime::initialize_native_io_services()
                 .map_err(NativeMountError::from)?;
             super::super::initialize_native_mount_services()?;
-            standalone = NativeMaterializationWork::new(
+            NativeMaterializationWork::new(
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
             )
-            .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?;
-            standalone
+            .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?
         };
         let work = &work;
         let native_original = options.native_original.clone();
@@ -242,18 +197,11 @@ where
             std::borrow::Cow::Owned(text) => text.capacity() as u64,
         };
         let _options_custody = work.claim(options_bytes, 0, crate::WorkCounters::default())?;
-        let options = options;
         if options.writable && options.publication == MountPublication::PerMutation {
             return Err(MountSourceError::NativeUnsupported.into());
         }
         let (authored, volume_id, root_text) = self
-            .prepare_authored_mount_source(
-                &options,
-                None,
-                callback_guard.as_ref(),
-                work,
-                native_original,
-            )
+            .prepare_authored_mount_source(&options, callback_guard.as_ref(), work, native_original)
             .await?;
         let root_custody = match root_text.1 {
             crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) => custody,

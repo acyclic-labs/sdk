@@ -1,4 +1,3 @@
-use super::HostRoot;
 use super::*;
 use std::io::Read;
 use std::path::Path;
@@ -6,10 +5,10 @@ use std::path::Path;
 fn a_local_root_is_classified_local() -> std::io::Result<()> {
     let temporary = tempfile::tempdir()?;
     assert!(
-        HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-            .map_err(crate::native_host::ordinary_error)?
-            .is_local(&mut super::ordinary_work())
-            .map_err(super::ordinary_error)?
+        HostRoot::open(temporary.path(), &mut ordinary_work())
+            .map_err(ordinary_error)?
+            .is_local(&mut ordinary_work())
+            .map_err(ordinary_error)?
     );
     Ok(())
 }
@@ -28,33 +27,19 @@ fn capability_reads_do_not_change_owned_access_times() -> std::io::Result<()> {
     for path in [&file, &directory, &root_path] {
         std::fs::File::open(path)?.set_times(std::fs::FileTimes::new().set_accessed(old))?;
     }
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let mut body = String::new();
-    root.open_file(
-        Path::new("directory/file"),
-        &mut crate::native_host::ordinary_work(),
-    )
-    .map_err(crate::native_host::ordinary_error)?
-    .read_to_string(&mut body)?;
+    root.open_file(Path::new("directory/file"), &mut ordinary_work())
+        .map_err(ordinary_error)?
+        .read_to_string(&mut body)?;
     assert_eq!(body, "body");
-    let mut work = super::ordinary_work();
+    let mut work = ordinary_work();
     for path in [Path::new("directory"), Path::new("")] {
         let (mut reader, _) = root
             .read_dir_stats(path, &mut work)
-            .map_err(super::ordinary_error)?;
-        assert!(
-            reader
-                .next(&mut work)
-                .map_err(super::ordinary_error)?
-                .is_some()
-        );
-        assert!(
-            reader
-                .next(&mut work)
-                .map_err(super::ordinary_error)?
-                .is_none()
-        );
+            .map_err(ordinary_error)?;
+        assert!(reader.next(&mut work).map_err(ordinary_error)?.is_some());
+        assert!(reader.next(&mut work).map_err(ordinary_error)?.is_none());
     }
     for path in [&file, &directory, &root_path] {
         assert_eq!(std::fs::metadata(path)?.atime(), 1_700_000_000);
@@ -71,27 +56,20 @@ fn held_root_rejects_intermediate_symlink_escape_for_reads_and_writes() -> std::
     std::fs::create_dir(&outside_path)?;
     std::fs::write(outside_path.join("secret"), b"outside")?;
     symlink(&outside_path, root_path.join("pivot"))?;
-    let root = HostRoot::open(&root_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
     assert!(
-        root.open_file(
-            Path::new("pivot/secret"),
-            &mut crate::native_host::ordinary_work()
-        )
-        .map_err(crate::native_host::ordinary_error)
-        .is_err()
+        root.open_file(Path::new("pivot/secret"), &mut ordinary_work())
+            .map_err(ordinary_error)
+            .is_err()
     );
     assert!(
-        root.stat(
-            Path::new("pivot/secret"),
-            &mut crate::native_host::ordinary_work()
-        )
-        .map_err(crate::native_host::ordinary_error)
-        .is_err()
+        root.stat(Path::new("pivot/secret"), &mut ordinary_work())
+            .map_err(ordinary_error)
+            .is_err()
     );
     assert!(
-        root.create_file(Path::new("pivot/created"), &mut super::ordinary_work())
-            .map_err(super::ordinary_error)
+        root.create_file(Path::new("pivot/created"), &mut ordinary_work())
+            .map_err(ordinary_error)
             .is_err()
     );
     assert!(!outside_path.join("created").exists());
@@ -112,29 +90,20 @@ fn held_special_metadata_rejects_intermediate_symlink_escape() -> std::io::Resul
     std::fs::write(&target, b"outside")?;
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))?;
     symlink(&outside_path, root_path.join("pivot"))?;
-    let root = HostRoot::open(&root_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
     assert!(
-        root.set_permissions_without_open(
-            Path::new("pivot/target"),
-            0o600,
-            &mut super::ordinary_work()
-        )
-        .map_err(super::ordinary_error)
-        .is_err()
+        root.set_permissions_without_open(Path::new("pivot/target"), 0o600, &mut ordinary_work())
+            .map_err(ordinary_error)
+            .is_err()
     );
     assert!(
-        root.create_fifo_held(
-            Path::new("pivot/created"),
-            0o600,
-            &mut super::ordinary_work()
-        )
-        .map_err(super::ordinary_error)
-        .is_err()
+        root.create_fifo_held(Path::new("pivot/created"), 0o600, &mut ordinary_work())
+            .map_err(ordinary_error)
+            .is_err()
     );
     assert!(!outside_path.join("created").exists());
-    root.create_fifo_held(Path::new("fifo"), 0o600, &mut super::ordinary_work())
-        .map_err(super::ordinary_error)?;
+    root.create_fifo_held(Path::new("fifo"), 0o600, &mut ordinary_work())
+        .map_err(ordinary_error)?;
     assert!(
         std::fs::symlink_metadata(root_path.join("fifo"))?
             .file_type()
@@ -151,7 +120,7 @@ fn held_special_metadata_rejects_intermediate_symlink_escape() -> std::io::Resul
 #[test]
 fn held_linux_metadata_targets_inode_across_rename_and_replacement()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut work = super::ordinary_work();
+    let mut work = ordinary_work();
     use crate::kernel::{FileMetadata, MetadataField};
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     let temporary = tempfile::tempdir()?;
@@ -160,8 +129,7 @@ fn held_linux_metadata_targets_inode_across_rename_and_replacement()
     let original = root_path.join("original");
     let moved = root_path.join("moved");
     std::fs::write(&original, b"old")?;
-    let root = HostRoot::open(&root_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
     let target = root.open_linux_metadata_target(Path::new("original"), &mut work)?;
     std::fs::rename(&original, &moved)?;
     std::fs::write(&original, b"new")?;
@@ -179,7 +147,7 @@ fn held_linux_metadata_targets_inode_across_rename_and_replacement()
         ..FileMetadata::default()
     };
     assert!(matches!(
-        super::apply_linux_metadata(
+        apply_linux_metadata(
             &target,
             FileMetadata {
                 created_ns: MetadataField::Value(12),
@@ -187,15 +155,13 @@ fn held_linux_metadata_targets_inode_across_rename_and_replacement()
             },
             &mut work
         ),
-        Err(crate::DemandError::LinuxMetadata(
-            super::NativeMetadataError(_)
-        ))
+        Err(crate::DemandError::LinuxMetadata(NativeMetadataError(_)))
     ));
     assert_eq!(
         std::fs::metadata(&moved)?.permissions().mode() & 0o7777,
         original_mode
     );
-    super::apply_linux_metadata(&target, representable, &mut work)?;
+    apply_linux_metadata(&target, representable, &mut work)?;
     let old = std::fs::metadata(&moved)?;
     assert_eq!(old.permissions().mode() & 0o777, 0o600);
     assert_eq!(old.atime() * 1_000_000_000 + old.atime_nsec(), atime_ns);
@@ -211,7 +177,7 @@ fn held_linux_metadata_targets_inode_across_rename_and_replacement()
 #[cfg(target_os = "linux")]
 #[test]
 fn held_linux_symlink_metadata_does_not_mutate_target() -> Result<(), Box<dyn std::error::Error>> {
-    let mut work = super::ordinary_work();
+    let mut work = ordinary_work();
     use crate::kernel::{FileMetadata, MetadataField};
     use std::os::unix::fs::{MetadataExt as _, symlink};
     let temporary = tempfile::tempdir()?;
@@ -222,11 +188,10 @@ fn held_linux_symlink_metadata_does_not_mutate_target() -> Result<(), Box<dyn st
     let link = root_path.join("link");
     symlink(&outside, &link)?;
     let outside_before = std::fs::metadata(&outside)?;
-    let root = HostRoot::open(&root_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
     let target = root.open_linux_metadata_target(Path::new("link"), &mut work)?;
     let desired = 1_700_000_000_456_789_123_i64;
-    super::apply_linux_metadata(
+    apply_linux_metadata(
         &target,
         FileMetadata {
             modified_ns: MetadataField::Value(desired),
@@ -254,8 +219,8 @@ fn root_symbolic_link_is_never_admitted() -> std::io::Result<()> {
     std::fs::create_dir(&real)?;
     symlink(&real, &link)?;
     assert!(
-        HostRoot::open(&link, &mut crate::native_host::ordinary_work())
-            .map_err(crate::native_host::ordinary_error)
+        HostRoot::open(&link, &mut ordinary_work())
+            .map_err(ordinary_error)
             .is_err()
     );
     Ok(())
@@ -265,12 +230,11 @@ fn bound_unix_socket_lands_inside_the_held_root() -> std::io::Result<()> {
     use std::os::unix::fs::FileTypeExt;
     let temporary = tempfile::tempdir()?;
     std::fs::create_dir(temporary.path().join("nested"))?;
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
-    root.bind_unix_socket(Path::new("root.sock"), &mut super::ordinary_work())
-        .map_err(super::ordinary_error)?;
-    root.bind_unix_socket(Path::new("nested/child.sock"), &mut super::ordinary_work())
-        .map_err(super::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
+    root.bind_unix_socket(Path::new("root.sock"), &mut ordinary_work())
+        .map_err(ordinary_error)?;
+    root.bind_unix_socket(Path::new("nested/child.sock"), &mut ordinary_work())
+        .map_err(ordinary_error)?;
     for bound in ["root.sock", "nested/child.sock"] {
         let file_type = std::fs::symlink_metadata(temporary.path().join(bound))?.file_type();
         assert!(file_type.is_socket(), "{bound} is not a socket");
@@ -281,12 +245,11 @@ fn bound_unix_socket_lands_inside_the_held_root() -> std::io::Result<()> {
 #[test]
 fn bound_unix_socket_rejects_paths_beyond_sun_path() -> std::io::Result<()> {
     let temporary = tempfile::tempdir()?;
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let name = format!("{}.sock", "n".repeat(128));
     match root
-        .bind_unix_socket(Path::new(&name), &mut super::ordinary_work())
-        .map_err(super::ordinary_error)
+        .bind_unix_socket(Path::new(&name), &mut ordinary_work())
+        .map_err(ordinary_error)
     {
         Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput),
         Ok(()) => return Err(std::io::Error::other("over-long socket path was admitted")),

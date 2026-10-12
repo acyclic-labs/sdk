@@ -7,13 +7,14 @@ fn compio_poll_failure_retains_key_and_allows_unrelated_progress() -> io::Result
         return Ok(());
     }
     let temporary = tempfile::tempdir()?;
-    let affected = Arc::new(NativeFilePayload::unmetered(
-        std::fs::OpenOptions::new()
+    let affected = Arc::new(NativeFilePayload {
+        file: std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
             .open(temporary.path().join("affected"))?,
-    ));
+        _allocation: None,
+    });
     affected.set_len(MAX_IO_BYTES as u64)?;
     let op = ReadAt::new(
         SharedFd::new(Arc::clone(&affected)),
@@ -37,13 +38,14 @@ fn compio_poll_failure_retains_key_and_allows_unrelated_progress() -> io::Result
     assert!(owner.retired.is_some());
     assert!(!owner.ensure_driver()?);
 
-    let unrelated = Arc::new(NativeFilePayload::unmetered(
-        std::fs::OpenOptions::new()
+    let unrelated = Arc::new(NativeFilePayload {
+        file: std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
             .open(temporary.path().join("unrelated"))?,
-    ));
+        _allocation: None,
+    });
     owner.write_batch(
         &unrelated,
         vec![OwnedWrite {
@@ -87,13 +89,14 @@ fn retired_compio_proactor_cannot_drop_pending_key() -> io::Result<()> {
     };
     if std::env::var_os(CHILD).is_some() {
         let temporary = tempfile::tempdir()?;
-        let file = Arc::new(NativeFilePayload::unmetered(
-            std::fs::OpenOptions::new()
+        let file = Arc::new(NativeFilePayload {
+            file: std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create_new(true)
                 .open(temporary.path().join("pending"))?,
-        ));
+            _allocation: None,
+        });
         file.set_len(MAX_IO_BYTES as u64)?;
         let op = ReadAt::new(
             SharedFd::new(file),

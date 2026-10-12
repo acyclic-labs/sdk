@@ -130,7 +130,7 @@ async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         native_creation_guard,
     ).await?;
     fork_preparer_io::retain(&generation, io).await?;
-    let reference = fork_preparer_io::generation_ref(controller.host, &generation, io)?;
+    let reference = fork_preparer_io::generation_ref(&controller.host.provider, generation.id(), io)?;
     Ok(reference)
 }
 
@@ -140,7 +140,7 @@ async fn original_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<Option<GenerationRef>> {
     let Some(generation) = fork_preparer_io::operation_generation(controller.host, workspace, key, io).await? else { return Ok(None); };
     fork_preparer_io::retain(&generation, io).await?;
-    let reference = fork_preparer_io::generation_ref(controller.host, &generation, io)?;
+    let reference = fork_preparer_io::generation_ref(&controller.host.provider, generation.id(), io)?;
     Ok(Some(reference))
 }
 

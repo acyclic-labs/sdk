@@ -78,18 +78,12 @@ async fn exercise_authority_before_work(
     let cancelled = fault.is_none();
     assert_authority_before_work(
         (async {
-            let __authority_args = (
-                authority_id,
-                Epoch::GENESIS,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            );
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
             let __authority_result = authority
                 .create_authority(
-                    __authority_args.0,
-                    __authority_args.1,
+                    authority_id,
+                    Epoch::GENESIS,
                     &mut __authority_work,
                     None::<&mut ()>,
                 )
@@ -102,12 +96,9 @@ async fn exercise_authority_before_work(
     )?;
     assert_authority_before_work(
         (async {
-            let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation);
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
-            let __authority_result = authority
-                .head(__authority_args.0, &mut __authority_work)
-                .await;
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let __authority_result = authority.head(authority_id, &mut __authority_work).await;
             __authority_work.receipt(__authority_result)
         })
         .await,
@@ -115,23 +106,17 @@ async fn exercise_authority_before_work(
     )?;
     assert_authority_before_work(
         (async {
-            let __authority_args = (
-                authority_id,
-                Epoch::GENESIS,
-                head,
-                proposal(44, 45),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            );
+            let authority_input_3 = proposal(44, 45);
+
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.4, __authority_args.5);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
             let __authority_result = authority
                 .compare_and_append(
                     crate::GuardedAppend {
-                        authority_id: __authority_args.0,
-                        epoch: __authority_args.1,
-                        expected: __authority_args.2,
-                        commit: __authority_args.3,
+                        authority_id: authority_id,
+                        epoch: Epoch::GENESIS,
+                        expected: head,
+                        commit: authority_input_3,
                         permit: crate::PublicationPermit::Unrestricted,
                     },
                     &mut __authority_work,
@@ -147,23 +132,18 @@ async fn exercise_authority_before_work(
     )?;
     assert_authority_before_work(
         (async {
-            let __authority_args = (
-                authority_id,
-                Sequence::GENESIS,
-                ReplayLimit {
-                    records: 1,
-                    payload_bytes: 64,
-                },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            );
+            let authority_input_2 = ReplayLimit {
+                records: 1,
+                payload_bytes: 64,
+            };
+
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.3, __authority_args.4);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
             let __authority_result = authority
                 .replay(
-                    __authority_args.0,
-                    __authority_args.1,
-                    __authority_args.2,
+                    authority_id,
+                    Sequence::GENESIS,
+                    authority_input_2,
                     &mut __authority_work,
                 )
                 .await
@@ -175,15 +155,10 @@ async fn exercise_authority_before_work(
     )?;
     assert_authority_before_work(
         (async {
-            let __authority_args = (authority_id, head, WorkBudget::UNBOUNDED, &cancellation);
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
             let __authority_result = authority
-                .fence(
-                    __authority_args.0,
-                    __authority_args.1,
-                    &mut __authority_work,
-                )
+                .fence(authority_id, head, &mut __authority_work)
                 .await;
             __authority_work.receipt(__authority_result)
         })
@@ -192,20 +167,10 @@ async fn exercise_authority_before_work(
     )?;
     assert_authority_before_work(
         (async {
-            let __authority_args = (
-                authority_id,
-                operation_id,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            );
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
             let __authority_result = authority
-                .find_operation(
-                    __authority_args.0,
-                    __authority_args.1,
-                    &mut __authority_work,
-                )
+                .find_operation(authority_id, operation_id, &mut __authority_work)
                 .await
                 .map(|(value, _allocation)| value);
             __authority_work.receipt(__authority_result)
@@ -263,19 +228,19 @@ async fn exercise_object_before_work(
     }];
     let cancelled = fault.is_none();
     assert_object_before_work(
-        (objects.put(object_id, bytes, WorkBudget::UNBOUNDED, &cancellation)).await,
+        (async { let __object_args = (object_id, bytes, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }).await,
         cancelled,
     )?;
     assert_object_before_work(
-        (objects.read(object_id, 64, WorkBudget::UNBOUNDED, &cancellation)).await,
+        (async { let __object_args = (object_id, 64, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }).await,
         cancelled,
     )?;
     assert_object_before_work(
-        (objects.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation)).await,
+        (async { let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = objects.read_many(__object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) }).await,
         cancelled,
     )?;
     assert_object_before_work(
-        (objects.contains(object_id, WorkBudget::UNBOUNDED, &cancellation)).await,
+        (async { let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = objects.contains(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) }).await,
         cancelled,
     )?;
     assert!(simulation.trace()?.is_empty() == cancelled);

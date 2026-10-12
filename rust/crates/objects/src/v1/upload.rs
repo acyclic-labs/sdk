@@ -9,24 +9,25 @@ use futures::{
 };
 use std::{
     future::Future,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
 pub(super) struct State {
-    result: Mutex<Option<Result<u64, Error>>>,
-    closed: AtomicBool,
+    result: Mutex<Option<Result<Option<u64>, Error>>>,
     waker: AtomicWaker,
     _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 impl State {
     pub(super) fn finish(&self) -> Result<u64, Error> {
-        self.result
+        match *self
+            .result
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .unwrap_or_else(|| Err(wire::ErrorCode::Unavailable.into()))
+        {
+            Some(Ok(Some(length))) => Ok(length),
+            Some(Err(error)) => Err(error),
+            _ => Err(wire::ErrorCode::Unavailable.into()),
+        }
     }
     fn fail(&self, error: Error) {
         let mut result = self
@@ -44,7 +45,15 @@ impl State {
 struct SourceState(Arc<State>);
 impl Drop for SourceState {
     fn drop(&mut self) {
-        self.0.closed.store(true, Ordering::Release);
+        let mut result = self
+            .0
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if result.is_none() {
+            *result = Some(Ok(None));
+        }
+        drop(result);
         self.0.waker.wake();
     }
 }
@@ -66,7 +75,6 @@ pub(super) fn chunks(
     };
     let state = Arc::new(State {
         result: Mutex::new(None),
-        closed: AtomicBool::new(false),
         waker: AtomicWaker::new(),
         _allocation: allocation,
     });
@@ -79,48 +87,39 @@ pub(super) fn chunks(
             controls.clone(),
         ),
         |(mut body, mut pending, mut length, state, controls)| async move {
+            let fail = |failure| {
+                state.0.fail(failure);
+                failure
+            };
             if let Some(controls) = &controls {
-                if let Err(failure) = controls.check() {
-                    state.0.fail(failure);
-                    return Err(failure);
-                }
+                controls.check().map_err(fail)?;
             }
             while pending.is_empty() {
                 if let Some(controls) = &controls {
-                    if let Err(failure) = controls.check() {
-                        state.0.fail(failure);
-                        return Err(failure);
-                    }
+                    controls.check().map_err(fail)?;
                 }
                 match body.next().await {
                     Some(Ok(bytes)) => {
-                        let size = length
+                        length = length
                             .checked_add(bytes.len() as u64)
-                            .ok_or(Error::from(wire::ErrorCode::QuotaExceeded));
-                        match size.and_then(|size| {
-                            request::upload_length(size)?;
-                            Ok(size)
-                        }) {
-                            Ok(size) => {
-                                length = size;
-                                pending = bytes;
-                            }
-                            Err(failure) => {
-                                state.0.fail(failure);
-                                return Err(failure);
-                            }
-                        }
+                            .ok_or(Error::from(wire::ErrorCode::QuotaExceeded))
+                            .and_then(|size| {
+                                request::upload_length(size)?;
+                                Ok(size)
+                            })
+                            .map_err(fail)?;
+                        pending = bytes;
                     }
                     Some(Err(failure)) => {
-                        state.0.fail(failure);
-                        return Err(failure);
+                        return Err(fail(failure));
                     }
                     None => {
                         *state
                             .0
                             .result
                             .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(length));
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            Some(Ok(Some(length)));
                         return Ok(None);
                     }
                 }
@@ -156,20 +155,10 @@ where
 
 pub(super) fn chunks_native(
     body: OwnedBytes,
-    meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     errors: Arc<super::NativeTransportErrors>,
 ) -> Result<UploadBody, super::NativeObjectsError> {
-    meter.check()?;
-    let source_meter = meter.clone();
-    let source = stream::once(async move {
-        if let Err(error) = source_meter.check() {
-            errors.record(error.into());
-            return Err(wire::ErrorCode::Unavailable.into());
-        }
-        Ok(body)
-    });
-    // The shared controlled framing engine performs custody-preserving slicing.
-    box_native(source, &meter)
+    errors.meter.check()?;
+    box_native(stream::once(std::future::ready(Ok(body))), &errors.meter)
 }
 pub(super) async fn run<T: Send>(
     request: impl Future<Output = Result<T, Error>> + Send,
@@ -185,7 +174,7 @@ pub(super) async fn run<T: Send>(
             *result = None;
             return std::task::Poll::Ready(Some(error));
         }
-        if state.closed.load(Ordering::Acquire) {
+        if result.is_some() {
             return std::task::Poll::Ready(None);
         }
         std::task::Poll::Pending

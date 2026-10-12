@@ -1904,7 +1904,7 @@ where
     let preparer = FilesystemForkPreparer::new(
         host.clone(),
         Reducer::restore(aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
-            issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new())?,
+            issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), &mut None)?,
         issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),

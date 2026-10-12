@@ -47,7 +47,6 @@ async fn native_journal_control_denial_keeps_original_cause_and_unpoisoned_tail(
     assert!(
         matches!(failed, Err(NativeObjectsError { cause: NativeObjectsCause::Admission(error), .. }) if error.kind() == std::io::ErrorKind::OutOfMemory)
     );
-    assert_eq!(observed.allocations.load(SeqCst), 0);
     assert_eq!(observed.memory.load(SeqCst), 0);
     assert_eq!(fs::read(path)?, durable);
     journal.check()?;

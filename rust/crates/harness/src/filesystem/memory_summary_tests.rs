@@ -339,7 +339,6 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     assert!(proof.summary.is_some());
     let source = prepared.context().clone();
     let selection = prepared.selection().clone();
-    drop(prepared);
     let provider = storage.volume.provider().clone();
     let project = VolumeRef::new(
         provider.clone(),
@@ -376,7 +375,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         storage.content_verifier.clone(),
         Some(archived), None, #[cfg(not(target_arch = "wasm32"))] None,
     )?
-    .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor, None)?;
+    .with_summary_context(prepared, storage.journal(), None)?;
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
         provider.clone(),

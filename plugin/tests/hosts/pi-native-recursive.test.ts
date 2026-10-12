@@ -127,7 +127,9 @@ export default function(pi) {
         ["root-import-g", "acyclic_import", {source:"grandchild",destination:sessionId,paths:["grandchild.txt"],confirm:true}],
         ["root-import-a", "acyclic_import", {source:"child-a",destination:sessionId,paths:["child-a.txt"],confirm:true}],
         ["root-import-b", "acyclic_import", {source:"child-b",destination:sessionId,paths:["child-b.txt"],confirm:true}],
-        ["root-writeback", "acyclic_writeback", {source:sessionId,paths:["child-a.txt","child-b.txt","grandchild.txt"],confirm:true}],
+        ["root-writeback", "acyclic_writeback", {source:"child-a",paths:["child-a.txt"],confirm:true}],
+        ["root-writeback-b", "acyclic_writeback", {source:"child-b",paths:["child-b.txt"],confirm:true}],
+        ["root-writeback-g", "acyclic_writeback", {source:"grandchild",paths:["grandchild.txt"],confirm:true}],
         ["deny-source", "acyclic_spawn", {id:"forged-source-child",source:"unregistered-source",prompt:"must not run"}],
         ["deny-destination", "acyclic_import", {source:"child-a",destination:"unregistered-destination",paths:["child-a.txt"],confirm:true}],
         ["deny-rebind", "acyclic_spawn", {id:"child-a",prompt:"changed duplicate child instruction"}],
@@ -184,16 +186,19 @@ test("required pinned Pi recursively launches original native effects and reopen
     await fixture.start();
     ownedServicePids.push(fixture.servicePid()!);
     fixture.environment.ACYCLIC_NATIVE_ORIGINAL_PROJECT = fixture.project;
-    const operator = piOperatorDriver({
-      session:fixture.manager.getSessionId(), cwd:fixture.project, command:fixture.command,
-      operation:"root-writeback", selected:{
-        "child-a.txt":{baseline:null,candidate:"child A edited\n",current:null},
-        "child-b.txt":{baseline:null,candidate:"child B isolated\n",current:null},
-        "grandchild.txt":{baseline:null,candidate:"grandchild inherited edited source\n",current:null},
-      }, preserved:{"concurrent.txt":"external root edit after original child admission\n"},
-    });
-    const result = await fixture.runJson("ACYCLIC_NATIVE_ROOT", operator.consumeJsonLine);
-    await operator.assertPublished();
+    const { manager, project, command } = fixture;
+    const operators = new Map([
+      ["root-writeback", "child-a.txt", "child A edited\n"],
+      ["root-writeback-b", "child-b.txt", "child B isolated\n"],
+      ["root-writeback-g", "grandchild.txt", "grandchild inherited edited source\n"],
+    ].map(([operation, path, candidate]) => [operation, piOperatorDriver({
+      session:manager.getSessionId(), cwd:project, command,
+      operation, selected:{[path]:{baseline:null,candidate,current:null}},
+      preserved:{"concurrent.txt":"external root edit after original child admission\n"},
+    })]));
+    const result = await fixture.runJson("ACYCLIC_NATIVE_ROOT", line =>
+      operators.get(JSON.parse(line).toolCallId)?.consumeJsonLine(line));
+    await Promise.all([...operators.values()].map(operator => operator.assertPublished()));
     const finalMessages = result.stdout.split("\n").filter(line => line.trim()).map(line => JSON.parse(line))
       .filter(event => event.type === "message_end" && event.message?.role === "assistant")
       .flatMap(event => event.message.content.filter(part => part.type === "text").map(part => part.text));
@@ -203,7 +208,8 @@ test("required pinned Pi recursively launches original native effects and reopen
     assert.equal(report.sessionId, fixture.manager.getSessionId());
     const outputs = new Map<string, {id:string;isError:boolean;text:string}>(report.results.map((value: {id:string;isError:boolean;text:string}) => [value.id,value]));
     for (const id of ["root-spawn-a","root-spawn-b","root-send-a","root-steer-a","root-wait-a","root-wait-b",
-      "root-spawn-foreign","root-wait-foreign","root-inspect-a","root-diff-a","root-import-g","root-import-a","root-import-b","root-writeback","root-status"]) {
+      "root-spawn-foreign","root-wait-foreign","root-inspect-a","root-diff-a","root-import-g","root-import-a","root-import-b",
+      "root-writeback","root-writeback-b","root-writeback-g","root-status"]) {
       assert.equal(outputs.get(id)?.isError, false, `${id} did not complete through the actual production tool`);
     }
     for (const id of ["deny-source","deny-destination","deny-rebind"]) assert.equal(outputs.get(id)?.isError, true);
