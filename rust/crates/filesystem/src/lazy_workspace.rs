@@ -3995,7 +3995,7 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             allocation: None,
         };
-        lazy.recover_pending_remove().await?;
+        lazy.recover_pending_remove(&meter).await.map_err(|error| error.with_prior_work(meter.spent()).into_measured_failure().error)?;
         Ok(lazy)
     }
 
@@ -4066,7 +4066,7 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             allocation: None,
         };
-        lazy.recover_pending_remove().await?;
+        lazy.recover_pending_remove(&meter).await.map_err(|error| error.with_prior_work(meter.spent()).into_measured_failure().error)?;
         lazy.rebind_source(&meter).await?;
         Ok(lazy)
     }
@@ -4669,13 +4669,9 @@ where
                 }
                 let baseline = work.accept(workspace.head(work.remaining()?, cancellation)
                     .await.map_err(measured_workspace_error))?;
-                let mut removed = work.accept(self.collect_selected_paths_measured(
-                    paths, None, Some(&baseline), work.remaining()?, cancellation,
-                ).await.map(|receipt| OperationReceipt { value: receipt.value.0, work: receipt.work }).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)))?;
+                let mut removed = work.accept((async { let accounting = LazyTreapWork::new(work.remaining()?, cancellation); let result = self.selected_paths(paths, None, Some(&baseline), &accounting).await; accounting.measured(result, |error, spent| crate::OperationFailure::new(error, spent)) }).await.map(|receipt| OperationReceipt { value: receipt.value.0, work: receipt.work }).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)))?;
                 work.adopt(exactify_paths_retained_bytes(&removed)?)?;
-                let present = work.accept(self.collect_selected_paths_measured(
-                    paths, None, Some(imported), work.remaining()?, cancellation,
-                ).await.map(|receipt| OperationReceipt { value: receipt.value.0, work: receipt.work }).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)))?;
+                let present = work.accept((async { let accounting = LazyTreapWork::new(work.remaining()?, cancellation); let result = self.selected_paths(paths, None, Some(imported), &accounting).await; accounting.measured(result, |error, spent| crate::OperationFailure::new(error, spent)) }).await.map(|receipt| OperationReceipt { value: receipt.value.0, work: receipt.work }).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)))?;
                 work.adopt(exactify_paths_retained_bytes(&present)?)?;
                 filter_selected_removals(&mut removed, &present, &work, cancellation, ||
                     cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled))?;
@@ -5039,16 +5035,14 @@ where
         }
         let (source, node) = match accounting {
             LazyReadonlyAccounting::Portable { work, budget, cancellation } => {
-                let receipt = self.observe_measured(
-                    path, state.clone(), remaining_work(*work, *budget, 0)?, cancellation,
-                ).await?;
+                let receipt = (async { let observations = LazyTreapWork::new(remaining_work(*work, *budget, 0)?, cancellation); let result = self.observe(path, state, &observations).await; observations.measured(result, |error, spent| error.with_prior_work(spent)) }).await?;
                 *work = account_work(*work, receipt.work, *budget)?;
                 receipt.value
             }
             #[cfg(not(target_arch = "wasm32"))]
             LazyReadonlyAccounting::Native { original, cancellation } => {
                     let observations = LazyTreapWork::native_with_work(original, cancellation)?;
-                    self.observe(path, state, &observations, cancellation).await?
+                    self.observe(path, state, &observations).await?
             }
         };
         let authored = match accounting {
@@ -8145,50 +8139,6 @@ where
         }).await
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn collect_snapshot_selected_paths_with_native_work(
-        &self,
-        snapshot: LazySnapshotRef,
-        roots: &[String],
-        original: &crate::materializer::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(Vec<String>, bool, crate::materializer::NativeAllocation), LazyWorkspaceError> {
-        let work = LazyTreapWork::native_with_work(original, cancellation)?;
-        in_heap_lazy::<_, LazyWorkspaceError, _>(&work, || async {
-            let mut accounting = ExactifyCollectorWork::Native { work: &work, original };
-            let (paths, used) = self.collect_selected_paths_with_accounting(
-                roots, Some(snapshot), None, &mut accounting, cancellation,
-            ).await?;
-            let bytes = exactify_paths_retained_bytes(&paths)?;
-            let allocation = work.take_native_owned(bytes)?
-                .ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
-            Ok((paths, used, allocation))
-        }).await
-    }
-
-    async fn collect_selected_paths_measured(
-        &self,
-        roots: &[String],
-        snapshot: Option<LazySnapshotRef>,
-        generation: Option<&crate::Generation<A, O>>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> crate::MeasuredResult<OperationReceipt<(Vec<String>, bool)>, LazyWorkspaceError> {
-        in_heap_measured(move |budget| async move {
-            let mut work = WorkCounters::default();
-            let mut retained_bytes = 0;
-            let result = self.collect_selected_paths_with_accounting(
-                roots, snapshot, generation,
-                &mut ExactifyCollectorWork::Portable {
-                    retained_bytes: &mut retained_bytes, work: &mut work, budget,
-                },
-                cancellation,
-            ).await;
-            result.map(|value| OperationReceipt { value, work })
-                .map_err(|error: LazyWorkspaceError| error.with_prior_work(work).into_measured_failure())
-        }, budget, cancellation, LazyWorkspaceError::Cancelled, None).await
-    }
-
     async fn collect_selected_paths_with_accounting(
         &self,
         roots: &[String],
@@ -9882,9 +9832,8 @@ where
     pub(crate) async fn finish_mount_removals(
         &self, work: &LazyTreapWork<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
-        let cancellation = work.cancellation;
         let Some(committed) = self.mount_removal_publication(work).await? else { return Ok(false); };
-        self.recover_pending_remove_with_accounting(work, cancellation).await?;
+        self.recover_pending_remove(work).await?;
         Ok(committed)
     }
 
@@ -10175,16 +10124,10 @@ where
         Ok((phase, source))
     }
 
-    async fn recover_pending_remove(&self) -> Result<(), LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        let work = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        self.recover_pending_remove_with_accounting(&work, &cancellation).await
-            .map_err(|error| error.with_prior_work(work.spent()).into_measured_failure().error)
-    }
-
-    async fn recover_pending_remove_with_accounting(
-        &self, work: &LazyTreapWork<'_>, cancellation: &CancellationToken,
+    async fn recover_pending_remove(
+        &self, work: &LazyTreapWork<'_>,
     ) -> Result<(), LazyWorkspaceError> {
+        let cancellation = work.cancellation;
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let phase = self.load_binding_at(self.workspace.id(), work, cancellation).await?
                 .ok_or(LazyWorkspaceError::StaleSource)?;
@@ -10226,22 +10169,11 @@ where
         Err(LazyWorkspaceError::Concurrent)
     }
 
-    async fn observe_measured(
-        &self,
-        path: &str,
-        state: LazyWorkspaceState,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<(SourceReference, SourceNode)>, LazyWorkspaceError> {
-        let work = LazyTreapWork::new(budget, cancellation);
-        let result = self.observe(path, &state, &work, cancellation).await;
-        work.measured(result, |error, spent| error.with_prior_work(spent))
-    }
-
     async fn observe(
         &self, path: &str, state: &LazyWorkspaceState,
-        work: &LazyTreapWork<'_>, cancellation: &CancellationToken,
+        work: &LazyTreapWork<'_>,
     ) -> Result<(SourceReference, SourceNode), LazyWorkspaceError> {
+        let cancellation = work.cancellation;
         let _scope = TreapAllocationScope::new(work);
         let path = work.canonical_path_owned(path, self.workspace.limits())?;
         let fact = match &work.meter {
@@ -10828,30 +10760,46 @@ where
         }
     }
 
-    async fn selected_paths_with_accounting(
-        &self, snapshot: LazySnapshotRef, roots: &[String],
-        accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
+    async fn selected_paths(
+        &self, roots: &[String], snapshot: Option<LazySnapshotRef>,
+        generation: Option<&crate::Generation<A, O>>, accounting: &LazyTreapWork<'_>,
     ) -> Result<(Vec<String>, bool), LazyWorkspaceError> {
-        match &accounting.meter {
-            LazyTreapMeter::Standalone { .. } => {
-                let (paths, used) = accounting.accept(self.collect_selected_paths_measured(
-                    roots, Some(snapshot), None, accounting.remaining()?, cancellation,
-                ).await.map_err(|failure| LazyWorkspaceError::SpentWork(Box::new(failure))))?;
-                accounting.adopt(exactify_paths_retained_bytes(&paths)?)?;
-                Ok((paths, used))
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            LazyTreapMeter::NativeOriginal { original, scratch } => {
-                let (paths, used, mut allocation) = self.collect_snapshot_selected_paths_with_native_work(
-                    snapshot, roots, original, cancellation,
-                ).await?;
-                if let Err(error) = scratch.lock().expect("lazy treap scratch lock poisoned").absorb(&mut allocation) {
-                    drop(paths);
-                    return Err(error.into());
+        let cancellation = accounting.cancellation;
+        in_heap_lazy::<_, LazyWorkspaceError, _>(accounting, || async {
+            match &accounting.meter {
+                LazyTreapMeter::Standalone { .. } => {
+                    let mut work = WorkCounters::UNCHARGED;
+                    let mut retained_bytes = 0;
+                    let result = self.collect_selected_paths_with_accounting(
+                        roots, snapshot, generation, &mut ExactifyCollectorWork::Portable {
+                            retained_bytes: &mut retained_bytes, work: &mut work,
+                            budget: accounting.remaining()?,
+                        }, cancellation,
+                    ).await;
+                    let (paths, used) = accounting.accept(result
+                        .map(|value| OperationReceipt { value, work })
+                        .map_err(|error| error.with_prior_work(work)))?;
+                    accounting.adopt(exactify_paths_retained_bytes(&paths)?)?;
+                    Ok((paths, used))
                 }
-                Ok((paths, used))
+                #[cfg(not(target_arch = "wasm32"))]
+                LazyTreapMeter::NativeOriginal { original, scratch } => {
+                    let scope = TreapAllocationScope::new(accounting);
+                    let (paths, used) = self.collect_selected_paths_with_accounting(
+                        roots, snapshot, generation,
+                        &mut ExactifyCollectorWork::Native { work: accounting, original }, cancellation,
+                    ).await?;
+                    let mut allocation = accounting.take_native_owned(exactify_paths_retained_bytes(&paths)?)?
+                        .ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
+                    drop(scope);
+                    if let Err(error) = scratch.lock().expect("lazy treap scratch lock poisoned").absorb(&mut allocation) {
+                        drop(paths);
+                        return Err(error.into());
+                    }
+                    Ok((paths, used))
+                }
             }
-        }
+        }).await
     }
 
     /// Prepares selected namespace replacement in the caller's actual private checkout.
@@ -10883,9 +10831,7 @@ where
                 return Err(LazyWorkspaceError::StaleSource);
             }
             let current_snapshot = self.snapshot(accounting).await?;
-            let (paths, _) = self.selected_paths_with_accounting(
-                destination, &plan.roots, accounting, cancellation,
-            ).await?;
+            let (paths, _) = self.selected_paths(&plan.roots, Some(destination), None, accounting).await?;
             let mut baseline = self.checkout_with_accounting(
                 crate::model::GenerationSelector::Exact(destination.authored_generation),
                 crate::model::CheckoutMode {
@@ -11580,9 +11526,7 @@ where
                     })?;
                     roots.push(text);
                 }
-                let (paths, source_used) = self.selected_paths_with_accounting(
-                    snapshot, &roots, accounting, cancellation,
-                ).await?;
+                let (paths, source_used) = self.selected_paths(&roots, Some(snapshot), None, accounting).await?;
                 let path_slots = (paths.capacity() as u64)
                     .checked_mul(std::mem::size_of::<String>() as u64)
                     .ok_or_else(counter_overflow)?;
