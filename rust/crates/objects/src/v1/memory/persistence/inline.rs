@@ -32,8 +32,8 @@ impl Journal {
             }
             StoredBody::Composite { parts, length } => {
                 let mut output = Vec::new();
-                publication.reserve(&mut output, parts.values.len())?;
-                for body in parts.values.iter() {
+                publication.reserve(&mut output, parts.value.len())?;
+                for body in parts.value.iter() {
                     output.push(self.prepare_inline(body, bytes, publication)?);
                 }
                 composite_publication(output, *length, publication)
@@ -227,7 +227,7 @@ fn journal_bodies(
             out.insert((*offset, *digest), *length);
         }
         StoredBody::Composite { parts, .. } => {
-            for part in parts.values.iter() {
+            for part in parts.value.iter() {
                 journal_bodies(part, out, publication)?;
             }
         }

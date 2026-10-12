@@ -15,7 +15,6 @@ use std::{
     },
 };
 
-
 pub(super) struct State {
     length: AtomicU64,
     complete: AtomicBool,
@@ -48,7 +47,7 @@ impl Drop for SourceState {
 }
 pub(super) fn chunks(
     body: UploadBody,
-    controls: Option<super::response::NativeGetControls>,
+    controls: Option<Arc<super::NativeTransportErrors>>,
 ) -> Result<(UploadBody, Arc<State>), Error> {
     let allocation = match &controls {
         Some(controls) => {
@@ -136,7 +135,7 @@ where
     let allocation = acyclic_native_runtime::ReadAllocation::new(
         meter, std::mem::size_of::<S>(),
     )?;
-    Ok(UploadBody { stream: stream.boxed(), _allocation: Some(allocation) })
+    Ok(UploadBody { value: stream.boxed(), _allocation: Some(allocation) })
 }
 
 pub(super) fn chunks_native(

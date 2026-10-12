@@ -12,6 +12,14 @@ use futures::{StreamExt as _, stream};
 use sha2::{Digest, Sha256};
 use tokio::sync::{RwLock, watch};
 
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TestClock(pub(crate) AtomicU64);
+#[cfg(test)]
+impl crate::UnixMillisClock for TestClock {
+    fn now_unix_millis(&self) -> u64 { self.0.load(Ordering::SeqCst) }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::{
     NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
@@ -3067,15 +3075,6 @@ mod tests {
             vec![100_000, 100_000, 105_000]
         );
         Ok(())
-    }
-
-    #[derive(Default)]
-    struct TestClock(AtomicU64);
-
-    impl UnixMillisClock for TestClock {
-        fn now_unix_millis(&self) -> u64 {
-            self.0.load(Ordering::SeqCst)
-        }
     }
 
     fn path(value: &str) -> Result<StreamPath, StreamError> {
