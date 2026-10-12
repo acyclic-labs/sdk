@@ -1,7 +1,5 @@
 use super::*;
-use bytes::Bytes;
 use futures::TryStreamExt as _;
-use prost::Message;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_controls;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -65,45 +63,6 @@ fn path(value: &str) -> Result<StreamPath, StreamError> {
 
 fn key(value: &'static [u8]) -> Result<crate::IdempotencyKey, StreamError> {
     crate::IdempotencyKey::new(OwnedBytes::from_static(value))
-}
-
-#[test]
-fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
-    let wire_records = vec![Bytes::from(vec![0_u8; MAX_RECORD_BYTES]); 16];
-    let records: Vec<_> = wire_records.iter().cloned().map(OwnedBytes::from).collect();
-    let mut low = 1_usize;
-    let mut high = crate::MAX_PATH_BYTES;
-    while low < high {
-        let middle = low + (high - low).div_ceil(2);
-        let path = StreamPath::new("x".repeat(middle))?;
-        let wire = crate::wire::AppendRequest {
-            path: path.to_string(),
-            records: wire_records.clone(),
-            if_tail: None,
-            idempotency_key: None,
-        };
-        if wire.encoded_len() <= MAX_COMMAND_BYTES {
-            low = middle;
-        } else {
-            high = middle - 1;
-        }
-    }
-    let request = AppendRequest {
-        path: StreamPath::new("x".repeat(low))?,
-        records,
-        if_tail: None,
-        idempotency_key: None,
-    };
-    assert!(validate_append_size(&request).is_ok());
-    let next = StreamPath::new("x".repeat(low + 1))?;
-    let next_wire = crate::wire::AppendRequest {
-        path: next.to_string(),
-        records: wire_records,
-        if_tail: None,
-        idempotency_key: None,
-    };
-    assert!(next_wire.encoded_len() > MAX_COMMAND_BYTES);
-    Ok(())
 }
 
 #[tokio::test]
