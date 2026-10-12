@@ -111,8 +111,8 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
     let view = tempfile::tempdir()?;
     exact
         .value
-        .materialize_path(
-            "/hot",
+        .materialize(
+            std::iter::once("/hot"),
             &MaterializeOptions::native(view.path()),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -186,8 +186,8 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
     };
     let destination = tempfile::tempdir()?;
     generation
-        .materialize_path(
-            "/tree",
+        .materialize(
+            std::iter::once("/tree"),
             &MaterializeOptions::native(destination.path()),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -439,8 +439,8 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     let started = Instant::now();
     phase_exact
         .value
-        .materialize_path(
-            "/hot",
+        .materialize(
+            std::iter::once("/hot"),
             &MaterializeOptions::native(phase_view.path()),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),

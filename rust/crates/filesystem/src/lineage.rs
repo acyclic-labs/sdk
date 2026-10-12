@@ -487,7 +487,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         if child.id() != expected_child {
             return Err(WorkspaceLineageError::UnauthorizedJoin);
         }
-        if initial.parents().await?.as_slice() != [fork_generation] {
+        if initial.parents(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_slice() != [fork_generation] {
             return Err(WorkspaceLineageError::UnauthorizedJoin);
         }
         self.register(WorkspaceLineageRecord {
@@ -802,7 +802,7 @@ mod tests {
     use crate::{Digest, Fs, WorkspaceName};
 
     fn workspace(name: &str) -> WorkspaceId {
-        WorkspaceId::derive([9; 16], &WorkspaceName::new(name).expect("valid name"))
+        WorkspaceId::derive([9; 16], &WorkspaceName::new(name).expect("valid name"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded workspace identity").value
     }
 
     fn generation(byte: u8) -> GenerationId {

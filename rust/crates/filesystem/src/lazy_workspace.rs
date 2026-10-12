@@ -5655,7 +5655,7 @@ where
                 held.then_some(generation)
             };
             let path = if let Some(generation) = generation {
-                let paths = generation.paths_for_file_id_measured(
+                let paths = generation.paths_for_file_id(
                     file_id, u32::MAX, remaining_work(work, budget, 0)?, cancellation,
                 ).await.map_err(measured_workspace_error)?;
                 work = account_work(work, paths.work, budget)?;
@@ -6282,8 +6282,8 @@ where
                         return Err(LazyWorkspaceError::NotRegularFile);
                     }
                     let file = accept_directory_work(
-                        self.workspace.detached_record_measured(*record, budget, cancellation)
-                            .map_err(measured_workspace_error), &mut work, &allocations,
+                        crate::DetachedFile::from_record(self.workspace.volume.clone(), *record, budget, cancellation)
+                            .map_err(|failure| measured_workspace_error(failure.map_error(WorkspaceError::from))), &mut work, &allocations,
                     )?;
                     let hold_bytes = file.logical_owned_bytes();
                     allocations.claim_bytes(hold_bytes, 0, &mut work, budget).map_err(lazy_allocation_error)?;
@@ -6382,8 +6382,7 @@ where
                 if record.kind != FileKind::Regular {
                     return Err(LazyWorkspaceError::NotRegularFile);
                 }
-                self.workspace
-                    .detached_record(record)
+                crate::DetachedFile::from_record(self.workspace.volume.clone(), record, WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("unbounded detached hold preserves a validated record").value
                     .seek(
                         offset,
                         match target {
@@ -9576,14 +9575,14 @@ where
                 };
                 self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
                 lazy_dispatch!{work, {
-                        accept_lazy_write_receipt(work, transaction.write_measured(
+                        accept_lazy_write_receipt(work, transaction.write(
                             &requested, bytes, work.remaining()?, cancellation,
-                        ).await.map(|work| OperationReceipt { value: (), work })
+                        ).await
                             .map_err(|failure| failure.map_error(|error|
                                 E::from(LazyWorkspaceError::WorkspaceCause(error)))))?;
                     },
-                    |original| transaction.write_with_native_work(&requested, bytes, original, cancellation)
-                    .await.map_err(native_workspace_error_pair)?
+                    |original| transaction.write(&requested, bytes, original, cancellation)
+                    .await.map_err(|error| native_workspace_error_pair((error, None)))?
                 }
                 if let Some(identity) = identity {
                     self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
@@ -9831,13 +9830,13 @@ where
             }
             for (record, metadata) in identity_records {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                let _hold = lazy_dispatch!{work, work.accept(self.workspace.make_records_durable_measured(
-                        std::slice::from_ref(record), work.remaining()?, cancellation,
-                    ).await.map_err(|failure| lazy_operation_failure(failure, workspace_error)))?,
+                let _hold = lazy_dispatch!{work, work.accept(self.workspace.volume.fs.make_records_durable(
+                        self.workspace.volume.config, std::slice::from_ref(record), work.remaining()?, cancellation,
+                    ).await.map_err(|failure| lazy_operation_failure(failure, |error| workspace_error(WorkspaceError::engine(error)))))?,
                     |original| {
-                        self.workspace.make_records_durable_with_native_work(
-                            std::slice::from_ref(record), original, cancellation,
-                        ).await.map_err(native_workspace_error)?
+                        self.workspace.volume.fs.make_records_durable_with_native_work(
+                            self.workspace.volume.config, std::slice::from_ref(record), original, cancellation,
+                        ).await.map_err(|error| native_workspace_error(error.into()))?
                     }
                 };
                 let encoded = match &work.meter {
@@ -10556,11 +10555,9 @@ where
         metadata: crate::WorkspaceMetadata,
     ) -> LazyFuture<'a, Result<LazyShadowId, LazyWorkspaceError>> {
         Box::pin(async move {
-            let _hold = self
-                .workspace
-                .make_records_durable(std::slice::from_ref(&record))
-                .await
-                .map_err(workspace_error)?;
+            let _hold = self.workspace.volume.fs.make_records_durable(self.workspace.volume.config, std::slice::from_ref(&record), WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await.map(|receipt| receipt.value)
+                .map_err(|failure| workspace_error(WorkspaceError::engine(failure.error)))?;
             insert_immutable_treap(
                 &ShadowTreap(&self.store, None),
                 root,
@@ -15707,12 +15704,10 @@ mod tests {
         .expect("reopen lazy");
         let state = reopened.inspect_state(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary inspection uses ordinary funding") }).expect("state");
         let shadow = { let mut accounting = LazyReadonlyAccounting::Portable { work: WorkCounters::UNCHARGED, budget: WorkBudget::UNBOUNDED, cancellation: &cancellation }; let result = reopened.shadow_record(state.shadows, shadowed.file_id, &mut accounting).await; accounting.finish_measured(result) }.expect("shadow lookup").value.expect("the removed identity stays shadowed");
-        let read = reopened
-            .workspace()
-            .detached_record(shadow.0).read_range(crate::ByteRange {
+        let read = crate::DetachedFile::from_record(reopened.workspace().volume.clone(), shadow.0, WorkBudget::UNBOUNDED, &cancellation).expect("validated shadow record").value.read_range(crate::ByteRange {
                     offset: 0,
                     length: u64::try_from(content.len()).expect("length"),
-                }, WorkBudget::UNBOUNDED, &cancellation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)
+                }, WorkBudget::UNBOUNDED, &cancellation).await
             .expect("the shadowed identity's content survived");
         assert_eq!(read.value.bytes.as_ref(), content.as_ref());
     }
@@ -17794,8 +17789,8 @@ mod tests {
             let staged = tempfile::tempdir().expect("empty native stage");
             exact
                 .value
-                .materialize_path(
-                    "/hot",
+                .materialize(
+                    std::iter::once("/hot"),
                     &crate::MaterializeOptions::native(staged.path()),
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
@@ -18494,7 +18489,7 @@ mod tests {
         let mut transaction = root.workspace().begin_pinned_transaction(
             &generation, key, &original, &token,
         ).await.expect("same existing canonical transaction");
-        transaction.write_with_native_work("/published", bytes, &original, &token)
+        transaction.write("/published", bytes, &original, &token)
             .await.expect("same SDK staged mutation");
         let (context, evidence) = native_publication_evidence_with_native_work(
             NativeSnapshotContext::Lazy(cut), key.operation_id(), crate::PublicationPermit::Unrestricted,
