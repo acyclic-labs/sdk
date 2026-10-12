@@ -2856,8 +2856,7 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
             owner, template, reservation, &self.work,
         ).await?;
         let future = crate::NativeFutureBundle::new(&self.work, || async move {
-            let counters = prepared.completion_work()?;
-            let (mut journal, mut output_custody) = prepared.finish(&owner.stream(), counters, None).await?;
+            let (mut journal, mut output_custody) = prepared.finish(&owner.stream()).await?;
             match journal.custody.as_mut() {
                 Some(custody) => {
                     if let Err(cause) = custody.absorb(&mut output_custody) {
