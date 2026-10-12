@@ -64,7 +64,7 @@ pub(super) fn validate_canonical_json_with_work(
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<()> {
     if work.is_none() {
-        let _: serde_json::Value = crate::executor::decode_json(bytes)?;
+        let _: serde_json::Value = crate::executor::decode_json(bytes, None)?.value;
         return Ok(());
     }
     let mut items = 0u64;
@@ -162,11 +162,10 @@ pub(super) fn decode_location_with_work(
     bytes: &[u8],
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<OperationLocation> {
-    if work.is_some() {
-        validate_canonical_json_with_work(bytes, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
-    }
+    validate_canonical_json_with_work(bytes, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
     let Some(observer) = work.as_deref_mut() else {
-        return crate::executor::decode_json(bytes);
+        return crate::contract::json_from_slice(bytes)
+            .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")));
     };
     let mut reservation = 0;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
@@ -244,10 +243,9 @@ pub(super) fn decode_message_location_with_work(
     bytes: &[u8],
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<MessageLocation> {
-    if work.is_some() {
-        validate_canonical_json_with_work(bytes, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
-    }
-    let Some(observer) = work.as_deref_mut() else { return crate::executor::decode_json(bytes); };
+    validate_canonical_json_with_work(bytes, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
+    let Some(observer) = work.as_deref_mut() else { return crate::contract::json_from_slice(bytes)
+            .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}"))); };
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
         bytes.len() as u64,
         ["MessageLocation", "OperationLocation", "Authority", "AggregateKind", "location",

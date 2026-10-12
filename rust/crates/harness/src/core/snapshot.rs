@@ -822,6 +822,7 @@ impl Reducer {
                 .ok_or_else(|| Error::Invalid("publication preview reservation overflows".into()))?
         } else { 0 };
         if let Some(observer) = work.as_deref() { observer.check_cancellation()?; }
+        let mut ordinary_work = None;
         let mut quota = crate::wire_codec::CodecQuota::new(work, reservation)?;
         let result = (|| {
             let mut preview = self.copy(quota.work())?;
@@ -872,7 +873,6 @@ impl Reducer {
         snapshot.projection.conversation = conversation;
         if native { quota.adopt(retained)?; }
         {
-            let mut ordinary_work = None;
             let mut ordinary_quota = crate::wire_codec::CodecQuota::from_retained(&mut ordinary_work, 0);
             let mut fields = if native { &mut quota } else { &mut ordinary_quota };
             snapshot.authority = super::native_custody::copy_authority(&self.authority, fields)?;
