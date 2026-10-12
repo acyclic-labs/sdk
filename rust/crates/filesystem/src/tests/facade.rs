@@ -156,108 +156,58 @@ mod heterogeneous_mount {
         };
     }
     impl AsyncAuthorityStore for Stores {
-        async fn create_authority(
-            &self,
-            authority: AuthorityId,
-            epoch: Epoch,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<CreateAuthorityOutcome> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                create_authority(authority, epoch, budget, cancellation)
-            )
-        }
-        async fn head(
-            &self,
-            authority: AuthorityId,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<Head> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                head(authority, budget, cancellation)
-            )
-        }
-        async fn compare_and_append(
-            &self,
-            authority: AuthorityId,
-            epoch: Epoch,
-            expected: Head,
-            commit: ProposedCommit,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<AppendOutcome> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                compare_and_append(authority, epoch, expected, commit, budget, cancellation)
-            )
-        }
-        async fn replay(
-            &self,
-            authority: AuthorityId,
-            after: Sequence,
-            limit: ReplayLimit,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<Vec<crate::foundation::DurableCommit>> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                replay(authority, after, limit, budget, cancellation)
-            )
-        }
-        async fn fence(
-            &self,
-            authority: AuthorityId,
-            expected: Head,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<FenceOutcome> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                fence(authority, expected, budget, cancellation)
-            )
-        }
-        async fn find_operation(
-            &self,
-            authority: AuthorityId,
-            operation: OperationId,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<Option<crate::foundation::DurableCommit>> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                find_operation(authority, operation, budget, cancellation)
-            )
-        }
-        async fn fork_generation_authority(
-            &self,
-            source: crate::async_storage::GenerationForkSource,
-            destination: AuthorityId,
-            operation: OperationId,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<CreateAuthorityOutcome> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                fork_generation_authority(source, destination, operation, budget, cancellation)
-            )
-        }
-        fn supports_generation_lineage_prefix(&self) -> bool {
+async fn create_authority<G: crate::AuthorityGuard>(&self, authority: crate::AuthorityId, epoch: crate::Epoch, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<crate::CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+let value = delegate!(self, AsyncAuthorityStore, authority, create_authority(authority, epoch, work, None::<&mut ()>)).map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
+Ok(value)
+}
+async fn fork_authority<G: crate::AuthorityGuard>(&self, source: crate::GenerationForkSource, destination: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<crate::CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+let value = delegate!(self, AsyncAuthorityStore, authority, fork_authority(source, destination, operation, work, None::<&mut ()>)).map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
+Ok(value)
+}
+async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::AuthorityStoreError::Rejected("authority backend cannot atomically evaluate operation leases".to_owned()).into()); }
+crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+delegate!(self, AsyncAuthorityStore, authority, compare_and_append(request, work, None::<&mut ()>)).map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))
+}
+async fn head(&self, authority: crate::AuthorityId, work: &mut crate::AuthorityWork<'_>) -> Result<crate::Head, crate::AuthorityStoreError> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+
+delegate!(self, AsyncAuthorityStore, authority, head(authority, work))
+
+}
+async fn replay(&self, authority: crate::AuthorityId, after: crate::Sequence, limit: crate::ReplayLimit, work: &mut crate::AuthorityWork<'_>) -> Result<(Vec<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+
+delegate!(self, AsyncAuthorityStore, authority, replay(authority, after, limit, work))
+
+}
+async fn fence(&self, authority: crate::AuthorityId, expected: crate::Head, work: &mut crate::AuthorityWork<'_>) -> Result<crate::FenceOutcome, crate::AuthorityStoreError> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+
+delegate!(self, AsyncAuthorityStore, authority, fence(authority, expected, work))
+
+}
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+
+delegate!(self, AsyncAuthorityStore, authority, find_operation(authority, operation, work))
+
+}
+fn supports_generation_lineage_prefix(&self) -> bool {
             match self {
                 Self::Memory(fs) => {
                     AsyncAuthorityStore::supports_generation_lineage_prefix(&fs.inner.authority)
@@ -267,7 +217,7 @@ mod heterogeneous_mount {
                 }
             }
         }
-    }
+}
 
     impl AsyncObjectStore for Stores {
         async fn put(
@@ -762,51 +712,56 @@ impl FaultAuthorityStore {
     }
 }
 
-impl AuthorityStore for FaultAuthorityStore {
-    fn create_authority(&self, authority_id: crate::foundation::AuthorityId, genesis_epoch: Epoch, budget: WorkBudget) -> AuthorityResult<CreateAuthorityOutcome> {
-        if self.control.should_fail() {
-            return Err(Self::failure(false));
-        }
-        AuthorityStore::create_authority(&self.inner, authority_id, genesis_epoch, budget)
-    }
-
-    fn head(&self, authority_id: crate::foundation::AuthorityId, budget: WorkBudget) -> AuthorityResult<Head> {
-        if self.control.should_fail() {
-            return Err(Self::failure(true));
-        }
-        AuthorityStore::head(&self.inner, authority_id, budget)
-    }
-
-    fn compare_and_append(&self, authority_id: crate::foundation::AuthorityId, epoch: Epoch, expected: Head, commit: ProposedCommit, budget: WorkBudget) -> AuthorityResult<AppendOutcome> {
-        if self.control.should_fail() {
-            return Err(Self::failure(false));
-        }
-        AuthorityStore::compare_and_append(&self.inner, authority_id, epoch, expected, commit, budget)
-    }
-
-    fn replay(&self, authority_id: crate::foundation::AuthorityId, after: Sequence, limit: ReplayLimit, budget: WorkBudget) -> AuthorityResult<Vec<DurableCommit>> {
-        if self.control.should_fail() {
-            return Err(Self::failure(true));
-        }
-        AuthorityStore::replay(&self.inner, authority_id, after, limit, budget)
-    }
-
-    fn fence(&self, authority_id: crate::foundation::AuthorityId, expected: Head, budget: WorkBudget) -> AuthorityResult<FenceOutcome> {
-        if self.control.should_fail() {
-            return Err(Self::failure(false));
-        }
-        AuthorityStore::fence(&self.inner, authority_id, expected, budget)
-    }
-
-    fn find_operation(&self, authority_id: crate::foundation::AuthorityId, operation_id: OperationId, budget: WorkBudget) -> AuthorityResult<Option<DurableCommit>> {
-        if self.control.should_fail() {
-            return Err(Self::failure(true));
-        }
-        AuthorityStore::find_operation(&self.inner, authority_id, operation_id, budget)
-    }
+impl crate::AsyncAuthorityStore for FaultAuthorityStore {
+async fn create_authority<G: crate::AuthorityGuard>(&self, authority: crate::AuthorityId, epoch: crate::Epoch, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<crate::CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
+if self.control.should_fail() { let failure = Self::failure(false); work.record(*failure.work)?; return Err(failure.error.into()); }
+let value = crate::AsyncAuthorityStore::create_authority(&self.inner, authority, epoch, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
+Ok(value)
+}
+async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::AuthorityStoreError::Rejected("authority backend cannot atomically evaluate operation leases".to_owned()).into()); }
+crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
+if self.control.should_fail() { let failure = Self::failure(false); work.record(*failure.work)?; return Err(failure.error.into()); }
+crate::AsyncAuthorityStore::compare_and_append(&self.inner, request, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))
+}
+async fn head(&self, authority: crate::AuthorityId, work: &mut crate::AuthorityWork<'_>) -> Result<crate::Head, crate::AuthorityStoreError> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
+if self.control.should_fail() { let failure = Self::failure(true); work.record(*failure.work)?; return Err(failure.error.into()); }
+crate::AsyncAuthorityStore::head(&self.inner, authority, work).await
+}
+async fn replay(&self, authority: crate::AuthorityId, after: crate::Sequence, limit: crate::ReplayLimit, work: &mut crate::AuthorityWork<'_>) -> Result<(Vec<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
+if self.control.should_fail() { let failure = Self::failure(true); work.record(*failure.work)?; return Err(failure.error.into()); }
+crate::AsyncAuthorityStore::replay(&self.inner, authority, after, limit, work).await
+}
+async fn fence(&self, authority: crate::AuthorityId, expected: crate::Head, work: &mut crate::AuthorityWork<'_>) -> Result<crate::FenceOutcome, crate::AuthorityStoreError> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
+if self.control.should_fail() { let failure = Self::failure(false); work.record(*failure.work)?; return Err(failure.error.into()); }
+crate::AsyncAuthorityStore::fence(&self.inner, authority, expected, work).await
+}
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
+if self.control.should_fail() { let failure = Self::failure(true); work.record(*failure.work)?; return Err(failure.error.into()); }
+crate::AsyncAuthorityStore::find_operation(&self.inner, authority, operation, work).await
+}
 }
 
-impl crate::async_storage::ImmediateAuthorityStore for FaultAuthorityStore {}
 
 impl FaultObjectStore {
     fn failure(read: bool) -> ObjectFailure {
@@ -958,43 +913,54 @@ impl crate::async_storage::ImmediateObjectStore for PostPutObjectStore {
     }
 }
 
-impl AuthorityStore for PostAppendAuthorityStore {
-    fn create_authority(&self, authority_id: crate::foundation::AuthorityId, genesis_epoch: Epoch, budget: WorkBudget) -> AuthorityResult<CreateAuthorityOutcome> {
-        AuthorityStore::create_authority(&*self.inner, authority_id, genesis_epoch, budget)
-    }
-
-    fn head(&self, authority_id: crate::foundation::AuthorityId, budget: WorkBudget) -> AuthorityResult<Head> {
-        AuthorityStore::head(&*self.inner, authority_id, budget)
-    }
-
-    fn compare_and_append(&self, authority_id: crate::foundation::AuthorityId, epoch: Epoch, expected: Head, commit: ProposedCommit, budget: WorkBudget) -> AuthorityResult<AppendOutcome> {
-        let receipt = AuthorityStore::compare_and_append(&*self.inner, authority_id, epoch, expected, commit, budget)?;
-        if matches!(receipt.value, AppendOutcome::Committed(_)) && self.control.should_fail() {
-            return Err(AuthorityFailure::new(
-                AuthorityStoreError::Indeterminate {
-                    operation: "compare-and-append",
-                    source: std::io::Error::other("deterministic acknowledgement loss"),
-                },
-                receipt.work,
-            ));
-        }
-        Ok(receipt)
-    }
-
-    fn replay(&self, authority_id: crate::foundation::AuthorityId, after: Sequence, limit: ReplayLimit, budget: WorkBudget) -> AuthorityResult<Vec<DurableCommit>> {
-        AuthorityStore::replay(&*self.inner, authority_id, after, limit, budget)
-    }
-
-    fn fence(&self, authority_id: crate::foundation::AuthorityId, expected: Head, budget: WorkBudget) -> AuthorityResult<FenceOutcome> {
-        AuthorityStore::fence(&*self.inner, authority_id, expected, budget)
-    }
-
-    fn find_operation(&self, authority_id: crate::foundation::AuthorityId, operation_id: OperationId, budget: WorkBudget) -> AuthorityResult<Option<DurableCommit>> {
-        AuthorityStore::find_operation(&*self.inner, authority_id, operation_id, budget)
-    }
+impl crate::AsyncAuthorityStore for PostAppendAuthorityStore {
+async fn create_authority<G: crate::AuthorityGuard>(&self, authority: crate::AuthorityId, epoch: crate::Epoch, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<crate::CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
+let value = crate::AsyncAuthorityStore::create_authority(self.inner.as_ref(), authority, epoch, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
+Ok(value)
+}
+async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::AuthorityStoreError::Rejected("authority backend cannot atomically evaluate operation leases".to_owned()).into()); }
+crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
+let value = crate::AsyncAuthorityStore::compare_and_append(self.inner.as_ref(), request, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+if matches!(&value.0, crate::AppendOutcome::Committed(_)) && self.control.should_fail() {
+    return Err(crate::AuthorityStoreError::Indeterminate { operation: "compare-and-append", source: std::io::Error::other("deterministic acknowledgement loss") }.into());
+}
+Ok(value)
+}
+async fn head(&self, authority: crate::AuthorityId, work: &mut crate::AuthorityWork<'_>) -> Result<crate::Head, crate::AuthorityStoreError> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
+crate::AsyncAuthorityStore::head(self.inner.as_ref(), authority, work).await
+}
+async fn replay(&self, authority: crate::AuthorityId, after: crate::Sequence, limit: crate::ReplayLimit, work: &mut crate::AuthorityWork<'_>) -> Result<(Vec<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
+crate::AsyncAuthorityStore::replay(self.inner.as_ref(), authority, after, limit, work).await
+}
+async fn fence(&self, authority: crate::AuthorityId, expected: crate::Head, work: &mut crate::AuthorityWork<'_>) -> Result<crate::FenceOutcome, crate::AuthorityStoreError> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
+crate::AsyncAuthorityStore::fence(self.inner.as_ref(), authority, expected, work).await
+}
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+#[cfg(not(target_arch = "wasm32"))]
+if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
+work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
+crate::AsyncAuthorityStore::find_operation(self.inner.as_ref(), authority, operation, work).await
+}
 }
 
-impl crate::async_storage::ImmediateAuthorityStore for PostAppendAuthorityStore {}
 
 #[test]
 fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
@@ -3752,20 +3718,9 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
     ))
     .value;
     ready!(fenced.create(crate::AuthoredMutation::CreateFile { path: path("fenced")?, bytes: (bytes::Bytes::from_static(b"fenced")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation));
-    let fence_expected = ready!(AsyncAuthorityStore::head(
-        &fs.inner.authority,
-        volume_authority_id(volume_id),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let fence_expected = ready!(async { let __authority_args = (volume_authority_id(volume_id), WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::head(&fs.inner.authority, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
     .value;
-    let fence = ready!(AsyncAuthorityStore::fence(
-        &fs.inner.authority,
-        volume_authority_id(volume_id),
-        fence_expected,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    let fence = ready!(async { let __authority_args = (volume_authority_id(volume_id), fence_expected, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::fence(&fs.inner.authority, __authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) });
     let FenceOutcome::Advanced(fenced_head) = fence.value else {
         return Err("fresh facade fence conflicted".into());
     };

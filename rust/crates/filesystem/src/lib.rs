@@ -163,10 +163,12 @@ pub use acyclic_stream::deferring_durability as deferring_authority_durability;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
 pub use async_storage::{
-    AsyncAuthorityStore, AsyncObjectStore, GenerationFork, GenerationForkSource,
-    ImmediateAuthorityStore, ImmediateObjectStore, PublicationScope, WorkspaceForkCommit,
-    WorkspaceForkOutcome, append_first_record, commit_workspace_fork_in_steps,
+    AsyncAuthorityStore, AsyncObjectStore, AuthorityWork, AuthorityGuard, AuthorityError, AuthorityAllocation, GenerationFork, GenerationForkSource,
+    ImmediateObjectStore, PublicationScope, WorkspaceForkCommit,
+    WorkspaceForkOutcome,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use async_storage::NativeAuthorityGuard;
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]

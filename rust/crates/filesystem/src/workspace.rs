@@ -438,17 +438,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ) -> crate::MeasuredResult<crate::OperationReceipt<crate::PublicationReservation>, WorkspaceError> {
         cancellation.check()
             .map_err(|error| crate::OperationFailure::before_work(WorkspaceError::from(error)))?;
-        let head = self.authority().head(
-            self.authority_id(), budget, cancellation,
-        ).await.map_err(|failure| failure.map_with_prior_work(
+        let head =({ let __authority_args = (self.authority_id(), budget, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = self.authority().head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).map_err(|failure| failure.map_with_prior_work(
             crate::WorkCounters::UNCHARGED, |error| WorkspaceError::from(FsError::Authority(error)),
         ))?;
-        let reserved = self.authority().reserve_publication(
-            self.authority_id(), head.value, operation_id,
-            head.work.remaining(budget)
-                .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), head.work))?,
-            cancellation,
-        ).await.map_err(|failure| failure.map_with_prior_work(
+        let reserved =({ let __authority_args = (self.authority_id(), head.value, operation_id, head.work.remaining(budget)
+                .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), head.work))?, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = self.authority().reserve_publication(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).map_err(|failure| failure.map_with_prior_work(
             head.work, |error| WorkspaceError::from(FsError::Authority(error)),
         ))?;
         let work = head.work.checked_add(reserved.work)
@@ -480,8 +474,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             return Err(crate::OperationFailure::before_work(WorkspaceError::IncompatibleWorkspace));
         }
         cancellation.check()
-            .map_err(|error| crate::OperationFailure::before_work(WorkspaceError::from(error)))?;
-        self.authority().release_publication(reservation, budget, cancellation).await
+            .map_err(|error| crate::OperationFailure::before_work(WorkspaceError::from(error)))?;({ let __authority_args = (reservation, budget, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = self.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map(|receipt| crate::OperationReceipt { value: receipt.value, work: receipt.work })
             .map_err(|failure| failure.map_with_prior_work(
                 crate::WorkCounters::UNCHARGED, |error| WorkspaceError::from(FsError::Authority(error)),
@@ -500,11 +493,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             original.admit(crate::WorkCounters::UNCHARGED).map_err(WorkspaceError::from)?;
             cancellation.check().map_err(WorkspaceError::from)?;
             let authority_id = self.authority_id();
-            let head = self.authority().head_with_native_work(authority_id, original, cancellation)
-                .await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
-            let reservation = self.authority().reserve_publication_with_native_work(
-                authority_id, head, operation_id, original, cancellation,
-            ).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
+            let head =(async { let __authority_args = (authority_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = self.authority().head(__authority_args.0, &mut __authority_work).await; __authority_result }.await).map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
+            let reservation =(async { let __authority_args = (authority_id, head, operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.3, __authority_args.4); let __authority_result = self.authority().reserve_publication(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.and_then(|value| match value { crate::ReservationOutcome::Reserved(proof) | crate::ReservationOutcome::AlreadyReserved(proof) => Ok(proof), crate::ReservationOutcome::Conflict { .. } => Err(crate::AuthorityStoreError::RejectedStatic("publication reservation head or gate changed")) }); __authority_result }.await).map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
             if reservation.authority_id != authority_id || reservation.operation_id != operation_id {
                 return Err(WorkspaceError::IncompatibleWorkspace);
             }
@@ -522,9 +512,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let result = async {
             original.admit(crate::WorkCounters::UNCHARGED).map_err(WorkspaceError::from)?;
             cancellation.check().map_err(WorkspaceError::from)?;
-            let reservation = self.authority().publication_reservation_with_native_work(
-                self.authority_id(), operation_id, original, cancellation,
-            ).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
+            let reservation =(async { let __authority_args = (self.authority_id(), operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.authority().publication_reservation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result }.await).map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
             if let Some(proof) = reservation
                 && (proof.authority_id != self.authority_id() || proof.operation_id != operation_id)
             {
@@ -546,9 +534,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 return Err(WorkspaceError::IncompatibleWorkspace);
             }
             original.admit(crate::WorkCounters::UNCHARGED).map_err(WorkspaceError::from)?;
-            cancellation.check().map_err(WorkspaceError::from)?;
-            self.authority().release_publication_with_native_work(reservation, original, cancellation)
-                .await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))
+            cancellation.check().map_err(WorkspaceError::from)?;(async { let __authority_args = (reservation, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = self.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_result }.await).map_err(|error| WorkspaceError::from(FsError::Authority(error)))
         }.await;
         result.map_err(|error| (error, None))
     }

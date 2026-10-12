@@ -465,26 +465,11 @@ where
         operation_id: OperationId,
         conflict: &'static str,
     ) -> Result<PublicationReservation, WorkspaceMultiRootPublisherError<R::Error>> {
-        let authority_head = target
-            .authority()
-            .head(
-                target.authority_id(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let authority_head =({ let __authority_args = (target.authority_id(), WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .authority().head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?
-            .value;
-        match target
-            .authority()
-            .reserve_publication(
-                target.authority_id(),
-                authority_head,
-                operation_id,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+            .value;match ({ let __authority_args = (target.authority_id(), authority_head, operation_id, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = target
+            .authority().reserve_publication(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?
             .value
         {
@@ -507,15 +492,8 @@ where
                 operation_id,
                 "publication reservation is owned by another operation",
             )
-            .await?;
-        target
-            .authority()
-            .release_publication(
-                reservation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+            .await?;({ let __authority_args = (reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?;
         Ok(())
     }
@@ -740,26 +718,12 @@ where
             .resolve(root.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        let authority_head = target
-            .authority()
-            .head(
-                target.authority_id(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let authority_head =({ let __authority_args = (target.authority_id(), WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .authority().head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?
             .value;
-        let reservation = match target
-            .authority()
-            .reserve_publication(
-                target.authority_id(),
-                authority_head,
-                operation_id,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let reservation =match ({ let __authority_args = (target.authority_id(), authority_head, operation_id, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = target
+            .authority().reserve_publication(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?
             .value
         {
@@ -787,15 +751,8 @@ where
             .resolver
             .resolve(decoded.target_workspace_id)
             .await
-            .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        target
-            .authority()
-            .release_publication(
-                decoded.reservation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+            .map_err(WorkspaceMultiRootPublisherError::Resolver)?;({ let __authority_args = (decoded.reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?;
         Ok(())
     }
@@ -864,14 +821,8 @@ where
                 },
             )
             .await;
-        let release = target
-            .authority()
-            .release_publication(
-                reservation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let release =({ let __authority_args = (reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error));
         if let Err(error) = release {
             return Err(error.into());
@@ -952,14 +903,8 @@ where
                 },
             )
             .await;
-        let release = target
-            .authority()
-            .release_publication(
-                reservation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let release =({ let __authority_args = (reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error));
         if let Err(error) = release {
             return Err(error.into());
@@ -1100,15 +1045,8 @@ where
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
         if target.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id() != root.target_generation {
             if let Some(generation) = target.operation_generation(publisher_key(operation_id, root_id, b"publish"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
-            {
-                target
-                    .authority()
-                    .release_publication(
-                        decoded.reservation,
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                    )
-                    .await
+            {({ let __authority_args = (decoded.reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+                    .authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                     .map_err(|failure| WorkspaceError::engine(failure.error))?;
                 return Ok(MultiRootPublishRoot::AlreadyPublished(generation.id()));
             }
@@ -1148,15 +1086,8 @@ where
         if matches!(
             outcome,
             MultiRootPublishRoot::Published(_) | MultiRootPublishRoot::AlreadyPublished(_)
-        ) {
-            target
-                .authority()
-                .release_publication(
-                    decoded.reservation,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .await
+        ) {({ let __authority_args = (decoded.reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+                .authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                 .map_err(|failure| WorkspaceError::engine(failure.error))?;
         }
         Ok(outcome)
