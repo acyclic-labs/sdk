@@ -128,8 +128,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
             join.plan_at(&source_generation, &target_generation, io.remaining()?, io.cancellation()))?;
         io.remaining()?;
         guard().await?;
-        let (child_project, parent_project, parent_scope) = crate::executor::with_history_io(Some(&io), |work|
-            Ok((source.copy(work)?, self.project.copy(work)?, self.scope.copy(work)?)))?;
+        let (child_project, parent_project, parent_scope) = crate::executor::with_history_io(Some(&io), |work| -> Result<_> {
+            Ok((source.copy(work)?, self.project.copy(work)?, self.scope.copy(work)?)) })?;
         drop(source_ref); drop(target_ref);
         #[cfg(not(target_arch = "wasm32"))]
         let native_custody = if native {

@@ -457,8 +457,8 @@ impl<A, O> FilesystemRootBootstrapAllocation<A, O> {
 #[cfg(not(target_arch = "wasm32"))]
 struct RootCreatedFilesystemAccess<A, O> {
     allocation: Arc<FilesystemRootBootstrapAllocation<A, O>>,
-    reader: FilesystemContentVerifier<A, O>,
-    writer: Option<FilesystemContentPublisher<A, O>>,
+    reader: Arc<FilesystemContentVerifier<A, O>>,
+    writer: Option<Arc<FilesystemContentPublisher<A, O>>>,
     _custody: acyclic_fs::NativeAllocation,
 }
 
@@ -1247,8 +1247,8 @@ struct CreatedFilesystemAccess<A, O> {
     generation: GenerationRef,
     prepared_generation: GenerationRef,
     creation_operation: acyclic_fs::OperationId,
-    reader: FilesystemContentVerifier<A, O>,
-    writer: FilesystemContentPublisher<A, O>,
+    reader: Arc<FilesystemContentVerifier<A, O>>,
+    writer: Arc<FilesystemContentPublisher<A, O>>,
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
@@ -1287,7 +1287,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CreatedFil
 struct CreatedFilesystemReference<A, O> {
     allocation: Arc<CreatedFilesystemAccess<A, O>>,
     file: FileRef,
-    reader: FilesystemContentVerifier<A, O>,
+    reader: Arc<FilesystemContentVerifier<A, O>>,
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CreatedFilesystemReference<A, O> {

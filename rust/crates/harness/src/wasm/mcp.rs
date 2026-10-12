@@ -45,6 +45,7 @@ pub fn validate_mcp_catalog(
         .map_err(js_error)
 }
 
+#[path = "mcp/browser.rs"]
 mod browser;
 
 /// Projects the host-selected schema exposure through the ordinary model wire.

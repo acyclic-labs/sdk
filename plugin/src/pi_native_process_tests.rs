@@ -1,4 +1,5 @@
 
+use acyclic_harness::filesystem::NativeProcessView;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::Passive;
@@ -177,7 +178,11 @@ impl Fixture {
         let reservation = owner.native_view_owner().reserve_publication(&workspace, &scratch, generation,
             acyclic_fs::OperationId::from_bytes(command.into_bytes()), &work, &cancellation, &CancellationToken::new()).await?;
         let namespace = NativeVolumeNamespace::MaterializedDirectory;
-        let scratch_verifier = issuer.verifier_with_native_work(&work)?;
+        let scratch_verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = issuer.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let callback_guard = context.volume_callback_guard_with_native_work(&owner, &work).await?;
         let callback_guards = [callback_guard];
         let view = NativeVolumeView::prepare_with_native_work(owner.as_ref(), &callback_guards, &allocation.0, &NativeViewOptions { root: native.clone(), maximum_volumes: 1, work_per_volume: budget },
@@ -231,7 +236,11 @@ impl Fixture {
     }
 
     fn authority(&self, work: &NativeMaterializationWork) -> Result<NativeProcessAuthority> {
-        let verifier = self.issuer.verifier_with_native_work(work)?;
+        let verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = self.issuer.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         Ok(NativeProcessAuthority { verifier: verifier.0, history_limits: HistoryReadLimits { maximum_events: 512, maximum_bytes: 16 * 1024 * 1024 },
             content: self.content.clone(), result_content: self.content.clone(), results: self.results.clone(), approvals: self.approvals.clone(),
             authority_custody: Some(verifier.1) })

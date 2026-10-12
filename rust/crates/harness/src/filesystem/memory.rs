@@ -492,7 +492,7 @@ impl ToolProjection for LocalListFilesTool {
 }
 
 struct MemoryContentPublisher {
-    files: FilesystemContentPublisher<MemoryAuthorityBackend, MemoryObjectBackend>,
+    files: Arc<FilesystemContentPublisher<MemoryAuthorityBackend, MemoryObjectBackend>>,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
 
@@ -892,7 +892,7 @@ impl MemoryHarnessStorage {
     fn delegated_reader(
         &self,
         scope: &Scope,
-    ) -> Result<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>> {
+    ) -> Result<Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>> {
         FilesystemContentVerifier::new(self.host.clone(), &self.issuer.verifier(&mut None).expect("verifier copy"), &scope, self.maximum_file_bytes, None)
     }
 

@@ -1,4 +1,6 @@
 
+use crate::{AdapterState, ADAPTER_STATE_VERSION, PluginTaskBinding, RootBinding, RootAllocation};
+use std::path::PathBuf;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::{pi_root_inputs::PiRootPreparation, pi_runtime::PiTaskRuntime};

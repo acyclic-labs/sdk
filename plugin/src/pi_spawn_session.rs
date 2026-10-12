@@ -5,7 +5,7 @@ use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{LazySnapshotRef, NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::{
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
-    filesystem::{ContentResidencyVerifier, FilesystemContentVerifier, TaskCommandProgress},
+    conversation::ContentResidencyVerifier, filesystem::{ FilesystemContentVerifier, TaskCommandProgress},
     runtime::NativeTaskContext,
     workflow::WorkflowCommand,
 };
@@ -504,7 +504,11 @@ impl PiSession {
         let (paths, paths_custody) = pi_native::planned_native_paths(
             &self.resources, &self.state.root_session_id, commit.child.task_id, Some(key), work)?;
         let paths = paths;
-        let (workspace, workspace_custody) = project.storage_name_with_native_work(work)?;
+        let (workspace, workspace_custody) = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = project.storage_name(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let workspace = workspace;
         if !matches!(&pending.task_binding, PluginTaskBinding::Pi(binding) if binding.as_ref() == &commit.child)
             || pending.agent_id.as_deref() != Some(commit.alias.as_str())
@@ -724,7 +728,9 @@ impl PiSession {
         let outcome = outcome;
         let state = if outcome.as_ref().is_some_and(Outcome::is_terminal) { "completed" }
             else if created { "pending" } else { "preparing" };
-        let native_effect = acyclic_harness::effect_host::task_effect_id(commit.child.task_id, operations.native)?;
+        let native_effect = acyclic_harness::effect_host::task_effect_id(commit.child.task_id, operations.native,
+            &mut Some(&mut acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let body = SpawnObservation {
             operation: &commit.sdk_operation, state, uncertain,
             child: SpawnObservedChild { id: &commit.alias, task: commit.child.task_id,

@@ -31,15 +31,17 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         }
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let (volume, grant) = crate::executor::with_history_io(io, |work| {
+        let (volume, grant) = crate::executor::with_history_io(io, |work| -> Result<_> {
             let grant = ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write, maximum_bytes, work)?;
             Ok((volume.copy(work)?, grant))
         })?;
+        if let Some(io) = io {
+            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
             Some(io) => {
-                io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-                io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
                 Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                     .ok_or_else(|| io.invalid("content publisher custody underflows"))?)?)
             }

@@ -44,7 +44,7 @@ impl crate::filesystem::PreparationRecord for TaskEffectPlan {
 
 /// Resolves the canonical effect identity for one original task command.
 #[cfg(feature = "filesystem")]
-pub(crate) fn task_effect_id(
+pub fn task_effect_id(
     task: crate::TaskId, command: OperationId,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<EffectId> {

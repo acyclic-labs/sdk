@@ -83,7 +83,11 @@ pub(crate) async fn observe_task_conversation<P: StreamProvider>(
     {
         return Err(native_invalid("Pi binding requires its original conversation authority"));
     }
-    let verifier = authority.0.1.verifier_with_native_work(work)?;
+    let verifier = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = authority.0.1.verifier(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let operation = acyclic_harness::filesystem::native_root_output_binding_operation(
         &authority.0.0, exact_volume, original_creation, work)?;
     Ok(observe_binding_with_native_work(stream, &authority.0.0, &verifier.0,

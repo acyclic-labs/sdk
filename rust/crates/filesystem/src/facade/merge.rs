@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     pub(crate) async fn apply_workspace_join(
         &self, request: WorkspaceJoinRequest<'_, A, O>,
     ) -> Result<WorkspaceJoinOutcome, WorkspaceError> {
@@ -13,7 +12,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         ).await?;
         Ok(output.value)
     }
-
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn apply_workspace_join_guarded_with_native_work<'original, F, Fut, E>(
@@ -35,7 +33,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 unreachable!("native join retains original output custody"),
         }
     }
-
 
     pub(super) async fn apply_workspace_join_with_accounting<R, P>(
         &self, request: WorkspaceJoinRequest<'_, A, O, R>, accounting: &mut KernelAccounting<'_>,
@@ -157,7 +154,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result
     }
 
-
     pub(super) async fn read_join_root_with_accounting(
         &self, object: ObjectId, config: VolumeConfig, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
     ) -> Result<Owned<GenerationRoot>, FsError> {
@@ -168,7 +164,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         root.bytes = root_parent_bytes(&root.value)?;
         Ok(root)
     }
-
 
     pub(super) async fn flush_join_parent_with_accounting(
         &self, parent: ObjectId, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
