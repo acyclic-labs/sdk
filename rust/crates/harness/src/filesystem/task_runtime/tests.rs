@@ -267,7 +267,7 @@ impl Fixture {
     async fn admit_only(&self, runtime: &Runtime, kind: &str, command: Value) -> Result<OperationId> {
         let operation = OperationId::from_bytes([104; 16]);
         let payloads = FilesystemSchedulerPayloadStore::new(self.filesystem.clone(), &(self.volume), &self.issuer.verifier(&mut None).expect("verifier copy"), &self.signed, 65_536, None)?;
-        let payload = payloads.stage(operation, "command", &crate::contract::canonical_json_bytes(&command)?).await?;
+        let payload = payloads.stage(operation, "command", &crate::contract::canonical_json_bytes(&command)?, None)?.await?;
         let definition = self.tasks.get_version::<Value, Value>("test.deadline", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         let input = json!({"command":WorkflowCommand {
             operation_id: OperationId::from_bytes([105; 16]),
@@ -559,7 +559,7 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
     let runtime = fixture.runtime().await?;
     let task = TaskId::from_bytes([104; 16]);
     let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), &(fixture.volume), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, 65_536, None)?;
-    let file = payloads.stage(OperationId::from_bytes([106; 16]), "mail-body", b"7").await?;
+    let file = payloads.stage(OperationId::from_bytes([106; 16]), "mail-body", b"7", None)?.await?;
     let lease = fixture.admit_command(
         &runtime, super::super::MAIL_SEND_TASK_COMMAND_KIND,
         serde_json::to_value(&super::super::MailSendTaskCommand { recipient:task, payload:file })
