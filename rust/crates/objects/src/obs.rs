@@ -1,4 +1,4 @@
-//! Span helpers for `docs/observability.md`. Each expands to nothing on wasm32,
+//! Span helpers for `docs/observability.md`.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::{
@@ -55,11 +55,6 @@ impl<T> Outcome for Result<T, crate::v1::NativeObjectsError> {
         self.as_ref().err().map(native_failure)
     }
 }
-impl<T> Outcome for Result<T, crate::body::BodyError> {
-    fn failure(&self) -> Option<&'static str> {
-        self.as_ref().err().map(|_| "unavailable")
-    }
-}
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 impl<T> Outcome for Result<T, crate::physical::PhysicalError> {
     fn failure(&self) -> Option<&'static str> {
@@ -75,8 +70,7 @@ impl<T> Outcome for Result<T, crate::physical::PhysicalError> {
 #[cfg(not(target_arch = "wasm32"))]
 struct Lifetime(Option<Span>);
 
-// Polling and destruction must both use the owner: closing a child may close
-// its parent through the current dispatcher. Pin::set drops without moving T.
+// Poll and drop with the originating dispatcher.
 #[cfg(not(target_arch = "wasm32"))]
 pin_project_lite::pin_project! {
     struct Origin<T> {
@@ -211,8 +205,7 @@ impl futures::Stream for BodyState {
     }
 }
 
-// Field recording follows the owned operation, even when its span is filtered.
-// tracing's current span may be a visible ancestor in that case.
+// Record on the owned operation, including when filtered.
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
     static RECORDING: std::cell::Cell<Option<Span>> = const { std::cell::Cell::new(None) };

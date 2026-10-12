@@ -81,12 +81,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             return crate::NativeFutureBundle::new(work, || async move {
-                self.lazy.validate_snapshot_with_native_work(snapshot, work).await.map_err(Error::from)
+                let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
+                    work, work.cancellation(),
+                )?;
+                self.lazy.validate_snapshot(snapshot, &accounting).await.map_err(Error::from)
             }).map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
-            io.receive_content(self.lazy.validate_snapshot_measured(snapshot, io.remaining()?, &io.cancellation).await
-                .map_err(|failure| failure.map_error(root_source_error)))
+            let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(io.remaining()?, &io.cancellation);
+            let result = self.lazy.validate_snapshot(snapshot, &accounting).await;
+            io.receive_content(accounting.measured(result, |error, work| error.with_prior_work(work)
+                .into_measured_failure().map_error(root_source_error)))
         })
     }
     fn read<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str, maximum: u64,
@@ -111,7 +116,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
         -> acyclic_stream::BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_fs::LazyDirectoryPage>, Error>>
     {
         Box::pin(async move {
-            self.lazy.list_directory_at_snapshot_measured(snapshot, path, cursor, maximum, budget, cancellation).await
+            self.lazy.list_directory_at_snapshot(snapshot, path, cursor, maximum, budget, cancellation, None).await
                 .map_err(|failure| failure.map_error(root_source_error))
         })
     }
@@ -145,7 +150,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                 };
                 let (commit, snapshot) = self.lazy.write_at_snapshot_with_native_work_guarded(
                     snapshot, root_lazy_mutations(mutations), key, permit, original,
-                    &io.cancellation, &mut before_mutation,
+                    io.cancellation(), &mut before_mutation,
                 ).await?;
                 Ok((generation(commit), snapshot))
             }).map(crate::store::history::HistoryContentFuture::Native);
@@ -154,7 +159,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
             let allowance = io.remaining()?;
             let (commit, snapshot) = if allowance.has_finite_allowances() {
                 let mut before_mutation = |budget| async move {
-                    let callback = super::fork_preparer::PreparationIo::from_budget(budget, &io.cancellation)
+                    let callback = super::fork_preparer::PreparationIo::from_budget(budget, io.cancellation())
                         .map_err(acyclic_fs::OperationFailure::before_work)?;
                     let verified = callback.verify_publication_lease(lease.as_ref()).await;
                     match verified {
@@ -164,13 +169,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                 };
                 io.receive_content(self.lazy.write_at_snapshot_measured_guarded(
                     snapshot, root_lazy_mutations(mutations), key, permit,
-                    allowance, &io.cancellation, &mut before_mutation,
+                    allowance, io.cancellation(), &mut before_mutation,
                 ).await)?
             } else {
                 let mut before_mutation = || async move { lease.verify().await };
                 self.lazy.write_at_snapshot_guarded(
                     snapshot, root_lazy_mutations(mutations), key, permit,
-                    &io.cancellation, &mut before_mutation,
+                    io.cancellation(), &mut before_mutation,
                 ).await?
             };
             Ok((generation(commit), snapshot))
@@ -295,7 +300,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             return Err(unauthorized(io, "bound lazy project requires its original native snapshot"));
         }
         if io.is_none() {
-            snapshot.project.validate()?;
+            snapshot.project.validate(&mut None)?;
             snapshot.generation.validate()?;
         }
         if snapshot.project.class() != VolumeClass::Project

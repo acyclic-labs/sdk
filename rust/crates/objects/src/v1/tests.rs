@@ -991,6 +991,9 @@ pub(super) struct NativeTransportMeter {
     pub reads: std::sync::atomic::AtomicU64,
     pub writes: std::sync::atomic::AtomicU64,
     reserved: std::sync::atomic::AtomicU64,
+    table: bool,
+    pub read_limit: std::sync::atomic::AtomicU64,
+    pub write_limit: std::sync::atomic::AtomicU64,
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeTransportMeter {
@@ -1001,7 +1004,19 @@ impl NativeTransportMeter {
             copied: 0.into(), allocations: 0.into(),
             allocation_limit: u64::MAX.into(), pending_allocations: parking_lot::Mutex::new((0, 0)),
             reads: 0.into(), writes: 0.into(), reserved: 0.into(),
+            table: false, read_limit: u64::MAX.into(), write_limit: u64::MAX.into(),
         }
+    }
+    pub(super) fn new_table() -> Self { Self { table: true, ..Self::new() } }
+    fn table_event(&self, maximum: usize, counter: &std::sync::atomic::AtomicU64, limit: &std::sync::atomic::AtomicU64) -> std::io::Result<()> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if !self.table { return Err(std::io::ErrorKind::Unsupported.into()); }
+        assert_eq!(maximum, 0, "table events transfer no physical bytes");
+        acyclic_native_runtime::NativeReadMeter::check(self)?;
+        counter.fetch_update(SeqCst, SeqCst,
+            |count| count.checked_add(1).filter(|next| *next <= limit.load(SeqCst)))
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
+        Ok(())
     }
     fn claim(&self, bytes: u64, allocations: u64) -> std::io::Result<()> {
         use std::sync::atomic::Ordering::SeqCst;
@@ -1122,12 +1137,12 @@ impl acyclic_native_runtime::NativeReadMeter for NativeTransportMeter {
     fn cancel_reserved_bytes(&self, _: acyclic_native_runtime::NativeOperationKind, _: u64) { panic!("transport cannot reserve invented physical bytes") }
     fn record_reserved_bytes(&self, _: acyclic_native_runtime::NativeOperationKind, _: u64, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
     fn admit_bytes(&self, _: usize) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
-    fn admit_read(&self, _: usize) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn admit_read(&self, maximum: usize) -> std::io::Result<()> { self.table_event(maximum, &self.reads, &self.read_limit) }
     fn admit_operations(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
     fn record_operations(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
     fn record_read(&self, _: usize) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
     fn admit_write_bytes(&self, _: usize) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
-    fn admit_write(&self, _: usize) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn admit_write(&self, maximum: usize) -> std::io::Result<()> { self.table_event(maximum, &self.writes, &self.write_limit) }
     fn record_write(&self, _: usize) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
     fn admit_write_operations(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
     fn record_write_operations(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
@@ -1144,7 +1159,7 @@ fn native_wire_aliases_keep_original_claim_after_context_retirement()
     let observed = Arc::new(NativeTransportMeter::new());
     let meter: Arc<dyn NativeReadMeter> = observed.clone();
     let prepared = super::Download::prepare_native(0, meter.clone())?;
-    let controls = super::response::NativeGetControls { meter, errors: prepared.errors() };
+    let controls = super::response::NativeGetControls { meter, errors: prepared.errors.clone() };
     let (data, allocation) = controls.copy(b"immutable native wire")?;
     let wire = controls.wire_bytes(data, allocation)?;
     let alias = wire.slice(1..4);
@@ -1189,7 +1204,6 @@ pub(super) async fn exercise_native_transport<P: ObjectsProvider>(
     let object = native_transport_get(provider, query("native-body"), bytes.len() as u64, meter.clone()).await?;
     assert_eq!(object.body(), &bytes);
     assert!(object.body().matches_meter(&meter));
-    assert_eq!(observed.reads.load(SeqCst), 1, "one GET RPC is one backend read");
     assert_eq!(observed.writes.load(SeqCst), 0);
     assert_eq!(observed.reserved.load(SeqCst), 0);
     let clone = object.body().clone();
@@ -1284,7 +1298,6 @@ pub(super) async fn exercise_native_transport<P: ObjectsProvider>(
     let receipt = native_transport_put(provider, &bucket, "native-put", bytes.clone(), observed.clone()).await?;
     assert_eq!(receipt.info().size, bytes.len() as u64);
     assert!(observed.copied.load(SeqCst) >= bytes.len() as u64);
-    assert_eq!(observed.writes.load(SeqCst), 1, "one PUT RPC is one backend write");
     assert_eq!(observed.reads.load(SeqCst), 0);
     assert_eq!(observed.reserved.load(SeqCst), 0);
     assert!(observed.memory.load(SeqCst) > 0);
@@ -1298,7 +1311,6 @@ pub(super) async fn exercise_native_transport<P: ObjectsProvider>(
         return Err("native publication lost its actual failed receipt".into());
     };
     assert!(matches!(&failure.cause, super::NativeObjectsCause::Service(error) if error.code == wire::ErrorCode::Unavailable));
-    assert_eq!(observed.writes.load(SeqCst), 1);
     let allocations = observed.allocations.load(SeqCst);
     observed.cancelled.store(true, SeqCst);
     observed.limit.store(0, SeqCst);

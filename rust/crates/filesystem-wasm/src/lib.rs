@@ -720,24 +720,24 @@ mod bindings {
         pub async fn sync(&self) -> Result<BrowserGeneration, JsValue> {
             let engine = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => BrowserGenerationEngine::IndexedDb(
-                    Box::pin(value.sync())
+                    Box::pin(value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
                         .await
-                        .map_err(js_error)?
-                        .into_generation(),
+                        .map_err(|failure| js_error(failure.error))?
+                        .value,
                 ),
                 BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
                     BrowserGenerationEngine::IndexedDbOpfs(
-                        Box::pin(value.sync())
+                        Box::pin(value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
                             .await
-                            .map_err(js_error)?
-                            .into_generation(),
+                            .map_err(|failure| js_error(failure.error))?
+                            .value,
                     )
                 }
                 BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
-                    Box::pin(value.sync())
+                    Box::pin(value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
                         .await
-                        .map_err(js_error)?
-                        .into_generation(),
+                        .map_err(|failure| js_error(failure.error))?
+                        .value,
                 ),
             };
             Ok(BrowserGeneration { engine })
@@ -751,24 +751,21 @@ mod bindings {
                     Box::pin(value.checkpoint(label))
                         .await
                         .map_err(js_error)?
-                        .generation()
-                        .clone(),
+                        .1,
                 ),
                 BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
                     BrowserGenerationEngine::IndexedDbOpfs(
                         Box::pin(value.checkpoint(label))
                             .await
                             .map_err(js_error)?
-                            .generation()
-                            .clone(),
+                            .1,
                     )
                 }
                 BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
                     Box::pin(value.checkpoint(label))
                         .await
                         .map_err(js_error)?
-                        .generation()
-                        .clone(),
+                        .1,
                 ),
             };
             Ok(BrowserGeneration { engine })
@@ -782,24 +779,21 @@ mod bindings {
                     Box::pin(value.pin(identity))
                         .await
                         .map_err(js_error)?
-                        .generation()
-                        .clone(),
+                        .1,
                 ),
                 BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
                     BrowserGenerationEngine::IndexedDbOpfs(
                         Box::pin(value.pin(identity))
                             .await
                             .map_err(js_error)?
-                            .generation()
-                            .clone(),
+                            .1,
                     )
                 }
                 BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
                     Box::pin(value.pin(identity))
                         .await
                         .map_err(js_error)?
-                        .generation()
-                        .clone(),
+                        .1,
                 ),
             };
             Ok(BrowserGeneration { engine })
@@ -1632,24 +1626,21 @@ mod bindings {
                     Box::pin(value.pin(identity))
                         .await
                         .map_err(js_error)?
-                        .generation()
-                        .clone(),
+                        .1,
                 ),
                 BrowserGenerationEngine::IndexedDbOpfs(value) => {
                     BrowserGenerationEngine::IndexedDbOpfs(
                         Box::pin(value.pin(identity))
                             .await
                             .map_err(js_error)?
-                            .generation()
-                            .clone(),
+                            .1,
                     )
                 }
                 BrowserGenerationEngine::Memory(value) => BrowserGenerationEngine::Memory(
                     Box::pin(value.pin(identity))
                         .await
                         .map_err(js_error)?
-                        .generation()
-                        .clone(),
+                        .1,
                 ),
             };
             Ok(BrowserGeneration { engine })
@@ -4392,7 +4383,7 @@ mod bindings {
                 BrowserResolvedFileEngine::IndexedDbOpfs(file) => file.description().metadata,
                 BrowserResolvedFileEngine::Memory(file) => file.description().metadata,
             };
-            encode_file_metadata(metadata).map_err(js_error)
+            encode_file_metadata(metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(js_error)
         }
 
         /// Reads one exact logical range without another namespace lookup.
@@ -4762,7 +4753,7 @@ mod bindings {
             let (record, metadata_canonical_bytes) = match receipt.value {
                 Some(value) => (
                     Some(encode_file_record(value.record)),
-                    Some(encode_file_metadata(value.metadata).map_err(js_error)?),
+                    Some(encode_file_metadata(value.metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(js_error)?),
                 ),
                 None => (None, None),
             };
@@ -4818,7 +4809,7 @@ mod bindings {
                     .map_err(js_error)?
             });
             ts(BrowserMetadataResult {
-                canonical_bytes: encode_file_metadata(receipt.value).map_err(js_error)?,
+                canonical_bytes: encode_file_metadata(receipt.value, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(js_error)?,
                 work: browser_work(receipt.work),
             })
         }
@@ -4843,7 +4834,7 @@ mod bindings {
                     .map_err(js_error)?
             });
             ts(BrowserMetadataResult {
-                canonical_bytes: encode_file_metadata(receipt.value).map_err(js_error)?,
+                canonical_bytes: encode_file_metadata(receipt.value, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(js_error)?,
                 work: browser_work(receipt.work),
             })
         }
@@ -4861,7 +4852,7 @@ mod bindings {
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let metadata =
-                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
+                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
                     .map_err(js_error)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4890,7 +4881,7 @@ mod bindings {
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let metadata =
-                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
+                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
                     .map_err(js_error)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4917,7 +4908,7 @@ mod bindings {
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let metadata =
-                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
+                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
                     .map_err(js_error)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4950,7 +4941,7 @@ mod bindings {
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let metadata =
-                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
+                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
                     .map_err(js_error)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -5616,7 +5607,7 @@ mod bindings {
                     Ok(DirectoryRecordEntryResult {
                         name: entry.name.as_bytes().to_vec(),
                         record: encode_file_record(entry.record),
-                        metadata_canonical_bytes: encode_file_metadata(entry.metadata)
+                        metadata_canonical_bytes: encode_file_metadata(entry.metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed)
                             .map_err(js_error)?,
                     })
                 })
@@ -5645,15 +5636,15 @@ mod bindings {
             let bytes = bytes::Bytes::from(bytes);
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create_file(path, bytes, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create_file(path, bytes, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create_file(path, bytes, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5678,15 +5669,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create_directory(path, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create_directory(path, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create_directory(path, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5713,15 +5704,15 @@ mod bindings {
             let target = bytes::Bytes::from(target);
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create_symbolic_link(path, target, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (target).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create_symbolic_link(path, target, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (target).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create_symbolic_link(path, target, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (target).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5748,15 +5739,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create_empty_special(path, kind, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create_empty_special(path, kind, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create_empty_special(path, kind, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5785,15 +5776,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create_device(path, kind, major, minor, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create_device(path, kind, major, minor, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create_device(path, kind, major, minor, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5816,30 +5807,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create_reparse_point(
-                        path,
-                        bytes::Bytes::from(payload),
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload)).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create_reparse_point(
-                        path,
-                        bytes::Bytes::from(payload),
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload)).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create_reparse_point(
-                        path,
-                        bytes::Bytes::from(payload),
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload)).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5927,15 +5903,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .remove(path, expected, boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .remove(path, expected, boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .remove(path, expected, boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5959,33 +5935,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .rename(
-                        source,
-                        destination,
-                        replace,
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .rename(
-                        source,
-                        destination,
-                        replace,
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .rename(
-                        source,
-                        destination,
-                        replace,
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6009,15 +5967,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .hard_link(source, destination, boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .hard_link(source, destination, boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .hard_link(source, destination, boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6969,10 +6927,7 @@ mod bindings {
                 canonical_bytes,
             } => AuthoredMutation::SetMetadata {
                 path: browser_path(&path, profile, limits)?,
-                metadata: decode_file_metadata(
-                    canonical_bytes.as_ref(),
-                    browser_decode_limits(limits),
-                )
+                metadata: decode_file_metadata(canonical_bytes.as_ref(), browser_decode_limits(limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
                 .map_err(js_error)?,
             },
             TransactionOperation::Resize {

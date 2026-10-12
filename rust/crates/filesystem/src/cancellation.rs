@@ -191,8 +191,7 @@ impl CancellationToken {
         original: &crate::NativeMaterializationWork,
     ) -> Result<Self, crate::NativeTreeMaterializationError> {
         let allocation = original.claim_allocation(
-            std::mem::size_of::<CancellationState>() as u64, 1,
-        )?;
+            std::mem::size_of::<CancellationState>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         // The allocator is deliberately outside the original accounting leaf.
         Ok(Self { state: Arc::new(CancellationState {
             _native_allocation: Some(allocation),
@@ -221,12 +220,12 @@ impl CancellationToken {
                 std::io::ErrorKind::OutOfMemory.into(),
             ),
         })?;
-        let allocation = original.claim_allocation(std::mem::size_of::<CancellationState>() as u64, 1)?;
+        let allocation = original.claim_allocation(std::mem::size_of::<CancellationState>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         let child = Self { state: Arc::new(CancellationState {
             parent: Some(parent.clone()), _native_allocation: Some(allocation),
             ..CancellationState::default()
         }) };
-        let allocation = original.claim_allocation(std::mem::size_of::<ChildCancellationWake>() as u64, 1)?;
+        let allocation = original.claim_allocation(std::mem::size_of::<ChildCancellationWake>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         let wake = Waker::from(Arc::new(ChildCancellationWake {
             child: Arc::downgrade(&child.state), _native_allocation: allocation,
         }));
@@ -844,7 +843,7 @@ impl Cancelled<'_> {
                         Err(error) => return Poll::Ready(Err(error.into())),
                     };
                 }
-                match original.claim_allocation(waiter_bytes, 1) {
+                match original.claim_allocation(waiter_bytes, 1, crate::WorkCounters::UNCHARGED) {
                     Ok(allocation) => Some(allocation),
                     Err(error) => return Poll::Ready(Err(error.into())),
                 }
@@ -894,7 +893,7 @@ impl Cancelled<'_> {
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 let mut native_registry_allocation = if let Some(original) = native_original {
-                    match original.claim_allocation(new_bytes, 1) {
+                    match original.claim_allocation(new_bytes, 1, crate::WorkCounters::UNCHARGED) {
                         Ok(allocation) => Some(allocation),
                         Err(error) => return Poll::Ready(Err(error.into())),
                     }
@@ -937,7 +936,7 @@ impl Cancelled<'_> {
                             return Poll::Ready(Err(crate::WorkError::Overflow.into()));
                         }
                     };
-                    let mut metadata = match original.claim_allocation(std::mem::size_of::<NativeRegistryLease>() as u64, 1) {
+                    let mut metadata = match original.claim_allocation(std::mem::size_of::<NativeRegistryLease>() as u64, 1, crate::WorkCounters::UNCHARGED) {
                         Ok(metadata) => metadata,
                         Err(error) => {
                             drop(waiters);

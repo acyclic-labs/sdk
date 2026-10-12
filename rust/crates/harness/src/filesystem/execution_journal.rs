@@ -671,7 +671,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let projection = crate::executor::load_json::<
             crate::executor::ResponseProjection>(self, projection, io).await?;
-        crate::context::validate_projected_context_with_io(&projection.context, limits, io)?;
+        crate::context::validate_projected_context(&projection.context, limits, io)?;
         let Some(reference) = &projection.checkpoint else {
             if projection.canonical.is_some() {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
@@ -708,7 +708,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         &self,
         limits: Limits,
     ) -> Result<crate::store::HistoryReadLimits> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         Ok(if let Some(limits) = self.history_read_limits {
             limits
         } else {
@@ -906,7 +906,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     bytes
                 }
                 Some(io) => io.receive_content(self.load_measured(
-                    &summary.output, io.remaining()?, &io.cancellation).await)?,
+                    &summary.output, io.remaining()?, io.cancellation()).await)?,
                 None => self.load(&summary.output).await?,
             };
             if let Some(io) = io { io.check_cancellation()?; }
@@ -937,9 +937,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append_keyed(
-                    (&stream, &self.stream), bytes, Some(tail), key, operation_id,
-                    "execution journal retry identity", &mut Some(&mut borrowed),
+                crate::distributed::append(
+                    (&stream, &self.stream), [bytes], 0, Some(tail), key, operation_id, &mut Some(&mut borrowed),
                 ).await
             }
             None => stream.append_batch(vec![bytes], Some(tail), Some(key)).await
@@ -1197,7 +1196,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         limits: Limits,
     ) -> Result<tokio::sync::MappedMutexGuard<'_, StreamAggregate<P>>>
     {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         let verifier = self.input_verifier.as_ref().ok_or_else(|| {
             Error::Unsupported("conversation content verifier is not bound".into())
         })?;
@@ -1409,7 +1408,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     "execution journal sequence or bound is invalid"));
             }
             let observation: Observation = match io {
-                Some(io) => io.decode_preparation::<Observation>(&record.value)?.into_retained(),
+                Some(io) => io.decode_preparation::<Observation>(&record.value, crate::wire::ErrorCode::Storage)?.into_retained(),
                 None => crate::contract::json_from_slice(&record.value)
                     .map_err(|error| Error::Storage(format!("execution journal record is invalid: {error}")))?,
             };
@@ -1551,7 +1550,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
                 model = Some(match io {
                     Some(io) => {
-                        let parsed = io.decode_preparation::<ModelEvent>(&bytes)?;
+                        let parsed = io.decode_preparation::<ModelEvent>(&bytes, crate::wire::ErrorCode::Storage)?;
                         let _canonical_hold;
                         let canonical = io.encode(&parsed.value, self.maximum_payload_bytes, true)?;
                         _canonical_hold = io.guard_bytes(&canonical)?;
@@ -1591,7 +1590,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         if let Some(io) = io {
             super::fork_preparer_io::item(Some(io), reference.logical_owned_bytes()?)?;
-            reference.validate()?;
+            reference.validate(&mut None)?;
             if reference.volume().class() == VolumeClass::AgentPrivate
                 && reference.volume().owner() != self.volume.owner()
             {
@@ -2125,7 +2124,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
-        limits.validate_with_work(&mut work)?;
+        limits.validate(&mut work)?;
         if selected.selection.message_ids.len() > limits.context_messages {
             return Err(super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Invalid, "selected history exceeds context message limit"));
@@ -2162,7 +2161,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             loaded.push(message.ok_or_else(|| super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Storage, "committed selected message is missing at its cutoff"))?);
         }
-        let (historical, _) = crate::conversation::ConversationState::selected_view_with_work(loaded, &mut work)?;
+        let (historical, _) = crate::conversation::ConversationState::selected_view(loaded, &mut work)?;
         let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
             (crate::conversation::MAX_PORTABLE_COUNT, crate::conversation::MAX_PORTABLE_COUNT,
                 self.maximum_payload_bytes),
@@ -2226,7 +2225,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             owner.validate_input_file(file, io)
         } else {
             let mut borrowed = io.map(PreparationIo::history_io);
-            file.validate_with_work(&mut borrowed.as_mut().map(
+            file.validate(&mut borrowed.as_mut().map(
                 |work| work as &mut dyn crate::store::history::HistoryIo))
         }
     }
@@ -2518,7 +2517,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
     }
     let mut borrowed = io.map(PreparationIo::history_io);
-    let (history, _) = crate::conversation::ConversationState::selected_view_with_work(
+    let (history, _) = crate::conversation::ConversationState::selected_view(
         loaded, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo),
     )?;
     let mut message_ids = Vec::new();

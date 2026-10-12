@@ -26,20 +26,12 @@ impl Format for FileTableFormat {
         &value.file_id
     }
 
-    fn decode(bytes: &[u8], limits: DecodeLimits) -> Result<Page<Self>, CanonicalDecodeError> {
-        Self::decode_with_steps(bytes, limits, &mut |_| Ok(()))
-    }
-
-    fn decode_with_steps<E: From<CanonicalDecodeError>>(
+    fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
         observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E> {
-        super::file_table::decode_file_table_page_mapped_with_steps(
-            bytes, limits, observe, Page::Leaf, Page::Internal,
-            |first, page| Child { first, page },
-            |child| &child.first,
-        )
+        super::file_table::decode_file_table_page(bytes, limits, observe, Page::Leaf, Page::Internal, |first, page| Child { first, page }, |child| &child.first)
     }
 
     fn decode_shape(
@@ -49,19 +41,13 @@ impl Format for FileTableFormat {
         file_table_page_decode_shape(bytes, limits)
     }
 
-
     fn encode_with_accounting(
         page: &PageRef<'_, Self>, maximum_items: u32,
         accounting: &mut super::allocation::KernelAccounting<'_>,
     ) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
         match page {
-            PageRef::Leaf(records) => super::file_table::encode_file_table_leaf_records_with_accounting(
-                records, maximum_items, accounting,
-            ),
-            PageRef::Internal(children) => super::file_table::encode_file_table_internal_children_with_accounting(
-                children.iter().map(|child| (child.first, child.page)),
-                maximum_items, accounting,
-            ),
+            PageRef::Leaf(records) => crate::kernel::codec::encode_owned(accounting, |observe, reserve| super::file_table::encode_file_table_leaf_records(records, maximum_items, None, observe, reserve)),
+            PageRef::Internal(children) => crate::kernel::codec::encode_owned(accounting, |observe, reserve| super::file_table::encode_file_table_internal_children(children.iter().map(|child| (child.first, child.page)), maximum_items, observe, reserve)),
         }
     }
 
@@ -116,14 +102,7 @@ impl Format for FileTableFormat {
 
     fn value_owned_bytes(_value: &Self::Value) -> u64 { 0 }
 
-    fn try_clone_key(
-        key: &Self::Key,
-        maximum_bytes: u32,
-    ) -> Result<Self::Key, CanonicalDecodeError> {
-        Self::try_clone_key_with_steps(key, maximum_bytes, &mut |_| Ok(()))
-    }
-
-    fn try_clone_key_with_steps<E: From<CanonicalDecodeError>>(
+    fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
         _maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
@@ -135,14 +114,7 @@ impl Format for FileTableFormat {
         Ok(copied)
     }
 
-    fn try_clone_value(
-        value: &Self::Value,
-        maximum_bytes: u32,
-    ) -> Result<Self::Value, CanonicalDecodeError> {
-        Self::try_clone_value_with_steps(value, maximum_bytes, &mut |_| Ok(()))
-    }
-
-    fn try_clone_value_with_steps<E: From<CanonicalDecodeError>>(
+    fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
         _maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
@@ -263,12 +235,6 @@ pub struct FileTableMutationReceipt {
 pub type FileTableMutationFailure = OperationFailure<FileTableMutationError>;
 
 /// Applies a bounded ordered file-table mutation batch.
-///
-/// # Errors
-///
-/// Rejects malformed records/preconditions before backend access, then fails
-/// closed on semantic conflicts, authenticated routing errors, storage failure,
-/// or work-budget exhaustion.
 pub fn apply_file_table_mutations<S: crate::ImmediateObjectStore>(
     store: &S,
     root: ObjectId,
@@ -284,14 +250,6 @@ pub fn apply_file_table_mutations<S: crate::ImmediateObjectStore>(
 }
 
 /// Asynchronously applies one ordered sparse file-table mutation batch.
-///
-/// This drives the same iterative persistent B+tree machine as the native
-/// synchronous API.
-///
-/// # Errors
-///
-/// Returns the same semantic, validation, storage, cancellation, and work
-/// failures as [`apply_file_table_mutations`].
 pub async fn apply_file_table_mutations_async<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -306,7 +264,6 @@ pub async fn apply_file_table_mutations_async<S: crate::AsyncObjectStore>(
         .await.map_err(|error| OperationFailure::new(project_file_table_error(error), accounting.spent()))
 }
 
-/// Borrows the compiler's already-owned input, with no post-adoption.
 pub(crate) async fn apply_file_table_mutations_with_accounting<S: crate::AsyncObjectStore>(
     store: &S, root: ObjectId, mutations: &[FileTableMutation], maximum_mutations: u32,
     limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,

@@ -436,8 +436,8 @@ impl PiSession {
         let PluginTaskBinding::Pi(binding) = &self.state.task_binding else {
             return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root has no original task binding" });
         };
-        let preparation = pi_root_inputs::PiRootPreparation::load_native_from_state(
-            &self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.filesystem, &self.state,
+        let preparation = pi_root_inputs::PiRootPreparation::load(
+            &self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.state,
             None, original_native_work,
         ).await?;
         // Restore the original completed creator before running any Root
@@ -479,8 +479,8 @@ impl PiSession {
                 if let Some(allocation) = driver.root_output().await? {
                     allocation
                 } else {
-                let preparation = pi_root_inputs::PiRootPreparation::load_native_from_state(
-                    &self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.filesystem, &self.state,
+                let preparation = pi_root_inputs::PiRootPreparation::load(
+                    &self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.state,
                     None, original_native_work,
                 ).await?;
                 let Some(allocation) = pi_root_provider::observe_root_allocation(
@@ -528,8 +528,8 @@ impl PiSession {
                 let physical = self.resources.shared_roots.acquire_with_native_work(
                     &root.path, SharedRootAdmission::Resume(expected), original_native_work,
                     || async move {
-                        let preparation = pi_root_inputs::PiRootPreparation::load_native_from_state(
-                            &proof_resources.private_state_root, proof_directory, proof_runtime, proof_filesystem, proof_state,
+                        let preparation = pi_root_inputs::PiRootPreparation::load(
+                            &proof_resources.private_state_root, proof_directory, proof_runtime, proof_state,
                             Some(Arc::clone(read_context)), original_native_work,
                         ).await?;
                         let owner = pi_owner::PiOwnerConfig::load_readonly_with_native_work(
@@ -727,8 +727,8 @@ impl PiSession {
             return Err(RootError::Invalid("Pi native instruction or model exceeds its admitted bounds".to_owned()));
         }
         owner.native_runtime()?.validate()?;
-        let original = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation);
-        let operations = pi_fork::PiForkOperations::new(original);
+        let original = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation, &work)?;
+        let operations = pi_fork::PiForkOperations::new(original, &work)?;
         let task = TaskId::from_bytes(operations.child.into_bytes());
         let source_task = match arguments.get("source") {
             None | Some(Value::Null) => caller,
@@ -821,8 +821,8 @@ impl PiSession {
         if sdk_operation.is_empty() || sdk_operation.len() > 512 {
             return Err(RootError::Invalid("Pi mail requires its original bounded SDK operation".to_owned()));
         }
-        let operation = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation);
         let work = self.mail_work(caller, owner, query_work).await?;
+        let operation = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation, &work)?;
         let message = arguments.get("message").and_then(Value::as_str).ok_or_else(|| RootError::Invalid("Pi mail message must be a string".to_owned()))?;
         let _envelope_custody = work.retain_owned(message.len() as u64)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;

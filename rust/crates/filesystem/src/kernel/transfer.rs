@@ -37,8 +37,7 @@ impl TransferCursor {
     }
 }
 
-/// One ordered bounded export page. Object identities are the corresponding
-/// manifest slice beginning at `first_object`.
+/// One ordered bounded export page. Object identities are the corresponding manifest slice beginning at `first_object`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GenerationTransferBatch {
     /// First manifest object represented by `objects`.
@@ -88,11 +87,6 @@ pub enum GenerationTransferError {
 pub type GenerationTransferResult<T> = MeasuredResult<OperationReceipt<T>, GenerationTransferError>;
 
 /// Authenticates a generation closure and builds its canonical transfer manifest.
-///
-/// # Errors
-///
-/// Returns typed cancellation, storage, closure, identity, configuration, or
-/// bounded-work failures.
 pub async fn build_generation_export_manifest_async<S: AsyncObjectStore>(
     store: &S,
     volume_id: VolumeId,
@@ -141,11 +135,6 @@ pub async fn build_generation_export_manifest_async<S: AsyncObjectStore>(
 }
 
 /// Reauthenticates a completely imported generation against its manifest.
-///
-/// # Errors
-///
-/// Returns before backend work for malformed manifests, otherwise preserving
-/// exact closure work on missing, corrupt, foreign, or mismatched objects.
 pub async fn authenticate_generation_export_manifest_async<S: AsyncObjectStore>(
     store: &S,
     manifest: &GenerationExportManifest,
@@ -187,14 +176,6 @@ pub async fn authenticate_generation_export_manifest_async<S: AsyncObjectStore>(
 }
 
 /// Reads one resumable manifest page using the backend's ordered batch primitive.
-///
-/// The request vector is bounded and accounted before allocation. A terminal
-/// cursor returns an empty terminal page without backend work.
-///
-/// # Errors
-///
-/// Rejects malformed manifests, invalid cursors/bounds, cancellation,
-/// allocation, storage, and work-budget failures without losing spent work.
 pub async fn export_generation_batch_async<S: AsyncObjectStore + ?Sized>(
     store: &S,
     manifest: &GenerationExportManifest,
@@ -302,14 +283,6 @@ pub async fn export_generation_batch_async<S: AsyncObjectStore + ?Sized>(
 }
 
 /// Idempotently imports one manifest-aligned page of immutable object bodies.
-///
-/// A failure may leave a valid immutable prefix, so callers retry the same
-/// cursor and bodies. Canonical object identity makes that retry exactly safe.
-///
-/// # Errors
-///
-/// Rejects malformed manifests, cursor/body bounds, cancellation, storage, or
-/// exact-work failures while preserving work spent on an imported prefix.
 pub async fn import_generation_batch_async<S: AsyncObjectStore + ?Sized>(
     store: &S,
     manifest: &GenerationExportManifest,

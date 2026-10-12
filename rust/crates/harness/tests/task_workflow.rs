@@ -26,7 +26,7 @@ use acyclic_harness::filesystem::{
     TaskWorkerOutcome, TimerTaskCommand, ToolTaskCommand,
 };
 use acyclic_harness::model::{
-    FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
+    FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent,
     ModelProvider, PreparedModelRequest,
 };
 use acyclic_harness::registry::ComponentIdentity;
@@ -270,13 +270,10 @@ impl ModelProvider for InterruptedModel {
             Err(Error::Storage("forced model interruption".into())),
         ]))
     }
-    fn reconcile<'a>(
-        &'a self,
-        attempt: ModelAttempt,
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, _dispatch: acyclic_harness::model::ModelDispatch, observed: &'a [acyclic_harness::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async move {
             assert_eq!(
-                attempt.observed,
+                observed,
                 if self.observed_events == 0 {
                     Vec::new()
                 } else {

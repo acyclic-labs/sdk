@@ -156,15 +156,9 @@ pub(crate) fn mutations(
         observer.admit_item()?;
         let committed = match mutation {
             CommitMutation::Append { path, records: bodies } => {
-                let start = tail(path).unwrap_or(0);
-                let records = records(
-                    start, bodies.iter().cloned(), commit_id, committed_at_micros, observer,
-                )?;
-                let end = start + records.value.len() as u64;
-                output.allocation.absorb(records.allocation)?;
-                CommittedMutation::Append(CommittedAppend {
-                    path: observer.retain_path(path)?, start, end, tail: end, records: records.value,
-                })
+                let append = append_fact(path, tail(path).unwrap_or(0), bodies.iter().cloned(), commit_id, committed_at_micros, observer)?;
+                output.allocation.absorb(append.allocation)?;
+                CommittedMutation::Append(append.value)
             }
             CommitMutation::Fork { source, destination, at_tail, records: bodies } => {
                 let source_tail = tail(source).ok_or(StreamError::NotFound)?;

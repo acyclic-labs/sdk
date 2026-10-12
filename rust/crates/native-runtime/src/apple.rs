@@ -5,29 +5,6 @@ use bytes::Bytes;
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt as _;
-use std::os::unix::fs::MetadataExt as _;
-
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(super) struct FileIdentity {
-    device: u64,
-    inode: u64,
-}
-
-pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
-    let metadata = file.metadata()?;
-    Ok(FileIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    })
-}
-
-pub(super) fn file_identity_capacity() -> usize {
-    let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile);
-    usize::try_from(limit.current.unwrap_or(u64::MAX))
-        .unwrap_or(usize::MAX)
-        .saturating_div(4)
-        .clamp(1, 4096)
-}
 
 fn validate_range(offset: u64, length: usize) -> io::Result<()> {
     let length = u64::try_from(length)
@@ -70,16 +47,6 @@ pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io:
         file.write_all_at(&write.bytes, write.offset)?;
     }
     Ok(())
-}
-
-#[allow(unsafe_code)]
-pub(super) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
-    use std::os::fd::AsRawFd as _;
-    let size = libc::off_t::try_from(size)
-        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    // SAFETY: ftruncate only acts on the live descriptor.
-    if unsafe { libc::ftruncate(file.as_raw_fd(), size) } == 0 { Ok(()) }
-    else { Err(io::Error::last_os_error()) }
 }
 
 #[allow(unsafe_code)]

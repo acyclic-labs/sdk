@@ -147,7 +147,7 @@ impl ResumableMachine for Machine {
             let encoded_hold;
             let encoded = io.encode(&state["command"], io.remaining()?.bytes_encoded, false)?;
             encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
-            let command = io.decode_preparation::<WorkflowCommand>(&encoded)?.into_retained();
+            let command = io.decode_preparation::<WorkflowCommand>(&encoded, crate::wire::ErrorCode::Storage)?.into_retained();
             drop(encoded);
             drop(encoded_hold);
             command
@@ -442,10 +442,7 @@ impl ModelProvider for PendingModel {
         self.clock.0.store(20, Ordering::SeqCst);
         Box::pin(futures::stream::pending())
     }
-    fn reconcile<'a>(
-        &'a self,
-        _: crate::model::ModelAttempt,
-    ) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
         Box::pin(async move {
             self.reconciled.fetch_add(1, Ordering::SeqCst);
             assert_eq!(self.generated.load(Ordering::SeqCst), 1);

@@ -97,8 +97,6 @@ async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
         let _guard = tracing::subscriber::set_default(
             tracing_subscriber::registry().with(Capture(log.clone())),
         );
-        // Valid gRPC frame envelope, invalid protobuf payload; the other
-        // case has no unary response message despite transport status OK.
         let body = if case == 0 {
             Body::empty()
         } else {

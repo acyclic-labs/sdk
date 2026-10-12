@@ -33,7 +33,7 @@ use acyclic_harness::{
         FilesystemHost, FilesystemTaskRuntime,
     },
     model::{
-        FileProjectionPolicy, ImageDetail, Model, ModelAttempt, ModelContent, ModelContentPart,
+        FileProjectionPolicy, ImageDetail, Model, ModelContent, ModelContentPart,
         ModelDataPart, ModelDispatch, ModelEvent, ModelMessage, ModelProvider, ModelRequest,
         ModelRole, NativeConfigurationBinding, NativeMediaIntent, NativeMediaPolicy,
         PreparedModelRequest, ToolResultContent,
@@ -53,7 +53,7 @@ use acyclic_harness::{
     },
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream, MemoryStream, StreamClient};
-use futures::stream;
+use futures::{stream, StreamExt as _};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::{
@@ -249,6 +249,12 @@ impl MockAdapter {
         Ok(())
     }
     async fn file(&self, file: &FileRef, policy: &FileProjectionPolicy) -> Result<CapturedPart> {
+        if *policy == FileProjectionPolicy::BoundedFull && file.descriptor().media_type() == "text/plain" {
+            let bytes = self.reader.read(file).await?;
+            file.descriptor().verify(&bytes)?;
+            return Ok(CapturedPart::Text(std::str::from_utf8(&bytes)
+                .map_err(|error| Error::Invalid(error.to_string()))?.into()));
+        }
         let FileProjectionPolicy::Native(policy) = policy else {
             return Err(Error::Unsupported(
                 "fixture accepts explicit native input only".into(),
@@ -305,7 +311,7 @@ impl ModelProvider for MockAdapter {
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         Self::selection(model)?;
         Ok(ModelContextCapacity {
-            context_tokens: 131_072,
+            context_tokens: model.options["context_tokens"].as_u64().and_then(|tokens| u32::try_from(tokens).ok()).unwrap_or(131_072),
             output_tokens: 4_096,
         })
     }
@@ -409,16 +415,20 @@ impl ModelProvider for MockAdapter {
                     request_bytes: request.bytes().to_vec(),
                     parts,
                 });
-            let event = ModelEvent::Completed {
-                metadata: Value::Null,
-            };
+            let mut events = Vec::new();
+            if request.request().messages.iter().any(|message| matches!(
+                &message.content, ModelContent::Text(text) if text.starts_with("Summarize the preceding context")
+            )) {
+                events.push(ModelEvent::Content { delta: "retained native summary".into() });
+            }
+            events.push(ModelEvent::Completed { metadata: Value::Null });
             if self.receipts_enabled {
                 let key = (dispatch.operation_id.into_bytes(), dispatch.step);
                 let previous = self
                     .receipts
                     .lock()
                     .map_err(|_| Error::Storage("fixture receipt lock".into()))?
-                    .insert(key, (dispatch, vec![event.clone()]));
+                    .insert(key, (dispatch, events.clone()));
                 if previous.is_some() {
                     return Err(Error::Conflict(
                         "fixture attempted duplicate generation".into(),
@@ -430,31 +440,31 @@ impl ModelProvider for MockAdapter {
                     "fixture response lost after native capture".into(),
                 ));
             }
-            Ok(event)
-        }))
+            Ok(events)
+        }).flat_map(|events| stream::iter(match events {
+            Ok(events) => events.into_iter().map(Ok).collect(),
+            Err(error) => vec![Err(error)],
+        })))
     }
-    fn reconcile<'a>(
-        &'a self,
-        attempt: ModelAttempt,
-    ) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, dispatch: acyclic_harness::model::ModelDispatch, observed: &'a [acyclic_harness::model::ModelEvent]) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         self.reconciles.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             let receipts = self
                 .receipts
                 .lock()
                 .map_err(|_| Error::Storage("fixture receipt lock".into()))?;
-            let Some((dispatch, events)) =
-                receipts.get(&(attempt.operation_id.into_bytes(), attempt.step))
+            let Some((recorded, events)) =
+                receipts.get(&(dispatch.operation_id.into_bytes(), dispatch.step))
             else {
                 return Ok(None);
             };
-            if dispatch.request_digest != attempt.request_digest
-                || !events.starts_with(&attempt.observed)
+            if recorded.request_digest != dispatch.request_digest
+                || !events.starts_with(observed)
             {
                 return Err(Error::Conflict("fixture original attempt differs".into()));
             }
             let remaining = events
-                .get(attempt.observed.len()..)
+                .get(observed.len()..)
                 .ok_or_else(|| Error::Conflict("fixture observed prefix exceeds receipt".into()))?;
             Ok(Some(remaining.to_vec()))
         })
@@ -1639,6 +1649,12 @@ where
         }
         drop(execution);
         drop(runtime);
+        if pass == 2 {
+            exercise_media_compaction_fork_restart(
+                host.clone(), volume.clone(), adapter.reader.clone(), &expected,
+                invocation, projection, conversion.clone(),
+            ).await?;
+        }
         if pass == 0 {
             writer
                 .stage(
@@ -1660,6 +1676,445 @@ where
                 .await?;
         }
     }
+    Ok(())
+}
+
+
+async fn exercise_media_compaction_fork_restart<A, O>(
+    host: Arc<FilesystemHost<A, O>>,
+    volume: VolumeRef,
+    reader: Arc<ReaderSpy>,
+    selected: &[(FileRef, NativeMediaPolicy)],
+    invocation: ToolInvocation,
+    result: ToolResultContent,
+    tool: Tool,
+) -> Result<()>
+where
+    A: acyclic_fs::AsyncAuthorityStore + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+{
+    use acyclic_harness::context::{
+        CompactionPolicy, CompactionRetention, Context, ContextPlacement, SourceStage,
+        ThresholdCompaction,
+    };
+    use acyclic_harness::executor::{ExecutionEvent, ExecutionJournal, Executor, ModelPurpose, StockExecutor};
+    use acyclic_harness::filesystem::{FilesystemForkPreparer, workspace_ref};
+    use acyclic_harness::fork::{ForkPreparation, ForkRequest, ForkSelection, ResourceRevision};
+    use acyclic_harness::model::ModelPrefix;
+    use acyclic_harness::resources::StreamRef;
+    use acyclic_harness::store::StreamAggregate;
+    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream_provider = ProviderRef::new("media-fork", "stream", "2")?;
+    let parent = Authority {
+        kind: AggregateKind::Conversation,
+        id: "media-parent".into(),
+    };
+    let issuer = AuthorityIssuer::new("media-fork", [42; 32], parent.clone());
+    let agent = match volume.owner() {
+        VolumeOwner::Agent(agent) => *agent,
+        _ => return Err(Error::Invalid("private media volume".into())),
+    };
+    let project = VolumeRef::new(
+        volume.provider().clone(),
+        "media-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("media".into()),
+    )?;
+    let project_head = host.create_volume(&project).await?;
+    let grants = Capabilities::new([
+        "conversation:bind".into(),
+        "conversation:append".into(),
+        "fork:publish".into(),
+        "model:generate".into(),
+        volume.capability(VolumeOperation::Read)?,
+        volume.capability(VolumeOperation::Write)?,
+        project.capability(VolumeOperation::Read)?,
+        project.capability(VolumeOperation::Write)?,
+    ]);
+    let scope = issuer.root_for_agent(agent, "media-parent", grants);
+    let journal = FilesystemExecutionJournal::new(
+        stream.clone(),
+        host.clone(),
+        volume.clone(),
+        issuer.verifier(),
+        SchemaRegistry::new(),
+        scope.clone(),
+        65_536,
+    )?
+    .with_input_verifier(reader.clone());
+    let adapter = Arc::new(MockAdapter::new(reader.clone()));
+    let model = Model::new(
+        "fixture-native",
+        "all",
+        "mock-native-1",
+        json!({"context_tokens":16_384}),
+    )?;
+    let exchange = vec![
+        ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Parts(vec![ModelContentPart::ToolCall {
+                call_id: invocation.call_id.clone(),
+                name: invocation.name.clone(),
+                arguments: invocation.arguments,
+            }]),
+        },
+        ModelMessage {
+            role: ModelRole::Tool,
+            content: ModelContent::Parts(vec![ModelContentPart::ToolResult {
+                call_id: invocation.call_id,
+                name: invocation.name,
+                content: result,
+            }]),
+        },
+    ];
+    let mut messages = vec![ModelMessage {
+        role: ModelRole::User,
+        content: ModelContent::Text("old history ".repeat(1_100)),
+    }];
+    messages.extend(exchange.clone());
+    let pipeline = ContextPipeline::new([Arc::new(SourceStage::new(
+        "media-history",
+        "1",
+        Arc::new(Context {
+            messages,
+            metadata: BTreeMap::new(),
+            current_input_index: None,
+        }),
+        ContextPlacement::Prepend,
+    ))
+        as Arc<dyn acyclic_harness::context::ContextStage>]);
+    let tool_scope = RuntimeScope::new(Capabilities::new(["tool:call:example.convert_image"]), Limits::default())?;
+    let mut tools = ToolRegistry::new();
+    tools.register(tool)?;
+    let executor = StockExecutor::new(
+        model.clone(),
+        adapter.clone(),
+        pipeline,
+        tools.clone(),
+    )
+    .with_tool_authority(tool_scope.clone(), None)?
+    .with_max_output_tokens(16)?
+    .with_compaction_policy(CompactionPolicy::Threshold(ThresholdCompaction {
+        response_reserve_tokens: 4_096,
+        recent_tokens: 1_024,
+        retention: CompactionRetention::default(),
+    }));
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        selected_context: None,
+        max_steps: 1,
+        input: ModelContent::Parts(
+            selected
+                .iter()
+                .map(|(file, policy)| ModelContentPart::File {
+                    file: file.clone(),
+                    policy: FileProjectionPolicy::Native(Box::new(policy.clone())),
+                })
+                .collect(),
+        ),
+    };
+    executor.execute(input.clone(), &journal).await?;
+    let records = journal.replay(input.operation_id, 0, 64).await?;
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(
+                record.event,
+                ExecutionEvent::ModelStarted {
+                    purpose: ModelPurpose::Summary,
+                    ..
+                }
+            ))
+            .count(),
+        1
+    );
+    let request = records
+        .iter()
+        .find_map(|record| match &record.event {
+            ExecutionEvent::ModelStarted {
+                purpose: ModelPurpose::Response,
+                request,
+                ..
+            } => Some(request),
+            _ => None,
+        })
+        .ok_or_else(|| Error::NotFound("compacted native response".into()))?;
+    let admitted =
+        PreparedModelRequest::decode(&journal.load(request).await?, Limits::default(), None)?;
+    assert!(
+        admitted
+            .request()
+            .messages
+            .windows(2)
+            .any(|messages| messages == exchange)
+    );
+    assert!(!admitted.request().messages.iter().any(|message| matches!(&message.content, ModelContent::Text(text) if text.starts_with("old history"))));
+    let prefix = journal.stage(OperationId::new(), "fork/media-prefix".into(),
+        ModelPrefix::select(&admitted, None)?.canonical_bytes()?.to_vec(), ModelPrefix::MEDIA_TYPE).await?;
+    let forks = Arc::new(acyclic_harness::fork::CompositeForkVerifier::new(vec![
+        Arc::new(acyclic_harness::filesystem::FilesystemForkVerifier::new(
+            host.clone(),
+            65_536,
+        )?),
+        Arc::new(acyclic_harness::fork::StreamHistoryForkVerifier::new(
+            stream_provider.clone(),
+        )?),
+    ])?);
+    let mut aggregate = StreamAggregate::open(
+        &stream,
+        parent.clone(),
+        issuer.verifier(),
+        SchemaRegistry::new(),
+    )
+    .await?
+    .with_content_verifier(reader.clone())
+    .with_fork_verifier(forks.clone());
+    for action in [
+        Action::BindConversation { agent },
+        Action::AppendConversationMessage {
+            message: Box::new(acyclic_harness::conversation::ConversationMessage {
+                id: uuid::Uuid::new_v4(),
+                sequence: 1,
+                kind: acyclic_harness::conversation::MessageKind::User,
+                content: prefix.clone(),
+                attachments: admitted
+                    .request()
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.content.file_refs())
+                    .cloned()
+                    .fold(Vec::new(), |mut files, file| {
+                        if !files.contains(&file) {
+                            files.push(file);
+                        }
+                        files
+                    })
+                    .into_iter()
+                    .map(|file| acyclic_harness::conversation::Attachment { file, label: None })
+                    .collect::<Vec<_>>()
+                    .into(),
+                reply_to: None,
+                tool_call_id: None,
+                extensions: BTreeMap::new().into(),
+            }),
+        },
+    ] {
+        aggregate
+            .execute(Command {
+                operation_id: OperationId::new(),
+                idempotency_key: IdempotencyKey::new(format!(
+                    "media:{}",
+                    aggregate.reducer().revision()
+                ))?,
+                expected_revision: aggregate.reducer().revision(),
+                scope: scope.clone(),
+                causal_parent: None,
+                action,
+            })
+            .await?;
+    }
+    let child_agent = AgentId::new();
+    let child = Authority {
+        kind: AggregateKind::Conversation,
+        id: "media-child".into(),
+    };
+    let child_private = VolumeRef::new(
+        volume.provider().clone(),
+        "media-child-private",
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(child_agent),
+    )?;
+    let child_project = VolumeRef::new(
+        volume.provider().clone(),
+        "media-child-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("media".into()),
+    )?;
+    let preparer = FilesystemForkPreparer::new(
+        host.clone(),
+        aggregate.reducer().clone(),
+        issuer.verifier(),
+        scope.clone(),
+        project.clone(),
+        stream_provider.clone(),
+        reader.clone(),
+    )?;
+    let report = aggregate
+        .prepare_fork(
+            &preparer,
+            ForkRequest {
+                authorized_source: None,
+                operation_id: OperationId::new(),
+                parent: parent.clone(),
+                parent_revision: aggregate.reducer().revision(),
+                child: child.clone(),
+                child_agent,
+                attached_agents: Vec::new(),
+                boundary: None,
+                preparation: ForkPreparation {
+                    child_result_volume: None,
+                    summary: None,
+                    child_project_volume: child_project.clone(),
+                    child_private_volume: child_private.clone(),
+                    inherited_through_sequence: 1,
+                    maximum_inherited_messages: 4,
+                    maximum_inherited_bytes: 65_536,
+                    maximum_inherited_references: 32,
+                },
+                selections: vec![
+                    ForkSelection {
+                        required: true,
+                        revision: ResourceRevision::History(StreamRef::new(
+                            stream_provider,
+                            parent.stream_path()?.into_bytes(),
+                            Some(aggregate.reducer().revision().to_string()),
+                        )?),
+                    },
+                    ForkSelection {
+                        required: true,
+                        revision: ResourceRevision::Project {
+                            volume: project,
+                            generation: project_head.generation,
+                        },
+                    },
+                    ForkSelection {
+                        required: true,
+                        revision: ResourceRevision::PrivateVolume {
+                            volume: volume.clone(),
+                            generation: host
+                                .resolve(&workspace_ref(
+                                    volume.provider().clone(),
+                                    &volume.storage_name()?,
+                                )?)
+                                .await?
+                                .generation,
+                            paths: Vec::new(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await?;
+    let child_issuer = AuthorityIssuer::new("media-fork-child", [43; 32], child.clone());
+    let child_scope = child_issuer.root_for_agent(
+        child_agent,
+        "media-child",
+        Capabilities::new(
+            [
+                "conversation:bind".into(),
+                child_private.capability(VolumeOperation::Read)?,
+                child_private.capability(VolumeOperation::Write)?,
+                child_project.capability(VolumeOperation::Read)?,
+                child_project.capability(VolumeOperation::Write)?,
+            ]
+            .into_iter()
+            .chain(
+                report
+                    .reference_grants
+                    .iter()
+                    .map(|grant| grant.capability())
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        ),
+    );
+    let child_reader = Arc::new(FilesystemContentVerifier::new(
+        host.clone(),
+        child_issuer.verifier(),
+        child_scope.clone(),
+        65_536,
+    )?);
+    let mut child_aggregate = StreamAggregate::open(
+        &stream,
+        child,
+        child_issuer.verifier(),
+        SchemaRegistry::new(),
+    )
+    .await?
+    .with_content_verifier(child_reader.clone())
+    .with_fork_verifier(forks);
+    child_aggregate
+        .spawn_from_report(&mut aggregate, report, scope, child_scope.clone())
+        .await?;
+    let child_executor = || {
+        StockExecutor::new(
+            model.clone(),
+            adapter.clone(),
+            ContextPipeline::default(),
+            tools.clone(),
+        )
+        .with_tool_authority(tool_scope.clone(), None)?
+        .with_compaction_policy(CompactionPolicy::Disabled)
+        .with_inherited_prefix(prefix.clone(), child_reader.clone())
+    };
+    let child_input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("child continues".into()),
+        selected_context: None,
+        max_steps: 1,
+    };
+    let open_journal = || {
+        FilesystemExecutionJournal::new(
+            stream.clone(),
+            host.clone(),
+            child_private.clone(),
+            child_issuer.verifier(),
+            SchemaRegistry::new(),
+            child_scope.clone(),
+            65_536,
+        )
+        .map(|journal| journal.with_input_verifier(child_reader.clone()))
+    };
+    let child_output = child_executor()?
+        .execute(child_input.clone(), &open_journal()?)
+        .await?;
+    let captures = adapter
+        .captures
+        .lock()
+        .map_err(|_| Error::Storage("media fork capture".into()))?
+        .clone();
+    let parent_capture = captures
+        .get(1)
+        .ok_or_else(|| Error::NotFound("parent native capture".into()))?;
+    let child_capture = captures
+        .last()
+        .ok_or_else(|| Error::NotFound("child native capture".into()))?;
+    let media = |capture: &Capture| {
+        capture
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                CapturedPart::Media(media) => Some(media.as_ref().clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(media(parent_capture), media(child_capture));
+    drop(child_aggregate);
+    drop(aggregate);
+    let reopened = open_journal()?;
+    assert_eq!(
+        child_executor()?.execute(child_input, &reopened).await?,
+        child_output
+    );
+    assert_eq!(
+        *adapter
+            .captures
+            .lock()
+            .map_err(|_| Error::Storage("media reopen capture".into()))?,
+        captures
+    );
+    assert_eq!(
+        PreparedModelRequest::decode(&journal.load(request).await?, Limits::default(), None)?
+            .bytes(),
+        admitted.bytes()
+    );
     Ok(())
 }
 

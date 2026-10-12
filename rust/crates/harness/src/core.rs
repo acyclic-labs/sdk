@@ -459,7 +459,7 @@ impl AuthorityIssuer {
         id: impl Into<String>,
         file: &FileRef,
     ) -> Result<Scope> {
-        file.validate()?;
+        file.validate(&mut None)?;
         if is_internal_path(file.path()) {
             return Err(Error::Unauthorized(
                 "internal storage files cannot be delegated".into(),
@@ -499,7 +499,7 @@ impl AuthorityIssuer {
         volume: &crate::conversation::VolumeRef,
     ) -> Result<()> {
         self.verifier().verify(owner_scope)?;
-        volume.validate()?;
+        volume.validate(&mut None)?;
         if !matches!(volume.owner(), VolumeOwner::Agent(owner) if Some(*owner) == owner_scope.agent)
             || !owner_scope
                 .capabilities
@@ -1478,7 +1478,7 @@ impl ExtensionRecord {
         {
             return Err(Error::Invalid("extension record is invalid".into()));
         }
-        self.content.validate()
+        self.content.validate(&mut None)
     }
 }
 
@@ -1730,7 +1730,7 @@ impl ExtensionAdmission {
                 {
                     return Err(invalid("extension configuration is invalid"));
                 }
-                configuration.content.validate_with_work(work)?;
+                configuration.content.validate(work)?;
                 let Some(position) = self.selected.iter().position(|extension| extension == &configuration.extension) else {
                     return Err(conflict("extension admission configuration is not uniquely selected"));
                 };
@@ -1755,7 +1755,7 @@ impl ExtensionConfiguration {
         {
             return Err(Error::Invalid("extension configuration is invalid".into()));
         }
-        self.content.validate()
+        self.content.validate(&mut None)
     }
 }
 
@@ -2168,11 +2168,11 @@ impl SchemaRegistry {
         let Some(schema) = &binding.configuration_schema else {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "extension does not declare configuration" });
         };
-        content.validate_with_work(work)?;
+        content.validate(work)?;
         if content.descriptor().media_type() != "application/json" {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "extension configuration must be JSON" });
         }
-        content.descriptor().verify_with_work(bytes, work)?;
+        content.descriptor().verify(bytes, work)?;
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let (value, produced) = quota.work().as_deref_mut().expect("original configuration decoder").decode_json_value(bytes)?;
         quota.adopt(produced)?;
@@ -2187,11 +2187,11 @@ impl SchemaRegistry {
         content: &FileRef,
         bytes: &[u8],
     ) -> Result<()> {
-        content.validate()?;
+        content.validate(&mut None)?;
         if content.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid("extension content must be JSON".into()));
         }
-        content.descriptor().verify(bytes)?;
+        content.descriptor().verify(bytes, &mut None)?;
         let value: Value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("extension content is not JSON: {error}")))?;
         let binding = self.pinned_binding(name, version, None)?;
@@ -2272,7 +2272,7 @@ impl SchemaRegistry {
         let _bytes;
         let bytes = io.encode(&Record { extension, schema_digest, content }, io.remaining()?.bytes_encoded, false)?;
         _bytes = io.guard_owned(bytes.len() as u64)?;
-        let record = io.decode_preparation::<ExtensionConfiguration>(&bytes)?;
+        let record = io.decode_preparation::<ExtensionConfiguration>(&bytes, crate::wire::ErrorCode::Storage)?;
         record.validate()?;
         Ok(record)
     }
@@ -2311,7 +2311,7 @@ impl SchemaRegistry {
             _metadata = io.encode(record, io.remaining()?.bytes_encoded, false)?;
             _metadata_hold = io.guard_owned(_metadata.len() as u64)?;
         }
-        limits.validate_file(&record.content)?;
+        limits.validate_file(&record.content, &mut None)?;
         let byte_length = u64::try_from(bytes.len())
             .map_err(|_| Error::Invalid("configuration byte length is not portable".into()))?;
         if byte_length > limits.file_bytes
@@ -2382,14 +2382,14 @@ impl SchemaRegistry {
         let hash_work = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
         #[cfg(feature = "filesystem")]
         if let Some(io) = io { io.preflight(hash_work)?; io.charge(hash_work)?; }
-        record.content.descriptor().verify(bytes)?;
+        record.content.descriptor().verify(bytes, &mut None)?;
         let value;
         #[cfg(feature = "filesystem")]
         let decoded;
         let value = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => {
-                decoded = io.decode_preparation::<Value>(bytes)?;
+                decoded = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
                 &decoded.value
             }
             _ => {
@@ -2652,13 +2652,13 @@ impl Reducer {
         &mut self, message: &ConversationMessage,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.conversation.validate_append_with_work(message, work)?;
+        self.conversation.validate_append(message, work)?;
         let (message, retired) = Self::produce_component(
             &mut self.native_custody, NativeComponentRef::ConversationMessage(message.sequence), work,
             || message.clone(), |quota| native_custody::copy_message(message, quota),
         )?;
         let sequence = message.sequence;
-        if let Err(error) = self.conversation.append_with_work(message, work) {
+        if let Err(error) = self.conversation.append(message, work) {
             self.native_custody.rollback(NativeComponentRef::ConversationMessage(sequence), retired);
             return Err(error);
         }
@@ -3174,7 +3174,7 @@ impl Reducer {
             Action::MigrateExtensionState { content, .. } => {
                 if work.as_deref().is_some_and(native_custody::is_native) {
                     self.authority_verifier.verify_with_work(&command.scope, work)?;
-                    content.volume().require_writer(command.scope.agent())?;
+                    content.volume().require_writer(command.scope.agent(), &None)?;
                     Self::require_volume_operation_with_work(
                         &|capability| require_capability(&command.scope, capability),
                         content.volume(), VolumeOperation::Write, work,
@@ -3326,7 +3326,7 @@ impl Reducer {
                         "merge receipt is not bound to the parent agent and operation".into(),
                     ));
                 }
-                receipt.target_project.require_writer(agent)?;
+                receipt.target_project.require_writer(agent, &None)?;
                 Self::require_volume_operation_with_work(&require, &receipt.target_project, VolumeOperation::Write, work)?;
                 Self::require_volume_operation_with_work(&require, &receipt.source_project, VolumeOperation::Read, work)?;
                 Ok(())
@@ -4099,7 +4099,7 @@ impl Reducer {
                         "extension state version change requires migration".into(),
                     ));
                 }
-                content.validate_with_work(quota.work())?;
+                content.validate(quota.work())?;
                 if content.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("extension content must be JSON".into()));
                 }
@@ -4222,13 +4222,13 @@ impl Reducer {
                         "effect provider and kind must be non-empty".into(),
                     ));
                 }
-                request.validate_with_work(quota.work())?;
+                request.validate(quota.work())?;
                 if request.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("effect request must be JSON content".into()));
                 }
                 let request_digest =
                     effect_request_digest_with_work(provider, *guarantee, effect_kind, request, quota.work())?;
-                result_schema.validate_with_work(quota.work())?;
+                result_schema.validate(quota.work())?;
                 if result_schema.descriptor().media_type() != "application/schema+json" {
                     return Err(Error::Invalid(
                         "effect result schema must be JSON Schema content".into(),
@@ -4314,7 +4314,7 @@ impl Reducer {
                 }
                 drop(key);
                 if let Some(io) = quota.work().as_deref_mut() { io.release_owned(key_owned)?; }
-                self.conversation.validate_append(&receipt.notice)?;
+                self.conversation.validate_append(&receipt.notice, &mut None)?;
                 Ok(EventPayload::ProjectMergePublished {
                     receipt: native_custody::copy_boxed(receipt.as_ref(), quota, native_custody::copy_receipt)?,
                 })
@@ -4328,7 +4328,7 @@ impl Reducer {
             }
             Action::AppendConversationMessage { message } => {
                 self.require_conversation()?;
-                self.conversation.validate_append(message)?;
+                self.conversation.validate_append(message, &mut None)?;
                 Ok(EventPayload::ConversationMessageAppended {
                     message: native_custody::copy_boxed(message.as_ref(), quota, native_custody::copy_message)?,
                 })
@@ -4543,7 +4543,7 @@ impl Reducer {
                         "effect provider and kind must be non-empty".into(),
                     ));
                 }
-                request.validate_with_work(work)?;
+                request.validate(work)?;
                 if request.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("effect request must be JSON content".into()));
                 }
@@ -4555,7 +4555,7 @@ impl Reducer {
                 {
                     return Err(Error::Invalid("effect request digest mismatch".into()));
                 }
-                result_schema.validate_with_work(work)?;
+                result_schema.validate(work)?;
                 if result_schema.descriptor().media_type() != "application/schema+json"
                     || *result_schema_digest != *result_schema.descriptor().sha256()
                 {
@@ -5152,7 +5152,7 @@ fn effect_request_digest_with_work(
 
 fn validate_effect_result(status: &EffectStatus) -> Result<()> {
     if let EffectStatus::Succeeded { result } = status {
-        result.validate()?;
+        result.validate(&mut None)?;
         if result.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid("effect result must be JSON content".into()));
         }
