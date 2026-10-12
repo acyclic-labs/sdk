@@ -8,7 +8,7 @@ use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{LazySnapshotRef, WorkBudget, WorkCounters, NativeMaterializationWork};
 use acyclic_harness::{Error, Result, TaskId, OperationId,
     durable_host::TaskJournalOwner, filesystem::{TaskCommandProgress, ForkPreparationLimits},
-    core::SchemaRegistry, NativeTaskContext, scheduler::LeaseFence,
+    core::SchemaRegistry, runtime::NativeTaskContext, scheduler::LeaseFence,
     store::StreamAggregate, workflow::WorkflowCommand};
 use acyclic_stream::{LocalStream};
 use serde::{Deserialize, Serialize};
@@ -236,7 +236,11 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             return Err(unauthorized("Pi SDK retained native paths differ from its original planned namespace"));
         }
         let project = plan.commit.child.project_volumes.values().next().ok_or_else(|| invalid("Pi project missing"))?;
-        let workspace = project.storage_name_with_native_work(work)?;
+        let workspace = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = project.storage_name(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         #[derive(Serialize)]
         struct Pending<'b> {
             task_binding: PluginTaskBinding<&'b crate::PiTaskBinding>, agent_id: Option<&'b str>, parent_agent_id: &'b str,
@@ -326,7 +330,11 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let conversation = self.protected.conversation_authority_with_native_work(owner.task_id(),
             caller.binding.agent_id, context.scope().grants(), work)?;
         let mut authority = (conversation.0, conversation.1);
-        let mut verifier = authority.0.1.verifier_with_native_work(work)?;
+        let mut verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = authority.0.1.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0,
             verifier.0, SchemaRegistry::new(), work).await?;
         let mut parent_custody = parent.1;

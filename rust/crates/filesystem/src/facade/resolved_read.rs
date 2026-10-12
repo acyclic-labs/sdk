@@ -26,7 +26,6 @@ impl<A, O> ResolvedFile<A, O> {
         self.record.file_id
     }
 
-
     /// Public semantic facts authenticated with this handle.
     #[must_use]
     pub const fn description(&self) -> &FileDescription {
@@ -43,7 +42,6 @@ pub struct ResolvedFileRangeReadRequest<'a, A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-
 
     /// Reads resolved handles without another namespace traversal.
     #[cfg(not(target_arch = "wasm32"))]
@@ -72,7 +70,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         }
         Ok((reads.value, native_pinned_allocation(reads.allocation)?))
     }
-
 
     /// Resolves ordered paths into native-reader handles for later range reads.
     #[cfg(not(target_arch = "wasm32"))]
@@ -113,7 +110,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         Ok((handles.value, native_pinned_allocation(handles.allocation)?))
     }
 
-
     pub(super) async fn resolve_file_records(
         &self,
         paths: &[NamespacePath],
@@ -145,7 +141,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         })
     }
 
-
     /// Describes an ordered path batch while sharing namespace and object traversal.
     pub async fn describe_files(
         &self,
@@ -164,7 +159,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             work: resolved.work,
         })
     }
-
 
     /// Resolves and describes paths once, returning reader-scoped handles for
     pub async fn resolve_files(
@@ -237,7 +231,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             work,
         })
     }
-
 
     /// Reads ranges from already resolved files with bounded concurrency and
     pub async fn read_resolved_ranges(

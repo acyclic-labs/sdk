@@ -1628,8 +1628,8 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Mutation::Remove(value) => transaction.remove(&value.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Mutation::Rename(value) => {
             transaction
-                .rename_with_replace(&value.source, &value.destination, value.replace)
-                .await
+                .rename(&value.source, &value.destination, value.replace, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::HardLink(value) => {
             transaction

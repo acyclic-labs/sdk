@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::core::SchemaRegistry;
 use acyclic_harness::{AgentId, Capabilities, conversation::{Limits, VolumeClass, VolumeOwner}, distributed::Worker,
     filesystem::{TaskWorkerAttempt, TaskWorkerOutcome}, resources::ProviderRef, runtime::{TaskStateProvider, TaskRunLimits}, scheduler::{LeaseFence, SessionLimits}};
 use crate::{PiScratchBinding, PiTaskBinding, PiScratchAllocation, pi_owner::PiOwnerPolicy, pi_root_inputs::stage_root_command, pi_runtime::PiTaskRuntime};
@@ -9,7 +10,7 @@ struct Fixture {
     directory: tempfile::TempDir, session: PathBuf, native: PathBuf, resources: ServiceResources,
     filesystem: Arc<Host>, stream: Arc<LocalStream>, owner: Arc<PiOwnerConfig>, runtime: PiTaskRuntime<LocalStream>,
     request: PiRootRequest, lease: acyclic_harness::distributed::WorkLease, provider: Arc<PiRootProvider<LocalStream>>,
-    startup: NativeMaterializationWork, _lease_custody: NativeAllocation, _lock: crate::ServiceLock,
+    startup: NativeMaterializationWork, _lease_custody: NativeAllocation, _lock: crate::service_process::ServiceLock,
 }
 
 impl Fixture {
@@ -109,7 +110,24 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
         let observed = fixture.provider.observe_resources_with_native_work(dispatch.effect_id, dispatch.attempt_id, dispatch.request_digest, &fixture.startup).await.unwrap().unwrap();
         observed.0.validate(&fixture.request.binding).unwrap();
         let schema = PiRootAllocation::schema(&fixture.request.binding, &fixture.startup).unwrap();
+        let mut schemas = SchemaRegistry::new();
+        schemas.register("plugin.test.allocation", 1, schema.0, [1; 32],
+            acyclic_harness::core::ExtensionForkPolicy::Inherit, [], None).unwrap();
+        let authority = acyclic_harness::core::Authority {
+            kind: acyclic_harness::core::AggregateKind::Conversation, id: "schema-test".into(),
+        };
+        let issuer = acyclic_harness::core::AuthorityIssuer::new("schema-test", [1; 32], authority.clone());
+        let reducer = acyclic_harness::core::Reducer::new(authority, issuer.verifier(&mut None).unwrap(), schemas);
+        let validate = |value: &serde_json::Value| {
+            let bytes = serde_json::to_vec(value).unwrap();
+            let descriptor = acyclic_harness::conversation::FileDescriptor::from_bytes(
+                &bytes, "application/json", &mut None).unwrap();
+            let file = acyclic_harness::conversation::FileRef::new(fixture.owner.policy().journal.clone(),
+                "allocation.json".into(), "schema-test".into(), descriptor, "allocation.json".into(), &mut None).unwrap();
+            reducer.validate_custom_bytes("plugin.test.allocation", 1, &file, &bytes)
+        };
         let value = serde_json::to_value(&observed.0).unwrap();
+        validate(&value).unwrap();
         for mutation in 0..4 {
             let mut invalid = value.clone();
             match mutation {
@@ -120,7 +138,7 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
                 _ => { invalid.as_object_mut().unwrap().insert("unknown".into(), serde_json::json!(true)); },
             }
             assert!(!serde_json::from_value::<PiRootAllocation>(invalid.clone()).is_ok_and(|allocation| allocation.validate(&fixture.request.binding).is_ok()));
-            assert!(acyclic_harness::tool::validate_value(&schema.0, &invalid, "allocation").is_err());
+            assert!(validate(&invalid).is_err());
         }
         assert!(fixture.provider.observe_conversation_with_native_work(dispatch.effect_id, dispatch.attempt_id, &fixture.startup).await.unwrap());
         for (key, handle) in fixture.provider.take_created_handles().await {

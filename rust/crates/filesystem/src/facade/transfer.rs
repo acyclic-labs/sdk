@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     /// Reads one exact immutable object for resumable manifest transfer.
     pub async fn export_object(
         &self,
@@ -23,7 +22,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-
     /// Idempotently imports one immutable object under its canonical identity.
     pub async fn import_object(
         &self,
@@ -43,7 +41,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             work: receipt.work,
         })
     }
-
 
     /// Reads one ordered resumable page from a canonical generation manifest.
     pub async fn export_generation_batch(
@@ -80,7 +77,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work));
         result.observe_on(&span, "export_generation_batch")
     }
-
 
     /// Idempotently imports one manifest-aligned page of immutable bodies.
     pub async fn import_generation_batch(
@@ -120,7 +116,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-
 
     /// Builds a deterministic complete manifest for the current immutable or
     pub async fn export_manifest(

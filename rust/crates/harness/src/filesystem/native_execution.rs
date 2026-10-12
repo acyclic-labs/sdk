@@ -1,5 +1,10 @@
 //! Optional native command composition over existing task, effect and workspace owners.
 
+pub(super) use super::root_binding::{
+    allocate, boundary, encode_record, native_codec_error_custody, native_owned_bytes_failure,
+    native_root_output_binding_operation,
+};
+
 use super::{
     FilesystemHost, NativeVolumeNamespace, NativeViewManifest, NativeViewOptions,
     NativeVolumeMapping,
@@ -22,9 +27,6 @@ use std::{
     sync::Arc,
 };
 
-pub(super) fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
-    Error::NativeBoundary { code, reason }
-}
 
 /// Authenticated, unmounted original ROOT result storage.
 pub struct NativeRootOutputSource {
@@ -236,22 +238,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     }
 }
 
-/// Canonical native ROOT bind identity; this derives an operation, not authority.
-pub fn native_root_output_binding_operation(
-    audience: &crate::core::Authority, volume: &VolumeRef,
-    creation: acyclic_fs::OperationId, work: &NativeMaterializationWork,
-) -> Result<crate::OperationId> {
-    let (encoded, _custody) = encode_record(
-        &("harness/native-root-output-bind/v2", audience, volume,
-            crate::OperationId::from_bytes(creation.into_bytes())), work,
-    )?;
-    work.charge(acyclic_fs::WorkCounters {
-        bytes_hashed: encoded.len() as u64, ..Default::default()
-    })?;
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&blake3::hash(&encoded).as_bytes()[..16]);
-    Ok(crate::OperationId::from_bytes(bytes))
-}
 
 /// Original process custody and the exact physically retired mount prefix.
 pub struct NativeTaskViewDrainReceipt {
@@ -1125,7 +1111,7 @@ where
     ) -> Result<crate::NativeFutureBundle<'a, std::result::Result<NativeViewPublicationReceipt, NativeViewPublicationError>>> {
         let custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         crate::NativeFutureBundle::new(work, || async move {
-            Ok(self.publish_original(owner, work, custody).await)
+            Ok(self.publish_original(owner, work, Some(custody)).await)
         })
     }
 }
@@ -1931,6 +1917,7 @@ where
         &self, owner: &TaskJournalOwner<P>, work: &NativeMaterializationWork,
         custody: Option<acyclic_fs::NativeAllocation>,
     ) -> std::result::Result<NativeViewPublicationReceipt, NativeViewPublicationError> {
+        let mut custody = custody.expect("original publication has its funded custody");
         let mut completed = Vec::new();
         let mut published = Vec::new();
         let mut mappings = Vec::new();
@@ -2356,95 +2343,6 @@ impl NativePreparationCompletionTemplate {
     }
 }
 
-/// Authenticates the original ROOT Bind and returns its canonical command bytes.
-#[allow(clippy::too_many_arguments, reason = "original creator, owner and paid authority are distinct")]
-pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>(
-    stream: &std::sync::Arc<P>,
-    authority: (crate::core::Authority, crate::core::AuthorityIssuer, Scope),
-    authority_custody: acyclic_fs::NativeAllocation,
-    owner: &TaskJournalOwner<P>,
-    private_volume: &VolumeRef,
-    original_creation: acyclic_fs::OperationId,
-    limits: crate::conversation::Limits,
-    work: &NativeMaterializationWork,
-) -> Result<acyclic_stream::OwnedBytes> {
-    let _authority_custody = authority_custody;
-    let (audience, issuer, scope) = authority;
-    let invalid = |reason| Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Invalid, reason,
-    };
-    if audience.kind != crate::core::AggregateKind::Conversation
-        || scope.agent().is_none()
-        || !scope.capabilities().contains("conversation:bind")
-        || limits.file_bytes == 0
-    {
-        return Err(invalid("ROOT binding requires its original conversation authority and finite event allowance"));
-    }
-    owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
-    let verifier = allocate(work, |io| issuer.verifier(&mut Some(&mut io.history_io())))?;
-    let operation = native_root_output_binding_operation(
-        &audience, private_volume, original_creation, work,
-    )?;
-    let mut reader_io = crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
-    let reader = crate::store::HistoryReader::new(stream, &audience, &verifier.0, &mut Some(&mut reader_io))?;
-    let reader_custody = reader_io.into_custody();
-    let event = reader.operation_event_bounded_with_native_work(
-        operation, limits.file_bytes, work,
-    ).await?;
-    let original_revision = match event.0.as_ref() {
-        None => None,
-        Some(event) => match &event.payload {
-            crate::core::EventPayload::ConversationBound { agent }
-                if Some(*agent) == scope.agent()
-                    && event.scope.agent() == scope.agent()
-                    && event.scope.id() == scope.id()
-                    && event.scope.capabilities() == scope.capabilities()
-                    && event.causal_parent.is_none() =>
-            {
-                Some(event.revision.checked_sub(1)
-                    .ok_or_else(|| invalid("original ROOT binding has no command revision"))?)
-            }
-            _ => return Err(invalid("ROOT binding differs from the protected original creation")),
-        },
-    };
-    drop(event);
-    drop(reader);
-    drop(reader_custody);
-    let mut aggregate = crate::store::StreamAggregate::open_with_native_work(
-        stream, audience,
-        verifier.0, crate::core::SchemaRegistry::new(), work,
-    ).await?;
-    aggregate.0.set_limits(limits)?;
-    if original_revision.is_none()
-        && aggregate.0.reducer().conversation().and_then(|state| state.agent).is_some()
-    {
-        return Err(invalid("ROOT conversation changed during original binding admission"));
-    }
-    let key = work.display(&format_args!("harness/native-root-output-bind/v2/{operation}"))?;
-    let key = (crate::IdempotencyKey::new(key.0)?, key.1);
-    let agent = scope.agent().expect("validated ROOT binding actor");
-    let command = crate::core::Command {
-        operation_id: operation, idempotency_key: key.0,
-        expected_revision: original_revision.unwrap_or_else(|| aggregate.0.reducer().revision()),
-        causal_parent: None, action: crate::core::Action::BindConversation { agent }, scope,
-    };
-    let mut io = crate::store::history::native_work_io(work)?;
-    let encoded = crate::store::history::canonical_bytes_with_work(
-        &command, crate::store::default_projection_read_limits().maximum_bytes,
-        &mut Some(&mut io),
-    )?;
-    let encoded_custody = crate::store::history::HistoryIo::take_native_custody(
-        &mut io, encoded.capacity() as u64,
-    )?;
-    let encoded = acyclic_stream::OwnedBytes::from_vec_with_guard(
-        encoded, encoded_custody, work.runtime_meter(),
-    ).map_err(|failure| native_owned_bytes_failure(failure, work))?;
-    crate::store::history::HistoryIo::retain_owned(
-        &mut io, std::mem::size_of::<crate::core::ApplyResult>() as u64)?;
-    let applied = aggregate.0.execute(command, Some(owner), &mut Some(&mut io)).await?;
-    drop(applied);
-    Ok(encoded)
-}
 
 /// Fenced Stream adapter for the existing materializer journal, not a second log.
 struct NativePreparationStore<'a, P: StreamProvider> {
@@ -2523,7 +2421,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
         let mut native_io = crate::store::history::native_work_io(&self.work)?;
         let mut observer = Some(&mut native_io as &mut dyn crate::store::history::HistoryIo);
         let bounds = match crate::store::operations::bounds_with_work(
-            self.read_client(), &path, &mut observer,
+            &self.read_client(), &path, &mut observer,
         ).await? {
             Ok(bounds) => bounds,
             Err(error) if matches!(crate::distributed::sdk_source(&error), acyclic_stream::StreamError::NotFound) => return Ok(None),
@@ -2535,9 +2433,9 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
             None => return Err(boundary(crate::wire::ErrorCode::Storage, "empty materializer journal")),
         };
         self.verify_read_owner().await?;
-        let stream = crate::store::operations::stream(self.read_client(), (&path).as_str(), &mut observer)?;
+        let stream = crate::store::operations::stream(&self.read_client(), (&path).as_str(), &mut observer)?;
         let mut records = crate::store::operations::read_records_with_work(
-            self.read_client(), &stream.0, sequence, 1, &mut observer,
+            &self.read_client(), &stream.0, sequence, 1, &mut observer,
         ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;
         let record = records.next(&mut observer).await?
             .ok_or(boundary(crate::wire::ErrorCode::Storage, "missing materializer journal"))?;
@@ -2756,56 +2654,9 @@ fn decode_record<T: serde::de::DeserializeOwned>(
     }
 }
 
-fn native_codec_error_custody(error: Error, custody: acyclic_fs::NativeAllocation) -> Error {
-    match error {
-        Error::NativeWork { cause, custody: None } => Error::NativeWork { cause, custody: Some(custody) },
-        Error::NativeDecode { code, source, custody: None } => Error::NativeDecode { code, source, custody: Some(custody) },
-        Error::NativeEncode { code, source, custody: None } => Error::NativeEncode { code, source, custody: Some(custody) },
-        error => error,
-    }
-}
 
-fn encode_record<T: serde::Serialize + ?Sized>(
-    value: &T, work: &NativeMaterializationWork,
-) -> Result<(Vec<u8>, acyclic_fs::NativeAllocation)> {
-    let io = super::PreparationIo::from_native_work(work)?;
-    io.retain_owned(crate::contract::sdk_json_diagnostic_bytes())?;
-    let remaining = work.remaining()?;
-    let bytes = crate::store::history::canonical_bytes_for_bounds_with_work(value,
-        crate::contract::JsonBounds { maximum_bytes: remaining.bytes_encoded,
-            maximum_items: remaining.items_examined, maximum_depth: 256 },
-        &mut Some(&mut &io));
-    match bytes {
-        Ok(bytes) => {
-            let custody = io.into_native_custody(bytes.capacity() as u64)?;
-            Ok((bytes, custody))
-        }
-        Err(error) => {
-            let held = io.owned_bytes()?;
-            Err(native_codec_error_custody(error, io.into_native_custody(held)?))
-        }
-    }
-}
 
-pub(super) fn native_owned_bytes_failure(
-    failure: acyclic_stream::PreparedOwnedBytesFailure<acyclic_fs::NativeAllocation>,
-    work: &NativeMaterializationWork,
-) -> Error {
-    match failure.into_error() {
-        acyclic_stream::PreparedOwnedBytesError::Admission(error) => Error::from(work.runtime_error(error)),
-        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-        => boundary(crate::wire::ErrorCode::Storage, "native owned byte buffer violated its fixed initialized ownership invariant"),
-    }
-}
 
-fn allocate<T>(work: &NativeMaterializationWork,
-    copy: impl FnOnce(&super::PreparationIo) -> Result<T>,
-) -> Result<(T, acyclic_fs::NativeAllocation)> {
-    let io = super::PreparationIo::from_native_work(work)?;
-    let copied = copy(&io)?;
-    let retained = io.owned_bytes()?;
-    Ok((copied, io.into_native_custody(retained)?))
-}
 
 /// Copies one admitted mapping while retaining its actual original-ledger storage.
 pub fn copy_native_mapping_with_work(

@@ -1,3 +1,5 @@
+use std::fs;
+use crate::pi_registration;
 use super::*;
 use crate::{AdapterState, PluginTaskBinding, RootAllocation, RootBinding, ServiceResources, SessionController, ConcurrentServiceControl,
     ControlCommand, ControlRequest, PiScratchAllocation, load_saved_state, save_state, Survives};

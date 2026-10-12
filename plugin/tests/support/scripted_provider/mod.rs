@@ -18,7 +18,6 @@ const CODEX_CHILD_ROLE_MARKER: &str = "immediately delivered back to your parent
 const OVERLAY_WORKFLOW_MARKER: &str = "ACYCLIC_OVERLAY_WORKFLOW_OK";
 const ISOLATION_DENIAL: &str = "Acyclic denied the tool because workspace isolation failed";
 
-#[derive(Clone)]
 enum Scenario {
     CodexLifecycle {
         root_target: String,
@@ -383,59 +382,25 @@ fn request_fingerprint(request: &Value) -> RequestFingerprint {
     }
 }
 
-#[derive(Clone, Copy)]
-struct ToolResult<'a> {
-    id: &'a str,
-    is_error: bool,
-    content: Option<&'a Value>,
-}
-
-fn tool_results(value: &Value) -> Vec<ToolResult<'_>> {
-    let mut results = Vec::new();
-    collect_tool_results(value, &mut results);
-    results
-}
-
-fn collect_tool_results<'a>(value: &'a Value, results: &mut Vec<ToolResult<'a>>) {
-    match value {
-        Value::Object(values)
-            if values.get("type").and_then(Value::as_str) == Some("tool_result") =>
-        {
-            if let Some(id) = values.get("tool_use_id").and_then(Value::as_str) {
-                results.push(ToolResult {
-                    id,
-                    is_error: values
-                        .get("is_error")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                    content: values.get("content"),
-                });
-            }
+fn tool_results(value: &Value) -> Vec<&Value> {
+    fn collect<'a>(value: &'a Value, results: &mut Vec<&'a Value>) {
+        match value {
+            Value::Object(values) if values.get("type").and_then(Value::as_str) == Some("tool_result") => {
+                if values.get("tool_use_id").and_then(Value::as_str).is_some() { results.push(value); }
+            },
+            Value::Object(values) => values.values().for_each(|value| collect(value, results)),
+            Value::Array(values) => values.iter().for_each(|value| collect(value, results)),
+            _ => {},
         }
-        Value::Object(values) => values
-            .values()
-            .for_each(|value| collect_tool_results(value, results)),
-        Value::Array(values) => values
-            .iter()
-            .for_each(|value| collect_tool_results(value, results)),
-        _ => {}
     }
+    let mut results = Vec::new(); collect(value, &mut results); results
 }
 
-fn expected_tool_result(
-    results: &[ToolResult<'_>],
-    id: &str,
-    is_error: bool,
-    receipt: Option<&str>,
-) -> bool {
-    let mut matching = results.iter().filter(|result| result.id == id);
+fn expected_tool_result(results: &[&Value], id: &str, is_error: bool, receipt: Option<&str>) -> bool {
+    let mut matching = results.iter().filter(|result| result.get("tool_use_id").and_then(Value::as_str) == Some(id));
     matching.next().is_some_and(|result| {
-        result.is_error == is_error
-            && receipt.is_none_or(|receipt| {
-                result
-                    .content
-                    .is_some_and(|content| contains_text(content, receipt))
-            })
+        result.get("is_error").and_then(Value::as_bool).unwrap_or(false) == is_error
+            && receipt.is_none_or(|receipt| result.get("content").is_some_and(|content| contains_text(content, receipt)))
     }) && matching.next().is_none()
 }
 
