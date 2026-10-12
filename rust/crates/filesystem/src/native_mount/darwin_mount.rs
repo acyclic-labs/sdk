@@ -162,12 +162,6 @@ struct DirectoryHandle {
     page_source_ownership: Option<crate::demand::SourcePayloadOwnership>,
 }
 
-struct DirectoryCheckpoint {
-    revision: u64,
-    handle: DirectoryHandle,
-    key_custody: DarwinOwned<()>,
-}
-
 impl DirectoryHandle {
     fn new(path: DarwinOwned<MountPath>, binding_epoch: Option<u64>, epochs: Option<CacheEpochs>) -> Self {
         Self {
@@ -337,7 +331,7 @@ struct DarwinMountContext {
     lookups: Mutex<DarwinOwned<Vec<(MountPath, (Option<MountLookup>, CacheStamp, DarwinOwned<()>))>>>,
     files: RwLock<DarwinOwned<Vec<(u64, FileHandle)>>>,
     directories: Mutex<DarwinOwned<Vec<(u64, Arc<DarwinOwned<Mutex<DirectoryHandle>>>)>>>,
-    directory_checkpoints: Mutex<DarwinOwned<Vec<(MountPath, DirectoryCheckpoint)>>>,
+    directory_checkpoints: Mutex<DarwinOwned<Vec<(MountPath, DarwinOwned<DirectoryHandle>)>>>,
     namespace_revision: AtomicU64,
     ledger: FlushLedger,
     changes: ChangeLabels,
@@ -3826,12 +3820,12 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
                 .lock()
                 .map_err(|_| libc::EIO)?;
             if let Some(checkpoint) = checkpoints.get(&directory.path, work)?
-                && checkpoint.revision == context.namespace_revision.load(Ordering::Acquire)
-                && checkpoint.handle.emitted == offset
-                && checkpoint.handle.binding_epoch == directory.binding_epoch
-                && checkpoint.handle.is_current(context, work)?
+                && checkpoint.revision == Some(context.namespace_revision.load(Ordering::Acquire))
+                && checkpoint.emitted == offset
+                && checkpoint.binding_epoch == directory.binding_epoch
+                && checkpoint.is_current(context, work)?
             {
-                *directory = checkpoint.handle.clone(work)?;
+                *directory = checkpoint.clone(work)?;
             }
         }
         if offset < directory.emitted {
@@ -4002,10 +3996,11 @@ fn checkpoint_directory(
         for (path, checkpoint) in checkpoints.drain(..) { drop(path); drop(checkpoint); }
     }
     let path = work.path_with_child(&directory.path, None)?;
-    let handle = directory.clone(work)?;
-    let (path, key_custody) = path.into_parts();
+    let mut handle = directory.clone(work)?;
+    handle.revision = Some(revision);
+    let (path, ownership) = path.into_parts();
     if let Some((key, value)) = checkpoints.remove_entry(&path, work)? { drop(key); drop(value); }
-    checkpoints.insert(path, DirectoryCheckpoint { revision, handle, key_custody }, work)?;
+    checkpoints.insert(path, ownership.map(|()| handle), work)?;
     Ok(())
 }
 
