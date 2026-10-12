@@ -1136,42 +1136,12 @@ mod tests {
     #[tokio::test]
     async fn calls_emit_spans_with_status_codes_and_no_content() -> Result<(), Error> {
         let _connect_trace = CONNECT_TRACE_TEST.lock().await;
-        use std::sync::Mutex;
-        use tracing::field::{Field, Visit};
-        use tracing_subscriber::layer::{Context, SubscriberExt as _};
+        use acyclic_grpc_observability::test_support::Capture;
+        use tracing_subscriber::layer::SubscriberExt as _;
 
-        type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
-        struct Capture(Seen);
-        struct Fields<'a>(
-            &'static str,
-            &'a mut Vec<(&'static str, &'static str, String)>,
-        );
-        impl Visit for Fields<'_> {
-            fn record_str(&mut self, field: &Field, value: &str) {
-                self.1.push((self.0, field.name(), value.to_owned()));
-            }
-            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-                self.1.push((self.0, field.name(), format!("{value:?}")));
-            }
-        }
-        impl<S> tracing_subscriber::Layer<S> for Capture
-        where
-            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-        {
-            fn on_record(
-                &self,
-                id: &tracing::span::Id,
-                values: &tracing::span::Record<'_>,
-                context: Context<'_, S>,
-            ) {
-                let name = context.span(id).unwrap().name();
-                values.record(&mut Fields(name, &mut self.0.lock().unwrap()));
-            }
-        }
-
-        let seen = Seen::default();
+        let seen = Capture::default();
         let _default = tracing::subscriber::set_default(
-            tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
+            tracing_subscriber::registry().with(seen.clone()),
         );
         assert!(
             Inference::connect("http://localhost", "secret", b"pem")
@@ -1196,10 +1166,11 @@ mod tests {
             return Err(Error::Invalid("the RPC did not fail"));
         };
 
-        let seen = seen.lock().unwrap();
+        let evidence = seen.0.lock().unwrap();
+        let seen = &evidence.records;
         let has = |span: &str, field: &str, value: &str| {
             seen.iter()
-                .any(|(s, f, v)| *s == span && *f == field && v == value)
+                .any(|(s, f, v)| s == span && f == field && v.trim_matches('"') == value)
         };
         assert!(
             has("acyclic.inference.connect", "error.kind", "invalid"),
@@ -1215,7 +1186,7 @@ mod tests {
         assert!(has("acyclic.inference.context.create", "outcome", "err"));
         for (span, field, value) in seen.iter() {
             assert!(
-                !["path", "token", "content", "body", "authorization"].contains(field),
+                !["path", "token", "content", "body", "authorization"].contains(&field.as_str()),
                 "{span} records {field}"
             );
             assert!(
