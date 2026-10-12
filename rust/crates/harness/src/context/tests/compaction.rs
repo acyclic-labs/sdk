@@ -54,7 +54,7 @@ fn owned_compaction_proof_reconstructs_exactly_and_releases_actual_fields() -> R
         operation_id: crate::OperationId::new(),
         step: 0,
         source_messages: 2,
-        source_digest: crate::contract::canonical_json_digest(&prefix, u64::MAX, &mut None)?,
+        source_digest: crate::executor::json::canonical_json_digest(&prefix, u64::MAX, &mut None)?,
         output,
     };
     let (retained, reference) = DurableContextProvider::compact(
@@ -114,7 +114,7 @@ fn native_call_retention_closes_tool_pair_before_compaction_budget() -> Result<(
             step: 0,
             source_messages: u32::try_from(source.messages.len())
                 .map_err(|_| crate::Error::Invalid("fixture count exceeds u32".into()))?,
-            source_digest: crate::contract::canonical_json_digest(&source, u64::MAX, &mut None)?,
+            source_digest: crate::executor::json::canonical_json_digest(&source, u64::MAX, &mut None)?,
             output: file.clone(),
         };
         let (compacted, reference) = DurableContextProvider::compact(
@@ -202,7 +202,7 @@ fn compaction_keeps_mandatory_messages_and_never_splits_tool_pairs() -> Result<(
         operation_id: crate::OperationId::new(),
         step: 0,
         source_messages: 6,
-        source_digest: crate::contract::canonical_json_digest(&source, u64::MAX, &mut None)?,
+        source_digest: crate::executor::json::canonical_json_digest(&source, u64::MAX, &mut None)?,
         output: message(ModelRole::System, "summary")?
             .content
             .file_refs()
@@ -218,7 +218,7 @@ fn compaction_keeps_mandatory_messages_and_never_splits_tool_pairs() -> Result<(
     };
     let prefix_summary = ContextSummary {
         source_messages: 3,
-        source_digest: crate::contract::canonical_json_digest(&prefix, u64::MAX, &mut None)?,
+        source_digest: crate::executor::json::canonical_json_digest(&prefix, u64::MAX, &mut None)?,
         ..summary.clone()
     };
     let (prefix_compacted, prefix_reference) = DurableContextProvider::compact(
@@ -305,7 +305,7 @@ fn compaction_keeps_mandatory_messages_and_never_splits_tool_pairs() -> Result<(
         current_input_index: None,
     };
     let configured_summary = ContextSummary {
-        source_digest: crate::contract::canonical_json_digest(&configurable, u64::MAX, &mut None)?,
+        source_digest: crate::executor::json::canonical_json_digest(&configurable, u64::MAX, &mut None)?,
         source_messages: 4,
         ..summary
     };
@@ -372,7 +372,7 @@ fn repeated_compaction_replaces_summaries_and_retains_instructions() -> Result<(
             step: 0,
             source_messages: u32::try_from(source.messages.len())
                 .map_err(|error| crate::Error::Invalid(error.to_string()))?,
-            source_digest: crate::contract::canonical_json_digest(source, u64::MAX, &mut None)?,
+            source_digest: crate::executor::json::canonical_json_digest(source, u64::MAX, &mut None)?,
             output: output.content.file_refs().next().unwrap().clone(),
         })
     };
@@ -443,7 +443,7 @@ fn compaction_retains_current_user_before_trailing_tool_results() -> Result<()> 
         operation_id: crate::OperationId::new(),
         step: 0,
         source_messages: 6,
-        source_digest: crate::contract::canonical_json_digest(&source, u64::MAX, &mut None)?,
+        source_digest: crate::executor::json::canonical_json_digest(&source, u64::MAX, &mut None)?,
         output: message(ModelRole::Assistant, "summary")?
             .content
             .file_refs()

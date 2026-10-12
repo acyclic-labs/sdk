@@ -335,7 +335,7 @@ async fn context_stages_preserve_explicit_input_position() -> Result<()> {
         operation_id: crate::OperationId::new(),
         step: 0,
         source_messages: 4,
-        source_digest: crate::contract::canonical_json_digest(&projected, u64::MAX, &mut None)?,
+        source_digest: crate::executor::json::canonical_json_digest(&projected, u64::MAX, &mut None)?,
         output: message(ModelRole::Assistant, "summary")?
             .content
             .file_refs()

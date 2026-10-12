@@ -321,7 +321,7 @@ where
                         )
                     })?;
                     let input_bytes = (std::mem::size_of::<Value>() as u64)
-                        .checked_add(crate::contract::json_value_logical_owned_bytes(&input.input)?)
+                        .checked_add(crate::executor::json::json_value_logical_owned_bytes(&input.input)?)
                         .ok_or_else(|| {
                             boundary(
                                 Some(io),

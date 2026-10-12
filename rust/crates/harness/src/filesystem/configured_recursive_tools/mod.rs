@@ -91,7 +91,7 @@ where
                 Error::Unauthorized("configured caller has no signed agent".into())
             })?;
             if let Some(native) = &caller.native_snapshot {
-                crate::contract::json_byte_length(native, limits.file_bytes, &mut None)
+                crate::executor::json::json_byte_length(native, limits.file_bytes, &mut None)
                     .map(|_| ())?;
             }
             if let Some(result) = &caller.result_volume {
@@ -210,7 +210,7 @@ where
         for caller in &self.config.callers {
             if let Some(io) = io {
                 io.codec_charge(
-                    crate::contract::JsonCodecCharge::Work {
+                    crate::executor::json::JsonCodecCharge::Work {
                         bytes: 16,
                         items: 1,
                     },
@@ -236,7 +236,7 @@ where
         for allocation in &self.config.forks {
             if let Some(io) = io {
                 io.codec_charge(
-                    crate::contract::JsonCodecCharge::Work {
+                    crate::executor::json::JsonCodecCharge::Work {
                         bytes: 32,
                         items: 1,
                     },
@@ -491,7 +491,7 @@ fn allocation_digest(
             limits: allocation.limits,
         };
         crate::executor::with_history_io(io, |work| {
-            crate::contract::canonical_json_digest(
+            crate::executor::json::canonical_json_digest(
                 &descriptor,
                 acyclic_stream::MAX_RECORD_BYTES as u64,
                 work,
