@@ -1,48 +1,80 @@
 use super::*;
-use crate::kernel::KernelAccounting;
-
-/// Actual publication identity and immutable SDK view.
+/// Actual SDK publication identity and immutable logical view.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativePublicationSnapshot {
     pub(crate) operation: Option<crate::OperationId>,
-    pub(crate) context: NativeSnapshotContext,
     pub(crate) generation: crate::GenerationId,
+    pub(crate) context: NativeSnapshotContext,
 }
-
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LazyPublicationCut {
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) config: VolumeConfig,
+    pub(crate) source: SourceReference,
+    pub(crate) overlay: LazyOverlayId,
+    pub(crate) shadows: LazyShadowId,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) enum NativeSnapshotContext {
+    Authored {
+        workspace_id: WorkspaceId,
+        config: VolumeConfig,
+    },
+    Lazy(LazyPublicationCut),
+    Selected {
+        cut: LazyPublicationCut,
+        input: crate::Digest,
+    },
+}
+impl NativeSnapshotContext {
+    pub(crate) const fn workspace_id(self) -> WorkspaceId {
+        match self {
+            Self::Authored { workspace_id, .. } => workspace_id,
+            Self::Lazy(cut) | Self::Selected { cut, .. } => cut.workspace_id,
+        }
+    }
+    pub(crate) const fn config(self) -> VolumeConfig {
+        match self {
+            Self::Authored { config, .. } => config,
+            Self::Lazy(cut) | Self::Selected { cut, .. } => cut.config,
+        }
+    }
+}
 impl NativePublicationSnapshot {
     /// Actual DATA operation, absent when no publication occurred.
     pub const fn operation(&self) -> Option<crate::OperationId> {
         self.operation
     }
-    /// Actual immutable authored generation.
+    /// Authenticated immutable generation.
     pub const fn generation(&self) -> crate::GenerationId {
         self.generation
     }
-    /// Actual workspace represented by this view.
+    /// Workspace represented by this view.
     pub const fn workspace_id(&self) -> WorkspaceId {
         self.context.workspace_id()
     }
-    /// Immutable decoding profile and limits.
+    /// Exact decode configuration.
     pub const fn volume_config(&self) -> VolumeConfig {
         self.context.config()
     }
-    /// Whether unresolved source metadata remains in the view.
+    /// Whether the view includes unresolved source metadata.
     pub const fn is_lazy(&self) -> bool {
         !matches!(self.context, NativeSnapshotContext::Authored { .. })
     }
-
-    /// Projects the exact source cut using the supplied accounting context.
+    /// Projects the immutable lazy cut using the same accounting context.
     pub fn lazy_snapshot(
         self,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<LazySnapshotRef>, crate::FsError> {
-        accounting.check()?;
+        ctx.check()?;
         let cut = match self.context {
-            NativeSnapshotContext::Lazy(cut) | NativeSnapshotContext::Selected { cut, .. } => cut,
             NativeSnapshotContext::Authored { .. } => return Ok(None),
+            NativeSnapshotContext::Lazy(cut) | NativeSnapshotContext::Selected { cut, .. } => cut,
         };
-        accounting.charge(WorkCounters {
+        ctx.charge(WorkCounters {
             bytes_hashed: LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
             bytes_copied: std::mem::size_of::<LazySnapshotRef>() as u64,
             ..WorkCounters::UNCHARGED
@@ -55,7 +87,6 @@ impl NativePublicationSnapshot {
             cut.shadows,
         )))
     }
-
     pub(crate) const fn unchanged(
         context: NativeSnapshotContext,
         generation: crate::GenerationId,
@@ -78,57 +109,17 @@ impl NativePublicationSnapshot {
         }
     }
 }
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct LazyPublicationCut {
-    pub(crate) workspace_id: WorkspaceId,
-    pub(crate) config: VolumeConfig,
-    pub(crate) source: SourceReference,
-    pub(crate) overlay: LazyOverlayId,
-    pub(crate) shadows: LazyShadowId,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) enum NativeSnapshotContext {
-    Authored {
-        workspace_id: WorkspaceId,
-        config: VolumeConfig,
-    },
-    Lazy(LazyPublicationCut),
-    Selected {
-        cut: LazyPublicationCut,
-        input: crate::Digest,
-    },
-}
-
-impl NativeSnapshotContext {
-    pub(crate) const fn workspace_id(self) -> WorkspaceId {
-        match self {
-            Self::Authored { workspace_id, .. } => workspace_id,
-            Self::Lazy(cut) | Self::Selected { cut, .. } => cut.workspace_id,
-        }
-    }
-    pub(crate) const fn config(self) -> VolumeConfig {
-        match self {
-            Self::Authored { config, .. } => config,
-            Self::Lazy(cut) | Self::Selected { cut, .. } => cut.config,
-        }
-    }
-}
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
 {
-    /// Captures the current view without rebinding or modifying companion state.
+    /// Captures a publication view without rebinding or modifying companion state.
     pub async fn publication_snapshot(
         &self,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<NativePublicationSnapshot, LazyWorkspaceError> {
-        let cut = self.publication_cut(None, accounting).await?;
-        let generation = self.head(accounting).await?;
-        accounting.check()?;
+        let cut = self.publication_cut(None, ctx).await?;
+        let generation = self.head(ctx).await?;
+        ctx.check()?;
         if self.source.reference() != cut.source {
             return Err(LazyWorkspaceError::StaleSource);
         }
@@ -137,15 +128,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             generation.id(),
         ))
     }
-
     pub(crate) async fn publication_cut(
         &self,
         operation: Option<crate::OperationId>,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyPublicationCut, LazyWorkspaceError> {
         let state = self
             .store
-            .load_lazy_workspace(self.workspace.id(), accounting)
+            .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
         state.require_ready_fork()?;
@@ -156,26 +146,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             return Err(LazyWorkspaceError::StaleSource);
         }
         match (operation, state.pending_remove.as_ref()) {
-            (Some(operation), Some(pending))
+            (Some(op), Some(pending))
                 if state.overlay == pending.prepared_overlay
-                    && matches!(pending.kind, PendingLazyRemoveKind::Mounted { idempotency_key }
-                    if idempotency_key.operation_id() == operation) => {}
+                    && matches!(pending.kind,PendingLazyRemoveKind::Mounted { idempotency_key } if idempotency_key.operation_id() == op) =>
+                {}
             (None, None) => {}
             _ => return Err(LazyWorkspaceError::OriginalSnapshotUnavailable),
         }
-        let overlay = self
-            .store
-            .load_lazy_overlay(state.overlay, accounting)
-            .await?
-            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-        retire_node(overlay, accounting)?;
-        let shadows = self
-            .store
-            .load_lazy_shadow(state.shadows, accounting)
-            .await?
-            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-        retire_node(shadows, accounting)?;
-        accounting.charge(WorkCounters {
+        retire_node(
+            self.store
+                .load_lazy_overlay(state.overlay, ctx)
+                .await?
+                .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?,
+            ctx,
+        )?;
+        retire_node(
+            self.store
+                .load_lazy_shadow(state.shadows, ctx)
+                .await?
+                .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?,
+            ctx,
+        )?;
+        ctx.charge(WorkCounters {
             bytes_copied: std::mem::size_of::<LazyPublicationCut>() as u64,
             ..WorkCounters::UNCHARGED
         })?;

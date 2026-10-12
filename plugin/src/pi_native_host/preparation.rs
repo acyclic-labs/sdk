@@ -4,7 +4,7 @@ use super::*;
 impl PiNativeCommandHost {
     pub(super) async fn prepare_effect(
         &self,
-        shared: Arc<NativeTaskContext>,
+        shared: Arc<TaskContext>,
         input: &PiTaskInput,
         owner: Arc<TaskJournalOwner<LocalStream>>,
         command: &WorkflowCommand,
@@ -13,7 +13,7 @@ impl PiNativeCommandHost {
         work: &NativeMaterializationWork,
     ) -> Result<Arc<BoundEffect>> {
         let intent = &mut retained_intent.0;
-        let context = shared.context();
+        let context = shared.as_ref();
         self.hydrate_child(
             &shared,
             &owner,
@@ -116,7 +116,7 @@ impl PiNativeCommandHost {
                 if handles.session.is_none() {
                     handles.session = Some(
                         intent
-                            .publish_session(scratch_context.context(), command.operation_id, work)
+                            .publish_session(scratch_context.as_ref(), command.operation_id, work)
                             .await?,
                     );
                 }
@@ -396,7 +396,7 @@ impl PiNativeCommandHost {
             work,
         )?;
         let staged = pi_native::stage_command(
-            result_context.context(),
+            result_context.as_ref(),
             command.operation_id,
             &request.0,
             work,

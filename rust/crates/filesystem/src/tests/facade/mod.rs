@@ -328,7 +328,7 @@ impl AsyncAuthorityStore for FaultAuthorityStore {
         request: crate::GuardedAppend,
         work: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
-    ) -> Result<(AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+    ) -> Result<AppendOutcome, crate::AuthorityError<G::Error>> {
         authority_context(work)?;
         if request.permit != PublicationPermit::Unrestricted {
             return Err(AuthorityStoreError::Rejected(
@@ -381,7 +381,7 @@ impl AsyncAuthorityStore for FaultAuthorityStore {
         authority: AuthorityId,
         operation: OperationId,
         work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Option<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+    ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
         authority_context(work)?;
         self.fail(true, work)?;
         AsyncAuthorityStore::find_operation(&self.inner, authority, operation, work).await
@@ -422,7 +422,7 @@ impl AsyncAuthorityStore for PostAppendAuthorityStore {
         request: crate::GuardedAppend,
         work: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
-    ) -> Result<(AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+    ) -> Result<AppendOutcome, crate::AuthorityError<G::Error>> {
         authority_context(work)?;
         if request.permit != PublicationPermit::Unrestricted {
             return Err(AuthorityStoreError::Rejected(
@@ -444,7 +444,7 @@ impl AsyncAuthorityStore for PostAppendAuthorityStore {
         .map_err(|error| {
             crate::AuthorityError::Authority(error.into_error(std::convert::identity))
         })?;
-        if matches!(&value.0, AppendOutcome::Committed(_)) && self.control.should_fail() {
+        if matches!(&value, AppendOutcome::Committed(_)) && self.control.should_fail() {
             return Err(AuthorityStoreError::Indeterminate {
                 operation: "compare-and-append",
                 source: std::io::Error::other("deterministic acknowledgement loss"),
@@ -494,7 +494,7 @@ impl AsyncAuthorityStore for PostAppendAuthorityStore {
         authority: AuthorityId,
         operation: OperationId,
         work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Option<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+    ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
         authority_context(work)?;
         work.cancellation
             .check()

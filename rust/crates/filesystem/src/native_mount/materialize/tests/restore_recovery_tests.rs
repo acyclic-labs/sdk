@@ -452,10 +452,10 @@ fn restore_preparation_rejects_a_swapped_root_before_any_write()
     let failure = prepare_restore(
         allocation_work
             .path(&destination, None)
-            .map_err(materialize_native_error)?,
+            .map_err(MaterializeError::from)?,
         allocation_work
             .path(Path::new("nested/entry"), None)
-            .map_err(materialize_native_error)?,
+            .map_err(MaterializeError::from)?,
         Some(expected),
         HostPathReplacement::Atomic,
         &mut work,

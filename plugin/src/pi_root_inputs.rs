@@ -29,7 +29,7 @@ pub(crate) struct PiRootPreparation {
     pub(crate) command: WorkflowCommand,
     pub(crate) plan: TaskEffectPlan,
     pub(crate) request: PiRootRequest,
-    pub(crate) context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+    pub(crate) context: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
     pub(crate) custody: NativeAllocation,
 }
 
@@ -42,7 +42,7 @@ impl PiRootPreparation {
         filesystem: &crate::pi_native_host::PiNativeFilesystem,
         binding: &PiTaskBinding,
         origin: super::pi_recovery::PiTaskOrigin<'_>,
-        context: Option<std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>>,
+        context: Option<std::sync::Arc<acyclic_harness::runtime::TaskContext>>,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
@@ -67,7 +67,7 @@ impl PiRootPreparation {
                 original.0.into_native_shared(original.1, work)?
             }
         };
-        if context.context().durable_task_id() != Some(admitted.0.binding.task_id) {
+        if context.durable_task_id() != Some(admitted.0.binding.task_id) {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi root preparation context belongs to another original task",
@@ -79,9 +79,8 @@ impl PiRootPreparation {
                 "Pi root preparation requires its original host admission",
             ));
         };
-        preparation.validate(&mut Some(&mut acyclic_harness::store::native_work_io(
-            work,
-        )?))?;
+        preparation.validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
         if preparation.kind != EFFECT_TASK_COMMAND_KIND
             || preparation.operation_id != preparation_operation(owner.policy().root_task, work)?
         {
@@ -159,7 +158,7 @@ pub(crate) async fn stage_root_command(
                 acyclic_fs::WorkError::Overflow,
             ))
         })?;
-    payload.1.resize_retained(retained)?;
+    payload.1.resize(retained)?;
     Ok((
         WorkflowCommand {
             operation_id,

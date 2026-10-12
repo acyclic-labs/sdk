@@ -1,4 +1,3 @@
-//! reducer admission semantics.
 use super::*;
 impl Reducer {
     pub(crate) fn verify_command_scope_with_work(
@@ -25,7 +24,7 @@ impl Reducer {
         self.authority_verifier.verify_event(event, work)?;
         if event.operation_id != command.operation_id
             || event.intent_digest
-                != crate::contract::canonical_json_digest_with_work(
+                != crate::contract::canonical_json_digest(
                     command,
                     crate::store::default_projection_read_limits().maximum_bytes,
                     work,
@@ -141,12 +140,8 @@ impl Reducer {
         archived_effect: Option<(EffectId, &EffectState)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(ApplyResult, u64)> {
-        self.native_custody.require_work(
-            work,
-            "native reducer planning requires explicit native work",
-        )?;
         self.verify_command_scope_with_work(command, work)?;
-        let intent = crate::contract::canonical_json_digest_with_work(
+        let intent = crate::contract::canonical_json_digest(
             command,
             crate::store::default_projection_read_limits().maximum_bytes,
             work,
@@ -261,11 +256,11 @@ impl Reducer {
         scope: (&str, &Capabilities),
         agent: Option<AgentId>,
         operation_id: OperationId,
-        (_, permission, subject): (&'static str, &'static str, Subject<'_>),
+        (_, capability, subject): (&str, &str, Subject<'_>),
         archived_effect: Option<(EffectId, &EffectState)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        require_capability(scope, permission)?;
+        require_capability(scope, capability)?;
         match subject {
             Subject::None => Ok(()),
             Subject::PlannedEffect => require_capability(scope, capability::EFFECT_PLAN),
@@ -306,7 +301,7 @@ impl Reducer {
                         "fork manifest is not bound to its operation and parent revision".into(),
                     ));
                 }
-                let ownership = self.validate_fork_reference_ownership_with_work(seed, work);
+                let ownership = self.validate_fork_reference_ownership(seed, None, work);
                 if work.is_some() {
                     ownership?;
                 } else if ownership.is_err() {
@@ -391,7 +386,7 @@ impl Reducer {
         maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let digest = crate::contract::canonical_json_digest_with_work(volume, maximum_bytes, work)?;
+        let digest = crate::contract::canonical_json_digest(volume, maximum_bytes, work)?;
         let hex = blake3::Hash::from_bytes(digest).to_hex();
         let prefix = match operation {
             VolumeOperation::Read => "volume:read:",
@@ -421,10 +416,6 @@ impl Reducer {
         event: Event,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<ApplyResult> {
-        self.native_custody.require_work(
-            work,
-            "native reducer mutation requires explicit native work",
-        )?;
         self.authority_verifier
             .verify_audience(&self.authority, work)?;
         if let Some(existing) = self.event_for_operation(event.operation_id) {
@@ -474,29 +465,9 @@ impl Reducer {
             observer.admit_owned(reservation)?;
             observer.retain_owned(reservation)?;
         }
-        let (cached, retired_event) = self.native_custody.produce(
-            &NativeComponentKey::Event(event.revision),
-            work,
-            |quota| copying::copy_event(&event, quota),
-        )?;
-        let applied = Self::reserve_deque_buffer(
-            &mut self.native_custody,
-            NativeComponentKey::EventBuffer,
-            &mut self.events,
-            work,
-        )
-        .and_then(|()| self.apply_payload_with_work(&event.payload, event.revision, work));
-        if let Err(error) = applied {
-            drop(cached);
-            drop(
-                self.native_custody
-                    .rollback(&NativeComponentKey::Event(event.revision), retired_event),
-            );
-            return Err(error);
-        }
+        self.apply_payload_with_work(&event.payload, event.revision, work)?;
         self.revision = event.revision;
-        self.events.push_back(cached);
-        drop(retired_event);
+        self.events.push_back(event.clone());
         self.trim_resident_events();
         Ok(ApplyResult::Applied { event })
     }

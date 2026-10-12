@@ -1,10 +1,7 @@
 //! Browser bindings over the ordinary task runtime and its real providers.
 use crate::runtime::TaskSpawner as _;
 
-use super::{
-    WasmLimitsInput, WasmReducer, WasmTaskRunLimitsInput, from_js, js_error, key_bytes,
-    wasm_limits, wasm_run_limits,
-};
+use super::{Limits, TaskRunLimits, WasmReducer, from_js, js_error, key_bytes};
 use crate::runtime::TaskStateProvider;
 use crate::{
     Admission, Error, OperationId, Result, TaskId,
@@ -206,8 +203,10 @@ struct WasmBrowserTaskOptions {
     filesystem_provider: ProviderRef,
     #[tsify(type = "WasmVolumeRefWire")]
     volume: VolumeRef,
-    limits: WasmLimitsInput,
-    run_limits: WasmTaskRunLimitsInput,
+    #[tsify(type = "WasmLimitsInput")]
+    limits: Limits,
+    #[tsify(type = "WasmTaskRunLimitsInput")]
+    run_limits: TaskRunLimits,
     #[tsify(
         type = "{ active_tasks: bigint; total_tasks: bigint; depth: number; model_steps: bigint }"
     )]

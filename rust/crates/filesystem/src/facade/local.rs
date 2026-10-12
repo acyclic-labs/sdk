@@ -183,20 +183,14 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         };
         let open_objects = async {
             let maximum_object_bytes = objects.maximum_object_bytes;
-            let objects = std::sync::Arc::new(match &lifecycle {
-                Some(ownership) => {
-                    acyclic_objects::v1::local::LocalObjects::open_with_ownership_anchor(
-                        root.join("objects"),
-                        objects,
-                        ownership.clone(),
-                    )
-                    .await?
-                }
-                None => {
-                    acyclic_objects::v1::local::LocalObjects::open(root.join("objects"), objects)
-                        .await?
-                }
-            });
+            let objects = Arc::new(
+                acyclic_objects::v1::local::LocalObjects::open(
+                    root.join("objects"),
+                    objects,
+                    lifecycle.clone(),
+                )
+                .await?,
+            );
             let bucket = acyclic_objects::v1::wire::BucketRef {
                 name: "filesystem-objects".to_owned(),
             };

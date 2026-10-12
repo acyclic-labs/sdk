@@ -1067,8 +1067,8 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     assert_eq!(original.receipt().authority_records_appended, 1);
     let reopened = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let resolved =({ let __authority_args = (request.authority_id, request.operation_id, &reopened, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result =  crate::AsyncAuthorityStore::find_operation(&authority, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result })?;
-    let commit = resolved.0
+    let resolved =({ let __authority_args = (request.authority_id, request.operation_id, &reopened, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result =  crate::AsyncAuthorityStore::find_operation(&authority, __authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result })?;
+    let commit = resolved
         .ok_or("lost acknowledgement operation was not durable")?;
     let predecessor = Head {
         epoch: commit.epoch,
@@ -1176,7 +1176,7 @@ impl crate::AsyncObjectStore for NativeMissingCustody<'_> {
             }
             .await;
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             {

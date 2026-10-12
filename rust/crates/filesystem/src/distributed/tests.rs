@@ -1,5 +1,9 @@
 use super::*;
-use crate::kernel::{VolumeCreated, encode_publication_payload, encode_volume_created};
+use crate::OperationReceipt;
+use crate::kernel::{
+    CanonicalDecodeError, VolumeCreated, VolumeCreatedError, encode_publication_payload,
+    encode_volume_created,
+};
 use crate::model::{Lifecycle, VolumeConfig};
 use crate::storage::ObjectKind;
 #[tokio::test]
@@ -8,53 +12,28 @@ pub(super) async fn settlement_times_and_retired_accounting_use_original_stream_
     let authority = StreamAuthorityStore::new(Arc::clone(&stream));
     let authority_id = AuthorityId::from_bytes([0x71; 16]);
     let cancellation = CancellationToken::new();
-    ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })
-    .expect("create authority");
-    let head = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority.head(authority_id, &mut __authority_work).await;
-        __authority_work.receipt(__authority_result)
-    })
-    .expect("head")
-    .value;
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    authority
+        .create_authority(authority_id, Epoch::GENESIS, &mut work, None::<&mut ()>)
+        .await
+        .expect("create authority");
+    let head = authority.head(authority_id, &mut work).await.expect("head");
     let proposed = ProposedCommit {
         operation_id: OperationId::from_bytes([0x72; 16]),
         fingerprint: Digest::from_bytes([0x73; 32]),
         payload: Bytes::from_static(b"accounting settlement"),
     };
-    let outcome = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .compare_and_append(
-                crate::GuardedAppend {
-                    authority_id: authority_id,
-                    epoch: head.epoch,
-                    expected: head,
-                    commit: proposed.clone(),
-                    permit: crate::PublicationPermit::Unrestricted,
-                },
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })
-    .expect("append")
-    .value;
+    let request = crate::GuardedAppend {
+        authority_id,
+        epoch: head.epoch,
+        expected: head,
+        commit: proposed.clone(),
+        permit: PublicationPermit::Unrestricted,
+    };
+    let outcome = authority
+        .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
+        .await
+        .expect("append");
     let FsAppendOutcome::Committed(durable) = outcome else {
         panic!("expected committed record");
     };
@@ -74,59 +53,27 @@ pub(super) async fn settlement_times_and_retired_accounting_use_original_stream_
         payload_bytes: 1_024,
     };
     assert_eq!(
-        ({
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __authority_result = authority
-                .replay(authority_id, Sequence::new(0), limit, &mut __authority_work)
-                .await
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        })
-        .expect("replay")
-        .value,
+        authority
+            .replay(authority_id, Sequence::GENESIS, limit, &mut work)
+            .await
+            .expect("replay")
+            .0,
         vec![durable.clone()]
     );
     assert_eq!(
-        ({
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __authority_result = authority
-                .find_operation(authority_id, proposed.operation_id, &mut __authority_work)
-                .await
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        })
-        .expect("find")
-        .value,
+        authority
+            .find_operation(authority_id, proposed.operation_id, &mut work)
+            .await
+            .expect("find"),
         Some(durable.clone())
     );
     assert_eq!(
-        ({
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __authority_result = authority
-                .compare_and_append(
-                    crate::GuardedAppend {
-                        authority_id: authority_id,
-                        epoch: head.epoch,
-                        expected: head,
-                        commit: proposed.clone(),
-                        permit: crate::PublicationPermit::Unrestricted,
-                    },
-                    &mut __authority_work,
-                    None::<&mut ()>,
-                )
-                .await
-                .map_err(|error| error.into_error(std::convert::identity))
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        })
-        .expect("retry")
-        .value,
+        authority
+            .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
+            .await
+            .expect("retry"),
         FsAppendOutcome::AlreadyCommitted(durable.clone())
     );
-
     let mut legacy = record.clone();
     legacy.committed_at_micros = 0;
     let borrowed = decode_record(&legacy).expect("legacy");
@@ -136,103 +83,43 @@ pub(super) async fn settlement_times_and_retired_accounting_use_original_stream_
         durable_commit(borrowed, legacy.committed_at_micros, payload).settled_at_micros,
         None
     );
-    ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .retire_authority(authority_id, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })
-    .expect("retire");
-    assert!(matches!(
-        ({
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __authority_result = authority.head(authority_id, &mut __authority_work).await;
-            __authority_work.receipt(__authority_result)
-        })
-        .expect_err("ordinary head stays retired")
-        .error,
-        AuthorityStoreError::Retired
-    ));
-    assert!(matches!(
-        ({
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __authority_result = authority
-                .replay(authority_id, Sequence::new(0), limit, &mut __authority_work)
-                .await
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        })
-        .expect_err("ordinary replay stays retired")
-        .error,
-        AuthorityStoreError::Retired
-    ));
-    assert!(matches!(
-        ({
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __authority_result = authority
-                .find_operation(authority_id, proposed.operation_id, &mut __authority_work)
-                .await
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        })
-        .expect_err("ordinary operation lookup stays retired")
-        .error,
-        AuthorityStoreError::Retired
-    ));
-    assert!(matches!(
-        ({
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __authority_result = authority
-                .compare_and_append(
-                    crate::GuardedAppend {
-                        authority_id: authority_id,
-                        epoch: head.epoch,
-                        expected: head,
-                        commit: proposed,
-                        permit: crate::PublicationPermit::Unrestricted,
-                    },
-                    &mut __authority_work,
-                    None::<&mut ()>,
-                )
-                .await
-                .map_err(|error| error.into_error(std::convert::identity))
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        })
-        .expect_err("ordinary retry stays retired")
-        .error,
-        AuthorityStoreError::Retired
-    ));
+    authority
+        .retire_authority(authority_id, &mut work)
+        .await
+        .expect("retire");
+    for failure in [
+        authority.head(authority_id, &mut work).await.err(),
+        authority
+            .replay(authority_id, Sequence::GENESIS, limit, &mut work)
+            .await
+            .err(),
+        authority
+            .find_operation(authority_id, proposed.operation_id, &mut work)
+            .await
+            .err(),
+        authority
+            .compare_and_append(request, &mut work, None::<&mut ()>)
+            .await
+            .map_err(|error| error.into_error(std::convert::identity))
+            .err(),
+    ] {
+        assert!(matches!(failure, Some(AuthorityStoreError::Retired)));
+    }
     let accounting = AccountingAuthority(&authority);
     assert_eq!(
-        ({
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __authority_result = accounting
-                .replay(authority_id, Sequence::new(0), limit, &mut __authority_work)
-                .await
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        })
-        .expect("accounting retains retired history")
-        .value,
+        accounting
+            .replay(authority_id, Sequence::GENESIS, limit, &mut work)
+            .await
+            .expect("accounting retains retired history")
+            .0,
         vec![durable.clone()]
     );
     assert_eq!(
-        ({
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __authority_result = accounting.head(authority_id, &mut __authority_work).await;
-            __authority_work.receipt(__authority_result)
-        })
-        .expect("historical head")
-        .value
-        .sequence,
+        accounting
+            .head(authority_id, &mut work)
+            .await
+            .expect("historical head")
+            .sequence,
         durable.sequence
     );
 }
@@ -247,20 +134,10 @@ pub(super) async fn original_append_owner_seals_after_planning_and_again_on_reco
     let cancellation = CancellationToken::new();
     let store = StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default()));
     let authority = AuthorityId::from_bytes([0x86; 16]);
-    ({
-        let mut __authority_work =
-            crate::AuthorityWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation);
-        let __authority_result = store
-            .create_authority(
-                authority,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })?;
+    let mut work = AuthorityWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation);
+    store
+        .create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)
+        .await?;
     let original = crate::NativeMaterializationWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation)
         .map_err(|(error, _)| error)?;
     let expected = Head::genesis(Epoch::GENESIS);
@@ -276,64 +153,40 @@ pub(super) async fn original_append_owner_seals_after_planning_and_again_on_reco
         permit: PublicationPermit::Unrestricted,
     };
     let expected_root = original.clone();
-    let mut reject = move |work: &crate::NativeMaterializationWork| {
+    let reject = move |work: &crate::NativeMaterializationWork| {
         assert!(work.shares_ledger(&expected_root));
         assert!(work.receipt().bytes_hashed > 0);
-        work.admit(WorkCounters::UNCHARGED)
-            .expect("unlocked original root");
         std::future::ready(Err(AuthorityStoreError::Retired))
     };
-    let failure = (async {
-        let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation);
-        store
-            .compare_and_append(
-                request.clone(),
-                &mut __authority_work,
-                Some(&mut crate::NativeAuthorityGuard((&mut reject).clone())),
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::Into::into))
-            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
-    }
-    .await);
+    let mut work = AuthorityWork::native(&original, &cancellation);
+    let failure = store
+        .compare_and_append(
+            request.clone(),
+            &mut work,
+            Some(&mut crate::NativeAuthorityGuard(reject.clone())),
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity));
     assert!(matches!(failure, Err(AuthorityStoreError::Retired)));
     assert_eq!(original.receipt().backend_write_operations, 0);
-    assert_eq!(
-        ({
-            let mut __authority_work =
-                crate::AuthorityWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation);
-            let __authority_result = store.head(authority, &mut __authority_work).await;
-            __authority_work.receipt(__authority_result)
-        })?
-        .value,
-        expected
-    );
-    let (outcome, allocation) = (async {
-        let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation);
-        store
-            .compare_and_append(request.clone(), &mut __authority_work, None::<&mut ()>)
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
-    }
-    .await)?;
+    let mut work = AuthorityWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation);
+    assert_eq!(store.head(authority, &mut work).await?, expected);
+    let mut work = AuthorityWork::native(&original, &cancellation);
+    let outcome = store
+        .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
+        .await?;
     assert!(matches!(outcome, FsAppendOutcome::Committed(_)));
     drop(outcome);
-    drop(allocation);
     let before = original.receipt();
-    let failure = (async {
-        let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation);
-        store
-            .compare_and_append(
-                request,
-                &mut __authority_work,
-                Some(&mut crate::NativeAuthorityGuard((&mut reject).clone())),
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::Into::into))
-            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
-    }
-    .await);
+    let mut work = AuthorityWork::native(&original, &cancellation);
+    let failure = store
+        .compare_and_append(
+            request,
+            &mut work,
+            Some(&mut crate::NativeAuthorityGuard(reject)),
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity));
     assert!(matches!(failure, Err(AuthorityStoreError::Retired)));
     assert_eq!(
         original.receipt().backend_write_operations,
@@ -359,19 +212,11 @@ pub(super) async fn original_creation_denial_and_cancellation_publish_nothing()
         fingerprint: Digest::from_bytes([0x8b; 32]),
         payload: Bytes::from_static(b"denied"),
     };
-    let failure = (async {
-        let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation);
-        store
-            .create_first_record(
-                authority,
-                first.clone(),
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))
-    }
-    .await);
+    let mut work = AuthorityWork::native(&original, &cancellation);
+    let failure = store
+        .create_first_record(authority, first.clone(), &mut work, None::<&mut ()>)
+        .await
+        .map_err(|error| error.into_error(std::convert::identity));
     assert!(matches!(
         failure,
         Err(AuthorityStoreError::NativeOriginal(
@@ -386,14 +231,11 @@ pub(super) async fn original_creation_denial_and_cancellation_publish_nothing()
     assert_eq!(original.receipt().authority_records_appended, 0);
     cancellation.cancel();
     let spent = original.receipt();
-    let failure = (async {
-        let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation);
-        store
-            .create_first_record(authority, first, &mut __authority_work, None::<&mut ()>)
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))
-    }
-    .await);
+    let mut work = AuthorityWork::native(&original, &cancellation);
+    let failure = store
+        .create_first_record(authority, first, &mut work, None::<&mut ()>)
+        .await
+        .map_err(|error| error.into_error(std::convert::identity));
     assert!(matches!(
         failure,
         Err(AuthorityStoreError::Cancelled)
@@ -403,10 +245,11 @@ pub(super) async fn original_creation_denial_and_cancellation_publish_nothing()
     ));
     assert_eq!(original.receipt(), spent);
     let fresh = CancellationToken::new();
-    assert!(
-        matches!(({  let mut __authority_work = crate::AuthorityWork::new(NATIVE_AUTHORITY_BUDGET, &fresh); let __authority_result = store.head(authority, &mut __authority_work).await; __authority_work.receipt(__authority_result) }),
-            Err(failure) if matches!(failure.error, AuthorityStoreError::Missing))
-    );
+    let mut work = AuthorityWork::new(NATIVE_AUTHORITY_BUDGET, &fresh);
+    assert!(matches!(
+        store.head(authority, &mut work).await,
+        Err(AuthorityStoreError::Missing)
+    ));
     Ok(())
 }
 
@@ -423,28 +266,37 @@ pub(super) async fn original_authority_custom_defaults_never_fall_back_to_ordina
     let original = crate::NativeMaterializationWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation)
         .map_err(|(error, _)| error)?;
     let authority = AuthorityId::from_bytes([0x7a; 16]);
-    assert!(
-        matches!(&(async {  let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation); store.head(authority, &mut __authority_work).await
-}.await),
-            Err(AuthorityStoreError::NativeStream(error))
-                if matches!(error, acyclic_stream::StreamError::Unsupported))
-    );
-    assert!(
-        matches!(&(async {  let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation); store.replay(authority, Sequence::GENESIS, ReplayLimit { records: 1, payload_bytes: 8 }, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
-}.await),
-            Err(AuthorityStoreError::NativeStream(error))
-                if matches!(error, acyclic_stream::StreamError::Unsupported))
-    );
-    assert!(
-        matches!(&(async {  let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation); store.fence(authority, Head::genesis(Epoch::GENESIS), &mut __authority_work).await
-}.await), Err(AuthorityStoreError::NativeStream(error))
-                if matches!(error, acyclic_stream::StreamError::Unsupported))
-    );
-    assert!(
-        matches!(&(async {  let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation); store.find_operation(authority, OperationId::from_bytes([0x7b; 16]), &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
-}.await), Err(AuthorityStoreError::NativeStream(error))
-                if matches!(error, acyclic_stream::StreamError::Unsupported))
-    );
+    let mut work = AuthorityWork::native(&original, &cancellation);
+    for result in [
+        store.head(authority, &mut work).await.map(|_| ()),
+        store
+            .replay(
+                authority,
+                Sequence::GENESIS,
+                ReplayLimit {
+                    records: 1,
+                    payload_bytes: 8,
+                },
+                &mut work,
+            )
+            .await
+            .map(|_| ()),
+        store
+            .fence(authority, Head::genesis(Epoch::GENESIS), &mut work)
+            .await
+            .map(|_| ()),
+        store
+            .find_operation(authority, OperationId::from_bytes([0x7b; 16]), &mut work)
+            .await
+            .map(|_| ()),
+    ] {
+        assert!(matches!(
+            result,
+            Err(AuthorityStoreError::NativeStream(
+                acyclic_stream::StreamError::Unsupported
+            ))
+        ));
+    }
     assert!(!provider.writes.load(Ordering::SeqCst));
     assert!(!provider.reads.load(Ordering::SeqCst));
     assert_eq!(original.receipt().backend_read_operations, 0);
@@ -489,22 +341,14 @@ pub(super) async fn authority_without_publication_gate_fails_closed()
     )
     .await?;
     let authority = StreamAuthorityStore::new(Arc::clone(&stream));
-    let refused = ({
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let __authority_result = authority
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let refused = (authority
+        .create_authority(authority_id, Epoch::GENESIS, &mut work, None::<&mut ()>)
+        .await
+        .map_err(|error| error.into_error(std::convert::identity)))
     .expect_err("an authority without its publication gate is refused");
-    assert!(matches!(refused.error, AuthorityStoreError::Corrupt(_)));
+    assert!(matches!(refused, AuthorityStoreError::Corrupt(_)));
     assert!(matches!(
         acyclic_stream::StreamProvider::tail(
             stream.as_ref(),
@@ -522,19 +366,11 @@ pub(super) async fn existing_authority_rejects_a_corrupt_publication_gate() {
     let authority = StreamAuthorityStore::new(Arc::clone(&stream));
     let authority_id = AuthorityId::from_bytes([0x35; 16]);
     let cancellation = CancellationToken::new();
-    ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    (authority
+        .create_authority(authority_id, Epoch::GENESIS, &mut work, None::<&mut ()>)
+        .await
+        .map_err(|error| error.into_error(std::convert::identity)))
     .expect("create authority");
     let gate = stream_path(authority_id, "/publication-gate").expect("gate path");
     acyclic_stream::StreamProvider::commit(
@@ -557,21 +393,12 @@ pub(super) async fn existing_authority_rejects_a_corrupt_publication_gate() {
     .await
     .expect("append invalid gate record");
 
-    let error = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })
+    let error = (authority
+        .create_authority(authority_id, Epoch::GENESIS, &mut work, None::<&mut ()>)
+        .await
+        .map_err(|error| error.into_error(std::convert::identity)))
     .expect_err("corrupt gate must fail authority reopen");
-    assert!(matches!(error.error, AuthorityStoreError::Corrupt(_)));
+    assert!(matches!(error, AuthorityStoreError::Corrupt(_)));
 }
 
 #[tokio::test]
@@ -583,14 +410,10 @@ pub(super) async fn publication_reservation_excludes_unreserved_writers()
     let head = reservation.expected;
     let operation_id = reservation.operation_id;
     let cancellation = CancellationToken::new();
-    let retry = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .reserve_publication(authority_id, head, operation_id, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let retry = (authority
+        .reserve_publication(authority_id, head, operation_id, &mut work)
+        .await)?;
     assert!(matches!(retry, ReservationOutcome::AlreadyReserved(value) if value == reservation));
     let request = crate::GuardedAppend {
         authority_id,
@@ -603,99 +426,46 @@ pub(super) async fn publication_reservation_excludes_unreserved_writers()
         },
         permit: PublicationPermit::Unrestricted,
     };
-    let ordinary = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .compare_and_append(request.clone(), &mut __authority_work, None::<&mut ()>)
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
+    let ordinary = (authority
+        .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
+        .await)?;
     assert!(matches!(ordinary, FsAppendOutcome::Fenced { .. }));
-    let reserved = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .compare_and_append(
-                crate::GuardedAppend {
-                    permit: PublicationPermit::Reservation {
-                        operation_id: operation_id.into_bytes(),
-                        gate_tail: reservation.gate_tail,
-                        expected: reservation.expected,
-                    },
-                    ..request
+    let reserved = (authority
+        .compare_and_append(
+            crate::GuardedAppend {
+                permit: PublicationPermit::Reservation {
+                    operation_id: operation_id.into_bytes(),
+                    gate_tail: reservation.gate_tail,
+                    expected: reservation.expected,
                 },
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
+                ..request
+            },
+            &mut work,
+            None::<&mut ()>,
+        )
+        .await)?;
     assert!(matches!(reserved, FsAppendOutcome::Committed(_)));
-    let changed = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority.head(authority_id, &mut __authority_work).await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
-    let stale = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .reserve_publication(authority_id, head, operation_id, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
+    let changed = (authority.head(authority_id, &mut work).await)?;
+    let stale = (authority
+        .reserve_publication(authority_id, head, operation_id, &mut work)
+        .await)?;
     assert!(matches!(stale, ReservationOutcome::Conflict { actual } if actual == changed));
-    ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .reserve_publication(authority_id, changed, operation_id, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })
-    .expect_err("an active operation must not adopt a different source head");
-    let denied_release = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::default(), &cancellation);
-        let __authority_result = authority
-            .release_publication(reservation, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })
-    .expect_err("release must charge its idempotency read before doing work");
-    assert!(matches!(denied_release.error, AuthorityStoreError::Work(_)));
-    ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .release_publication(reservation, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?;
-    ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .release_publication(reservation, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?;
-    let current = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority.head(authority_id, &mut __authority_work).await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
-    let reacquired = match ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .reserve_publication(authority_id, current, operation_id, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value
+    (authority
+        .reserve_publication(authority_id, changed, operation_id, &mut work)
+        .await)
+        .expect_err("an active operation must not adopt a different source head");
+    let mut denied_work = AuthorityWork::new(WorkBudget::default(), &cancellation);
+    let denied_release = (authority
+        .release_publication(reservation, &mut denied_work)
+        .await)
+        .expect_err("release must charge its idempotency read before doing work");
+    assert!(matches!(denied_release, AuthorityStoreError::Work(_)));
+    (authority.release_publication(reservation, &mut work).await)?;
+    (authority.release_publication(reservation, &mut work).await)?;
+    let current = (authority.head(authority_id, &mut work).await)?;
+    let reacquired = match (authority
+        .reserve_publication(authority_id, current, operation_id, &mut work)
+        .await)?
     {
         ReservationOutcome::Reserved(reservation) => reservation,
         outcome => panic!("unexpected reacquisition outcome: {outcome:?}"),
@@ -704,17 +474,7 @@ pub(super) async fn publication_reservation_excludes_unreserved_writers()
         operation_id: OperationId::from_bytes([0x99; 16]),
         ..reacquired
     };
-    assert!(
-        ({
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __authority_result = authority
-                .release_publication(forged, &mut __authority_work)
-                .await;
-            __authority_work.receipt(__authority_result)
-        })
-        .is_err()
-    );
+    assert!((authority.release_publication(forged, &mut work).await).is_err());
     let gate = stream_path(authority_id, "/publication-gate")?;
     let advanced = acyclic_stream::StreamProvider::commit(
         stream.as_ref(),
@@ -771,14 +531,8 @@ pub(super) async fn publication_reservation_excludes_unreserved_writers()
         retained_conflict,
         acyclic_stream::CommitOutcome::Conflict(_)
     ));
-    ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .release_publication(reacquired, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })
-    .expect_err("retained release conflict must not become success");
+    (authority.release_publication(reacquired, &mut work).await)
+        .expect_err("retained release conflict must not become success");
     let gate = stream_path(authority_id, "/publication-gate")?;
     let tail = acyclic_stream::StreamProvider::tail(stream.as_ref(), gate.clone()).await?;
     let record = read_one(stream.as_ref(), gate, tail - 1).await?;
@@ -927,34 +681,15 @@ pub(super) async fn release_fixture()
     let inner = Arc::new(acyclic_stream::MemoryStream::default());
     let authority = StreamAuthorityStore::new(Arc::clone(&inner));
     let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let id = AuthorityId::from_bytes([0xd1; 16]);
-    ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .create_authority(id, Epoch::GENESIS, &mut __authority_work, None::<&mut ()>)
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })?;
-    let head = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority.head(id, &mut __authority_work).await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
-    let outcome = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .reserve_publication(
-                id,
-                head,
-                OperationId::from_bytes([0xd2; 16]),
-                &mut __authority_work,
-            )
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
+    authority
+        .create_authority(id, Epoch::GENESIS, &mut work, None::<&mut ()>)
+        .await?;
+    let head = authority.head(id, &mut work).await?;
+    let outcome = authority
+        .reserve_publication(id, head, OperationId::from_bytes([0xd2; 16]), &mut work)
+        .await?;
     let ReservationOutcome::Reserved(reservation) = outcome else {
         return Err("reservation denied".into());
     };
@@ -966,54 +701,42 @@ pub(super) async fn release_lost_ack_recovers_original_envelope_after_gate_advan
 -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::atomic::Ordering;
     let (inner, reservation) = release_fixture().await?;
+    let cancellation = CancellationToken::new();
     let mut spy = ReleaseSpy::new(Arc::clone(&inner));
     spy.lose_ack = true;
     let spy = Arc::new(spy);
-    let failure = ({
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let __authority_result = StreamAuthorityStore::new(Arc::clone(&spy))
-            .release_publication(reservation, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })
-    .expect_err("provider loses release acknowledgement");
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    StreamAuthorityStore::new(Arc::clone(&spy))
+        .release_publication(reservation, &mut work)
+        .await
+        .expect_err("provider loses release acknowledgement");
     assert!(spy.writes.load(Ordering::SeqCst));
-    assert_eq!(failure.work.durability_operations, 0);
-    assert_eq!(failure.work.authority_bytes_written, 0);
+    assert_eq!(work.spent().durability_operations, 0);
+    assert_eq!(work.spent().authority_bytes_written, 0);
     let authority = StreamAuthorityStore::new(Arc::clone(&inner));
     let new_operation = OperationId::from_bytes([0xd3; 16]);
-    let outcome = ({
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let __authority_result = authority
-            .reserve_publication(
-                reservation.authority_id,
-                reservation.expected,
-                new_operation,
-                &mut __authority_work,
-            )
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let outcome = authority
+        .reserve_publication(
+            reservation.authority_id,
+            reservation.expected,
+            new_operation,
+            &mut work,
+        )
+        .await?;
     assert!(matches!(outcome, ReservationOutcome::Reserved(_)));
     let spy = Arc::new(ReleaseSpy::new(Arc::clone(&inner)));
-    let receipt = ({
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let __authority_result = StreamAuthorityStore::new(Arc::clone(&spy))
-            .release_publication(reservation, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?;
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    StreamAuthorityStore::new(Arc::clone(&spy))
+        .release_publication(reservation, &mut work)
+        .await?;
     assert!(!spy.writes.load(Ordering::SeqCst));
-    assert_eq!(receipt.work.authority_records_read, 1);
+    assert_eq!(work.spent().authority_records_read, 1);
     assert_eq!(
-        receipt.work.authority_bytes_read,
+        work.spent().authority_bytes_read,
         PUBLICATION_GATE_FREE.len() as u64
     );
-    assert_eq!(receipt.work.backend_write_operations, 0);
+    assert_eq!(work.spent().backend_write_operations, 0);
     let gate = stream_path(reservation.authority_id, "/publication-gate")?;
     let tail = acyclic_stream::StreamProvider::tail(inner.as_ref(), gate.clone()).await?;
     let record = read_one(inner.as_ref(), gate, tail - 1).await?;
@@ -1022,33 +745,26 @@ pub(super) async fn release_lost_ack_recovers_original_envelope_after_gate_advan
         let mut spy = ReleaseSpy::new(Arc::clone(&inner));
         spy.corrupt_observation = corrupt;
         let spy = Arc::new(spy);
-        let failure = ({
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-            let __authority_result = StreamAuthorityStore::new(Arc::clone(&spy))
-                .release_publication(reservation, &mut __authority_work)
-                .await;
-            __authority_work.receipt(__authority_result)
-        })
-        .expect_err("retained observation must bind exact original release");
-        assert!(matches!(failure.error, AuthorityStoreError::Corrupt(_)));
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let failure = StreamAuthorityStore::new(Arc::clone(&spy))
+            .release_publication(reservation, &mut work)
+            .await
+            .expect_err("observation must bind the original release");
+        assert!(matches!(failure, AuthorityStoreError::Corrupt(_)));
         assert!(!spy.writes.load(Ordering::SeqCst));
     }
     let cancellation = CancellationToken::new();
     let mut spy = ReleaseSpy::new(inner);
     spy.cancel_inspect = Some(cancellation.clone());
-    let failure = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = StreamAuthorityStore::new(Arc::new(spy))
-            .release_publication(reservation, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })
-    .expect_err("cancellation retains the actual returned observation prefix");
-    assert!(matches!(failure.error, AuthorityStoreError::Cancelled));
-    assert_eq!(failure.work.authority_records_read, 1);
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let failure = StreamAuthorityStore::new(Arc::new(spy))
+        .release_publication(reservation, &mut work)
+        .await
+        .expect_err("cancellation retains the returned observation prefix");
+    assert!(matches!(failure, AuthorityStoreError::Cancelled));
+    assert_eq!(work.spent().authority_records_read, 1);
     assert_eq!(
-        failure.work.authority_bytes_read,
+        work.spent().authority_bytes_read,
         PUBLICATION_GATE_FREE.len() as u64
     );
     Ok(())
@@ -1058,6 +774,7 @@ pub(super) async fn release_lost_ack_recovers_original_envelope_after_gate_advan
 pub(super) async fn release_rejects_committed_wrong_request_and_mutation_family()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::atomic::Ordering;
+    let cancellation = CancellationToken::new();
     for wrong_family in [false, true] {
         let (inner, reservation) = release_fixture().await?;
         let gate = stream_path(reservation.authority_id, "/publication-gate")?;
@@ -1111,29 +828,21 @@ pub(super) async fn release_rejects_committed_wrong_request_and_mutation_family(
             ));
         }
         let spy = Arc::new(ReleaseSpy::new(inner));
-        let failure = ({
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-            let __authority_result = StreamAuthorityStore::new(Arc::clone(&spy))
-                .release_publication(reservation, &mut __authority_work)
-                .await;
-            __authority_work.receipt(__authority_result)
-        })
-        .expect_err("arbitrary retained success must not release this reservation");
-        assert!(matches!(failure.error, AuthorityStoreError::Corrupt(_)));
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let failure = (StreamAuthorityStore::new(Arc::clone(&spy))
+            .release_publication(reservation, &mut work)
+            .await)
+            .expect_err("arbitrary retained success must not release this reservation");
+        assert!(matches!(failure, AuthorityStoreError::Corrupt(_)));
         assert!(!spy.writes.load(Ordering::SeqCst));
     }
     let (inner, reservation) = release_fixture().await?;
-    let receipt = ({
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let __authority_result = StreamAuthorityStore::new(inner)
-            .release_publication(reservation, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?;
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    (StreamAuthorityStore::new(inner)
+        .release_publication(reservation, &mut work)
+        .await)?;
     assert_eq!(
-        receipt.work.authority_bytes_written,
+        work.spent().authority_bytes_written,
         PUBLICATION_GATE_FREE.len() as u64
     );
     Ok(())
@@ -1154,12 +863,8 @@ pub(super) fn generation_records_are_bound_to_their_authority_and_sequence()
             config: VolumeConfig::portable(Lifecycle::Ephemeral),
             initial_generation_root: root,
         },
-        |_| Ok::<_, crate::kernel::VolumeCreatedError>(()),
-        |_| {
-            crate::kernel::VolumeCreatedError::Decode(
-                crate::kernel::CanonicalDecodeError::AllocationFailed,
-            )
-        },
+        |_| Ok::<_, VolumeCreatedError>(()),
+        |_| VolumeCreatedError::Decode(CanonicalDecodeError::AllocationFailed),
     )?;
     let publication = encode_publication_payload(volume_id, root);
     let generation = GenerationId::new(root.digest);
@@ -1204,30 +909,22 @@ pub(super) async fn generation_owner_guard_seals_after_planning_and_on_recovery(
             config: VolumeConfig::portable(Lifecycle::Ephemeral),
             initial_generation_root: root,
         },
-        |_| Ok::<_, crate::kernel::VolumeCreatedError>(()),
-        |_| {
-            crate::kernel::VolumeCreatedError::Decode(
-                crate::kernel::CanonicalDecodeError::AllocationFailed,
-            )
-        },
+        |_| Ok::<_, VolumeCreatedError>(()),
+        |_| VolumeCreatedError::Decode(CanonicalDecodeError::AllocationFailed),
     )?;
-    ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .create_first_record(
-                source_authority,
-                ProposedCommit {
-                    operation_id: OperationId::from_bytes([0x93; 16]),
-                    fingerprint: Digest::from_bytes([0x94; 32]),
-                    payload: Bytes::from(source_payload),
-                },
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })?;
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    authority
+        .create_first_record(
+            source_authority,
+            ProposedCommit {
+                operation_id: OperationId::from_bytes([0x93; 16]),
+                fingerprint: Digest::from_bytes([0x94; 32]),
+                payload: Bytes::from(source_payload),
+            },
+            &mut work,
+            None::<&mut ()>,
+        )
+        .await?;
     let source = crate::GenerationForkSource {
         authority: source_authority,
         generation: GenerationId::new(root.digest),
@@ -1242,7 +939,7 @@ pub(super) async fn generation_owner_guard_seals_after_planning_and_on_recovery(
     let mut guard = |remaining: WorkBudget| {
         assert!(remaining.allocation_operations < budget.allocation_operations);
         assert!(remaining.backend_read_operations < budget.backend_read_operations);
-        std::future::ready(Err::<crate::OperationReceipt<()>, _>(OperationFailure::new(
+        std::future::ready(Err::<OperationReceipt<()>, _>(OperationFailure::new(
             crate::FsError::WorkspaceDeleted,
             WorkCounters {
                 items_examined: 1,
@@ -1250,61 +947,50 @@ pub(super) async fn generation_owner_guard_seals_after_planning_and_on_recovery(
             },
         )))
     };
-    let failed = ({
-        let mut __authority_work = crate::AuthorityWork::new(budget, &cancellation);
-        let __authority_result = authority
-            .fork_authority(
-                source,
-                destination,
-                operation,
-                &mut __authority_work,
-                Some(&mut (&mut *&mut guard)),
-            )
-            .await
-            .map_err(|error| error.into_error(crate::FsError::from));
-        __authority_work.receipt(__authority_result)
-    })
-    .expect_err("deleted destination owner seals after preparation");
-    assert!(matches!(failed.error, crate::FsError::WorkspaceDeleted));
-    assert!(failed.work.backend_read_operations > 0);
-    assert!(failed.work.allocation_operations > 0);
-    assert_eq!(failed.work.backend_write_operations, 0);
+    let mut work = AuthorityWork::new(budget, &cancellation);
+    let failed = authority
+        .fork_authority(
+            source,
+            destination,
+            operation,
+            &mut work,
+            Some(&mut (&mut guard)),
+        )
+        .await
+        .expect_err("deleted owner seals after preparation");
     assert!(matches!(
-        acyclic_stream::StreamProvider::tail(stream.as_ref(), stream_path(destination, "")?,).await,
+        failed,
+        AuthorityError::Owner(crate::FsError::WorkspaceDeleted)
+    ));
+    let failed_work = work.spent();
+    assert!(failed_work.backend_read_operations > 0);
+    assert!(failed_work.allocation_operations > 0);
+    assert_eq!(failed_work.backend_write_operations, 0);
+    assert!(matches!(
+        acyclic_stream::StreamProvider::tail(stream.as_ref(), stream_path(destination, "")?).await,
         Err(acyclic_stream::StreamError::NotFound)
     ));
-    ({
-        let mut __authority_work = crate::AuthorityWork::new(budget, &cancellation);
-        let __authority_result = authority
-            .fork_authority(
-                source,
-                destination,
-                operation,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })?;
-    let retried = ({
-        let mut __authority_work = crate::AuthorityWork::new(budget, &cancellation);
-        let __authority_result = authority
-            .fork_authority(
-                source,
-                destination,
-                operation,
-                &mut __authority_work,
-                Some(&mut (&mut *&mut guard)),
-            )
-            .await
-            .map_err(|error| error.into_error(crate::FsError::from));
-        __authority_work.receipt(__authority_result)
-    })
-    .expect_err("existing destination requires a fresh recovery seal");
-    assert!(matches!(retried.error, crate::FsError::WorkspaceDeleted));
-    assert!(retried.work.backend_read_operations > failed.work.backend_read_operations);
-    assert_eq!(retried.work.backend_write_operations, 0);
+    let mut work = AuthorityWork::new(budget, &cancellation);
+    authority
+        .fork_authority(source, destination, operation, &mut work, None::<&mut ()>)
+        .await?;
+    let mut work = AuthorityWork::new(budget, &cancellation);
+    let retried = authority
+        .fork_authority(
+            source,
+            destination,
+            operation,
+            &mut work,
+            Some(&mut (&mut guard)),
+        )
+        .await
+        .expect_err("existing destination requires a fresh seal");
+    assert!(matches!(
+        retried,
+        AuthorityError::Owner(crate::FsError::WorkspaceDeleted)
+    ));
+    assert!(work.spent().backend_read_operations > failed_work.backend_read_operations);
+    assert_eq!(work.spent().backend_write_operations, 0);
     Ok(())
 }
 #[tokio::test]
@@ -1326,53 +1012,42 @@ pub(super) async fn native_first_record_seals_prepared_request_and_ack_recovery(
     let mut reject_prepared = |remaining: WorkBudget| {
         assert!(remaining.allocation_operations < budget.allocation_operations);
         assert!(remaining.bytes_hashed < budget.bytes_hashed);
-        std::future::ready(Err::<crate::OperationReceipt<()>, _>(
+        std::future::ready(Err::<OperationReceipt<()>, _>(
             OperationFailure::before_work(crate::FsError::WorkspaceDeleted),
         ))
     };
-    let rejected = ({
-        let mut __authority_work = crate::AuthorityWork::new(budget, &cancellation);
-        let __authority_result = authority
-            .create_first_record(
-                destination,
-                proposed(),
-                &mut __authority_work,
-                Some(&mut (&mut *&mut reject_prepared)),
-            )
-            .await
-            .map_err(|error| error.into_error(crate::FsError::from));
-        __authority_work.receipt(__authority_result)
-    })
-    .expect_err("owner rejected the actual prepared canonical request");
-    assert!(matches!(rejected.error, crate::FsError::WorkspaceDeleted));
-    assert!(rejected.work.bytes_encoded > 0);
-    assert!(rejected.work.bytes_hashed > 0);
-    assert_eq!(rejected.work.backend_write_operations, 0);
+    let mut work = AuthorityWork::new(budget, &cancellation);
+    let rejected = authority
+        .create_first_record(
+            destination,
+            proposed(),
+            &mut work,
+            Some(&mut (&mut reject_prepared)),
+        )
+        .await
+        .expect_err("owner rejected the prepared request");
     assert!(matches!(
-        acyclic_stream::StreamProvider::tail(stream.as_ref(), stream_path(destination, "")?,).await,
+        rejected,
+        AuthorityError::Owner(crate::FsError::WorkspaceDeleted)
+    ));
+    assert!(work.spent().bytes_encoded > 0);
+    assert!(work.spent().bytes_hashed > 0);
+    assert_eq!(work.spent().backend_write_operations, 0);
+    assert!(matches!(
+        acyclic_stream::StreamProvider::tail(stream.as_ref(), stream_path(destination, "")?).await,
         Err(acyclic_stream::StreamError::NotFound)
     ));
+    let mut work = AuthorityWork::new(budget, &cancellation);
     assert!(
-        ({
-            let mut __authority_work = crate::AuthorityWork::new(budget, &cancellation);
-            let __authority_result = authority
-                .create_first_record(
-                    destination,
-                    proposed(),
-                    &mut __authority_work,
-                    None::<&mut ()>,
-                )
-                .await
-                .map_err(|error| error.into_error(std::convert::identity));
-            __authority_work.receipt(__authority_result)
-        })?
-        .value
+        authority
+            .create_first_record(destination, proposed(), &mut work, None::<&mut ()>)
+            .await?
     );
     let mut seals = 0;
     let mut reject_recovery = |_| {
         seals += 1;
         std::future::ready(if seals == 1 {
-            Ok(crate::OperationReceipt {
+            Ok(OperationReceipt {
                 value: (),
                 work: WorkCounters::default(),
             })
@@ -1382,22 +1057,21 @@ pub(super) async fn native_first_record_seals_prepared_request_and_ack_recovery(
             ))
         })
     };
-    let recovered = ({
-        let mut __authority_work = crate::AuthorityWork::new(budget, &cancellation);
-        let __authority_result = authority
-            .create_first_record(
-                destination,
-                proposed(),
-                &mut __authority_work,
-                Some(&mut (&mut *&mut reject_recovery)),
-            )
-            .await
-            .map_err(|error| error.into_error(crate::FsError::from));
-        __authority_work.receipt(__authority_result)
-    })
-    .expect_err("retained ACK also requires the current owner seal");
-    assert!(matches!(recovered.error, crate::FsError::WorkspaceDeleted));
-    assert!(recovered.work.authority_records_appended > 0);
+    let mut work = AuthorityWork::new(budget, &cancellation);
+    let recovered = authority
+        .create_first_record(
+            destination,
+            proposed(),
+            &mut work,
+            Some(&mut (&mut reject_recovery)),
+        )
+        .await
+        .expect_err("retained ACK requires the current owner seal");
+    assert!(matches!(
+        recovered,
+        AuthorityError::Owner(crate::FsError::WorkspaceDeleted)
+    ));
+    assert!(work.spent().authority_records_appended > 0);
     Ok(())
 }
 #[tokio::test]
@@ -1408,159 +1082,109 @@ pub(super) async fn readonly_reservation_recovers_original_head_after_authority_
     let cancellation = CancellationToken::new();
     let authority_id = AuthorityId::from_bytes([0xb1; 16]);
     let operation_id = OperationId::from_bytes([0xb2; 16]);
-    ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })?;
-    let original_head = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority.head(authority_id, &mut __authority_work).await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
-    let reservation = match ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .reserve_publication(
-                authority_id,
-                original_head,
-                operation_id,
-                &mut __authority_work,
-            )
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value
-    {
-        ReservationOutcome::Reserved(reservation) => reservation,
-        other => panic!("unexpected acquisition: {other:?}"),
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    authority
+        .create_authority(authority_id, Epoch::GENESIS, &mut work, None::<&mut ()>)
+        .await?;
+    let original_head = authority.head(authority_id, &mut work).await?;
+    let ReservationOutcome::Reserved(reservation) = authority
+        .reserve_publication(authority_id, original_head, operation_id, &mut work)
+        .await?
+    else {
+        panic!("unexpected acquisition");
     };
-    ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .compare_and_append(
-                crate::GuardedAppend {
-                    authority_id,
-                    epoch: original_head.epoch,
-                    expected: original_head,
-                    commit: ProposedCommit {
-                        operation_id: OperationId::from_bytes([0xb3; 16]),
-                        fingerprint: Digest::from_bytes([0xb4; 32]),
-                        payload: Bytes::from_static(b"original-reserved-operation-effect"),
-                    },
-                    permit: PublicationPermit::Reservation {
-                        operation_id: operation_id.into_bytes(),
-                        gate_tail: reservation.gate_tail,
-                        expected: original_head,
-                    },
+    authority
+        .compare_and_append(
+            crate::GuardedAppend {
+                authority_id,
+                epoch: original_head.epoch,
+                expected: original_head,
+                commit: ProposedCommit {
+                    operation_id: OperationId::from_bytes([0xb3; 16]),
+                    fingerprint: Digest::from_bytes([0xb4; 32]),
+                    payload: Bytes::from_static(b"original-reserved-operation-effect"),
                 },
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })?;
-    let advanced_head = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority.head(authority_id, &mut __authority_work).await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
-    assert_ne!(advanced_head, original_head);
-    let spy = Arc::new(ReleaseSpy::new(Arc::clone(&stream)));
-    let queried = StreamAuthorityStore::new(Arc::clone(&spy));
-    let denied = ({
-        let mut __authority_work = crate::AuthorityWork::new(
-            WorkBudget {
-                allocation_operations: 0,
-                ..WorkBudget::UNBOUNDED
+                permit: PublicationPermit::Reservation {
+                    operation_id: operation_id.into_bytes(),
+                    gate_tail: reservation.gate_tail,
+                    expected: original_head,
+                },
             },
-            &cancellation,
-        );
-        let __authority_result = queried
-            .publication_reservation(authority_id, operation_id, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })
-    .expect_err("no path allocation admitted");
-    assert!(matches!(denied.error, AuthorityStoreError::Work(_)));
-    assert!(!spy.reads.load(std::sync::atomic::Ordering::SeqCst));
-    let recovered = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = queried
-            .publication_reservation(authority_id, operation_id, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?;
-    assert_eq!(recovered.value, Some(reservation));
-    assert_eq!(
-        recovered.value.expect("original evidence").expected,
+            &mut work,
+            None::<&mut ()>,
+        )
+        .await?;
+    assert_ne!(
+        authority.head(authority_id, &mut work).await?,
         original_head
     );
-    assert_eq!(recovered.work.backend_write_operations, 0);
-    assert!(recovered.work.bytes_hashed > 0);
+    let spy = Arc::new(ReleaseSpy::new(Arc::clone(&stream)));
+    let queried = StreamAuthorityStore::new(Arc::clone(&spy));
+    let mut work = AuthorityWork::new(
+        WorkBudget {
+            allocation_operations: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    );
+    let denied = queried
+        .publication_reservation(authority_id, operation_id, &mut work)
+        .await
+        .expect_err("no path allocation admitted");
+    assert!(matches!(denied, AuthorityStoreError::Work(_)));
+    assert!(!spy.reads.load(std::sync::atomic::Ordering::SeqCst));
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let recovered = queried
+        .publication_reservation(authority_id, operation_id, &mut work)
+        .await?;
+    assert_eq!(recovered, Some(reservation));
+    assert_eq!(
+        recovered.expect("original evidence").expected,
+        original_head
+    );
+    assert_eq!(work.spent().backend_write_operations, 0);
+    assert!(work.spent().bytes_hashed > 0);
     assert!(!spy.writes.load(std::sync::atomic::Ordering::SeqCst));
-    let refused = ({
-        let mut __authority_work = crate::AuthorityWork::new(
-            WorkBudget {
-                bytes_hashed: 0,
-                ..WorkBudget::UNBOUNDED
-            },
-            &cancellation,
-        );
-        let __authority_result = queried
-            .publication_reservation(authority_id, operation_id, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })
-    .expect_err("query proof hashing refused after actual reads");
-    assert!(matches!(refused.error, AuthorityStoreError::Work(_)));
-    assert!(refused.work.backend_read_operations > 0);
-    assert_eq!(refused.work.bytes_hashed, 0);
+    let mut work = AuthorityWork::new(
+        WorkBudget {
+            bytes_hashed: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    );
+    let refused = queried
+        .publication_reservation(authority_id, operation_id, &mut work)
+        .await
+        .expect_err("proof hashing refused after actual reads");
+    assert!(matches!(refused, AuthorityStoreError::Work(_)));
+    assert!(work.spent().backend_read_operations > 0);
+    assert_eq!(work.spent().bytes_hashed, 0);
     let mut corrupted = ReleaseSpy::new(Arc::clone(&stream));
     corrupted.corrupt_observation = 10;
-    let uncertain = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = StreamAuthorityStore::new(Arc::new(corrupted))
-            .publication_reservation(authority_id, operation_id, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })
-    .expect_err("unqualified historical conditions cannot create a proof");
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let uncertain = StreamAuthorityStore::new(Arc::new(corrupted))
+        .publication_reservation(authority_id, operation_id, &mut work)
+        .await
+        .expect_err("unqualified historical conditions cannot create a proof");
     assert!(
-        matches!(uncertain.error, AuthorityStoreError::ReservationOriginalHeadUnavailable {
-            authority_id: actual_authority, operation_id: actual_operation, gate_tail,
-        } if actual_authority == authority_id && actual_operation == operation_id && gate_tail == reservation.gate_tail)
+        matches!(uncertain, AuthorityStoreError::ReservationOriginalHeadUnavailable {
+        authority_id: actual_authority, operation_id: actual_operation, gate_tail,
+    } if actual_authority == authority_id && actual_operation == operation_id && gate_tail == reservation.gate_tail)
     );
-    assert_eq!(uncertain.work.backend_write_operations, 0);
-    assert!(uncertain.work.bytes_hashed > 0);
-    ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .release_publication(reservation, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?;
-    let inactive = ({
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = queried
-            .publication_reservation(authority_id, operation_id, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?;
-    assert_eq!(inactive.value, None);
-    assert_eq!(inactive.work.backend_write_operations, 0);
+    assert_eq!(work.spent().backend_write_operations, 0);
+    assert!(work.spent().bytes_hashed > 0);
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    authority
+        .release_publication(reservation, &mut work)
+        .await?;
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    assert_eq!(
+        queried
+            .publication_reservation(authority_id, operation_id, &mut work)
+            .await?,
+        None
+    );
+    assert_eq!(work.spent().backend_write_operations, 0);
     assert!(!spy.writes.load(std::sync::atomic::Ordering::SeqCst));
     Ok(())
 }

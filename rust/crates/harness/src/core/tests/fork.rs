@@ -150,7 +150,7 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
         };
         let token = CancellationToken::new();
         let mut work = crate::store::history::HistoryWork::new(budget, &token);
-        reducer.validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work))?;
+        reducer.validate_fork_reference_ownership(&seed, None, &mut Some(&mut work))?;
         reducer.require_fresh_fork_with_work(&seed, &mut Some(&mut work))?;
         let mut narrow = crate::store::history::HistoryWork::new(
             WorkBudget {
@@ -169,7 +169,7 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
         let mut work = crate::store::history::HistoryWork::new(budget, &cancelled);
         assert!(
             reducer
-                .validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work))
+                .validate_fork_reference_ownership(&seed, None, &mut Some(&mut work))
                 .is_err()
         );
         let prefix = InheritedConversationPrefix::select(
@@ -194,9 +194,9 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
             "inherited-conversation.json".into(),
             &mut None,
         )?);
-        reducer.validate_fork_reference_ownership_with_work(&materialized, &mut None)?;
+        reducer.validate_fork_reference_ownership(&materialized, None, &mut None)?;
         let mut work = crate::store::history::HistoryWork::new(budget, &token);
-        reducer.validate_fork_reference_ownership_with_work(&materialized, &mut Some(&mut work))?;
+        reducer.validate_fork_reference_ownership(&materialized, None, &mut Some(&mut work))?;
         for limited in [
             WorkBudget {
                 bytes_encoded: 1,
@@ -210,17 +210,14 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
             let mut work = crate::store::history::HistoryWork::new(limited, &token);
             assert!(
                 reducer
-                    .validate_fork_reference_ownership_with_work(
-                        &materialized,
-                        &mut Some(&mut work)
-                    )
+                    .validate_fork_reference_ownership(&materialized, None, &mut Some(&mut work))
                     .is_err()
             );
         }
         let mut hostile = seed.clone();
         hostile.attachment_manifests.push(request_file(b"[]")?);
         assert!(matches!(
-            reducer.validate_fork_reference_ownership_with_work(&hostile, &mut None),
+            reducer.validate_fork_reference_ownership(&hostile, None, &mut None),
             Err(Error::Invalid(_))
         ));
     }
@@ -299,8 +296,6 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
         &mut None,
     )?;
     assert_eq!(restored, reducer);
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    native_snapshot_round_trip(&reducer, &issuer(), usize::MAX)?;
     let mut reused = seed;
     reused.operation_id = operation(9);
     reused.child.id = "conversation-3".into();

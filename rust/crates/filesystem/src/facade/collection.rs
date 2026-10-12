@@ -474,9 +474,12 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     ) -> Result<(), FsError> {
         self.inner
             .authority
-            .retire_authority(authority_id, WorkBudget::UNBOUNDED, cancellation)
+            .retire_authority(
+                authority_id,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation),
+            )
             .await
-            .map_err(|failure| FsError::from(failure.error))?;
+            .map_err(FsError::from)?;
         Ok(())
     }
 }

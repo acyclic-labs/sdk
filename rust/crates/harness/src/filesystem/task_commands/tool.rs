@@ -120,43 +120,15 @@ where
         }
         let runner = DurableToolRunner::new(self.runtime.tool_registry(), journal, work)?
             .with_limits(limits)?;
-        let outcome = 'outcome: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = work {
-                let result = if reconciliation_only {
-                    runner.reconcile_with_native_context(
-                        task,
-                        operation,
-                        definition,
-                        &invocation.arguments,
-                        &context,
-                        work,
-                    )?
-                } else {
-                    runner.run_with_native_context(
-                        task,
-                        operation,
-                        definition,
-                        &invocation.arguments,
-                        &context,
-                        work,
-                    )?
-                }
-                .await?;
-                io.expect("native observer")
-                    .absorb_native_custody(result.1)?;
-                break 'outcome result.0;
-            }
-            runner
-                .run_with_context(
-                    task,
-                    operation,
-                    definition.clone(),
-                    invocation.arguments,
-                    context,
-                )
-                .await?
-        };
+        let (outcome, custody) = runner
+            .run(task, definition, &invocation, &context, work, reconciliation_only)?
+            .await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            io.absorb_native_custody(custody.ok_or_else(|| {
+                boundary(Some(io), ErrorCode::Storage, "native tool outcome has no custody")
+            })?)?;
+        }
         match outcome {
             Outcome::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
             outcome => ready(outcome, io),

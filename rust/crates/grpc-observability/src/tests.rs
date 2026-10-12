@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing_subscriber::{layer::Context, registry::LookupSpan};
 
 /// A historical span, retained when registry IDs are reused.
@@ -221,10 +222,10 @@ impl http_body::Body for Trailers {
     }
 }
 
-/// Re-executes one TLS test in isolated trust environments, or returns its PEM inputs and mode.
+/// Re-executes one TLS test, or returns its CA, configured server, unrelated CA and trust mode.
 pub fn tls_fixture(
     module: &str,
-) -> Result<Option<(String, String, Vec<u8>, String)>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Option<(String, Server, Vec<u8>, String)>, Box<dyn std::error::Error + Send + Sync>> {
     const FIXTURE: &str = "ACYCLIC_TLS_FIXTURE";
     const MODE: &str = "ACYCLIC_TLS_MODE";
     let Ok(directory) = std::env::var(FIXTURE) else {
@@ -287,9 +288,13 @@ pub fn tls_fixture(
         return Ok(None);
     };
     let directory = std::path::Path::new(&directory);
+    let pem = std::fs::read_to_string(directory.join("trusted/root.pem"))?;
+    let key = std::fs::read_to_string(directory.join("key.pem"))?;
+    let server = Server::builder()
+        .tls_config(ServerTlsConfig::new().identity(Identity::from_pem(&pem, key)))?;
     Ok(Some((
-        std::fs::read_to_string(directory.join("trusted/root.pem"))?,
-        std::fs::read_to_string(directory.join("key.pem"))?,
+        pem,
+        server,
         std::fs::read(directory.join("unrelated.pem"))?,
         std::env::var(MODE)?,
     )))

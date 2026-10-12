@@ -316,7 +316,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "aggregate refresh page is not contiguous".into(),
                 ));
             }
-            let ((authority, event), _) = decode_event(&record.value, &mut None)?;
+            let ((authority, event), _) = crate::wire_codec::decode_event(&record.value, &mut None)?;
             if &authority != self.reducer.authority()
                 || event.revision
                     != record.sequence.checked_add(1).ok_or_else(|| {

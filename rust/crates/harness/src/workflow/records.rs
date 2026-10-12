@@ -19,7 +19,11 @@ impl WorkflowCommand {
             observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
         if !crate::contract::is_valid_component_label(&self.kind) {
-            return Err(crate::scheduler::diagnostic(work, Invalid, "workflow command kind is invalid"));
+            return Err(crate::scheduler::diagnostic(
+                work,
+                Invalid,
+                "workflow command kind is invalid",
+            ));
         }
         self.payload.validate(work)
     }
@@ -89,7 +93,12 @@ pub struct WorkflowRecord {
 impl WorkflowRecord {
     /// All identities reserved by this atomic transition.
     pub fn operation_ids(&self) -> impl Iterator<Item = OperationId> + '_ {
-        std::iter::once(self.operation_id).chain(self.transition.commands.iter().map(|command| command.operation_id))
+        std::iter::once(self.operation_id).chain(
+            self.transition
+                .commands
+                .iter()
+                .map(|command| command.operation_id),
+        )
     }
     /// Validates the envelope before storage or replay.
     pub fn validate(&self, io: Option<&PreparationIo>) -> Result<()> {
@@ -99,23 +108,27 @@ impl WorkflowRecord {
             || self.next.revision != next_revision(self.prior.revision, io)?
             || self.next.state != self.transition.state
         {
-            return Err(error(io, Conflict, "workflow transition envelope is inconsistent"));
+            return Err(error(
+                io,
+                Conflict,
+                "workflow transition envelope is inconsistent",
+            ));
         }
         validate_commands(&self.transition.commands, io)?;
-        if self.transition.commands.iter().any(|command| command.operation_id == self.operation_id) {
-            return Err(error(io, Conflict, "workflow command reuses its transition identity"));
+        if self
+            .transition
+            .commands
+            .iter()
+            .any(|command| command.operation_id == self.operation_id)
+        {
+            return Err(error(
+                io,
+                Conflict,
+                "workflow command reuses its transition identity",
+            ));
         }
         Ok(())
     }
-}
-
-/// Atomic journal commit result.
-#[derive(Clone, Debug, PartialEq)]
-pub enum WorkflowCommitOutcome {
-    /// Newly committed record.
-    Applied(WorkflowRecord),
-    /// Previously committed exact retry.
-    Replayed(WorkflowRecord),
 }
 
 /// Immutable admission of one workflow instance.
@@ -139,12 +152,25 @@ impl WorkflowAdmission {
     }
 }
 
-pub(super) fn validate_commands(commands: &[WorkflowCommand], io: Option<&PreparationIo>) -> Result<()> {
+pub(super) fn validate_commands(
+    commands: &[WorkflowCommand],
+    io: Option<&PreparationIo>,
+) -> Result<()> {
     #[cfg(feature = "filesystem")]
-    let _workspace = io.map(|io| crate::executor::reserve_preparation_workspace(&commands, io)).transpose()?;
+    let _workspace = io
+        .map(|io| crate::executor::reserve_preparation_workspace(&commands, io))
+        .transpose()?;
     with_history_io(io, |work| {
-        let bytes = commands.len().checked_mul(std::mem::size_of::<OperationId>()).ok_or_else(||
-            crate::scheduler::diagnostic(work, Invalid, "workflow command set ownership overflow"))? as u64;
+        let bytes = commands
+            .len()
+            .checked_mul(std::mem::size_of::<OperationId>())
+            .ok_or_else(|| {
+                crate::scheduler::diagnostic(
+                    work,
+                    Invalid,
+                    "workflow command set ownership overflow",
+                )
+            })? as u64;
         let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
         let mut identities = BTreeSet::new();
         for command in commands {
@@ -153,31 +179,59 @@ pub(super) fn validate_commands(commands: &[WorkflowCommand], io: Option<&Prepar
                 observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
             }
             if !identities.insert(command.operation_id) {
-                return Err(crate::scheduler::diagnostic(quota.work(), Conflict, "workflow command identity is duplicated"));
+                return Err(crate::scheduler::diagnostic(
+                    quota.work(),
+                    Conflict,
+                    "workflow command identity is duplicated",
+                ));
             }
         }
         Ok(())
     })
 }
 
-pub(crate) fn validate_workflow_commit(expected: u64, key: &IdempotencyKey, record: &WorkflowRecord, io: Option<&PreparationIo>) -> Result<()> {
+pub(crate) fn validate_workflow_commit(
+    expected: u64,
+    key: &IdempotencyKey,
+    record: &WorkflowRecord,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
     validate_key(key, io)?;
     record.validate(io)?;
     if record.idempotency_key != *key || record.prior.revision != expected {
-        return Err(error(io, Invalid, "workflow commit identity or revision is invalid"));
+        return Err(error(
+            io,
+            Invalid,
+            "workflow commit identity or revision is invalid",
+        ));
     }
     Ok(())
 }
 
-pub(crate) fn validate_workflow_next(checkpoint: &MachineCheckpoint, terminal: bool,
-    reserved: &BTreeSet<OperationId>, keys: &BTreeSet<IdempotencyKey>, record: &WorkflowRecord, io: Option<&PreparationIo>,
+pub(crate) fn validate_workflow_next(
+    checkpoint: &MachineCheckpoint,
+    terminal: bool,
+    reserved: &BTreeSet<OperationId>,
+    keys: &BTreeSet<IdempotencyKey>,
+    record: &WorkflowRecord,
+    io: Option<&PreparationIo>,
 ) -> Result<()> {
     record.validate(io)?;
     if record.prior != *checkpoint || terminal {
-        return Err(error(io, Conflict, "workflow transition differs from its current checkpoint"));
+        return Err(error(
+            io,
+            Conflict,
+            "workflow transition differs from its current checkpoint",
+        ));
     }
-    if keys.contains(&record.idempotency_key) || record.operation_ids().any(|id| reserved.contains(&id)) {
-        return Err(error(io, Conflict, "workflow command, transition or retry identity is already bound"));
+    if keys.contains(&record.idempotency_key)
+        || record.operation_ids().any(|id| reserved.contains(&id))
+    {
+        return Err(error(
+            io,
+            Conflict,
+            "workflow command, transition or retry identity is already bound",
+        ));
     }
     Ok(())
 }

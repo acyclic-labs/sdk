@@ -88,31 +88,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Option<DurableCommit>> {
-        let receipt = {
-            let sdk_args = (
-                volume_authority_id(volume_id),
-                operation_id,
-                budget,
-                cancellation,
-            );
-            let sdk_store = &self.inner.authority;
-            async move {
-                let mut sdk_work = crate::AuthorityWork::new(sdk_args.2, sdk_args.3);
-                let result = sdk_store
-                    .find_operation(sdk_args.0, sdk_args.1, &mut sdk_work)
-                    .await
-                    .map(|(value, _allocation)| value);
-                sdk_work.receipt(result)
-            }
-        }
-        .await
-        .map_err(|failure| {
-            OperationFailure::new(FsError::Authority(failure.error), *failure.work)
-        })?;
-        Ok(OperationReceipt {
-            value: receipt.value,
-            work: receipt.work,
-        })
+        let mut work = crate::AuthorityWork::new(budget, cancellation);
+        let result = self
+            .inner
+            .authority
+            .find_operation(volume_authority_id(volume_id), operation_id, &mut work)
+            .await
+            .map_err(FsError::Authority);
+        work.receipt(result)
     }
     pub(crate) async fn generation_parents<W: FsWork>(
         &self,

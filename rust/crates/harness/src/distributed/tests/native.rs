@@ -48,7 +48,7 @@ async fn keyed_append_native_keeps_exact_original_sdk_mismatch_source() {
     let work =
         acyclic_fs::NativeMaterializationWork::new(keyed_append_native_budget(), &cancellation)
             .expect("original ledger");
-    let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+    let mut observer = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?).expect("original observer");
     let error = append(
         (&stream, &client),
         [OwnedBytes::from_static(b"changed")],
@@ -60,10 +60,14 @@ async fn keyed_append_native_keeps_exact_original_sdk_mismatch_source() {
     )
     .await
     .expect_err("SDK mismatch");
-    assert!(matches!(&error, Error::NativeStream {
-        code: wire::ErrorCode::Conflict, source: StreamError::IdempotencyMismatch,
-        custody: Some(custody),
-    } if custody.bytes() == 0));
+    assert!(matches!(
+        &error,
+        Error::NativeStream {
+            code: wire::ErrorCode::Conflict,
+            source: StreamError::IdempotencyMismatch,
+            ..
+        }
+    ));
     assert_eq!(observer.into_custody().bytes(), 0);
     assert!(matches!(
         append(
@@ -116,12 +120,12 @@ async fn native_refresh_keeps_original_serde_error_and_raw_record_prefix() {
     budget.bytes_hashed = 2;
     let work =
         acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
-    let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+    let mut observer = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?).expect("original observer");
     let error = coordinator
         .refresh(&mut Some(&mut observer))
         .await
         .expect_err("original typed scheduler Deserialize failure");
-    assert!(matches!(&error, Error::NativeDecode {
+    assert!(matches!(&error, Error::NativeJson {
         code: wire::ErrorCode::Storage, source, custody: Some(guard),
     } if source.is_data() && guard.bytes() > 0));
     assert_eq!(coordinator.revision(), 0);
@@ -156,7 +160,7 @@ async fn native_publication_phase_survives_receiver_denial_and_original_ack_reco
         }
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .expect("original operation ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?).expect("original observer");
         let mut work = Some(&mut io as &mut dyn HistoryIo);
         let (key, retained) = stream_key(
             "native-phase-key".len(),

@@ -78,9 +78,6 @@ async fn original_authority_checks_both_cancellation_roots_before_backend_work()
                     &mut crate::AuthorityWork::native(&work, cancellation),
                 )
                 .await
-                .map(|(value, allocation)| {
-                    (value, allocation.expect("native authority allocation"))
-                })
             })
             .is_err()
         );
@@ -323,7 +320,6 @@ async fn original_owner_failure_wins_after_planning_outside_every_lock()
             )
             .await
             .map_err(|error| error.into_error(std::convert::Into::into))
-            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
         })
         .await,
         Err(OriginalMutationOwnerFailure::Owner(0xa7))
@@ -403,7 +399,7 @@ async fn original_owner_revalidates_head_permit_and_cancellation_at_publication(
             .map(|_| ())
         }
     };
-    let (outcome, allocation) = (async {
+    let outcome = (async {
         AsyncAuthorityStore::compare_and_append(
             &store,
             native_mutation_request(id, head),
@@ -412,11 +408,9 @@ async fn original_owner_revalidates_head_permit_and_cancellation_at_publication(
         )
         .await
         .map_err(|error| error.into_error(std::convert::Into::into))
-        .map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
     })
     .await?;
     assert!(matches!(outcome, AppendOutcome::Fenced { actual_epoch } if actual_epoch.get() == 2));
-    assert_eq!(allocation.bytes(), 0);
     assert_eq!(
         ({
             let authority_cancellation = &crate::CancellationToken::new();
@@ -464,7 +458,6 @@ async fn original_owner_revalidates_head_permit_and_cancellation_at_publication(
             )
             .await
             .map_err(|error| error.into_error(std::convert::Into::into))
-            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
         })
         .await,
         Err(AuthorityStoreError::RejectedStatic(_))
@@ -486,7 +479,6 @@ async fn original_owner_revalidates_head_permit_and_cancellation_at_publication(
             )
             .await
             .map_err(|error| error.into_error(std::convert::Into::into))
-            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
         })
         .await,
         Err(AuthorityStoreError::Cancelled)
@@ -592,9 +584,6 @@ async fn original_first_record_and_append_denial_never_create_a_partial_authorit
                 )
                 .await
                 .map_err(|error| error.into_error(std::convert::identity))
-                .map(|(value, allocation)| {
-                    (value, allocation.expect("native authority allocation"))
-                })
             })
             .is_err()
         );

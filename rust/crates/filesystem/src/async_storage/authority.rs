@@ -102,8 +102,7 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         request: GuardedAppend,
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
-    ) -> impl Future<Output = Result<(AppendOutcome, AuthorityAllocation), AuthorityError<G::Error>>>
-    + ProviderTask;
+    ) -> impl Future<Output = Result<AppendOutcome, AuthorityError<G::Error>>> + ProviderTask;
 
     /// Reads an existing reservation for the exact operation identity.
     fn publication_reservation(
@@ -195,18 +194,14 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         work: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<FenceOutcome, crate::AuthorityStoreError>> + ProviderTask;
 
-    /// Resolves an idempotent operation while retaining its native storage.
+    /// Resolves an idempotent operation.
     fn find_operation(
         &self,
         authority: AuthorityId,
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
-    ) -> impl Future<
-        Output = Result<
-            (Option<crate::DurableCommit>, AuthorityAllocation),
-            crate::AuthorityStoreError,
-        >,
-    > + ProviderTask;
+    ) -> impl Future<Output = Result<Option<crate::DurableCommit>, crate::AuthorityStoreError>>
+    + ProviderTask;
 }
 
 impl<T: AsyncAuthorityStore + ?Sized> AsyncAuthorityStore for Arc<T> {
@@ -265,7 +260,7 @@ impl<T: AsyncAuthorityStore + ?Sized> AsyncAuthorityStore for Arc<T> {
         request: GuardedAppend,
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
-    ) -> Result<(AppendOutcome, AuthorityAllocation), AuthorityError<G::Error>> {
+    ) -> Result<AppendOutcome, AuthorityError<G::Error>> {
         AsyncAuthorityStore::compare_and_append(self.as_ref(), request, work, guard).await
     }
     async fn head(
@@ -304,8 +299,7 @@ impl<T: AsyncAuthorityStore + ?Sized> AsyncAuthorityStore for Arc<T> {
         authority: AuthorityId,
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(Option<crate::DurableCommit>, AuthorityAllocation), crate::AuthorityStoreError>
-    {
+    ) -> Result<Option<crate::DurableCommit>, crate::AuthorityStoreError> {
         AsyncAuthorityStore::find_operation(self.as_ref(), authority, operation, work).await
     }
     async fn publication_reservation(
