@@ -1,5 +1,4 @@
 use super::*;
-
 use prost::Message as _;
 
 pub(super) fn validate_idempotency_key(
@@ -50,66 +49,51 @@ pub(super) fn encode(
     committed_at_ms: u64,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<u8>> {
-    let incoming_held = if work.is_some() {
+    let retained = if work.is_some() {
         canonical.capacity() as u64
     } else {
         0
     };
-    let mut custody = CodecQuota::from_retained(work, incoming_held);
-    let version = crate::core::copy_text(COORDINATOR_WIRE_VERSION, &mut custody)?;
-    if let Some(work) = custody.work().as_deref_mut() {
-        work.hashed_bytes(COORDINATOR_WIRE_CONTRACT.len() as u64)?;
+    let mut quota = CodecQuota::from_retained(work, retained);
+    let protocol = wire::ProtocolIdentity {
+        version: crate::core::copy_text(COORDINATOR_WIRE_VERSION, &mut quota)?,
+        descriptor_digest: crate::core::copy_text(COORDINATOR_WIRE_DIGEST, &mut quota)?,
+    };
+    let operation_id = formatted_text(36, format_args!("{operation_id}"), quota.work())?;
+    if quota.work().is_some() {
+        quota.adopt(operation_id.capacity() as u64)?;
     }
-    let hash = blake3::hash(COORDINATOR_WIRE_CONTRACT).to_hex();
-    let descriptor_digest = crate::core::copy_text(hash.as_str(), &mut custody)?;
-    let operation_id = formatted_text(36, format_args!("{operation_id}"), custody.work())?;
-    if custody.work().is_some() {
-        custody.adopt(operation_id.capacity() as u64)?;
-    }
-    let idempotency_key = crate::core::copy_text(key, &mut custody)?;
-    let event_digest = crate::core::copy_copy_vector(&digest, &mut custody)?;
     let envelope = wire::SchedulerEventEnvelope {
-        protocol: Some(wire::ProtocolIdentity {
-            version,
-            descriptor_digest,
-        }),
+        protocol: Some(protocol),
         revision,
         operation_id,
-        idempotency_key,
+        idempotency_key: crate::core::copy_text(key, &mut quota)?,
         canonical_event_json: canonical,
-        event_digest,
+        event_digest: crate::core::copy_copy_vector(&digest, &mut quota)?,
         committed_at_ms: Some(committed_at_ms),
     };
+    let mut output = Vec::new();
     let length = envelope.encoded_len();
-    let mut bytes = Vec::new();
-    if let Some(work) = custody.work().as_deref_mut() {
-        work.admit_encoding(length as u64)?;
-        work.reserve_bytes(&mut bytes, length)?;
-        custody.adopt(bytes.capacity() as u64)?;
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.admit_encoding(length as u64)?;
+        io.reserve_bytes(&mut output, length)?;
+        quota.adopt(output.capacity() as u64)?;
     } else {
-        bytes.reserve_exact(length);
+        output.reserve_exact(length);
     }
-    let encoded = envelope.encode(&mut bytes);
-    if let Some(work) = custody.work().as_deref_mut() {
-        work.encoded_bytes(bytes.len() as u64)?;
+    envelope.encode_raw(&mut output);
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.encoded_bytes(output.len() as u64)?;
     }
-    encoded.map_err(|_| {
-        coordinator_boundary(
-            custody.work(),
-            wire::ErrorCode::Storage,
-            "scheduler envelope encoding failed",
-        )
-    })?;
-    let retained_output = if custody.work().is_some() {
-        bytes.capacity() as u64
+    drop(envelope);
+    let retained = if quota.work().is_some() {
+        output.capacity() as u64
     } else {
         0
     };
-    drop(envelope);
-    let metadata_bytes = custody.retained() - retained_output;
-    custody.relinquish(metadata_bytes)?;
-    custody.transfer();
-    Ok(bytes)
+    quota.replace(retained)?;
+    quota.transfer();
+    Ok(output)
 }
 
 fn scheduler_json_owned_bytes(input_bytes: u64, items: u64) -> Result<u64> {
@@ -122,33 +106,8 @@ fn scheduler_json_owned_bytes(input_bytes: u64, items: u64) -> Result<u64> {
     let typed_bytes = slots * std::mem::size_of::<(String, serde_json::Value)>() as u64;
     let strings = input_bytes * (CONTENT_LAYERS + 2);
     let scratch = input_bytes.max(8) * 2;
-    const LABELS: &str = concat!(
-        "SchedulerEvent SessionConfigured ModelDispatchClaimed Declared WaitingForCapacity ",
-        "Admitted PartiallyAdmitted Rejected Started Checkpointed WaitingForChildren ",
-        "WorkflowSuspended WorkflowResumed ReconciliationResumed LeaseReleased ",
-        "CancellationRequested Completed Orchestrated ",
-        "session_configured model_dispatch_claimed declared waiting_for_capacity admitted ",
-        "partially_admitted rejected started checkpointed waiting_for_children workflow_suspended ",
-        "workflow_resumed reconciliation_resumed lease_released cancellation_requested completed orchestrated ",
-        "operation_id limits active_tasks total_tasks depth model_steps attempt_id step request_digest ",
-        "fence ceiling spec reservation reason checkpoint workflow_revision waiting_command input recursive ",
-        "outcome execution_duration_ns expected_revision cancel reducer reduction_digest reservation_id ",
-        "placement id admitted parent slot owner owner_scope entrypoint dependencies resources orchestration ",
-        "state authority kind attached detached leaf join race quorum reduce required name version digest ",
-        "result_schema capabilities agent issuer parent_proof proof Succeeded Failed Cancelled Indeterminate message ",
-        "namespace family provider key volume path descriptor display_name sha256 byte_length media_type class ",
-        "workspace generation artifact sandbox checkpoint stream context run project session agent ",
-        "user agent_private session_shared Authority Scope SessionLimits DurableOwner ParentLink ",
-        "EntrypointRef Orchestration Reservation LeaseFence Outcome VolumeClass VolumeOwner VolumeRefWire ",
-        "FileDescriptorWire FileRefWire ProviderRefWire ResourceRefWire ResourceKind Capabilities ",
-        "conversation turn task ",
-        "provider identity is invalid resource key is empty resource version is invalid typed resource kind mismatch ",
-        "SHA-256 digest must contain exactly 32 bytes file or volume label is invalid ",
-        "volume-relative path is invalid file byte length exceeds cross-language precision media type is invalid ",
-        "invalid request: storage failure: a valid UUID string an array of length 32 ",
-    );
-    let diagnostics =
-        crate::contract::audited_serde_diagnostic_bytes(input_bytes, LABELS.len() as u64 * 5)?;
+    const LABEL_BYTES: u64 = 9955;
+    let diagnostics = crate::contract::audited_serde_diagnostic_bytes(input_bytes, LABEL_BYTES)?;
     Ok(content_bytes
         + typed_bytes * 2
         + strings
@@ -194,13 +153,6 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
     } else {
         0
     };
-    let maximum = if result_value {
-        (input.len() as u64).checked_add(diagnostic)
-    } else {
-        Some(0)
-    };
-    let maximum =
-        maximum.ok_or_else(|| coordinator_boundary(work, code, "JSON admission overflows"))?;
     let bound = if result_value {
         input.len() as u64
     } else {
@@ -217,7 +169,7 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
             maximum_items: bound + 1,
             maximum_depth: 256,
         },
-        maximum,
+        0,
         code,
         native,
         schema,
@@ -281,13 +233,11 @@ pub(super) fn inspect_envelope<'a>(
     protocol: bool,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(u64, u64, Option<&'a str>)> {
-    use prost::encoding::{DecodeContext, WireType, decode_key, decode_varint, skip_field};
-    let mut payload = 0u64;
-    let mut buffers = 0u64;
-    let mut key = None;
+    use prost::encoding::{DecodeContext, WireType, decode_key, skip_field};
+    let (mut payload, mut buffers, mut key) = (0, 0, None);
     while !input.is_empty() {
-        if let Some(work) = work.as_deref_mut() {
-            work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        if let Some(io) = work.as_deref_mut() {
+            io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
         let (tag, kind) = decode_key(&mut input).map_err(|_| {
             coordinator_boundary(
@@ -296,58 +246,47 @@ pub(super) fn inspect_envelope<'a>(
                 "invalid scheduler protobuf field",
             )
         })?;
+        let framed = input;
+        skip_field(kind, tag, &mut input, DecodeContext::default()).map_err(|_| {
+            coordinator_boundary(
+                work,
+                wire::ErrorCode::Storage,
+                "invalid scheduler protobuf framing",
+            )
+        })?;
         let nested = !protocol && tag == 1;
         let owned = if protocol {
             matches!(tag, 1 | 2)
         } else {
             matches!(tag, 3 | 4 | 5 | 6)
         };
-        if kind == WireType::LengthDelimited && (nested || owned) {
-            let length = decode_varint(&mut input).map_err(|_| {
-                coordinator_boundary(
-                    work,
-                    wire::ErrorCode::Storage,
-                    "invalid scheduler protobuf length",
-                )
-            })?;
-            let length = usize::try_from(length)
-                .ok()
-                .filter(|length| *length <= input.len())
-                .ok_or_else(|| {
-                    coordinator_boundary(
-                        work,
-                        wire::ErrorCode::Storage,
-                        "scheduler protobuf field exceeds its frame",
-                    )
-                })?;
-            let (value, rest) = input.split_at(length);
-            input = rest;
-            if !protocol && tag == 4 {
-                key = Some(std::str::from_utf8(value).map_err(|_| {
-                    coordinator_boundary(
-                        work,
-                        wire::ErrorCode::Storage,
-                        "scheduler retry key is not UTF-8",
-                    )
-                })?);
-            }
-            let (bytes, count, _) = if nested {
-                inspect_envelope(value, true, work)?
-            } else {
-                (length as u64, 1, None)
-            };
-            // Disjoint fields contribute no more than their encoded frame.
-            payload += bytes;
-            buffers += count;
-        } else {
-            skip_field(kind, tag, &mut input, DecodeContext::default()).map_err(|_| {
-                coordinator_boundary(
-                    work,
-                    wire::ErrorCode::Storage,
-                    "invalid scheduler protobuf framing",
-                )
-            })?;
+        if kind != WireType::LengthDelimited || !(nested || owned) {
+            continue;
         }
+        let header = framed
+            .iter()
+            .position(|byte| byte & 0x80 == 0)
+            .expect("prost accepted the length varint")
+            + 1;
+        let length = framed.len() - input.len() - header;
+        let value = &framed[header..header + length];
+        if !protocol && tag == 4 {
+            key = Some(std::str::from_utf8(value).map_err(|_| {
+                coordinator_boundary(
+                    work,
+                    wire::ErrorCode::Storage,
+                    "scheduler retry key is not UTF-8",
+                )
+            })?);
+        }
+        let (bytes, count, _) = if nested {
+            inspect_envelope(value, true, work)?
+        } else {
+            (length as u64, 1, None)
+        };
+        // Disjoint fields contribute no more than their encoded frame.
+        payload += bytes;
+        buffers += count;
     }
     Ok((payload, buffers, key))
 }
@@ -358,144 +297,113 @@ pub(super) fn decode(
 ) -> Result<(u64, String, [u8; 32], u64, SchedulerEvent)> {
     let bytes = record.value.as_ref();
     let diagnostic = if work.is_some() {
-        crate::contract::audited_serde_diagnostic_bytes(bytes.len() as u64, concat!(
-            "SchedulerEventEnvelope ProtocolIdentity protocol revision operation_id idempotency_key ",
-            "canonical_event_json event_digest committed_at_ms version descriptor_digest ",
-            "failed to decode Protobuf message buffer underflow invalid varint invalid wire type ",
-            "invalid tag value unexpected end group tag recursion limit reached invalid string value ",
-        ).len() as u64)?
+        crate::contract::audited_serde_diagnostic_bytes(bytes.len() as u64, 335)?
     } else {
         0
     };
-    let mut custody = CodecQuota::new(work, diagnostic)?;
-    if custody.work().is_some() {
-        let (payload, buffers, _) = inspect_envelope(bytes, false, custody.work())?;
-        let fields = payload * 2 + buffers * 8;
-        if let Some(work) = custody.work().as_deref_mut() {
-            work.admit_owned(fields)?;
-            work.retain_owned(fields)?;
-        }
-        custody.adopt(fields)?;
+    let mut quota = CodecQuota::new(work, diagnostic)?;
+    if quota.work().is_some() {
+        let (payload, buffers, _) = inspect_envelope(bytes, false, quota.work())?;
+        quota.replace(quota.retained() + payload * 2 + buffers * 8)?;
     }
-    let envelope = wire::SchedulerEventEnvelope::decode(bytes).map_err(|_| {
+    let mut envelope = wire::SchedulerEventEnvelope::decode(bytes).map_err(|_| {
         coordinator_boundary(
-            custody.work(),
+            quota.work(),
             wire::ErrorCode::Storage,
             "invalid scheduler protobuf envelope",
         )
     })?;
-    let retained = if custody.work().is_some() {
+    let fields = if quota.work().is_some() {
         (envelope.canonical_event_json.capacity()
             + envelope.event_digest.capacity()
             + envelope.operation_id.capacity()
             + envelope.idempotency_key.capacity()
-            + envelope.protocol.as_ref().map_or(0, |protocol| {
-                protocol.version.capacity() + protocol.descriptor_digest.capacity()
-            })) as u64
+            + envelope
+                .protocol
+                .as_ref()
+                .map_or(0, |p| p.version.capacity() + p.descriptor_digest.capacity()))
+            as u64
     } else {
         0
     };
-    let slack = custody.retained().checked_sub(retained).ok_or_else(|| {
-        coordinator_boundary(
-            custody.work(),
+    if fields > quota.retained() {
+        return Err(coordinator_boundary(
+            quota.work(),
             wire::ErrorCode::Storage,
             "scheduler protobuf exceeds its concrete admission",
-        )
-    })?;
-    custody.relinquish(slack)?;
-    if let Some(work) = custody.work().as_deref_mut() {
-        work.hashed_bytes(COORDINATOR_WIRE_CONTRACT.len() as u64)?;
+        ));
     }
-    let protocol = envelope.protocol.as_ref().ok_or_else(|| {
-        coordinator_boundary(
-            custody.work(),
-            wire::ErrorCode::Storage,
-            "scheduler protocol identity is absent",
-        )
-    })?;
-    let expected = blake3::hash(COORDINATOR_WIRE_CONTRACT).to_hex();
-    if protocol.version != COORDINATOR_WIRE_VERSION
-        || protocol.descriptor_digest != expected.as_str()
-    {
+    quota.replace(fields)?;
+    if envelope.protocol.as_ref().is_none_or(|p| {
+        p.version != COORDINATOR_WIRE_VERSION || p.descriptor_digest != COORDINATOR_WIRE_DIGEST
+    }) {
         return Err(coordinator_boundary(
-            custody.work(),
+            quota.work(),
             wire::ErrorCode::Storage,
             "scheduler protocol identity differs",
         ));
     }
     let digest: [u8; 32] = envelope.event_digest.as_slice().try_into().map_err(|_| {
         coordinator_boundary(
-            custody.work(),
+            quota.work(),
             wire::ErrorCode::Storage,
             "scheduler digest must be 32 bytes",
         )
     })?;
-    if let Some(work) = custody.work().as_deref_mut() {
-        work.hashed_bytes(envelope.canonical_event_json.len() as u64)?;
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.hashed_bytes(envelope.canonical_event_json.len() as u64)?;
     }
     if *blake3::hash(&envelope.canonical_event_json).as_bytes() != digest {
         return Err(coordinator_boundary(
-            custody.work(),
+            quota.work(),
             wire::ErrorCode::Storage,
             "scheduler event digest mismatch",
         ));
     }
-    let (event, _) = decode_json(
+    let (event, retained) = decode_json(
         &envelope.canonical_event_json,
         crate::contract::JsonValueSchema::SchedulerEvent,
         SchedulerEvent::logical_owned_bytes,
-        custody.work(),
+        quota.work(),
     )?;
-    if custody.work().is_some() {
-        custody.adopt(event.logical_owned_bytes()?)?;
-    }
+    quota.adopt(retained)?;
     let committed_at_ms = envelope
         .committed_at_ms
         .filter(|time| *time > 0)
         .ok_or_else(|| {
             coordinator_boundary(
-                custody.work(),
+                quota.work(),
                 wire::ErrorCode::Storage,
                 "coordinator event lacks commit time",
             )
         })?;
-    let operation_id = OperationId::from_bytes(
-        *uuid::Uuid::parse_str(&envelope.operation_id)
-            .map_err(|_| {
-                coordinator_boundary(
-                    custody.work(),
-                    wire::ErrorCode::Invalid,
-                    "scheduler operation id is not a UUID",
-                )
-            })?
-            .as_bytes(),
-    );
-    if envelope.revision != next_revision(record.sequence)? || event.operation_id() != operation_id
+    let operation = uuid::Uuid::parse_str(&envelope.operation_id).map_err(|_| {
+        coordinator_boundary(
+            quota.work(),
+            wire::ErrorCode::Invalid,
+            "scheduler operation id is not a UUID",
+        )
+    })?;
+    if envelope.revision != next_revision(record.sequence)?
+        || event.operation_id() != OperationId::from_bytes(*operation.as_bytes())
     {
         return Err(coordinator_boundary(
-            custody.work(),
+            quota.work(),
             wire::ErrorCode::Storage,
             "coordinator record identity differs",
         ));
     }
-    let key_bytes = if custody.work().is_some() {
-        envelope.idempotency_key.capacity() as u64
+    let revision = envelope.revision;
+    let key = std::mem::take(&mut envelope.idempotency_key);
+    let key_bytes = if quota.work().is_some() {
+        key.capacity() as u64
     } else {
         0
     };
-    let wire::SchedulerEventEnvelope {
-        revision,
-        idempotency_key,
-        protocol,
-        operation_id: text,
-        canonical_event_json,
-        event_digest,
-        ..
-    } = envelope;
-    drop((protocol, text, canonical_event_json, event_digest));
-    custody.relinquish(retained - key_bytes)?;
-    custody.transfer();
-    Ok((revision, idempotency_key, digest, committed_at_ms, event))
+    drop(envelope);
+    quota.relinquish(fields - key_bytes)?;
+    quota.transfer();
+    Ok((revision, key, digest, committed_at_ms, event))
 }
 
 pub(super) fn stream_path(
