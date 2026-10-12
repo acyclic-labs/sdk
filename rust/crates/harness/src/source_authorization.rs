@@ -210,7 +210,7 @@ impl ProjectSourceAuthorization {
             self.operation_id, self.source_task, &self.project, &self.generation,
             &self.native_snapshot, self.graph_root, self.maximum_work, self.maximum_bytes,
         );
-        let digest = crate::contract::canonical_json_digest_with_work(
+        let digest = crate::contract::canonical_json_digest(
             &descriptor, self.maximum_bytes, work,
         )?;
         let mut label = String::new();

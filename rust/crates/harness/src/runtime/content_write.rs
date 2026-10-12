@@ -401,7 +401,7 @@ impl TaskContext {
             #[cfg(target_arch = "wasm32")]
             let native = false;
             if !native {
-                io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(&file)?)?;
+                io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(file)?)?;
             }
         }
         #[cfg(feature = "filesystem")]

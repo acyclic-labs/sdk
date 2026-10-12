@@ -270,7 +270,7 @@ impl Reducer {
                 self.require_fresh_fork_with_work(seed, work)?;
                 if let Some(observer) = work.as_deref_mut().filter(|io| !copying::is_native(&**io))
                 {
-                    let reservation = owned_seed(seed)?
+                    let reservation = owned_bytes(seed)?
                         .checked_add(seed.child.id.len() as u64)
                         .and_then(|bytes| {
                             bytes.checked_add(std::mem::size_of::<(Authority, ForkSeed)>() as u64)

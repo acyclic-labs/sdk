@@ -60,7 +60,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<bool, WorkspaceError> {
         let mut accounting = funding.accounting(cancellation);
-        let baseline = fork_selection_standalone_live(&mut accounting);
+        let baseline = readonly_standalone_live(&mut accounting);
         let result = async {
             let input_bytes = paths
                 .as_ref()
@@ -97,7 +97,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             Ok(expected.value.generation_root.digest == initial.id.digest())
         }
         .await;
-        let result = fork_selection_cleanup_standalone(&mut accounting, baseline).and(result);
+        let result = readonly_cleanup_standalone(&mut accounting, baseline, 0)
+            .map_err(WorkspaceError::from)
+            .and(result);
         funding.finish(result, &accounting)
     }
 }
@@ -112,7 +114,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, WorkspaceError> {
-        let baseline = fork_selection_standalone_live(accounting);
+        let baseline = readonly_standalone_live(accounting);
         let result = async {
             // The transferred input already exists, including spare capacities.
             // Its actual claim must survive a late budget/cancellation refusal.
@@ -478,7 +480,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await
         }
         .await;
-        fork_selection_cleanup_standalone(accounting, baseline)?;
+        readonly_cleanup_standalone(accounting, baseline, 0)?;
         result
     }
 

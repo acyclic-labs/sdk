@@ -93,7 +93,7 @@ fn live_ids(
             #[cfg(unix)]
             let next = reader.next(&mut &*work)?;
             #[cfg(windows)]
-            let next = reader.next_wide(&mut &*work)?;
+            let next = reader.next(&mut &*work)?;
             let Some((entry, entry_allocation)) = next else {
                 break;
             };

@@ -206,14 +206,12 @@ where
         wait: &CancellationToken,
     ) -> Result<bool, MountSourceError> {
         let changed = !self.capture_retired();
-        self.cancel_cleanup(Some(wait))?;
-        Ok(changed)
+        self.cancel_cleanup(Some(wait)).map(|()| changed)
     }
 
     fn shutdown_accepted_cleanup(&self) -> Result<bool, MountSourceError> {
         let changed = !self.capture_retired();
-        self.cancel_cleanup(None)?;
-        Ok(changed)
+        self.cancel_cleanup(None).map(|()| changed)
     }
 
     fn supports_posix_named_attributes(&self) -> bool {
@@ -277,8 +275,7 @@ where
         boundary(&self.cancellation, |work| {
             self.folded_path_with_meter(path, work)
         })
-        .ok()
-        .flatten()
+        .ok()?
         .map(|(path, _)| path)
     }
 
@@ -378,28 +375,22 @@ where
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        boundary(&self.cancellation, |work| {
-            self.open_file_with_meter(path, work)
-        })
-        .map(|(file, _)| file)
+        boundary(&self.cancellation, |work| self.open_handle(path, work)).map(|((file, _), _)| file)
     }
 
     fn open_created(
         &self,
-        path: &MountPath,
+        _path: &MountPath,
         created: &MountLookup,
     ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
         boundary(&self.cancellation, |work| {
-            self.open_created_with_meter(path, created, work)
+            self.created_handle(created, work)
         })
         .map(|(file, _)| file)
     }
 
     fn detach_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        boundary(&self.cancellation, |work| {
-            self.detach_file_with_meter(path, work)
-        })
-        .map(|(file, _)| file)
+        boundary(&self.cancellation, |work| self.detached_handle(path, work)).map(|(file, _)| file)
     }
 
     fn read_link(
@@ -750,9 +741,15 @@ where
                         work,
                         work.cancellation(),
                         Some(&self.cancellation),
-                        self.native_callback_guard.clone(),
+                        &mut source_publication_guard(
+                            self.native_callback_guard.clone(),
+                            Some(self.cancellation.clone()),
+                        ),
+                        None,
+                        &mut None,
                     )
-                    .await?;
+                    .await
+                    .map_err(|(error, _)| error)?;
             }
             carrier.check(work.cancellation(), Some(&self.cancellation))
         })

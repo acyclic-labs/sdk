@@ -77,16 +77,6 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         #[cfg(not(target_arch = "wasm32"))] custody: Option<NativeAllocation>,
     ) -> Result<MaterializationJournal, MaterializationError<S::Error, B::Error>> {
         self.check_plan(&plan)?;
-        if let MaterializationIntent::GenerationTransition { from, .. } = plan.intent {
-            if !self
-                .backend
-                .verify_source(from)
-                .await
-                .map_err(MaterializationError::Backend)?
-            {
-                return Err(MaterializationError::PlanConflict);
-            }
-        }
         #[cfg(not(target_arch = "wasm32"))]
         let custody = match custody {
             Some(custody) => Some(custody),
@@ -599,9 +589,4 @@ pub(super) fn validate_plan<'a, E>(
         }
     }
     Ok(true)
-}
-pub(super) fn validate_materialization_path(path: &str) -> Result<(), ()> {
-    crate::path::is_canonical_relative(path)
-        .then_some(())
-        .ok_or(())
 }

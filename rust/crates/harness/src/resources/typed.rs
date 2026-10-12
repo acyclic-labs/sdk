@@ -81,7 +81,8 @@ typed_reference!(
         ) -> Result<(Self, crate::NativeCustody)> {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(work) = work {
-                let mut io = crate::store::history::native_work_io(work)?;
+                let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)?;
                 let mut observed = Some(&mut io as &mut dyn HistoryIo);
                 provider.validate(&mut observed)?;
                 if key.is_empty() {
@@ -102,7 +103,7 @@ typed_reference!(
                 });
                 quota.transfer();
                 drop(quota);
-                return Ok((value, Some(io.into_custody())));
+                return Ok((value, Some(io.into_custody()?)));
             }
             let _ = work;
             ResourceRef::new(

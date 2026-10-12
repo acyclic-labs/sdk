@@ -1596,7 +1596,7 @@ fn collect_host_walk_measured(
                 .map_err(capture_demand_error)?;
             #[cfg(windows)]
             let entry = reader
-                .next_wide(&mut meter.source())
+                .next(&mut meter.source())
                 .map_err(capture_demand_error)?;
             let Some((entry, name_allocation)) = entry else {
                 break;
@@ -2809,7 +2809,7 @@ mod shared_watch_capture_tests {
     async fn read(&self, object_id: ObjectId, maximum_bytes: u64, context: &mut crate::AuthorityWork<'_>) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if context.original.is_some() { return Err(crate::ObjectStoreError::NativeUnavailable); }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             self.reenter().await;
@@ -3643,7 +3643,7 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             .map_err(capture_demand_error)?;
         #[cfg(windows)]
         let file = source_root
-            .open_file_positional_wide(host_path, &mut meter.source())
+            .open_file_wide(host_path, windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0), &mut meter.source())
             .map_err(capture_demand_error)?;
         let file = file.into_std();
         let metadata = source_root
@@ -4002,8 +4002,9 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager: 
             capture_custody: std::sync::Arc::clone(meter.custody.as_ref().expect("capture scope is live")),
         };
         let stage_cancellation = meter.native.cancellation().clone();
+        let mut accounting = crate::kernel::KernelAccounting::native(&meter.native, &stage_cancellation);
         let content = capture_sdk(
-            stager.stage(&mut bounded, range.length, &meter.native, &stage_cancellation),
+            stager.stage_content_with_accounting(&mut bounded, range.length, &mut accounting, &stage_cancellation),
             meter, &stage_cancellation,
         ).await;
         drop(bounded);

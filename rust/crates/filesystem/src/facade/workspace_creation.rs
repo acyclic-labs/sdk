@@ -229,19 +229,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let allowance = remaining_owned(work, budget, live).map_err(|failure| {
                 failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
             })?;
-            let head = created
+            let mut accounting = KernelAccounting::standalone(allowance, cancellation);
+            created
                 .value
                 .volume
-                .resolve_head_generation(allowance, cancellation)
+                .resolve_head_generation(&mut accounting, cancellation)
                 .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| {
-                    merge_simultaneous_failure(work, *failure.work, live, failure.error)
+                .map_err(|error| {
+                    merge_simultaneous_failure(work, accounting.spent(), live, error)
                         .map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
                 })?;
-            let work = merge_simultaneous_work(work, head.2, live, budget).map_err(|failure| {
-                failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
-            })?;
+            let work = merge_simultaneous_work(work, accounting.spent(), live, budget).map_err(
+                |failure| {
+                    failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+                },
+            )?;
             Ok(OperationReceipt {
                 value: created.value,
                 work,

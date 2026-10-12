@@ -17,12 +17,6 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    /// Exact generation admitted into the physical view.
-    #[must_use]
-    pub const fn generation_id(&self) -> GenerationId {
-        self.expected_generation
-    }
-
     /// Physical volume-root directory owned by this view.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -123,7 +117,7 @@ where
         mut before_publication: F,
     ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where
-        E: From<MountLifecycleError> + From<MountSourceError> + Send + 'static,
+        E: From<MountLifecycleError> + From<MountSourceError> + From<crate::FsError> + Send + 'static,
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
@@ -158,17 +152,11 @@ where
             self.capture_host_subtree(&MountPath::root(), work)
                 .await
                 .map_err(|cause| (E::from(cause), None))?;
-            self.source
-                .sync_async_with_permit_carrier_guarded_context_with_ack(
-                    permit,
-                    false,
-                    &mut super::super::adapter::NativeDemandCarrier::Native(work),
-                    cancellation,
-                    &mut before_publication,
-                    Some(self.snapshot_context()),
-                    &mut acknowledged,
-                )
-                .await
+            self.source.shared_checkout().publish(
+                permit, work, cancellation, Some(self.source.cancellation()),
+                &mut before_publication, Some(self.snapshot_context()), &mut acknowledged,
+            ).await?;
+            acknowledged.ok_or_else(|| (E::from(MountSourceError::Indeterminate), None))
         }
         .await;
         result.map_err(

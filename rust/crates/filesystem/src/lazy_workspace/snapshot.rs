@@ -65,26 +65,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             if let Some(original) = accounting.native_work() {
                 break 'accounted {
                     self.workspace
-                        .fork_with_native_work(
+                        .fork::<_, _, LazyWorkspaceError>(
                             destination,
                             options,
                             crate::PublicationPermit::Unrestricted,
                             original,
                             cancellation,
-                            &mut |_| async { Ok::<(), LazyWorkspaceError>(()) },
+                            crate::NativeAuthorityGuard((|_| async { Ok::<(), LazyWorkspaceError>(()) }).clone()),
                         )
                         .await?
                 };
             }
             accept_receipt(
                 self.workspace
-                    .fork(
+                    .fork::<_, _, crate::WorkspaceError>(
                         destination,
                         options,
                         crate::PublicationPermit::Unrestricted,
                         accounting.remaining()?,
                         cancellation,
-                        |_| async {
+                        &mut |_| async {
                             Ok::<_, crate::OperationFailure<crate::FsError>>(OperationReceipt {
                                 value: (),
                                 work: WorkCounters::UNCHARGED,

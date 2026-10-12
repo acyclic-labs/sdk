@@ -111,48 +111,52 @@ impl GitCommit {
         authored_at_seconds: i64,
         message: impl Into<String>,
     ) -> Self {
-        let author = author.into();
-        let message = message.into();
+        let mut commit = Self {
+            id: GitCommitId([0; 32]),
+            tree,
+            workspace_tree,
+            capture_proof,
+            tracked_paths,
+            parents,
+            author: author.into(),
+            authored_at_seconds,
+            message: message.into(),
+        };
+        commit.id = commit.hash_id();
+        commit
+    }
+
+    pub(super) fn hash_id(&self) -> GitCommitId {
         let mut hasher = blake3::Hasher::new();
         hasher.update(COMMIT_DOMAIN);
-        hash_tree_ref(&mut hasher, tree);
-        hash_tree_ref(&mut hasher, workspace_tree);
-        if let Some(proof) = &capture_proof {
+        hash_tree_ref(&mut hasher, self.tree);
+        hash_tree_ref(&mut hasher, self.workspace_tree);
+        if let Some(proof) = &self.capture_proof {
             hasher.update(&[1]);
             hash_tree_ref(&mut hasher, proof.fork_parent);
             hasher.update(proof.initial_generation.digest().as_bytes());
             hasher.update(&proof.operation_id.into_bytes());
         }
         hasher.update(
-            &u64::try_from(tracked_paths.len())
+            &u64::try_from(self.tracked_paths.len())
                 .unwrap_or(u64::MAX)
                 .to_le_bytes(),
         );
-        for path in &tracked_paths {
+        for path in &self.tracked_paths {
             hash_bytes(&mut hasher, path.as_bytes());
         }
         hasher.update(
-            &u64::try_from(parents.len())
+            &u64::try_from(self.parents.len())
                 .unwrap_or(u64::MAX)
                 .to_le_bytes(),
         );
-        for parent in &parents {
+        for parent in &self.parents {
             hasher.update(&parent.0);
         }
-        hash_bytes(&mut hasher, author.as_bytes());
-        hasher.update(&authored_at_seconds.to_le_bytes());
-        hash_bytes(&mut hasher, message.as_bytes());
-        Self {
-            id: GitCommitId(*hasher.finalize().as_bytes()),
-            tree,
-            workspace_tree,
-            capture_proof,
-            tracked_paths,
-            parents,
-            author,
-            authored_at_seconds,
-            message,
-        }
+        hash_bytes(&mut hasher, self.author.as_bytes());
+        hasher.update(&self.authored_at_seconds.to_le_bytes());
+        hash_bytes(&mut hasher, self.message.as_bytes());
+        GitCommitId(*hasher.finalize().as_bytes())
     }
 }
 
@@ -203,6 +207,7 @@ impl GitTreeRef {
             generation,
         })
     }
+
     /// Workspace owning the authored component.
     #[must_use]
     pub const fn workspace_id(self) -> WorkspaceId {

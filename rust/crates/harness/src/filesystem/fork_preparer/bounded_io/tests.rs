@@ -4,6 +4,18 @@ use crate::core::{AggregateKind, AuthorityIssuer};
 use crate::filesystem::workspace_ref;
 use acyclic_fs::Fs;
 
+#[test]
+fn denied_vector_growth_does_not_retain_storage() -> Result<()> {
+    let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+    budget.bytes_copied = 0;
+    let io = PreparationIo::from_budget(budget, &CancellationToken::new())?;
+    let mut values = vec![1_u8];
+    assert!(PreparationIo::reserve(&mut values, 4, Some(&io)).is_err());
+    assert_eq!(values, [1]);
+    assert_eq!(io.owned_bytes()?, 0);
+    Ok(())
+}
+
 #[tokio::test]
 async fn dropping_pending_completion_releases_its_frame() -> Result<()> {
     let io = PreparationIo::from_budget(
@@ -11,12 +23,12 @@ async fn dropping_pending_completion_releases_its_frame() -> Result<()> {
         &CancellationToken::new(),
     )?;
     let before = io.owned_bytes()?;
-    let future = io.history_future(|| async {
+    let future = crate::conversation::BoundedContentFuture::new(Some(&io), || async {
         std::future::pending::<()>().await;
         Ok(())
     })?;
     assert!(io.owned_bytes()? > before);
-    let mut completion = Box::pin(io.finish_future(future));
+    let mut completion = Box::pin(future);
     assert!(futures::poll!(&mut completion).is_pending());
     drop(completion);
     assert_eq!(io.owned_bytes()?, before);
@@ -212,8 +224,6 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
             None,
             &IdempotencyKey::new("denied-source-read")?,
             None,
-            None,
-            #[cfg(not(target_arch = "wasm32"))]
             None
         )
         .await,
@@ -231,8 +241,6 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
             None,
             &IdempotencyKey::new("wrong-generation")?,
             None,
-            None,
-            #[cfg(not(target_arch = "wasm32"))]
             None
         )
         .await
@@ -259,8 +267,6 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
         None,
         &IdempotencyKey::new("pinned-selected-fork")?,
         None,
-        None,
-        #[cfg(not(target_arch = "wasm32"))]
         None,
     )
     .await?;

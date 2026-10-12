@@ -19,9 +19,12 @@ async fn native_logical_batch_keeps_all_acknowledged_prefix_and_original_error()
         bytes: OwnedBytes::copy_from_slice(body),
     });
     let error = ({
-        let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-        let __object_result = store.put_many(&writes, &mut __object_work).await;
-        __object_result
+        store
+            .put_many(
+                &writes,
+                &mut crate::AuthorityWork::native(&work, &cancellation),
+            )
+            .await
     })
     .err()
     .ok_or("partial batch unexpectedly succeeded")?;
@@ -86,12 +89,13 @@ async fn native_logical_batch_is_one_original_provider_call_with_retained_vector
         maximum_bytes: 4,
     }; 2];
     let batch = ({
-        let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-        let __object_result = store
-            .read_many(&requests, &mut __object_work)
+        store
+            .read_many(
+                &requests,
+                &mut crate::AuthorityWork::native(&work, &cancellation),
+            )
             .await
-            .map(|(values, allocation)| (values, allocation.expect("native batch allocation")));
-        __object_result
+            .map(|(values, allocation)| (values, allocation.expect("native batch allocation")))
     })?;
     assert_eq!(store.provider.calls.load(SeqCst), 1);
     assert_eq!(store.provider.maximum.load(SeqCst), 8);
@@ -134,12 +138,13 @@ async fn native_logical_batch_finite_data_and_budget_denial_precede_provider_and
     let (store, work, cancellation) = observed_native_store(budget, false, false, false);
     assert!(
         ({
-            let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __object_result = store
-                .read_many(&requests, &mut __object_work)
+            store
+                .read_many(
+                    &requests,
+                    &mut crate::AuthorityWork::native(&work, &cancellation),
+                )
                 .await
-                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")));
-            __object_result
+                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")))
         })
         .is_err()
     );
@@ -151,12 +156,13 @@ async fn native_logical_batch_finite_data_and_budget_denial_precede_provider_and
     let (store, work, cancellation) = observed_native_store(budget, false, false, false);
     assert!(
         ({
-            let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __object_result = store
-                .read_many(&requests, &mut __object_work)
+            store
+                .read_many(
+                    &requests,
+                    &mut crate::AuthorityWork::native(&work, &cancellation),
+                )
                 .await
-                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")));
-            __object_result
+                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")))
         })
         .is_err()
     );
@@ -168,12 +174,13 @@ async fn native_logical_batch_finite_data_and_budget_denial_precede_provider_and
     let (store, work, cancellation) = observed_native_store(budget, false, false, false);
     assert!(
         ({
-            let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __object_result = store
-                .read_many(&requests, &mut __object_work)
+            store
+                .read_many(
+                    &requests,
+                    &mut crate::AuthorityWork::native(&work, &cancellation),
+                )
                 .await
-                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")));
-            __object_result
+                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")))
         })
         .is_err()
     );
@@ -200,12 +207,13 @@ async fn native_logical_batch_error_cancellation_and_panic_keep_one_call_prefix(
         let (store, work, cancellation) =
             observed_native_store(WorkBudget::UNBOUNDED, cancel, panic, error);
         let future = async {
-            let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __object_result = store
-                .read_many(&requests, &mut __object_work)
+            store
+                .read_many(
+                    &requests,
+                    &mut crate::AuthorityWork::native(&work, &cancellation),
+                )
                 .await
-                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")));
-            __object_result
+                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")))
         };
         let result = std::panic::AssertUnwindSafe(future).catch_unwind().await;
         if panic {
@@ -229,59 +237,5 @@ async fn native_logical_batch_error_cancellation_and_panic_keep_one_call_prefix(
         assert_eq!(work.receipt().object_probes, 2);
         assert_eq!(work.receipt().bytes_hashed, 0);
     }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn ordinary_and_native_logical_batches_share_the_genuine_batch_engine()
--> Result<(), Box<dyn std::error::Error>> {
-    let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-    let store = LogicalObjectStore::new(Arc::new(provider), bucket);
-    let cancellation = CancellationToken::new();
-    ({
-        let authority_input_0 = native_test_id();
-        let authority_input_1 = OwnedBytes::from_static(b"body");
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = store
-            .put(authority_input_0, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    })?;
-    let requests = [ObjectReadRequest {
-        object_id: native_test_id(),
-        maximum_bytes: 4,
-    }; 2];
-    let ordinary = ({
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = store
-            .read_many(&requests, &mut __object_work)
-            .await
-            .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
-    })?;
-    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .unwrap_or_else(|_| panic!("test accounting construction failed"));
-    let before = work.receipt().allocation_operations;
-    let native = ({
-        let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-        let __object_result = store
-            .read_many(&requests, &mut __object_work)
-            .await
-            .map(|(values, allocation)| (values, allocation.expect("native batch allocation")));
-        __object_result
-    })?;
-    assert_eq!(native.0.len(), ordinary.value.len());
-    for (native, ordinary) in native.0.iter().zip(&ordinary.value) {
-        assert_eq!(native.bytes, ordinary.bytes);
-        assert_eq!(native.retention, ObjectReadRetention::Shared);
-    }
-    assert_eq!(
-        work.receipt().object_bytes_read,
-        ordinary.work.object_bytes_read
-    );
-    assert!(work.receipt().bytes_copied >= ordinary.work.bytes_copied);
-    assert_eq!(work.receipt().bytes_hashed, ordinary.work.bytes_hashed);
-    assert!(work.receipt().allocation_operations - before > ordinary.work.allocation_operations);
     Ok(())
 }

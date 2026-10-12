@@ -1,5 +1,6 @@
 //! Pi builtin IO is mediated by the original task owner, not by its cwd.
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
+use acyclic_harness::store::native_work_io;
 use acyclic_harness::{Error, OperationId, Result, TaskId};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
@@ -295,13 +296,6 @@ fn strip_native_prefix<'a>(path: &'a Path, root: &Path) -> Option<&'a Path> {
     Some(selected.as_path())
 }
 
-pub(crate) fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork {
-        cause,
-        custody: None,
-    }
-}
-
 pub(crate) fn invalid(reason: &'static str) -> Error {
     Error::NativeBoundary {
         code: acyclic_harness::wire::ErrorCode::Invalid,
@@ -330,15 +324,12 @@ pub(crate) fn read_response(
         .and_then(|size| size.checked_div(3))
         .and_then(|size| size.checked_mul(4))
         .ok_or_else(|| invalid("builtin response size overflow"))?;
-    let _encoded = work
-        .claim(size as u64 + 64, 0, acyclic_fs::WorkCounters::UNCHARGED)
-        .map_err(native_error)?;
+    let _encoded = work.claim(size as u64 + 64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     work.charge(WorkCounters {
         bytes_hashed: bytes.len() as u64,
         bytes_encoded: bytes.len() as u64,
         ..WorkCounters::default()
-    })
-    .map_err(native_error)?;
+    })?;
     let content_base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     let sha256 = hex::encode(Sha256::digest(bytes));
     #[derive(Serialize)]
@@ -365,7 +356,7 @@ fn decoded_tool_request(
     invocation: &acyclic_harness::tool::ToolInvocation,
     work: &NativeMaterializationWork,
 ) -> Result<(PiBuiltinRequest, NativeAllocation)> {
-    work.remaining().map_err(native_error)?;
+    work.remaining()?;
     if invocation.name != PI_BUILTIN_COMMAND_KIND
         || invocation.operation_id != context.operation_id()
         || invocation.call_id != context.call_id()
@@ -408,8 +399,7 @@ pub(crate) fn builtin_tool_executor_with_native_work(
     work.charge(WorkCounters {
         allocation_operations: 1,
         ..WorkCounters::default()
-    })
-    .map_err(native_error)?;
+    })?;
     Ok(std::sync::Arc::new(PiBuiltinToolExecutor))
 }
 
@@ -494,9 +484,7 @@ pub(crate) fn mounted_relative_path(
         .checked_mul(2)
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<std::path::PathBuf>() as u64))
         .ok_or_else(|| invalid("mounted path ownership overflow"))?;
-    let custody = work
-        .claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
-        .map_err(native_error)?;
+    let custody = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let mut path = std::path::PathBuf::with_capacity(capacity);
     path.push(prefix);
     path.push(leaf);
@@ -683,7 +671,7 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
     }
 
     fn supports_native_execution(&self, work: &NativeMaterializationWork) -> Result<()> {
-        work.remaining().map_err(native_error)?;
+        work.remaining()?;
         Ok(())
     }
 
@@ -734,13 +722,11 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
             drop(decoded.1);
             drop(admission.0);
             drop(admission.1);
-            let custody = work
-                .claim(
-                    std::mem::size_of::<Option<acyclic_harness::tool::ToolResult>>() as u64,
-                    0,
-                    acyclic_fs::WorkCounters::UNCHARGED,
-                )
-                .map_err(native_error)?;
+            let custody = work.claim(
+                std::mem::size_of::<Option<acyclic_harness::tool::ToolResult>>() as u64,
+                0,
+                acyclic_fs::WorkCounters::UNCHARGED,
+            )?;
             Ok((None, custody))
         })
     }
@@ -752,13 +738,13 @@ type Owner = acyclic_harness::durable_host::TaskJournalOwner<acyclic_stream::Loc
 impl<'a> crate::pi_selected_host::PiControlHost<'a> {
     async fn root_read(
         &self,
-        native_context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+        native_context: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
         owner: std::sync::Arc<Owner>,
         request: &PiBuiltinRequest,
     ) -> Result<(serde_json::Value, NativeAllocation)> {
         request.validate()?;
         request.require_root_source_read(self.protected.policy().root_task)?;
-        let context = native_context.context();
+        let context = native_context.as_ref();
         authorize_owner(context, &owner, request.caller, &self.work).await?;
         let work = &self.work;
         let decoded = self.admission_input(request.caller, &self.work).await?;
@@ -844,7 +830,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
 
     pub(crate) async fn run_builtin(
         &self,
-        context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
         fence: acyclic_harness::scheduler::LeaseFence,
         command: acyclic_harness::workflow::WorkflowCommand,
         payload: serde_json::Value,
@@ -870,7 +856,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let request = decoded.0;
         request.validate()?;
         request.require_root_source_read(self.protected.policy().root_task)?;
-        if context.context().durable_task_id() != Some(request.caller) {
+        if context.durable_task_id() != Some(request.caller) {
             return Err(denied(
                 "builtin command differs from its original native task actor",
             ));
@@ -947,10 +933,7 @@ pub(crate) async fn authorize_owner(
         ));
     }
     owner
-        .verify(
-            false,
-            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
-        )
+        .verify(false, &mut Some(&mut native_work_io(work)?))
         .await
 }
 
@@ -998,9 +981,7 @@ fn logical_path(
     work: &NativeMaterializationWork,
 ) -> Result<(String, NativeAllocation)> {
     let maximum = path.as_os_str().len();
-    let custody = work
-        .claim(maximum as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
-        .map_err(native_error)?;
+    let custody = work.claim(maximum as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let mut value = String::with_capacity(maximum);
     for component in path.components() {
         let part = component
@@ -1015,12 +996,8 @@ fn logical_path(
     work.charge(WorkCounters {
         bytes_copied: value.len() as u64,
         ..WorkCounters::default()
-    })
-    .map_err(native_error)?;
-    acyclic_harness::conversation::validate_content_path(
-        &value,
-        &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
-    )?;
+    })?;
+    acyclic_harness::conversation::validate_content_path(&value)?;
     Ok((value, custody))
 }
 

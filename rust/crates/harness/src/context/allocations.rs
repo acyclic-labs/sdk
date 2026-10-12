@@ -39,11 +39,11 @@ pub(super) fn context_contract_native<T: Serialize>(
     })();
     match encoded {
         Ok(value) => Ok((value, io.into_custody()?)),
-        Err(crate::Error::NativeEncode {
+        Err(crate::Error::NativeJson {
             code,
             source,
             custody: None,
-        }) => Err(crate::Error::NativeEncode {
+        }) => Err(crate::Error::NativeJson {
             code,
             source,
             custody: Some(diagnostic),

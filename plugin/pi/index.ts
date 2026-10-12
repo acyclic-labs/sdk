@@ -1,6 +1,6 @@
 import { VERSION, SessionManager, parseSessionEntries, createReadToolDefinition, createWriteToolDefinition,
   createEditToolDefinition, truncateHead, formatSize, DEFAULT_MAX_BYTES, convertToPng, resizeImage,
-  formatDimensionNote, type ReadToolInput, type ReadToolDetails, type ExtensionAPI,
+  formatDimensionNote, type ReadToolDetails, type ExtensionAPI,
   type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -394,22 +394,6 @@ function builtinImageMime(bytes: Buffer) {
     if (offset !== undefined && buffer.readUInt16LE(offset) === 1 && [1, 4, 8, 16, 24, 32].includes(buffer.readUInt16LE(offset + 2))) return "image/bmp";
   }
 }
-function builtinReadText(bytes: Buffer, input: ReadToolInput) {
-  const lines = bytes.toString("utf8").split("\n"), start = input.offset ? Math.max(0, input.offset - 1) : 0;
-  if (start >= lines.length) throw new Error(`Offset ${input.offset} is beyond end of file (${lines.length} lines total)`);
-  const end = input.limit === undefined ? lines.length : Math.min(start + input.limit, lines.length);
-  const truncation = truncateHead(lines.slice(start, end).join("\n"));
-  let text = truncation.content, details: ReadToolDetails | undefined;
-  if (truncation.firstLineExceedsLimit) {
-    text = `[Line ${start + 1} is ${formatSize(Buffer.byteLength(lines[start], "utf8"))}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit.]`;
-    details = { truncation };
-  } else if (truncation.truncated) {
-    const last = start + truncation.outputLines, bound = truncation.truncatedBy === "bytes" ? ` (${formatSize(DEFAULT_MAX_BYTES)} limit)` : "";
-    text += `\n\n[Showing lines ${start + 1}-${last} of ${lines.length}${bound}. Use offset=${last + 1} to continue.]`;
-    details = { truncation };
-  } else if (input.limit !== undefined && end < lines.length) text += `\n\n[${lines.length - end} more lines in file. Use offset=${end + 1} to continue.]`;
-  return { content: [{ type: "text" as const, text }], details, structuredContent: text };
-}
 
 export default function acyclic(pi: ExtensionAPI) {
   if (VERSION !== "1.1.0") throw new Error(`Acyclic requires Pi 1.1.0 APIs; found ${VERSION}`);
@@ -517,7 +501,22 @@ export default function acyclic(pi: ExtensionAPI) {
       const { bytes } = builtinBytes(await control("NativeBuiltinRead", ctx, { operation, path, variants, maximum_bytes: maximumBuiltinBytes }, signal), operation);
       signal?.throwIfAborted();
       const mime = builtinImageMime(bytes);
-      if (!mime) return builtinReadText(bytes, input);
+      if (!mime) {
+        const lines = bytes.toString("utf8").split("\n"), start = input.offset ? Math.max(0, input.offset - 1) : 0;
+        if (start >= lines.length) throw new Error(`Offset ${input.offset} is beyond end of file (${lines.length} lines total)`);
+        const end = input.limit === undefined ? lines.length : Math.min(start + input.limit, lines.length);
+        const truncation = truncateHead(lines.slice(start, end).join("\n"));
+        let text = truncation.content, details: ReadToolDetails | undefined;
+        if (truncation.firstLineExceedsLimit) {
+          text = `[Line ${start + 1} is ${formatSize(Buffer.byteLength(lines[start], "utf8"))}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit.]`;
+          details = { truncation };
+        } else if (truncation.truncated) {
+          const last = start + truncation.outputLines, bound = truncation.truncatedBy === "bytes" ? ` (${formatSize(DEFAULT_MAX_BYTES)} limit)` : "";
+          text += `\n\n[Showing lines ${start + 1}-${last} of ${lines.length}${bound}. Use offset=${last + 1} to continue.]`;
+          details = { truncation };
+        } else if (input.limit !== undefined && end < lines.length) text += `\n\n[${lines.length - end} more lines in file. Use offset=${end + 1} to continue.]`;
+        return { content: [{ type: "text" as const, text }], details, structuredContent: text };
+      }
       const nonVision = ctx.model && !ctx.model.input.includes("image") ? "\n[Current model does not support images. The image will be omitted from this request.]" : "";
       let imageBytes: Uint8Array = bytes, imageMime = mime;
       const hints: string[] = [];

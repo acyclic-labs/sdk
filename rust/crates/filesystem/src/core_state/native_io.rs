@@ -194,12 +194,11 @@ impl Read for MaterializationReader<'_> {
                 })
                 .map_err(std::io::Error::other)?;
         }
-        let count = crate::native_host::read_builtin_file(
-            &self.file,
-            buffer
-                .get_mut(..length)
-                .ok_or_else(|| std::io::Error::other("invalid journal read bound"))?,
+        let count = crate::native_host::builtin_io(
+            acyclic_native_runtime::NativeOperationKind::Read,
+            length,
             self.work,
+            || self.file.read(&mut buffer[..length]),
         )
         .map_err(std::io::Error::other)?;
         self.remaining_file_bytes -= count as u64;

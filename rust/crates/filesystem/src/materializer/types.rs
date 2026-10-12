@@ -223,16 +223,6 @@ pub trait MaterializationBackend: Send + Sync {
         async { Ok(()) }
     }
 
-    /// Verifies that the checkout still represents the plan's exact source.
-    /// Backends without an independently observable generation may retain the
-    /// conservative default and provide equivalent fencing externally.
-    fn verify_source(
-        &self,
-        _from: GenerationId,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
-        async { Ok(true) }
-    }
-
     /// Captures a complete preimage without mutating the checkout.
     fn capture(
         &self,
@@ -240,9 +230,6 @@ pub trait MaterializationBackend: Send + Sync {
     ) -> impl Future<Output = Result<MaterializationPreimage, Self::Error>> + Send;
 
     /// Classifies the current path against both durable endpoints.
-    ///
-    /// Backends that cannot independently witness physical state may retain
-    /// the default only when equivalent exclusion is provided externally.
     fn observe(
         &self,
         _edit: &MaterializationEdit,
