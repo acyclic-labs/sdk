@@ -51,16 +51,14 @@ pub enum ConnectError {
     Transport(#[from] tonic::transport::Error),
 }
 
-/// Connects a bounded TLS channel with sensitive bearer metadata.
+/// Connects a bounded TLS channel.
 #[doc(hidden)]
 pub async fn connect_channel(
-    endpoint: &str, token: &str, ca: Option<&[u8]>,
-) -> Result<(Channel, BearerAuth), ConnectError> {
+    endpoint: &str, ca: Option<&[u8]>,
+) -> Result<Channel, ConnectError> {
     if !crate::client_config::valid_endpoint(endpoint) {
         return Err(ConnectError::InsecureEndpoint);
     }
-    let authorization =
-        BearerAuth::new(token).map_err(|()| ConnectError::InvalidCredential)?;
     let configured = Endpoint::from_shared(endpoint.to_owned())?
         .http2_max_header_list_size(tonic_web_wasm_client::limits::HEADER_LIST_BYTES);
     let configured = match ca {
@@ -78,16 +76,16 @@ pub async fn connect_channel(
             configured.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
         }
     };
-    Ok((configured.connect().await?, authorization))
+    Ok(configured.connect().await?)
 }
 
 /// Connect trusting exactly `ca` when supplied, otherwise the platform's roots.
 pub async fn connect(
     endpoint: &str,
-    token: &str,
+    authorization: BearerAuth,
     ca: Option<&[u8]>,
 ) -> Result<Client, ConnectError> {
-    let (channel, authorization) = connect_channel(endpoint, token, ca).await?;
+    let channel = connect_channel(endpoint, ca).await?;
     Ok(
         wire::workers_service_client::WorkersServiceClient::with_origin(
             tonic::service::interceptor::InterceptedService::new(
