@@ -31,7 +31,7 @@ use crate::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializati
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use crate::kernel::decode_retention_created;
 use crate::kernel::{
-    AsyncBlobSource, AttributeEntry, AttributeListError, AttributeListing, AttributeLookupError,
+    AsyncBlobSource, AttributeEntry, AttributeListing, AttributeLookupError,
     AttributeMutation, AttributeMutationError, AttributeName, AttributePage, AuthenticatedGenerationProbe,
     AuthenticatedProbeError, BlobBuildError, BlobBuildOptions, BlobReadError, CanonicalDecodeError,
     CheckoutDependencies, CheckpointError, CheckpointRequest, ClosureError, ClosureLimits, DecodeLimits,
@@ -2518,7 +2518,7 @@ pub enum FsError {
     AttributeLookup(#[from] AttributeLookupError),
     /// Authenticated named-attribute pagination failed.
     #[error(transparent)]
-    AttributeList(#[from] AttributeListError),
+    AttributeList(DirectoryReadError),
     /// Sparse named-attribute path-copy failed.
     #[error(transparent)]
     AttributeMutation(#[from] AttributeMutationError),

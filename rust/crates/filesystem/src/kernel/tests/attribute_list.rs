@@ -1,7 +1,7 @@
 use super::*;
 use crate::foundation::Digest;
 use crate::kernel::{
-    AttributeClass, AttributePage, attribute_page_id, encode_attribute_page,
+    AttributeClass, AttributePage, DirectoryReadError, attribute_page_id, encode_attribute_page,
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore};
@@ -229,7 +229,7 @@ async fn pre_cancel_and_output_admission_do_no_backend_work() -> Result<(), Box<
     .await
     .err()
     .ok_or("cancelled listing succeeded")?;
-    assert!(matches!(failure.error, AttributeListError::Cancelled));
+    assert!(matches!(failure.error, DirectoryReadError::Cancelled));
     assert_eq!(*failure.work, WorkCounters::default());
 
     let mut budget = WorkBudget::UNBOUNDED;
@@ -240,7 +240,7 @@ async fn pre_cancel_and_output_admission_do_no_backend_work() -> Result<(), Box<
         .ok_or("unadmitted listing succeeded")?;
     assert!(matches!(
         failure.error,
-        AttributeListError::Work(WorkError::BudgetExceeded {
+        DirectoryReadError::Work(crate::performance::WorkError::BudgetExceeded {
             counter: "items_returned",
             ..
         })
@@ -277,7 +277,7 @@ async fn forged_child_bounds_fail_closed() -> Result<(), Box<dyn std::error::Err
     .ok_or("forged child bound unexpectedly succeeded")?;
     assert!(matches!(
         failure.error,
-        AttributeListError::ChildBoundsMismatch
+        DirectoryReadError::ChildBoundsMismatch
     ));
     assert_eq!(failure.work.page_reads, 2);
     Ok(())
@@ -317,7 +317,7 @@ async fn one_byte_short_peak_budget_rejects_the_same_plan() -> Result<(), Box<dy
     .ok_or("one-byte-short peak budget unexpectedly succeeded")?;
     assert!(matches!(
         failure.error,
-        AttributeListError::Work(WorkError::BudgetExceeded {
+        DirectoryReadError::Work(crate::performance::WorkError::BudgetExceeded {
             counter: "peak_allocation_bytes",
             ..
         })
@@ -410,12 +410,12 @@ async fn pagination_admission_height_and_alias_guards_are_fail_closed()
     ];
     assert!(matches!(
         failures[0].error,
-        AttributeListError::WrongRootKind
+        DirectoryReadError::WrongRootKind
     ));
-    assert!(matches!(failures[1].error, AttributeListError::ZeroLimit));
+    assert!(matches!(failures[1].error, DirectoryReadError::ZeroLimit));
     assert!(matches!(
         failures[2].error,
-        AttributeListError::InvalidLimits
+        DirectoryReadError::InvalidLimits
     ));
     for failure in failures {
         assert_eq!(*failure.work, WorkCounters::default());
@@ -436,7 +436,7 @@ async fn pagination_admission_height_and_alias_guards_are_fail_closed()
     .await
     .err()
     .ok_or("height-limited attribute traversal succeeded")?;
-    assert!(matches!(height.error, AttributeListError::HeightExceeded));
+    assert!(matches!(height.error, DirectoryReadError::HeightExceeded));
     assert_eq!(height.work.page_reads, 1);
 
     let leaf = put(
@@ -468,67 +468,7 @@ async fn pagination_admission_height_and_alias_guards_are_fail_closed()
     .await
     .err()
     .ok_or("aliased attribute page succeeded")?;
-    assert!(matches!(alias.error, AttributeListError::CycleOrAlias));
+    assert!(matches!(alias.error, DirectoryReadError::Cycle));
     assert_eq!(alias.work.page_reads, 2);
     Ok(())
-}
-
-#[test]
-fn pagination_error_translation_is_total() {
-    use persistent_pagination::Error as PaginationError;
-
-    assert!(matches!(
-        map_error(PaginationError::Cancelled),
-        AttributeListError::Cancelled
-    ));
-    assert!(matches!(
-        map_error(PaginationError::ZeroLimit),
-        AttributeListError::ZeroLimit
-    ));
-    assert!(matches!(
-        map_error(PaginationError::LimitOverflow),
-        AttributeListError::LimitOverflow
-    ));
-    assert!(matches!(
-        map_error(PaginationError::WrongRootKind),
-        AttributeListError::WrongRootKind
-    ));
-    assert!(matches!(
-        map_error(PaginationError::InvalidLimits),
-        AttributeListError::InvalidLimits
-    ));
-    assert!(matches!(
-        map_error(PaginationError::HeightExceeded),
-        AttributeListError::HeightExceeded
-    ));
-    assert!(matches!(
-        map_error(PaginationError::CycleOrAlias),
-        AttributeListError::CycleOrAlias
-    ));
-    assert!(matches!(
-        map_error(PaginationError::ChildBoundsMismatch),
-        AttributeListError::ChildBoundsMismatch
-    ));
-    assert!(matches!(
-        map_error(PaginationError::TraversalState),
-        AttributeListError::TraversalState
-    ));
-    assert!(matches!(
-        map_error(PaginationError::AllocationFailed),
-        AttributeListError::AllocationFailed
-    ));
-    assert!(matches!(
-        map_error(PaginationError::Storage(ObjectStoreError::Missing)),
-        AttributeListError::Storage(ObjectStoreError::Missing)
-    ));
-    assert!(matches!(
-        map_error(PaginationError::Decode(
-            CanonicalDecodeError::LengthOverflow
-        )),
-        AttributeListError::Decode(CanonicalDecodeError::LengthOverflow)
-    ));
-    assert!(matches!(
-        map_error(PaginationError::Work(WorkError::Overflow)),
-        AttributeListError::Work(WorkError::Overflow)
-    ));
 }
