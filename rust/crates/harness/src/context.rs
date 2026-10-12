@@ -1425,9 +1425,8 @@ impl BorrowedContext<'_> {
                 message.content.validate_limits(limits, work)?;
             }
             if let Some(content) = self.messages.user { content.validate_limits(limits, work)?; }
-            Ok::<(), crate::Error>(())
-        })?;
-        validate_context_json(self, limits.render_bytes, io)
+            crate::contract::validate_trusted_json_byte_bound(self, limits.render_bytes, work)
+        })
     }
 }
 
@@ -1453,50 +1452,43 @@ impl ContextInput {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
         let input = crate::executor::with_history_io(io, |work| crate::model::clone_content(&turn.input, work).map(|(copy, _)| copy))?;
-        let selected_context = match &turn.selected_context {
-            Some(selected) => {
-                #[cfg(feature = "filesystem")]
-                if let Some(io) = io {
-                    let mut history = io.history_io();
-                    let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-                    let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
-                    let mut message_ids = Vec::new();
-                    let copied = (selected.selection.message_ids.len() * std::mem::size_of::<uuid::Uuid>()) as u64;
-                    quota.work().as_deref().expect("observed selection").admit_copy(copied)?;
-                    compaction::reserve_vector_with_work(&mut message_ids, selected.selection.message_ids.len(), quota.work())?;
-                    quota.adopt((message_ids.capacity() * std::mem::size_of::<uuid::Uuid>()) as u64)?;
-                    let result = (|| {
-                        quota.work().as_deref_mut().expect("observed selection").copy_bytes(copied)?;
-                        message_ids.extend_from_slice(&selected.selection.message_ids);
-                        let checkpoint = match &selected.selection.checkpoint {
-                            Some(file) => Some(file.clone_in_quota(&mut quota)?),
-                            None => None,
-                        };
-                        let (messages, claim) = compaction::clone_messages(&selected.messages, quota.work())?;
-                        quota.adopt(claim)?;
-                        Ok((checkpoint, messages))
-                    })();
-                    let (checkpoint, messages) = match result {
-                        Ok(value) => value,
-                        Err(error) => { drop(message_ids); return Err(error); }
+        let selected_context = turn.selected_context.as_ref().map(|selected| {
+            crate::executor::with_history_io(io, |work| {
+                if work.is_none() { return Ok(selected.clone()); }
+                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+                let mut message_ids = Vec::new();
+                let copied = (selected.selection.message_ids.len() * std::mem::size_of::<uuid::Uuid>()) as u64;
+                quota.work().as_deref().expect("observed selection").admit_copy(copied)?;
+                compaction::reserve_vector_with_work(&mut message_ids, selected.selection.message_ids.len(), quota.work())?;
+                quota.adopt((message_ids.capacity() * std::mem::size_of::<uuid::Uuid>()) as u64)?;
+                let result = (|| {
+                    quota.work().as_deref_mut().expect("observed selection").copy_bytes(copied)?;
+                    message_ids.extend_from_slice(&selected.selection.message_ids);
+                    let checkpoint = match &selected.selection.checkpoint {
+                        Some(file) => Some(file.clone_in_quota(&mut quota)?),
+                        None => None,
                     };
-                    quota.transfer();
-                    Some(SelectedModelContext {
-                        selection: crate::conversation::ModelContextSelection {
-                            conversation_revision: selected.selection.conversation_revision,
-                            message_ids, checkpoint,
-                        },
-                        messages,
-                    })
-                } else {
-                    Some(selected.clone())
-                }
-                #[cfg(not(feature = "filesystem"))]
-                { Some(selected.clone()) }
-            }
-            None => None,
-        };
-        Ok(Self { input, selected_context, step, prior_messages: copy_context_messages(prior, io)? })
+                    let (messages, claim) = compaction::clone_messages(&selected.messages, quota.work())?;
+                    quota.adopt(claim)?;
+                    Ok((checkpoint, messages))
+                })();
+                let (checkpoint, messages) = match result {
+                    Ok(value) => value,
+                    Err(error) => { drop(message_ids); return Err(error); }
+                };
+                quota.transfer();
+                Ok(SelectedModelContext {
+                    selection: crate::conversation::ModelContextSelection {
+                        conversation_revision: selected.selection.conversation_revision,
+                        message_ids, checkpoint,
+                    },
+                    messages,
+                })
+            })
+        }).transpose()?;
+        let prior_messages = crate::executor::with_history_io(io, |work|
+            compaction::clone_messages(prior, work).map(|(copy, _)| copy))?;
+        Ok(Self { input, selected_context, step, prior_messages })
     }
 }
 
@@ -1505,32 +1497,8 @@ fn native_context_work_error(cause: acyclic_fs::NativeTreeMaterializationError) 
     crate::Error::NativeWork { cause, custody: None }
 }
 
-fn validate_context_json<T: Serialize>(
-    value: &T, maximum: u64, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        return crate::contract::validate_trusted_json_byte_bound(
-            value, maximum, &mut Some(&mut history));
-    }
-    let _ = io;
-    crate::contract::validate_json_byte_bound(value, maximum)
-}
-
-fn copy_context_messages(messages: &[ModelMessage], io: Option<&crate::executor::PreparationIo>) -> Result<Vec<ModelMessage>> {
-    crate::executor::with_history_io(io, |work| compaction::clone_messages(messages, work).map(|(copy, _)| copy))
-}
-
 pub(crate) fn copy_context(context: &Context, io: Option<&crate::executor::PreparationIo>) -> Result<Context> {
     crate::executor::with_history_io(io, |work| compaction::clone_context(context, work).map(|(copy, _)| copy))
-}
-
-fn copy_context_base_messages(input: &ContextInput, io: Option<&crate::executor::PreparationIo>) -> Result<Vec<ModelMessage>> {
-    crate::executor::with_history_io(io, |work| compaction::clone_base_messages(
-            input.selected_context.as_ref().map_or(&[], |selected| selected.messages.as_slice()),
-            input.selected_context.is_none().then_some(&input.input), &input.prior_messages,
-            work).map(|(copy, _)| copy))
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1566,44 +1534,28 @@ fn reserve_context_vec_native<T>(
     Ok(guard)
 }
 
-fn reserve_context_messages(
-    messages: &mut Vec<ModelMessage>, capacity: usize, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        return compaction::reserve_vector_with_work(messages, capacity, &mut Some(&mut history));
-    }
-    let _ = io;
-    messages.reserve(capacity.saturating_sub(messages.len()));
-    Ok(())
-}
-
 fn append_context_messages(
     first: &mut Vec<ModelMessage>, second: &mut Vec<ModelMessage>, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     let capacity = first.len().checked_add(second.len()).ok_or_else(||
         crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "context vector capacity overflows"))?;
-    reserve_context_messages(first, capacity, io)?;
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        let copied = second.len().checked_mul(std::mem::size_of::<ModelMessage>()).ok_or_else(||
-            crate::executor::stock_boundary(Some(io), crate::wire::ErrorCode::Invalid, "context vector copy overflows"))?;
-        use crate::store::history::HistoryIo as _;
-        history.admit_copy(copied as u64)?;
-        history.copy_bytes(copied as u64)?;
-    }
-    first.append(second);
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let bytes = second.capacity().checked_mul(std::mem::size_of::<ModelMessage>()).ok_or_else(||
-            crate::executor::stock_boundary(Some(io), crate::wire::ErrorCode::Invalid, "context vector capacity overflows"))?;
-        // The payloads moved, but the drained source vector's backing no longer has a physical user.
-        drop(std::mem::take(second));
-        io.release(bytes as u64)?;
-    }
-    Ok(())
+    crate::executor::with_history_io(io, |work| {
+        compaction::reserve_vector_with_work(first, capacity, work)?;
+        if let Some(work) = work.as_deref_mut() {
+            let copied = second.len().checked_mul(std::mem::size_of::<ModelMessage>()).ok_or_else(||
+                crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "context vector copy overflows"))?;
+            work.admit_copy(copied as u64)?;
+            work.copy_bytes(copied as u64)?;
+        }
+        first.append(second);
+        if let Some(work) = work.as_deref_mut() {
+            let bytes = second.capacity().checked_mul(std::mem::size_of::<ModelMessage>()).ok_or_else(||
+                crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "context vector capacity overflows"))?;
+            drop(std::mem::take(second));
+            work.release_owned(bytes as u64)?;
+        }
+        Ok(())
+    })
 }
 
 /// Replaceable ordered context transformation.
@@ -1752,12 +1704,12 @@ impl ContextPipeline {
         })?)
         .map_err(|_| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
             "current input index exceeds portable count"))?;
-        BorrowedContext {
+        let base = BorrowedContext {
             messages,
             metadata: &metadata,
             current_input_index: Some(current_input_index),
-        }
-        .validate_bounds(limits, io)?;
+        };
+        base.validate_bounds(limits, io)?;
         crate::executor::with_history_io(io, |work| {
             input.input.validate_limits(limits, work)?;
             input.input.validate_user_input(work)
@@ -1771,7 +1723,9 @@ impl ContextPipeline {
             return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Unsupported,
                 "canonical checkpoint requires owner-resolved base context"));
         }
-        let messages = copy_context_base_messages(input, io)?;
+        let messages = crate::executor::with_history_io(io, |work|
+            compaction::clone_base_messages(base.messages.first, base.messages.user,
+                base.messages.second, work).map(|(copy, _)| copy))?;
         let context = Context { messages, metadata, current_input_index: Some(current_input_index) };
         validate_projected_context(&context, limits, io)?;
         Ok(context)
@@ -1886,11 +1840,12 @@ impl ContextPipeline {
     pub(crate) fn summary_source(
         source: Context, revision: String, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = io {
-            let mut history = io.history_io();
-            let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
+        crate::executor::with_history_io(io, |work| {
+            if work.is_none() {
+                return Ok(Self::new([Arc::new(SourceStage::new(
+                    "summary-source", revision, Arc::new(source), ContextPlacement::Prepend)) as Arc<dyn ContextStage>]));
+            }
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let mut stages: Vec<Arc<dyn ContextStage>> = Vec::new();
             let made = (|| {
                 let name = quota.work().as_deref_mut().expect("observed summary").clone_text("summary-source")?;
@@ -1913,11 +1868,8 @@ impl ContextPipeline {
             })();
             if let Err(error) = made { drop(stages); return Err(error); }
             quota.transfer();
-            return Ok(Self(stages));
-        }
-        let _ = io;
-        Ok(Self::new([Arc::new(SourceStage::new(
-            "summary-source", revision, Arc::new(source), ContextPlacement::Prepend)) as Arc<dyn ContextStage>]))
+            Ok(Self(stages))
+        })
     }
 }
 
