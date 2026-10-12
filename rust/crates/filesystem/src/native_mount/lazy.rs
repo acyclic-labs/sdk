@@ -381,7 +381,7 @@ pub(super) fn mount_demand_error(error: DemandError) -> MountSourceError {
         DemandError::Work(error) => MountSourceError::Work(error),
         DemandError::Cancelled => MountSourceError::Cancelled,
         DemandError::Mount(error) => error,
-        DemandError::Io(error) => MountSourceError::Io(error),
+        DemandError::Io(error) => MountSourceError::Io(error, None),
         DemandError::Allocation(error) => MountSourceError::Allocation(error),
         DemandError::StaleSource | DemandError::StaleVersion | DemandError::StaleCursor =>
             MountSourceError::Stale,
@@ -2057,7 +2057,7 @@ fn recorder_projection_error(error: MountSourceError) -> DemandError {
     match error {
         MountSourceError::NativeWork(error) => recorder_native_error(error),
         MountSourceError::Allocation(error) => DemandError::Allocation(error),
-        MountSourceError::Io(error) => DemandError::Io(error),
+        MountSourceError::Io(error, None) => DemandError::Io(error),
         error => source_callback_error(error),
     }
 }
@@ -8099,10 +8099,10 @@ fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::SelectedPublication(outcome) =>
             return MountSourceError::SelectedPublication(outcome),
         LazyWorkspaceError::Demand(DemandError::Mount(error)) => return error,
-        LazyWorkspaceError::Demand(DemandError::Io(error)) => return MountSourceError::Io(error),
+        LazyWorkspaceError::Demand(DemandError::Io(error)) => return MountSourceError::Io(error, None),
         LazyWorkspaceError::NativeWork(error) => return MountSourceError::NativeWork(error),
         LazyWorkspaceError::NativeRecordIo(error, allocation) =>
-            return MountSourceError::NativeRecordIo(error, allocation),
+            return MountSourceError::Io(error, allocation),
         LazyWorkspaceError::NativeRecordJson(error, allocation) =>
             return MountSourceError::NativeRecordJson(error, allocation),
         LazyWorkspaceError::NativeRecordLockTimeout(path, allocation) =>
@@ -8110,8 +8110,10 @@ fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::NativeRecordOwnershipConflict(path, allocation) =>
             return MountSourceError::NativeRecordOwnershipConflict(path, allocation),
         LazyWorkspaceError::NativeRecordMaterializationInProgress =>
-            return MountSourceError::NativeRecordMaterializationInProgress,
-        LazyWorkspaceError::NativeRecordIntegrity => return MountSourceError::NativeRecordIntegrity,
+            return MountSourceError::Indeterminate,
+        LazyWorkspaceError::NativeRecordIntegrity => return MountSourceError::NativeText {
+            kind: super::NativeSourceTextKind::Engine, text: "native record integrity verification failed",
+        },
         LazyWorkspaceError::NativeRecordContextTransaction(message, allocation) =>
             return MountSourceError::NativeRecordContextTransaction(message, allocation),
         LazyWorkspaceError::NativeRecordCorrupt(path, allocation) =>

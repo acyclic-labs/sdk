@@ -3311,7 +3311,7 @@ fn darwin_source_errno(error: &MountSourceError) -> i32 {
         MountSourceError::Stale | MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
         MountSourceError::Cancelled | MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ECANCELED,
         MountSourceError::Allocation(_) => libc::ENOMEM,
-        MountSourceError::Io(error) | MountSourceError::NativeRecordIo(error, _) =>
+        MountSourceError::Io(error, _) =>
             error.raw_os_error().unwrap_or(libc::EIO),
         MountSourceError::NativeWork(error) => super::native_materialization_errno(error),
         MountSourceError::WorkspaceCause(error) => super::native_workspace_errno(error),
@@ -3354,7 +3354,6 @@ fn darwin_handler_is_fatal(error: &NativeMountError) -> bool {
                 MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_failure_is_fatal(&error.source),
                 MountSourceError::Cancelled | MountSourceError::Work(_)
                 | MountSourceError::OriginalSnapshotUnavailable | MountSourceError::Indeterminate
-                | MountSourceError::NativeRecordMaterializationInProgress
                 | MountSourceError::Filesystem(crate::FsError::Cancelled(_) | crate::FsError::Work(_)) => true,
                 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                 MountSourceError::SourceWatchStartup(_)
