@@ -503,9 +503,6 @@ pub enum MountSourceError {
     /// The original native operation has not finished reconciliation.
     #[error("original native operation is indeterminate")]
     Indeterminate,
-    /// The original SDK seal returned an exact semantic decision.
-    #[error("selected import publication was not committed: {0:?}")]
-    SelectedPublication(crate::LivePublicationObservation),
     /// Canonical namespace validation retains its exact typed cause.
     #[error(transparent)]
     NamespacePath(crate::kernel::NamespacePathError),

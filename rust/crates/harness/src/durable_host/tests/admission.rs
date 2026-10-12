@@ -1,254 +1,263 @@
 use super::*;
+use fixture::fixture;
 
 #[tokio::test]
-async fn admission_retry_retains_original_owner_grant_after_renewal() -> Result<()> {
-    for session in [false, true] {
-        let stream = Arc::new(MemoryStream::default());
-        let payloads = Arc::new(MemoryPayloads::new()?);
-        let owner = Authority {
-            kind: AggregateKind::Task,
-            id: "batch-owner".into(),
-        };
-        let issuer = AuthorityIssuer::new("batch-test", [7; 32], owner.clone());
-        let owner_scope = issuer
-            .issue(
-                "owner",
-                &Capabilities::new([
-                    "operation:declare",
-                    "operation:observe",
-                    "operation:cancel",
-                    "task:spawn:test.batch@1",
-                ]),
-                None,
-                None,
-                &mut None,
-            )
-            .expect("scope proof");
-        let runtime_scope =
-            RuntimeScope::new(owner_scope.capabilities().clone(), Limits::default())?;
-        let machine = MachineIdentity {
-            name: "test.batch".into(),
-            version: "1".into(),
-            digest: [2; 32],
-        };
-        let implementation: Arc<dyn ResumableMachine> = Arc::new(BatchMachine {
-            identity: machine.clone(),
-            schema: serde_json::json!({"type": "integer"}),
-        });
-        let (task, machine, tasks, machines) = test_registries::<i64>(
-            implementation,
-            serde_json::json!({"type": "integer"}),
-            serde_json::json!({"type": "integer"}),
-        )?;
-        let coordinator =
-            DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?;
-        let host = CoordinatorTaskHost::new(
-            coordinator,
-            stream.clone(),
-            payloads.clone(),
-            payloads.clone(),
-            &(owner),
-            owner_scope.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            runtime_scope.clone(),
-            tasks.clone(),
-            machines.clone(),
-            Arc::new(SystemUnixMillisClock),
-            None,
-        )?;
-        let limits = crate::scheduler::SessionLimits {
+async fn b01_registered_input_and_schema() -> Result<()> {
+    let f = fixture().await?;
+    let mut record = f.admission(1, json!("wrong type"));
+    assert!(matches!(
+        f.host.admit(record.clone()).await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(
+        f.host
+            .reconcile_admission(record.operation_id)
+            .await?
+            .is_none()
+    );
+    record.input = json!(0);
+    assert_eq!(
+        f.host.admit(record).await?,
+        Admission::Accepted(TaskId::from_bytes([1; 16]))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn b02_retry_preserves_signed_owner() -> Result<()> {
+    for session in [
+        None,
+        Some(crate::scheduler::SessionLimits {
             active_tasks: 8,
             total_tasks: 16,
             depth: 4,
             model_steps: 100,
+        }),
+    ] {
+        let f = Fixture::new(
+            Arc::new(MemoryStream::default()),
+            acyclic_fs::Fs::memory(),
+            json!({"type":"integer"}),
+            session,
+            &[],
+        )
+        .await?;
+        let record = f.admission(2, json!(0));
+        f.host.admit(record.clone()).await?;
+        let original = f.claim(2, "original").await?;
+        let renewed = f.reopen(&f.issuer, "renewed-owner").await?;
+        assert_eq!(
+            renewed.admit(record.clone()).await?,
+            Admission::Accepted(TaskId::from_bytes([2; 16]))
+        );
+        let crate::distributed::WorkPull::Claimed(recovered) =
+            renewed.recover_work(TaskId::from_bytes([2; 16])).await?
+        else {
+            return Err(Error::NotFound("renewed original owner".into()));
         };
-        let host = if session {
-            host.with_session_limits(limits, None)?
-        } else {
-            host
-        };
-        let root_admission = |operation_id, input| TaskAdmissionRecord {
-            operation_id,
-            resource_proofs: Vec::new(),
-            task: task.clone(),
-            machine: machine.clone(),
-            input,
-            input_schema: serde_json::json!({"type": "integer"}),
-            output_schema: serde_json::json!({"type": "integer"}),
-            parent: None,
-            grants: runtime_scope.grants().clone(),
-            limits: runtime_scope.limits(),
-            run_limits: runtime_scope.run_limits(),
-            policy: None,
-            extensions: runtime_scope.extensions().cloned(),
-            execution: None,
-        };
+        assert_eq!(
+            recovered.operation.owner_scope,
+            original.operation.owner_scope
+        );
+        let impostor = AuthorityIssuer::new("fixture", [8; 32], f.issuer.audience().clone());
+        assert!(matches!(
+            f.reopen(&impostor, "owner")
+                .await?
+                .admit(record.clone())
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let mut changed = record;
+        changed.input = json!(1);
+        assert!(matches!(
+            renewed.admit(changed).await,
+            Err(Error::Conflict(_))
+        ));
+    }
+    Ok(())
+}
 
-        let operation_id = OperationId::from_bytes([88; 16]);
-        let admission = root_admission(operation_id, serde_json::json!(0));
+#[tokio::test]
+async fn b03_child_requires_original_live_fence() -> Result<()> {
+    let f = fixture().await?;
+    f.host.admit(f.admission(3, json!(0))).await?;
+    let lease = f.claim(3, "parent").await?;
+    let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
+    let mut child = f.admission(4, json!(0));
+    child.parent = Some(TaskId::from_bytes([3; 16]));
+    f.host.admit_owned(child.clone(), fence.clone()).await?;
+    let mut stale = fence.clone();
+    stale.reservation_id.push_str("-stale");
+    assert!(f.host.admit_owned(child.clone(), stale).await.is_err());
+    f.host.cancel(child.parent.unwrap()).await?;
+    assert!(f.host.admit_owned(child, fence).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn b04_descendants_only_narrow_authority() -> Result<()> {
+    let f = fixture().await?;
+    let mut parent = f.admission(5, json!(0));
+    parent.grants = Capabilities::new(["task:spawn:test.fixture@1"]);
+    parent.limits.model_steps = 2;
+    parent.run_limits = crate::runtime::TaskRunLimits {
+        concurrency: Some(2),
+        max_steps: Some(2),
+        deadline_epoch_ms: None,
+    };
+    f.host.admit(parent.clone()).await?;
+    for change in 0..5 {
+        let mut child = parent.clone();
+        child.operation_id = OperationId::new();
+        child.parent = Some(TaskId::from_bytes([5; 16]));
+        match change {
+            0 => child.grants = f.scope.grants().clone(),
+            1 => child.limits.model_steps = 3,
+            2 => child.run_limits.max_steps = Some(3),
+            3 => child.run_limits.max_steps = None,
+            _ => child.run_limits.concurrency = None,
+        }
+        let operation = child.operation_id;
         assert!(matches!(
-            host.admit(admission.clone()).await?,
-            Admission::Accepted(_)
-        ));
-        let original = host
-            .retained_declaration_with_work(operation_id, &mut None)
-            .await?
-            .ok_or_else(|| Error::NotFound("original admission".into()))?;
-        let lease = host
-            .coordinator
-            .lock()
-            .await
-            .pull(&crate::distributed::Worker {
-                id: "renewal-worker".into(),
-                available: crate::scheduler::ResourceRequest::default(),
-                labels: BTreeMap::new(),
-            })
-            .await?
-            .ok_or_else(|| Error::NotFound("parent lease".into()))?;
-        host.start_task(&lease, None).await?;
-        let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
-        let mut child = root_admission(OperationId::from_bytes([89; 16]), serde_json::json!(0));
-        child.parent = Some(TaskId::from_bytes(operation_id.into_bytes()));
-        assert!(matches!(
-            host.admit_owned(child.clone(), fence.clone()).await?,
-            Admission::Accepted(_)
-        ));
-        let original_child = host
-            .retained_declaration_with_work(child.operation_id, &mut None)
-            .await?
-            .ok_or_else(|| Error::NotFound("original child admission".into()))?;
-        let renewed = issuer
-            .issue(
-                "renewed-owner",
-                owner_scope.capabilities(),
-                None,
-                None,
-                &mut None,
-            )
-            .expect("scope proof");
-        let reopened = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?,
-            stream.clone(),
-            payloads.clone(),
-            payloads.clone(),
-            &(owner),
-            renewed,
-            issuer.verifier(&mut None).expect("verifier copy"),
-            runtime_scope.clone(),
-            tasks.clone(),
-            machines.clone(),
-            Arc::new(SystemUnixMillisClock),
-            None,
-        )?;
-        let reopened = if session {
-            reopened.with_session_limits(limits, None)?
-        } else {
-            reopened
-        };
-        let revision = reopened.coordinator.lock().await.revision();
-        assert!(matches!(
-            reopened.admit(admission.clone()).await?,
-            Admission::Accepted(_)
-        ));
-        assert_eq!(reopened.coordinator.lock().await.revision(), revision);
-        assert_eq!(
-            reopened
-                .retained_declaration_with_work(operation_id, &mut None)
-                .await?,
-            Some(original.clone())
-        );
-        assert!(matches!(
-            reopened.admit_owned(child.clone(), fence.clone()).await?,
-            Admission::Accepted(_)
-        ));
-        assert_eq!(reopened.coordinator.lock().await.revision(), revision);
-        assert_eq!(
-            reopened
-                .retained_declaration_with_work(child.operation_id, &mut None)
-                .await?,
-            Some(original_child.clone())
-        );
-        let mut stale = fence.clone();
-        stale.reservation_id.push_str("-stale");
-        assert!(matches!(
-            reopened.admit_owned(child.clone(), stale).await,
+            f.host.admit(child).await,
             Err(Error::Unauthorized(_))
         ));
-        assert_eq!(reopened.coordinator.lock().await.revision(), revision);
-        let mut changed = admission.clone();
-        changed.input = serde_json::json!(1);
-        assert!(matches!(
-            reopened.admit(changed).await,
-            Err(Error::Conflict(_))
-        ));
-        let impostor = AuthorityIssuer::new("batch-test", [8; 32], owner.clone());
-        let impostor_host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?,
-            stream.clone(),
-            payloads.clone(),
-            payloads.clone(),
-            &(owner),
-            impostor
-                .issue(
-                    "renewed-owner",
-                    owner_scope.capabilities(),
-                    None,
-                    None,
-                    &mut None,
-                )
-                .expect("scope proof"),
-            impostor.verifier(&mut None).expect("verifier copy"),
-            runtime_scope.clone(),
-            tasks.clone(),
-            machines.clone(),
-            Arc::new(SystemUnixMillisClock),
-            None,
-        )?;
-        let impostor_host = if session {
-            impostor_host.with_session_limits(limits, None)?
-        } else {
-            impostor_host
-        };
-        assert!(matches!(
-            impostor_host.admit(admission).await,
-            Err(Error::Unauthorized(_))
-        ));
-        assert_eq!(
-            reopened
-                .retained_declaration_with_work(operation_id, &mut None)
-                .await?,
-            Some(original)
-        );
+        assert!(f.host.reconcile_admission(operation).await?.is_none());
+    }
+    let mut child = parent;
+    child.operation_id = OperationId::new();
+    child.parent = Some(TaskId::from_bytes([5; 16]));
+    child.limits.model_steps = 1;
+    child.run_limits.max_steps = Some(1);
+    child.run_limits.concurrency = Some(1);
+    assert!(matches!(f.host.admit(child).await?, Admission::Accepted(_)));
+    let request = f.batch(6, Some(TaskId::from_bytes([5; 16])));
+    assert!(matches!(
+        f.host.admit_batch(request.clone()).await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert!(f.host.load_batch(request.batch_id).await?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn b05_partial_batch_resumes_missing_members() -> Result<()> {
+    let f = fixture().await?;
+    let request = f.batch(7, None);
+    f.host.commit_batch(&request).await?;
+    f.host.admit(request.member_admission(0)?).await?;
+    let reopened = f.reopen(&f.issuer, "owner").await?;
+    assert_eq!(
         reopened
-            .coordinator
-            .lock()
-            .await
-            .cancel_operation(
-                &owner,
-                &reopened.owner_scope,
-                &issuer.verifier(&mut None).expect("verifier copy"),
-                operation_id,
-                IdempotencyKey::new("renewal-parent-cancel")?,
-                false,
-                None,
-                &mut None,
-            )
-            .await?;
-        let cancelled_revision = reopened.coordinator.lock().await.revision();
-        assert!(matches!(
-            reopened.admit_owned(child.clone(), fence).await,
-            Err(Error::Conflict(_))
-        ));
+            .load_batch(request.batch_id)
+            .await?
+            .unwrap()
+            .canonical_value(),
+        request.canonical_value()
+    );
+    assert!(matches!(
+        reopened
+            .reconcile_batch(request.clone())
+            .await?
+            .unwrap()
+            .as_slice(),
+        [
+            Admission::Accepted(_),
+            Admission::Indeterminate { .. },
+            Admission::Indeterminate { .. }
+        ]
+    ));
+    let completed = reopened.admit_batch(request.clone()).await?;
+    for (index, result) in completed.iter().enumerate() {
         assert_eq!(
-            reopened.coordinator.lock().await.revision(),
-            cancelled_revision
-        );
-        assert_eq!(
-            reopened
-                .retained_declaration_with_work(child.operation_id, &mut None)
-                .await?,
-            Some(original_child)
+            result,
+            &Admission::Accepted(TaskId::from_bytes(request.operation_id(index).into_bytes()))
         );
     }
+    assert_eq!(reopened.admit_batch(request).await?, completed);
+    Ok(())
+}
+
+#[tokio::test]
+async fn b06_batch_identity_and_parent_collisions() -> Result<()> {
+    let f = fixture().await?;
+    f.host.admit(f.admission(8, json!(0))).await?;
+    f.host.admit(f.admission(9, json!(0))).await?;
+    let request = f.batch(10, Some(TaskId::from_bytes([8; 16])));
+    for change in 0..2 {
+        let mut changed = request.clone();
+        if change == 0 {
+            changed.task.digest = [99; 32];
+        } else {
+            changed.output_schema = json!({"type":"number"});
+        }
+        assert!(matches!(
+            f.host.admit_batch(changed).await,
+            Err(Error::Conflict(_))
+        ));
+    }
+    for change in 0..3 {
+        let mut selected = request.clone();
+        selected.batch_id = BatchId::from_bytes([11 + change; 16]);
+        let mut member = selected.member_admission(0)?;
+        match change {
+            0 => member.input = json!(999),
+            1 => member.parent = None,
+            _ => member.parent = Some(TaskId::from_bytes([9; 16])),
+        }
+        f.host.admit(member).await?;
+        f.host.commit_batch(&selected).await?;
+        assert!(matches!(
+            f.host.reconcile_batch(selected).await,
+            Err(Error::Conflict(_))
+        ));
+    }
+    f.host.admit_batch(request.clone()).await?;
+    let mut reordered = request;
+    reordered.inputs.swap(0, 1);
+    assert!(matches!(
+        f.host.reconcile_batch(reordered).await,
+        Err(Error::Conflict(_))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn b07_batch_cancellation_prevents_missing_admissions() -> Result<()> {
+    let f = fixture().await?;
+    let mut request = f.batch(14, None);
+    request.group_policy = crate::runtime::BatchGroupPolicy::CancelOnFailure;
+    f.host.commit_batch(&request).await?;
+    f.host.admit(request.member_admission(0)?).await?;
+    let cancellation = f.host.cancel_batch(request.batch_id).await?.unwrap();
+    assert_eq!(cancellation.entries.len(), 3);
+    assert!(matches!(
+        cancellation.entries[0].1,
+        BatchCancellationStatus::Requested
+    ));
+    assert!(
+        cancellation.entries[1..]
+            .iter()
+            .all(|(_, state)| matches!(state, BatchCancellationStatus::NotAdmitted { .. }))
+    );
+    let after = f.host.admit_batch(request.clone()).await?;
+    assert!(matches!(
+        after.as_slice(),
+        [
+            Admission::Accepted(_),
+            Admission::Rejected { .. },
+            Admission::Rejected { .. }
+        ]
+    ));
+    assert_eq!(f.host.reconcile_batch(request.clone()).await?, Some(after));
+    assert_eq!(
+        f.host
+            .cancel_batch(request.batch_id)
+            .await?
+            .unwrap()
+            .entries
+            .len(),
+        3
+    );
     Ok(())
 }

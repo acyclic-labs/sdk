@@ -130,180 +130,135 @@ impl<P: StreamProvider> HistoryReader<P> {
         })
     }
 
-    /// Reads at most one caller-bounded page; a failure leaves the supplied cursor intact.
+    /// Reads one bounded page without changing the supplied cursor.
     pub async fn read_page(
         &self,
         cursor: &HistoryCursor,
         limits: HistoryReadLimits,
-        work: Option<&mut dyn HistoryIo>,
-    ) -> Result<HistoryPage> {
-        self.read_page_with_work(cursor, limits, false, work)
-            .await
-            .map(|(page, _, _, _)| page)
-    }
-
-    pub(crate) async fn read_page_with_work(
-        &self,
-        cursor: &HistoryCursor,
-        limits: HistoryReadLimits,
-        retain_records: bool,
         mut work: Option<&mut dyn HistoryIo>,
-    ) -> Result<(
-        HistoryPage,
-        Vec<crate::store::operations::ObservedRecord>,
-        u64,
-        u64,
-    )> {
+    ) -> Result<HistoryPage> {
+        use crate::{
+            store::guarded_boundary as boundary,
+            wire::ErrorCode::{Invalid, Storage},
+            wire_codec::CodecQuota,
+        };
+        let mut quota = CodecQuota::new(&mut work, 0)?;
         self.verifier
-            .verify_audience(&cursor.authority, &mut work)?;
+            .verify_audience(&cursor.authority, quota.work())?;
         if limits.maximum_events == 0
             || limits.maximum_bytes == 0
             || cursor.after_revision > cursor.through_revision
         {
-            return Err(crate::store::guarded_boundary(
-                &work,
-                crate::wire::ErrorCode::Invalid,
+            return Err(boundary(
+                quota.work(),
+                Invalid,
                 "history read bounds or cursor are invalid",
             ));
         }
-        if cursor.through_revision > self.committed_tail_with_work(&mut work).await? {
-            return Err(crate::store::guarded_boundary(
-                &work,
-                crate::wire::ErrorCode::Invalid,
+        if cursor.through_revision > self.committed_tail_with_work(quota.work()).await? {
+            return Err(boundary(
+                quota.work(),
+                Invalid,
                 "history cursor exceeds committed tail",
             ));
         }
-        let mut next = match work.as_deref_mut() {
-            Some(work) => HistoryCursor {
-                authority: work.clone_authority(&cursor.authority)?,
-                after_revision: cursor.after_revision,
-                through_revision: cursor.through_revision,
+        let mut next = HistoryCursor {
+            authority: match quota.work().as_deref_mut() {
+                Some(io) => io.clone_authority(&cursor.authority)?,
+                None => cursor.authority.clone(),
             },
-            None => cursor.clone(),
+            after_revision: cursor.after_revision,
+            through_revision: cursor.through_revision,
         };
+        quota.adopt(next.authority.id.capacity() as u64)?;
         let count = u32::try_from(
             (cursor.through_revision - cursor.after_revision).min(u64::from(limits.maximum_events)),
         )
         .map_err(|_| {
-            crate::store::guarded_boundary(
-                &work,
-                crate::wire::ErrorCode::Invalid,
+            boundary(
+                quota.work(),
+                Invalid,
                 "history page count exceeds platform bounds",
             )
         })?;
         let mut events = Vec::new();
-        let mut events_retained_bytes = 0_u64;
-        if count == 0 {
-            if let Some(work) = work.as_deref_mut() {
-                work.check_cancellation()?;
-            }
-            return Ok((
-                HistoryPage {
-                    events,
-                    cursor: next,
-                },
-                Vec::new(),
-                0,
-                0,
-            ));
-        }
-        let mut records = crate::store::operations::read_records(
-            &self.client,
-            &self.path,
-            cursor.after_revision,
-            count,
-            &mut work,
-        )
-        .await?
-        .map_err(|error| crate::distributed::sdk_error(error, &work))?;
-        let mut retained_records = Vec::new();
-        let mut bytes = 0_u64;
-        loop {
-            if let Some(work) = work.as_deref_mut() {
-                work.check_cancellation()?;
-            }
-            let Some(record) = records.next(&mut work).await? else {
-                break;
-            };
-            let record_bytes = crate::store::operations::sdk_record_retained_bytes(&record, &work);
-            if let Some(work) = work.as_deref_mut() {
-                work.check_cancellation()?;
-            }
-            if events.len() >= count as usize || record.sequence != next.after_revision {
-                return Err(crate::store::guarded_boundary(
-                    &work,
-                    crate::wire::ErrorCode::Storage,
-                    "history page is not bounded and contiguous",
-                ));
-            }
-            bytes = bytes
-                .checked_add(record.value.len() as u64)
-                .filter(|total| *total <= limits.maximum_bytes)
-                .ok_or_else(|| {
-                    crate::store::guarded_boundary(
-                        &work,
-                        crate::wire::ErrorCode::Invalid,
-                        "history page exceeds byte bound",
-                    )
-                })?;
-            let (event, event_retained) = verify_history_record_with_retained_quota(
-                &self.verifier,
-                &cursor.authority,
-                next.after_revision,
-                &record,
-                &mut work,
-            )?;
-            events_retained_bytes = events_retained_bytes
-                .checked_add(event_retained)
-                .ok_or_else(|| {
-                    crate::store::guarded_boundary(
-                        &work,
-                        crate::wire::ErrorCode::Storage,
-                        "history event custody overflows",
-                    )
-                })?;
-            if let Some(work) = work.as_deref_mut() {
-                work.admit_output(bytes, events.len() as u64 + 1)?;
-                crate::store::history::ensure_slot(&mut events, count as usize, work)?;
-            }
-            next.after_revision = event.revision;
-            events.push(event);
-            if retain_records {
-                if let Some(work) = work.as_deref_mut() {
-                    crate::store::history::ensure_slot(
-                        &mut retained_records,
-                        count as usize,
-                        work,
+        if count != 0 {
+            let mut records = crate::store::operations::read_records(
+                &self.client,
+                &self.path,
+                cursor.after_revision,
+                count,
+                quota.work(),
+            )
+            .await?
+            .map_err(|error| crate::distributed::sdk_error(error, quota.work()))?;
+            let mut bytes = 0_u64;
+            loop {
+                if let Some(io) = quota.work().as_deref() {
+                    io.check_cancellation()?;
+                }
+                let Some(record) = records.next(quota.work()).await? else {
+                    break;
+                };
+                let raw =
+                    crate::store::operations::sdk_record_retained_bytes(&record, quota.work());
+                quota.adopt(raw)?;
+                if let Some(io) = quota.work().as_deref() {
+                    io.check_cancellation()?;
+                }
+                if events.len() >= count as usize || record.sequence != next.after_revision {
+                    return Err(boundary(
+                        quota.work(),
+                        Storage,
+                        "history page is not bounded and contiguous",
+                    ));
+                }
+                bytes = bytes
+                    .checked_add(record.value.len() as u64)
+                    .filter(|bytes| *bytes <= limits.maximum_bytes)
+                    .ok_or_else(|| {
+                        boundary(quota.work(), Invalid, "history page exceeds byte bound")
+                    })?;
+                let (event, held) = verify_history_record_with_retained_quota(
+                    &self.verifier,
+                    &cursor.authority,
+                    next.after_revision,
+                    &record,
+                    quota.work(),
+                )?;
+                quota.adopt(held)?;
+                if let Some(io) = quota.work().as_deref_mut() {
+                    io.admit_output(bytes, events.len() as u64 + 1)?;
+                    let before = events.capacity();
+                    ensure_slot(&mut events, count as usize, io)?;
+                    quota.adopt(
+                        ((events.capacity() - before) * std::mem::size_of::<Event>()) as u64,
                     )?;
                 }
-                retained_records.push(record);
-            } else {
+                next.after_revision = event.revision;
+                events.push(event);
                 drop(record);
-                if let Some(work) = work.as_deref_mut() {
-                    work.release_owned(record_bytes)?;
-                }
+                quota.relinquish(raw)?;
             }
+            if events.is_empty() {
+                return Err(boundary(
+                    quota.work(),
+                    Storage,
+                    "history page stopped before its pinned boundary",
+                ));
+            }
+            if let Some(io) = quota.work().as_deref_mut() {
+                io.check_cancellation()?;
+                io.stage_output(bytes, events.len() as u64)?;
+            }
+        } else if let Some(io) = quota.work().as_deref() {
+            io.check_cancellation()?;
         }
-        if events.is_empty() {
-            return Err(crate::store::guarded_boundary(
-                &work,
-                crate::wire::ErrorCode::Storage,
-                "history page stopped before its pinned boundary",
-            ));
-        }
-        if let Some(work) = work.as_deref_mut() {
-            work.check_cancellation()?;
-            work.stage_output(bytes, events.len() as u64)?;
-        }
-        Ok((
-            HistoryPage {
-                events,
-                cursor: next,
-            },
-            retained_records,
-            bytes,
-            events_retained_bytes,
-        ))
+        quota.transfer();
+        Ok(HistoryPage {
+            events,
+            cursor: next,
+        })
     }
 
     pub(super) async fn committed_tail_with_work(

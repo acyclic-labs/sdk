@@ -293,13 +293,13 @@ impl NativeWorkspace {
         let generation = sdk_value!(unbounded_future!(self.inner, head()))?;
         let idempotency_key = native_idempotency_key(idempotency_key)?;
         self.inner
-            .fork(
+            .fork::<_, _, acyclic_fs::WorkspaceError>(
                 destination,
                 ForkOptions::from_generation(generation, idempotency_key),
                 acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                publication_ready,
+                &mut publication_ready,
             )
             .await
             .map(|receipt| receipt.value)
@@ -321,13 +321,13 @@ impl NativeWorkspace {
             None => fork,
         };
         self.inner
-            .fork(
+            .fork::<_, _, acyclic_fs::WorkspaceError>(
                 destination,
                 fork,
                 acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                publication_ready,
+                &mut publication_ready,
             )
             .await
             .map(|receipt| receipt.value)

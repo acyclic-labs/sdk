@@ -1,4 +1,3 @@
-//! Admission and capture of bounded checkpoint data.
 use super::*;
 
 fn admit_copy<'a, 'w>(
@@ -17,7 +16,6 @@ fn admit_copy<'a, 'w>(
 impl Snapshot {
     /// Copies authenticated state under the optional work ledger.
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-        self.require_work(work)?;
         inspect_metadata(self, work)?;
         let bytes = if work.is_some() {
             self.fields_owned_bytes()?
@@ -27,7 +25,7 @@ impl Snapshot {
         let mut quota = admit_copy(bytes, work)?;
         let (conversation, retained) = self.projection.conversation.copy(quota.work(), None)?;
         quota.adopt(retained)?;
-        let mut snapshot = Self {
+        let snapshot = Self {
             format_version: self.format_version,
             authority: self.authority.clone(),
             revision: self.revision,
@@ -37,27 +35,21 @@ impl Snapshot {
                 .copy(conversation, self.projection.bindings.clone()),
             state_digest: self.state_digest,
             attestation: self.attestation,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_allocation: None,
         };
-        snapshot.finish(&mut quota)?;
         quota.transfer();
         Ok(snapshot)
     }
-    fn finish(&mut self, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if quota.work().as_deref().is_some_and(copying::is_native) {
-            let bytes = quota.retained();
-            let allocation = quota
-                .work()
-                .as_deref_mut()
-                .expect("native snapshot observer")
-                .take_native_custody(bytes)?;
-            quota.transfer();
-            self.install_native_custody(allocation, quota.work())?;
-        }
-        let _ = quota;
-        Ok(())
+    fn fields_owned_bytes(&self) -> Result<u64> {
+        ownership::owned_sum([
+            owned_vector(&self.projection.bindings, |(extension, _)| {
+                Ok(extension.name.capacity() as u64)
+            })?,
+            self.projection.owned_bytes(
+                &self.authority,
+                self.events.iter(),
+                self.events.capacity(),
+            )?,
+        ])
     }
 }
 impl Reducer {
@@ -83,27 +75,18 @@ impl Reducer {
         maximum_events: usize,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(Snapshot, u64)> {
-        self.native_custody.require_work(
-            work,
-            "native snapshot capture requires explicit native work",
-        )?;
         if maximum_events == 0 && self.revision != 0 {
             return Err(Error::Invalid("snapshot must retain its head event".into()));
         }
-        let mut bytes = 0;
-        if work.is_some() {
-            self.projection.visit(
+        let bytes = if work.is_some() {
+            self.projection.owned_bytes(
                 &self.authority,
                 self.events.iter(),
                 self.events.capacity(),
-                |key, owned| {
-                    if !matches!(key, NativeComponentKey::ConversationMessage(_)) {
-                        bytes = ownership::owned_sum([bytes, owned])?;
-                    }
-                    Ok(())
-                },
-            )?;
-        }
+            )?
+        } else {
+            0
+        };
         let mut quota = admit_copy(bytes, work)?;
         let (conversation, retained) = match self.resident_checkpoint_selection() {
             Some(selection) => {
@@ -152,8 +135,6 @@ impl Reducer {
             projection: self.projection.copy(conversation, bindings),
             state_digest: [0; 32],
             attestation: [0; 32],
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_allocation: None,
         };
         snapshot.state_digest = snapshot.digest_with_work(quota.work())?;
         snapshot.attestation = self.authority_verifier.canonical_proof(
@@ -165,7 +146,6 @@ impl Reducer {
             ),
             quota.work(),
         )?;
-        snapshot.finish(&mut quota)?;
         let retained = quota.retained();
         quota.transfer();
         Ok((snapshot, retained))

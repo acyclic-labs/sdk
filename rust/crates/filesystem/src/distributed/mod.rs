@@ -6,8 +6,6 @@ use crate::foundation::{
     Sequence, authority_commit_digest,
 };
 use crate::kernel::volume_authority_id;
-#[cfg(test)]
-use crate::performance::OperationFailure;
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
     AppendOutcome as FsAppendOutcome, AuthorityStoreError, CreateAuthorityOutcome, FenceOutcome,
@@ -62,21 +60,23 @@ struct AuthoritySnapshot {
 // Private read-only capability: retirement bypass is available only to accounting.
 struct AccountingAuthority<'a, P>(&'a StreamAuthorityStore<P>);
 
-mod work;
-use work::*;
-mod accounting;
-mod history;
-mod read;
-use read::*;
-mod creation;
-mod publication;
-use publication::*;
+use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest, StreamPath};
+mod io;
+use io::*;
+mod native;
+use native::*;
+mod append;
+mod authority;
+mod bindings;
+mod lineage;
+mod replay;
+use append::seal;
 mod records;
+mod reservations;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) use records::object_id_from_key;
 pub(crate) use records::object_key;
 use records::*;
-mod reservation;
-
+mod accounting;
 #[cfg(test)]
 mod tests;

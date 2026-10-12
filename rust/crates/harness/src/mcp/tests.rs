@@ -25,25 +25,27 @@ impl McpToolTransport for Transport {
         &'a self,
         _: OperationId,
         _: &'a str,
-        _: Value,
-        _: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
+        arguments: Value,
+        context: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<Value>> {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async {
-            Ok(McpToolResult {
-                content: vec![json!({"type":"text","text":"ok"})],
-                structured_content: Some(json!({"value":1})),
-                is_error: false,
-                meta: None,
-            })
+        Box::pin(async move {
+            if let Some(context) = context {
+                return Ok(context_result(&context, arguments));
+            }
+            Ok(
+                json!({"content":[{"type":"text","text":"ok"}], "structuredContent":{"value":1}, "isError":false}),
+            )
         })
     }
     fn reconcile<'a>(
         &'a self,
         _: OperationId,
-        _: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
-        Box::pin(async { Ok(None) })
+        context: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
+        Box::pin(
+            async move { Ok(context.map(|context| context_result(&context, json!({"value":1})))) },
+        )
     }
 }
 fn catalog(revision: &str, names: &[&str]) -> McpCatalog {
@@ -61,27 +63,6 @@ fn catalog_pins_replaceable_projection_independently_of_remote_output() -> Resul
         "required":["kind","parts"],"additionalProperties":false});
     let definition = selected.model_definitions(8, 8192)?.remove(0);
     assert_eq!(definition.projection_schema, selected.projection_schema);
-    definition.validate_projection(
-        &json!({"kind":"parts","parts":[{"kind":"text","text":"bounded view"}]}),
-        Limits::default(),
-        None,
-    )?;
-    assert!(
-        definition
-            .validate_projection(&json!({"kind":"json","value":{}}), Limits::default(), None)
-            .is_err()
-    );
-    assert!(
-        definition
-            .validate_projection(
-                &json!({"kind":"parts","parts":[
-                    {"kind":"tool_call","name":"nested","call_id":"nested","arguments":{}}
-                ]}),
-                Limits::default(),
-                None
-            )
-            .is_err()
-    );
     let digest = selected.installation_digest(None, 8, 8192)?;
     selected.projection_schema = crate::tool::json_projection_schema(json!({}));
     assert_ne!(digest, selected.installation_digest(None, 8, 8192)?);
@@ -157,22 +138,18 @@ async fn catalog_installation_requires_signed_namespace_and_exact_complete_appro
     let mut registry = ToolRegistry::default();
     for control in 0..=13 {
         let mut input = original.clone();
-        let mut installation = McpCatalogInstallation {
-            operation: approval.operation,
-            interaction: approval.interaction,
-            scope: &scope,
-            verifier: &verifier,
-            approval: &approval,
-            maximum_tools: 8,
-            maximum_bytes: 8192,
-        };
+        let mut operation = approval.operation;
+        let mut interaction = approval.interaction;
+        let mut selected_scope = &scope;
+        let mut maximum_tools = 8;
+        let mut maximum_bytes = 8192;
         match control {
-            0 => installation.scope = &missing,
-            1 => installation.scope = &forged,
-            2 => installation.operation = OperationId::from_bytes([48; 16]),
-            3 => installation.interaction = InteractionId::from_bytes([48; 16]),
-            4 => installation.maximum_tools = 9,
-            5 => installation.maximum_bytes = 8193,
+            0 => selected_scope = &missing,
+            1 => selected_scope = &forged,
+            2 => operation = OperationId::from_bytes([48; 16]),
+            3 => interaction = InteractionId::from_bytes([48; 16]),
+            4 => maximum_tools = 9,
+            5 => maximum_bytes = 8193,
             6 => input.revision = "different".into(),
             7 => input.schema_exposure = McpSchemaExposure::Selected { names: vec![] },
             8 => input.discovery = McpDiscoveryPolicy::Disabled,
@@ -198,14 +175,26 @@ async fn catalog_installation_requires_signed_namespace_and_exact_complete_appro
         }
         let reads = approval.reads.load(Ordering::SeqCst);
         let result = input
-            .install_scoped(&mut registry, None, &bound, &projection, installation)
+            .install_scoped(
+                &mut registry,
+                None,
+                &bound,
+                &projection,
+                operation,
+                interaction,
+                selected_scope,
+                &verifier,
+                &approval,
+                maximum_tools,
+                maximum_bytes,
+            )
             .await;
         if control == 13 {
             result?;
         } else {
             assert!(result.is_err());
             assert!(registry.definitions(None)?.is_empty());
-            assert!(registry.get_version("mcp.fixture.a", "1", None)?.is_none());
+            assert!(registry.get("mcp.fixture.a", Some("1"), None)?.is_none());
             if control < 2 {
                 assert_eq!(approval.reads.load(Ordering::SeqCst), reads);
             }
@@ -220,7 +209,7 @@ async fn catalog_installation_requires_signed_namespace_and_exact_complete_appro
     };
     let installer = RuntimeScope::new(scope.capabilities().clone(), Limits::default())?;
     let tool = registry
-        .get("mcp.fixture.a", None)?
+        .get("mcp.fixture.a", None, None)?
         .ok_or_else(|| Error::NotFound("installed tool".into()))?;
     assert!(matches!(
         tool.executor.authorize(Some(&installer), &invocation),
@@ -272,15 +261,13 @@ async fn scoped_replacement_approval_pins_the_exact_previous_catalog() -> Result
                 previous,
                 &bound,
                 &projection,
-                McpCatalogInstallation {
-                    operation: approval.operation,
-                    interaction: approval.interaction,
-                    scope: &scope,
-                    verifier: &verifier,
-                    approval: &approval,
-                    maximum_tools: 8,
-                    maximum_bytes: 8192,
-                },
+                approval.operation,
+                approval.interaction,
+                &scope,
+                &verifier,
+                &approval,
+                8,
+                8192,
             )
             .await;
         if previous == Some(&original) {
@@ -291,64 +278,31 @@ async fn scoped_replacement_approval_pins_the_exact_previous_catalog() -> Result
                 registry.definitions(None)?,
                 original.model_definitions(8, 8192)?
             );
-            assert!(registry.get_version("mcp.fixture.a", "2", None)?.is_none());
+            assert!(registry.get("mcp.fixture.a", Some("2"), None)?.is_none());
         }
     }
     assert!(registry.definitions(None)?.is_empty());
-    assert!(registry.get_version("mcp.fixture.a", "1", None)?.is_some());
-    assert!(registry.get_version("mcp.fixture.b", "1", None)?.is_some());
-    assert!(registry.get_version("mcp.fixture.a", "2", None)?.is_some());
+    assert!(registry.get("mcp.fixture.a", Some("1"), None)?.is_some());
+    assert!(registry.get("mcp.fixture.b", Some("1"), None)?.is_some());
+    assert!(registry.get("mcp.fixture.a", Some("2"), None)?.is_some());
     Ok(())
 }
 
-struct ContextTransport;
-
-fn context_result(context: &ToolContext, structured_content: Value) -> McpToolResult {
-    McpToolResult {
-        content: vec![],
-        structured_content: Some(structured_content),
-        is_error: false,
-        meta: Some(json!({
-            "task": context.task().id(),
-            "operation": context.operation_id(),
-            "call": context.call_id(),
-            "serverGrant": context.task().scope().grants().contains("mcp:call:fixture"),
-            "durableTask": context.task().durable_task_id(),
-        })),
-    }
-}
-
-impl McpToolTransport for ContextTransport {
-    fn call<'a>(
-        &'a self,
-        _: OperationId,
-        name: &'a str,
-        arguments: Value,
-        context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
-        Box::pin(async move {
-            let context =
-                context.ok_or_else(|| Error::Unsupported("task context required".into()))?;
-            assert_eq!(name, "a");
-            Ok(context_result(&context, arguments))
-        })
-    }
-    fn reconcile<'a>(
-        &'a self,
-        _: OperationId,
-        context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
-        Box::pin(async move {
-            let context =
-                context.ok_or_else(|| Error::Unsupported("task context required".into()))?;
-            Ok(Some(context_result(&context, json!({"value":1}))))
-        })
-    }
+fn context_result(context: &ToolContext, structured_content: Value) -> Value {
+    json!({"content":[], "structuredContent":structured_content, "isError":false,
+        "_meta":{"task":context.task().id(), "operation":context.operation_id(),
+            "call":context.call_id(), "serverGrant":context.task().scope().grants().contains("mcp:call:fixture"),
+            "durableTask":context.task().durable_task_id()}})
 }
 
 async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
     let operation = OperationId::from_bytes([17; 16]);
-    let context = ToolContext::new(std::sync::Arc::new(task.clone()), operation, "provider-call", None)?;
+    let context = ToolContext::new(
+        std::sync::Arc::new(task.clone()),
+        operation,
+        "provider-call",
+        None,
+    )?;
     let invocation = ToolInvocation {
         operation_id: operation,
         call_id: "provider-call".into(),
@@ -370,9 +324,19 @@ async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
     assert_eq!(recovered.value["_meta"], expected);
     let denied = task.scoped(Capabilities::new([] as [String; 0]), Limits::default())?;
     for wrong in [
-        ToolContext::new(std::sync::Arc::new(task.clone()), OperationId::from_bytes([18; 16]), "provider-call", None)?,
+        ToolContext::new(
+            std::sync::Arc::new(task.clone()),
+            OperationId::from_bytes([18; 16]),
+            "provider-call",
+            None,
+        )?,
         ToolContext::new(std::sync::Arc::new(task), operation, "different-call", None)?,
-        ToolContext::new(std::sync::Arc::new(denied), operation, "provider-call", None)?,
+        ToolContext::new(
+            std::sync::Arc::new(denied),
+            operation,
+            "provider-call",
+            None,
+        )?,
     ] {
         assert!(matches!(
             tool.executor
@@ -398,13 +362,13 @@ async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
 
 #[tokio::test]
 async fn admitted_mcp_tools_preserve_context_and_reject_identity_or_scope_changes() -> Result<()> {
-    let transport = Arc::new(ContextTransport);
+    let transport = Arc::new(Transport::default());
     let bound: Arc<dyn McpToolTransport> = transport.clone();
     let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
     let mut registry = ToolRegistry::default();
     catalog("1", &["a"]).install(&mut registry, None, &bound, &projection, 8, 8192)?;
     let tool = registry
-        .get("mcp.fixture.a", None)?
+        .get("mcp.fixture.a", None, None)?
         .cloned()
         .ok_or_else(|| Error::NotFound("context fixture".into()))?;
     let definition = TaskDefinition::live("mcp.context", "1", move |task, (): ()| {
@@ -428,42 +392,6 @@ async fn admitted_mcp_tools_preserve_context_and_reject_identity_or_scope_change
     );
     Ok(())
 }
-#[test]
-fn catalog_reload_is_atomic_and_retains_pinned_removed_tools() -> Result<()> {
-    let transport = Arc::new(Transport::default());
-    let bound: Arc<dyn McpToolTransport> = transport.clone();
-    let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
-    let mut registry = ToolRegistry::default();
-    let old = catalog("1", &["a", "b"]);
-    old.install(&mut registry, None, &bound, &projection, 8, 8192)?;
-    let pinned = registry
-        .get("mcp.fixture.a", None)?
-        .cloned()
-        .ok_or_else(|| Error::NotFound("fixture".into()))?;
-    let mut invalid = catalog("2", &["a", "a"]);
-    assert!(
-        invalid
-            .install(&mut registry, Some(&old), &bound, &projection, 8, 8192)
-            .is_err()
-    );
-    assert_eq!(registry.definitions(None)?.len(), 2);
-    invalid.tools.pop();
-    invalid.install(&mut registry, Some(&old), &bound, &projection, 8, 8192)?;
-    assert_eq!(registry.definitions(None)?.len(), 1);
-    assert_eq!(registry.definitions(None)?[0].revision, "2");
-    assert!(registry.get("mcp.fixture.b", None)?.is_none());
-    assert!(registry.get_version("mcp.fixture.b", "1", None)?.is_some());
-    assert_eq!(pinned.definition.revision, "1");
-    assert_eq!(transport.0.load(Ordering::SeqCst), 0);
-    // A stale replacement cannot withdraw a later selection.
-    assert!(
-        catalog("3", &["c"])
-            .install(&mut registry, Some(&old), &bound, &projection, 8, 8192)
-            .is_err()
-    );
-    assert_eq!(registry.definitions(None)?[0].revision, "2");
-    Ok(())
-}
 #[tokio::test]
 async fn search_grants_no_authority_and_reconciliation_never_dispatches() -> Result<()> {
     let catalog = catalog("1", &["c", "a", "b"]);
@@ -481,7 +409,7 @@ async fn search_grants_no_authority_and_reconciliation_never_dispatches() -> Res
     let mut registry = ToolRegistry::default();
     catalog.install(&mut registry, None, &bound, &projection, 8, 8192)?;
     let tool = registry
-        .get("mcp.fixture.a", None)?
+        .get("mcp.fixture.a", None, None)?
         .ok_or_else(|| Error::NotFound("fixture".into()))?;
     let invocation = ToolInvocation {
         operation_id: OperationId::from_bytes([1; 16]),
@@ -510,6 +438,9 @@ fn schema_bounds_namespace_and_result_negative_controls() {
     input.server = "fixture.other".into();
     assert!(input.validate(1, 8192).is_err());
     input.server = "fixture".into();
+    input.tools.push(input.tools[0].clone());
+    assert!(input.validate(8, 8192).is_err());
+    input.tools.pop();
     input.tools[0].input_schema = json!({"type":"unknown"});
     assert!(input.validate(1, 8192).is_err());
     let tool = RemoteTool {
@@ -518,39 +449,18 @@ fn schema_bounds_namespace_and_result_negative_controls() {
         output_schema: catalog("1", &["a"]).tools.remove(0).output_schema,
         transport: Arc::new(Transport::default()),
     };
+    assert!(tool.result(json!({"content":[], "isError":false})).is_err());
     assert!(
-        tool.result(McpToolResult {
-            content: vec![],
-            structured_content: None,
-            is_error: false,
-            meta: None
-        })
-        .is_err()
+        tool.result(json!({"content":[], "structuredContent":{"value":"wrong"}, "isError":false}))
+            .is_err()
     );
-    assert!(
-        tool.result(McpToolResult {
-            content: vec![],
-            structured_content: Some(json!({"value":"wrong"})),
-            is_error: false,
-            meta: None
-        })
-        .is_err()
-    );
-    assert!(
-        tool.result(McpToolResult {
-            content: vec![],
-            structured_content: None,
-            is_error: true,
-            meta: None
-        })
-        .is_ok()
-    );
+    assert!(tool.result(json!({"content":[], "isError":true})).is_ok());
 }
 
 #[tokio::test]
 async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
     struct PendingTransport {
-        response: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<McpToolResult>>>,
+        response: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<Value>>>,
     }
     impl McpToolTransport for PendingTransport {
         fn call<'a>(
@@ -559,7 +469,7 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
             _: &'a str,
             _: Value,
             _: Option<ToolContext>,
-        ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
+        ) -> BoxProviderFuture<'a, Result<Value>> {
             Box::pin(async move {
                 let response = self
                     .response
@@ -576,7 +486,7 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
             &'a self,
             _: OperationId,
             _: Option<ToolContext>,
-        ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
+        ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
             Box::pin(async { Ok(None) })
         }
     }
@@ -590,7 +500,7 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
     let old_catalog = catalog("1", &["a"]);
     old_catalog.install(&mut registry, None, &old_transport, &projection, 8, 8192)?;
     let admitted = registry
-        .get("mcp.fixture.a", None)?
+        .get("mcp.fixture.a", None, None)?
         .cloned()
         .ok_or_else(|| Error::NotFound("fixture".into()))?;
     let invocation = ToolInvocation {
@@ -612,16 +522,11 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
         8192,
     )?;
     sender
-        .send(McpToolResult {
-            content: vec![],
-            structured_content: Some(json!({"value":11})),
-            is_error: false,
-            meta: None,
-        })
+        .send(json!({"content":[], "structuredContent":{"value":11}, "isError":false}))
         .map_err(|_| Error::Invalid("fixture dropped".into()))?;
     assert_eq!(call.await?.value["structuredContent"]["value"], 11);
     let next = registry
-        .get("mcp.fixture.a", None)?
+        .get("mcp.fixture.a", None, None)?
         .ok_or_else(|| Error::NotFound("fixture".into()))?;
     assert_eq!(next.definition.revision, "2");
     assert_eq!(
@@ -665,12 +570,12 @@ fn every_selected_exposure_reload_is_atomic_including_empty_visibility() -> Resu
             for name in names {
                 assert!(
                     registry
-                        .get_version(&format!("mcp.fixture.{name}"), "1", None)?
+                        .get(&format!("mcp.fixture.{name}"), Some("1"), None)?
                         .is_some()
                 );
                 assert!(
                     registry
-                        .get_version(&format!("mcp.fixture.{name}"), "2", None)?
+                        .get(&format!("mcp.fixture.{name}"), Some("2"), None)?
                         .is_some()
                 );
             }

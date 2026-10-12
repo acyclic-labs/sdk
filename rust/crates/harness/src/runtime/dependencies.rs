@@ -1,7 +1,6 @@
 use super::*;
 
 /// Provider capabilities visible to task dependency admission.
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TaskDependencyEnvironment {
     /// A model provider is bound for this composition.
@@ -31,7 +30,6 @@ pub struct TaskDependencyEnvironment {
 }
 
 /// Validates an immutable task dependency graph and its provider requirements.
-
 pub(crate) fn validate_task_requirements(
     tasks: &BTreeMap<(String, String), BTreeSet<String>>,
     tools: &BTreeSet<(String, String)>,
@@ -270,7 +268,7 @@ pub(super) fn validate_task_dependencies(
         let preparation = io;
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let preparation = None;
-        let available = tools.get_version(name, version, preparation)?.is_some()
+        let available = tools.get(name, Some(version), preparation)?.is_some()
             || resumable_tools.get(name, version, &mut work)?.is_some();
         if available {
             native_startup::item(io, std::mem::size_of::<(String, String)>())?;

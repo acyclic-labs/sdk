@@ -669,10 +669,9 @@ impl PiSession {
                     })?;
                 let workspace_name = {
                     let mut io =
-                        acyclic_harness::store::history::native_work_io(original_native_work)
-                            .map_err(acyclic_harness::Error::from)?;
+                        acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(original_native_work)?);
                     let value = volume.storage_name(&mut Some(&mut io))?;
-                    (value, io.into_custody())
+                    (value, io.into_custody()?)
                 };
                 let workspace = self
                     .resources
@@ -722,14 +721,10 @@ impl PiSession {
             let rebound = handle
                 .workspace
                 .rebind_source(
-                    &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
-                        original_native_work,
-                        original_native_work.cancellation(),
-                    )
-                    .map_err(|source| RootError::NativeSource {
-                        source,
-                        custody: None,
-                    })?,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work: original_native_work,
+                        cancellation: original_native_work.cancellation(),
+                    },
                 )
                 .await
                 .map_err(|source| RootError::NativeSource {
@@ -745,8 +740,8 @@ impl PiSession {
                     code: acyclic_harness::wire::ErrorCode::Invalid,
                     reason: "Pi retained root handle is not selected by allocation",
                 })?;
-            if rebound.as_state().source.identity != original.source_identity
-                || rebound.as_state().source.epoch < original.source_epoch
+            if rebound.source.identity != original.source_identity
+                || rebound.source.epoch < original.source_epoch
             {
                 return Err(RootError::NativeBoundary {
                     code: acyclic_harness::wire::ErrorCode::Invalid,
@@ -754,7 +749,7 @@ impl PiSession {
                 });
             }
             // Only the genuine SDK rebind may advance the admitted creation epoch.
-            original.source_epoch = rebound.as_state().source.epoch;
+            original.source_epoch = rebound.source.epoch;
             drop(rebound);
         }
         let PluginTaskBinding::Pi(binding) = &mut self.state.task_binding else {
@@ -866,7 +861,7 @@ impl PiSession {
             },
         )?;
         context_custody
-            .resize_retained(actual_context_bytes)
+            .resize(actual_context_bytes)
             .map_err(|cause| RootError::NativeWork {
                 cause,
                 custody: None,
@@ -1195,9 +1190,9 @@ impl PiSession {
         }
         let binding = self.binding(caller)?;
         let host = self.runtime.runtime.task_host();
-        let mut lease_io = acyclic_harness::store::native_work_io(&work)?;
+        let mut lease_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?);
         let reservation = host.recover_work(caller, &mut Some(&mut lease_io)).await?;
-        let _reservation_custody = lease_io.into_custody();
+        let _reservation_custody = lease_io.into_custody()?;
         let lease = match reservation {
             acyclic_harness::distributed::WorkPull::Claimed(lease) => lease,
             acyclic_harness::distributed::WorkPull::Unresolved { .. } => {

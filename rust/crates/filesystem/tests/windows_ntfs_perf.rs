@@ -128,9 +128,9 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
         }, )
     .await .map(|(lazy, _)| lazy) ?;
     let cancellation = CancellationToken::new();
-    let work = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let exact = lazy
-        .exactify("/hot", PublicationPermit::Unrestricted, &work)
+        .exactify("/hot", PublicationPermit::Unrestricted, &mut work)
         .await?;
     let file = exact
         .stat(
@@ -580,9 +580,9 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     .await .map(|(lazy, _)| lazy) ?;
     let started = Instant::now();
     let cancellation = CancellationToken::new();
-    let work = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut work = acyclic_fs::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let phase_exact = phase_lazy
-        .exactify("/hot", PublicationPermit::Unrestricted, &work)
+        .exactify("/hot", PublicationPermit::Unrestricted, &mut work)
         .await?;
     let exactify_us = started.elapsed().as_micros();
     let phase_view = tempfile::tempdir()?;

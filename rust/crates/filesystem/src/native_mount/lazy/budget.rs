@@ -12,12 +12,7 @@ pub(in crate::native_mount) fn mount_demand_error(error: DemandError) -> MountSo
         }
         DemandError::Absent => MountSourceError::NotFound,
         DemandError::NotDirectory => MountSourceError::Filesystem(crate::FsError::NotDirectory),
-        #[cfg(target_os = "linux")]
-        DemandError::LinuxMetadata(error) => MountSourceError::Metadata(error),
-        #[cfg(target_os = "macos")]
-        DemandError::MacMetadata(error) => MountSourceError::Metadata(error),
-        #[cfg(windows)]
-        DemandError::WindowsMetadata(error) => MountSourceError::Metadata(error),
+        DemandError::NativeMetadata(error) => MountSourceError::Metadata(error),
         #[cfg(feature = "native-watch")]
         DemandError::SourceWatchStartup(owner) => MountSourceError::SourceWatchStartup(owner),
         #[cfg(feature = "native-watch")]
@@ -60,11 +55,11 @@ pub(in crate::native_mount) fn mount_accept<T, E>(
 ) -> Result<T, MountSourceError> {
     match result {
         Ok(receipt) => {
-            work.merge(receipt.work).map_err(mount_demand_error)?;
+            work.merge(receipt.work, work.live_allocation_bytes()).map_err(mount_demand_error)?;
             Ok(receipt.value)
         }
         Err(failure) => {
-            work.merge(*failure.work).map_err(mount_demand_error)?;
+            work.merge(*failure.work, work.live_allocation_bytes()).map_err(mount_demand_error)?;
             Err(map(failure.error))
         }
     }
@@ -88,7 +83,7 @@ pub(in crate::native_mount) fn mount_vec<T>(
     let bytes = count
         .checked_mul(std::mem::size_of::<T>())
         .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
-    work.allocate(bytes).map_err(mount_demand_error)?;
+    work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
     let mut values = Vec::new();
     if let Err(error) = values.try_reserve_exact(count) {
         work.release(bytes).map_err(mount_demand_error)?;

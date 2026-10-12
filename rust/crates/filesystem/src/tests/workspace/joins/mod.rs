@@ -10,7 +10,7 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
         .value;
     let parent_base = parent.head(B, &cancel).await?.value;
     let child = parent
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "incremental-child",
             ForkOptions::from_generation(
                 parent_base.clone(),
@@ -19,7 +19,7 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -31,7 +31,7 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
                 ApplyOptions {
                     if_target: first.target_head(),
                     idempotency_key: IdempotencyKey::from_bytes([0x68; 16]),
-                },
+                }, std::collections::BTreeMap::new(),
                 PublicationPermit::Unrestricted
             )
             .await?,
@@ -45,7 +45,7 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
                 ApplyOptions {
                     if_target: second.target_head(),
                     idempotency_key: IdempotencyKey::from_bytes([0x69; 16]),
-                },
+                }, std::collections::BTreeMap::new(),
                 PublicationPermit::Unrestricted
             )
             .await?,
@@ -79,13 +79,13 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     main.write_text("/base", "base").await?;
     let base = main.head(B, &cancel).await?.value;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -101,7 +101,7 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
             ApplyOptions {
                 if_target: expected,
                 idempotency_key,
-            },
+            }, std::collections::BTreeMap::new(),
             PublicationPermit::Unrestricted,
         )
         .await?;
@@ -111,12 +111,12 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     let witness = plan
         .commit_witness(&joined, idempotency_key, B, &cancel)?
         .value;
-    assert!(main.verify_join_commit(&witness).await?);
+    assert!(main.verify_join_commit(&witness, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value);
     let mut forged = serde_json::to_value(witness)?;
     forged["source_generation"] =
         serde_json::to_value(crate::GenerationId::new(crate::Digest::ZERO))?;
     let forged: crate::JoinCommitWitness = serde_json::from_value(forged)?;
-    assert!(!main.verify_join_commit(&forged).await?);
+    assert!(!main.verify_join_commit(&forged, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value);
     assert_eq!(
         main.operation_generation(idempotency_key, B, &cancel)
             .await?
@@ -152,14 +152,14 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
             ApplyOptions {
                 if_target: expected,
                 idempotency_key,
-            },
+            }, std::collections::BTreeMap::new(),
             PublicationPermit::Unrestricted
         )
         .await?,
         JoinOutcome::AlreadyApplied(_)
     ));
     main.write_text("/after-join", "later").await?;
-    assert!(main.verify_join_commit(&witness).await?);
+    assert!(main.verify_join_commit(&witness, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value);
     let ordinary_key = IdempotencyKey::new();
     let mut ordinary = main
         .begin_transaction(ordinary_key, B, &cancel)
@@ -188,7 +188,7 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     impostor["operation_id"] = serde_json::to_value(ordinary_key.operation_id())?;
     impostor["result_generation"] = serde_json::to_value(ordinary_generation.id())?;
     let impostor: crate::JoinCommitWitness = serde_json::from_value(impostor)?;
-    assert!(!main.verify_join_commit(&impostor).await?);
+    assert!(!main.verify_join_commit(&impostor, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value);
     Ok(())
 }
 
@@ -201,13 +201,13 @@ async fn exact_generation_join_matches_head_plan_and_rejects_stale_target()
     main.write_text("/base", "base").await?;
     let base = main.head(B, &cancel).await?.value;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-exact",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -256,13 +256,13 @@ async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Er
     let main = fs.create_workspace("main", B, &cancel).await?.value;
     let base = main.head(B, &cancel).await?.value;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -275,7 +275,7 @@ async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Er
             ApplyOptions {
                 if_target: expected,
                 idempotency_key: IdempotencyKey::new(),
-            },
+            }, std::collections::BTreeMap::new(),
             PublicationPermit::Unrestricted,
         )
         .await?;
@@ -295,13 +295,13 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
     let main = fs.create_workspace("driver-main", B, &cancel).await?.value;
     main.write_text("/shared", "base").await?;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "driver-agent",
             ForkOptions::from_generation(main.head(B, &cancel).await?.value, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -331,10 +331,15 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
     assert!(
         main.verify_join_commit(
             &plan
-                .commit_witness(&application, join_key, B, &cancel)?
-                .value
+                .commit_witness(
+                    &application,
+                    join_key,
+                    B,
+                    &cancel
+                )?
+                .value, B, &cancel
         )
-        .await?
+        .await?.value
     );
     assert_eq!(
         main.read("/shared", 16, B, &cancel).await?.value,
@@ -353,13 +358,13 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
         .value;
     main.write_text("/shared", "base\n").await?;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "text-driver-agent",
             ForkOptions::from_generation(main.head(B, &cancel).await?.value, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -375,7 +380,7 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
+            }, std::collections::BTreeMap::new(),
             PublicationPermit::Unrestricted,
         )
         .await?

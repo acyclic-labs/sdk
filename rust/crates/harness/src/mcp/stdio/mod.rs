@@ -1,10 +1,10 @@
 //! Bounded newline protocol for an already approved native process exchange.
 
 use super::{
-    PROTOCOL_VERSION,
+    PROTOCOL_VERSION, charge, error,
     rpc::{initialization, notification, rpc_result},
 };
-use crate::{Error, NativeCustody, NativeWork, OperationId, Result};
+use crate::{Error, NativeCustody, NativeWork, OperationId, Result, wire::ErrorCode};
 use bytes::{Buf as _, BytesMut};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

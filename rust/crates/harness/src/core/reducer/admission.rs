@@ -1,10 +1,13 @@
-//! reducer admission semantics.
 use super::*;
+use crate::contract::canonical_json_digest as digest;
+use crate::store::default_projection_read_limits;
+use crate::wire::ErrorCode;
+
 impl Reducer {
     pub(crate) fn verify_command_scope_with_work(
         &self,
         command: &Command,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         self.authority_verifier
             .verify_audience(&self.authority, work)?;
@@ -19,18 +22,16 @@ impl Reducer {
         &self,
         command: &Command,
         event: &Event,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         self.verify_command_scope_with_work(command, work)?;
         self.authority_verifier.verify_event(event, work)?;
-        if event.operation_id != command.operation_id
-            || event.intent_digest
-                != crate::contract::canonical_json_digest(
-                    command,
-                    crate::store::default_projection_read_limits().maximum_bytes,
-                    work,
-                )?
-        {
+        let intent = digest(
+            command,
+            default_projection_read_limits().maximum_bytes,
+            work,
+        )?;
+        if event.operation_id != command.operation_id || event.intent_digest != intent {
             return Err(Error::Conflict(
                 "operation identity is already bound to another intent".into(),
             ));
@@ -39,38 +40,14 @@ impl Reducer {
     }
 
     /// Applies one deterministic command.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "command ownership ends at application"
-    )]
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.harness.reducer.apply",
-            level = "debug",
-            skip_all,
-            fields(rev = self.revision, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub fn apply(&mut self, command: Command) -> Result<ApplyResult> {
         crate::obs::outcome(match self.plan(&command) {
-            Ok(ApplyResult::Applied { event }) => self
-                .apply_committed(event.clone(), &mut None)
-                .map(|_| ApplyResult::Applied { event }),
+            Ok(ApplyResult::Applied { event }) => self.apply_committed(event, &mut None),
             planned => planned,
         })
     }
 
     /// Plans a command without advancing authoritative state.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.harness.reducer.plan",
-            level = "debug",
-            skip_all,
-            fields(rev = self.revision, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub fn plan(&self, command: &Command) -> Result<ApplyResult> {
         crate::obs::outcome(
             self.plan_with_migration_boundary_with_work(command, false, false, None, &mut None)
@@ -78,17 +55,16 @@ impl Reducer {
         )
     }
 
-    /// Returns the original planner's already-retained output allowance.
     pub(crate) fn plan_indexed_with_retained_quota(
         &self,
         command: &Command,
         migration_verified: bool,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(ApplyResult, u64)> {
-        if migration_verified && !matches!(&command.action, Action::MigrateExtensionState { .. }) {
-            return crate::obs::outcome(Err(Error::Invalid(
+        if migration_verified && !matches!(command.action, Action::MigrateExtensionState { .. }) {
+            return Err(Error::Invalid(
                 "verified migration planner requires a migration action".into(),
-            )));
+            ));
         }
         crate::obs::outcome(self.plan_with_migration_boundary_with_work(
             command,
@@ -99,15 +75,14 @@ impl Reducer {
         ))
     }
 
-    /// Selects only fresh effect transitions whose original projection may have been retired.
     pub(crate) fn archived_effect_for_command(&self, command: &Command) -> Option<EffectId> {
-        let effect_id = match &command.action {
+        let id = match &command.action {
             Action::MarkEffectDispatched { effect_id, .. } => *effect_id,
             Action::ResolveEffect { observation } => observation.effect_id,
             _ => return None,
         };
-        (self.projection.effects_archived && !self.projection.effects.contains_key(&effect_id))
-            .then_some(effect_id)
+        (self.projection.effects_archived && !self.projection.effects.contains_key(&id))
+            .then_some(id)
     }
 
     pub(crate) fn plan_with_archived_effect(
@@ -115,7 +90,7 @@ impl Reducer {
         command: &Command,
         effect_id: EffectId,
         effect: &EffectState,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(ApplyResult, u64)> {
         if self.archived_effect_for_command(command) != Some(effect_id)
             || !settled_effect(&effect.status)
@@ -139,16 +114,12 @@ impl Reducer {
         migration_verified: bool,
         identity_checked: bool,
         archived_effect: Option<(EffectId, &EffectState)>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(ApplyResult, u64)> {
-        self.native_custody.require_work(
-            work,
-            "native reducer planning requires explicit native work",
-        )?;
         self.verify_command_scope_with_work(command, work)?;
-        let intent = crate::contract::canonical_json_digest(
+        let intent = digest(
             command,
-            crate::store::default_projection_read_limits().maximum_bytes,
+            default_projection_read_limits().maximum_bytes,
             work,
         )?;
         if let Some(event) = self.event_for_operation(command.operation_id) {
@@ -234,9 +205,9 @@ impl Reducer {
             payload,
         };
         event.attestation = self.authority_verifier.attest_event(&event, quota.work())?;
-        let retained_quota = quota.retained();
+        let retained = quota.retained();
         quota.transfer();
-        Ok((ApplyResult::Applied { event }, retained_quota))
+        Ok((ApplyResult::Applied { event }, retained))
     }
 
     pub(in crate::core) fn transition_effect<'a>(
@@ -255,7 +226,6 @@ impl Reducer {
             .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))
     }
 
-    /// Authorizes one transition identically when planned and when committed.
     pub(in crate::core) fn authorize(
         &self,
         scope: (&str, &Capabilities),
@@ -263,14 +233,14 @@ impl Reducer {
         operation_id: OperationId,
         (_, capability, subject): (&str, &str, Subject<'_>),
         archived_effect: Option<(EffectId, &EffectState)>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         require_capability(scope, capability)?;
         match subject {
             Subject::None => Ok(()),
             Subject::PlannedEffect => require_capability(scope, capability::EFFECT_PLAN),
-            Subject::Effect(effect_id) => {
-                let effect = self.transition_effect(effect_id, archived_effect)?;
+            Subject::Effect(id) => {
+                let effect = self.transition_effect(id, archived_effect)?;
                 require_capability(scope, &capability::effect_provider(&effect.provider))
             }
             Subject::Interaction(resolution) => {
@@ -283,20 +253,25 @@ impl Reducer {
                 require_capability(scope, &ticket.responder_grant())
             }
             Subject::Fork(seed) => {
-                if self.projection.conversation.agent.is_none()
-                    || agent != self.projection.conversation.agent
-                {
+                let Some(parent) = self
+                    .projection
+                    .conversation
+                    .agent
+                    .filter(|parent| Some(*parent) == agent)
+                else {
                     return Err(Error::Unauthorized(
                         "fork must be published by the parent agent".into(),
                     ));
-                }
-                let validation = seed.validate(work);
-                if work.is_some() {
-                    validation?;
-                } else if validation.is_err() {
-                    return Err(Error::Invalid(
-                        "fork manifest is not bound to its operation and parent revision".into(),
-                    ));
+                };
+                if let Err(error) = seed.validate(work) {
+                    return Err(if work.is_some() {
+                        error
+                    } else {
+                        Error::Invalid(
+                            "fork manifest is not bound to its operation and parent revision"
+                                .into(),
+                        )
+                    });
                 }
                 if seed.operation_id != operation_id
                     || seed.parent != self.authority
@@ -306,48 +281,39 @@ impl Reducer {
                         "fork manifest is not bound to its operation and parent revision".into(),
                     ));
                 }
-                let ownership = self.validate_fork_reference_ownership(seed, None, work);
-                if work.is_some() {
-                    ownership?;
-                } else if ownership.is_err() {
-                    return Err(Error::Invalid(
-                        "fork manifest is not bound to its operation and parent revision".into(),
-                    ));
+                if let Err(error) = self.validate_fork_reference_ownership(seed, None, work) {
+                    return Err(if work.is_some() {
+                        error
+                    } else {
+                        Error::Invalid(
+                            "fork manifest is not bound to its operation and parent revision"
+                                .into(),
+                        )
+                    });
                 }
                 if let Some(io) = work.as_deref() {
                     io.check_cancellation()?;
                 }
-                for resource in &seed.resources {
-                    if let crate::fork::ResourceRevision::Project { volume, .. } = &resource.source
-                    {
-                        Self::require_volume_operation(
-                            scope,
-                            volume,
-                            VolumeOperation::Read,
-                            crate::store::default_projection_read_limits().maximum_bytes,
-                            work,
-                        )?;
-                    }
-                    if let crate::fork::ResourceRevision::PrivateVolume { volume, .. } =
-                        &resource.source
-                    {
-                        if volume.owner()
-                            != &VolumeOwner::Agent(agent.ok_or_else(|| {
-                                Error::Unauthorized("scratch fork has no parent agent".into())
-                            })?)
-                        {
-                            return Err(Error::Unauthorized(
-                                "scratch is not owned by the direct parent".into(),
-                            ));
+                for capture in &seed.resources {
+                    let volume = match &capture.source {
+                        crate::fork::ResourceRevision::PrivateVolume { volume, .. } => {
+                            if volume.owner() != &VolumeOwner::Agent(parent) {
+                                return Err(Error::Unauthorized(
+                                    "scratch is not owned by the direct parent".into(),
+                                ));
+                            }
+                            volume
                         }
-                        Self::require_volume_operation(
-                            scope,
-                            volume,
-                            VolumeOperation::Read,
-                            crate::store::default_projection_read_limits().maximum_bytes,
-                            work,
-                        )?;
-                    }
+                        crate::fork::ResourceRevision::Project { volume, .. } => volume,
+                        _ => continue,
+                    };
+                    Self::require_volume_operation(
+                        scope,
+                        volume,
+                        VolumeOperation::Read,
+                        default_projection_read_limits().maximum_bytes,
+                        work,
+                    )?;
                 }
                 Ok(())
             }
@@ -360,7 +326,7 @@ impl Reducer {
                     ));
                 }
                 receipt.target_project.require_writer(agent, &None)?;
-                let maximum_bytes = if work.as_deref().is_some_and(copying::is_native) {
+                let maximum = if work.as_deref().is_some_and(copying::is_native) {
                     acyclic_stream::MAX_RECORD_BYTES as u64
                 } else {
                     u64::MAX
@@ -369,17 +335,16 @@ impl Reducer {
                     scope,
                     &receipt.target_project,
                     VolumeOperation::Write,
-                    maximum_bytes,
+                    maximum,
                     work,
                 )?;
                 Self::require_volume_operation(
                     scope,
                     &receipt.source_project,
                     VolumeOperation::Read,
-                    maximum_bytes,
+                    maximum,
                     work,
-                )?;
-                Ok(())
+                )
             }
         }
     }
@@ -389,42 +354,28 @@ impl Reducer {
         volume: &VolumeRef,
         operation: VolumeOperation,
         maximum_bytes: u64,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        let digest = crate::contract::canonical_json_digest(volume, maximum_bytes, work)?;
-        let hex = blake3::Hash::from_bytes(digest).to_hex();
+        let hash = blake3::Hash::from_bytes(digest(volume, maximum_bytes, work)?).to_hex();
         let prefix = match operation {
             VolumeOperation::Read => "volume:read:",
             VolumeOperation::Write => "volume:write:",
         };
         let mut label = [0_u8; 77];
         label[..prefix.len()].copy_from_slice(prefix.as_bytes());
-        label[prefix.len()..prefix.len() + 64].copy_from_slice(hex.as_bytes());
+        label[prefix.len()..prefix.len() + 64].copy_from_slice(hash.as_bytes());
         require_capability(
             scope,
             std::str::from_utf8(&label[..prefix.len() + 64]).expect("hex capability"),
         )
     }
 
-    /// Applies an event only after its canonical Stream append commits.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.harness.reducer.apply_committed",
-            level = "trace",
-            skip_all,
-            fields(rev = event.revision)
-        )
-    )]
+    /// Applies an event after its canonical Stream append commits.
     pub fn apply_committed(
         &mut self,
         event: Event,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<ApplyResult> {
-        self.native_custody.require_work(
-            work,
-            "native reducer mutation requires explicit native work",
-        )?;
         self.authority_verifier
             .verify_audience(&self.authority, work)?;
         if let Some(existing) = self.event_for_operation(event.operation_id) {
@@ -433,23 +384,16 @@ impl Reducer {
             }
             return Err(crate::fork::boundary_error(
                 work,
-                crate::wire::ErrorCode::Conflict,
+                ErrorCode::Conflict,
                 "operation identity is already bound to another event",
             ));
         }
-        let expected = next_revision(self.revision)?;
-        if event.revision != expected {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(copying::is_native) {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "committed revision does not match the exact successor",
-                });
-            }
-            return Err(Error::Conflict(format!(
-                "expected committed revision {expected}, found {}",
-                event.revision
-            )));
+        if event.revision != next_revision(self.revision)? {
+            return Err(crate::fork::boundary_error(
+                work,
+                ErrorCode::Conflict,
+                "committed revision does not match the exact successor",
+            ));
         }
         self.authority_verifier.verify_event(&event, work)?;
         self.authorize(
@@ -466,37 +410,17 @@ impl Reducer {
             event.causal_parent.as_ref(),
             work,
         )?;
-        if let Some(observer) = work.as_deref_mut().filter(|io| !copying::is_native(*io)) {
-            let reservation = event_owned_bytes(&event)?;
-            if matches!(&event.payload, EventPayload::ForkPublished { .. }) {
-                observer.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
+        if let Some(io) = work.as_deref_mut().filter(|io| !copying::is_native(*io)) {
+            let bytes = event_owned_bytes(&event)?;
+            if matches!(event.payload, EventPayload::ForkPublished { .. }) {
+                io.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
             }
-            observer.admit_owned(reservation)?;
-            observer.retain_owned(reservation)?;
+            io.admit_owned(bytes)?;
+            io.retain_owned(bytes)?;
         }
-        let (cached, retired_event) = self.native_custody.produce(
-            &NativeComponentKey::Event(event.revision),
-            work,
-            |quota| copying::copy_event(&event, quota),
-        )?;
-        let applied = Self::reserve_deque_buffer(
-            &mut self.native_custody,
-            NativeComponentKey::EventBuffer,
-            &mut self.events,
-            work,
-        )
-        .and_then(|()| self.apply_payload_with_work(&event.payload, event.revision, work));
-        if let Err(error) = applied {
-            drop(cached);
-            drop(
-                self.native_custody
-                    .rollback(&NativeComponentKey::Event(event.revision), retired_event),
-            );
-            return Err(error);
-        }
+        self.apply_payload_with_work(&event.payload, event.revision, work)?;
         self.revision = event.revision;
-        self.events.push_back(cached);
-        drop(retired_event);
+        self.events.push_back(event.clone());
         self.trim_resident_events();
         Ok(ApplyResult::Applied { event })
     }

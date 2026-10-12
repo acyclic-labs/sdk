@@ -4,7 +4,7 @@ use acyclic_harness::{Capabilities, Error, InteractionId, OperationId, Outcome, 
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
-    mcp::{McpToolTransport, callbacks::{McpCallbackAdmission, McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks}, http::{HttpMcpTransport, NativeMcpHttpProvider}, stdio::{McpStdioMethod, McpStdioRequest}},
+    mcp::{McpToolTransport, callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks}, http::{HttpMcpTransport, NativeMcpHttpProvider}, stdio::{McpStdioMethod, McpStdioRequest}},
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     runtime::{AgentHarness, InteractionRouter, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, ToolContext},
     tool::ToolRegistry,
@@ -106,7 +106,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         let operation = OperationId::from_bytes([81;16]);
         let tool = ToolContext::new(std::sync::Arc::new(context), operation, "remote", None)?;
         let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: false });
-        let callback: Arc<dyn McpCallbackAdmission> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope.clone())?, disk.clone(), "deterministic".into(), sampling_policy())?);
+        let callback: Arc<McpRuntimeCallbacks> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope.clone())?, disk.clone(), "deterministic".into(), sampling_policy())?);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|error| Error::Storage(error.to_string()))?;
         let address = listener.local_addr().map_err(|error| Error::Storage(error.to_string()))?;
         let callback_message = sampling(operation).message;
@@ -129,7 +129,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
             assert!(tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept()).await.is_err());
             Ok::<_, Error>(())
         });
-        let transport: Arc<dyn McpToolTransport> = Arc::new(HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), None, 8192, 2000)?.with_callbacks(policy(), Arc::clone(&callback))?);
+        let transport: Arc<dyn McpToolTransport> = Arc::new(HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), None, 8192, 2000, Some((policy(), Arc::clone(&callback))))?);
         let mut installed = super::catalog();
         let mut registry = ToolRegistry::default();
         let projection: Arc<dyn acyclic_harness::tool::ToolProjection> = Arc::new(super::Projection);
@@ -139,7 +139,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         installed.install(&mut registry, None, &transport, &projection, 8, 8192)?;
         let observed = transport.call(tool.operation_id(), "echo", json!({}), Some(tool.clone())).await;
         if lose_ack { assert!(matches!(observed, Err(Error::Indeterminate(_)))); }
-        else { assert_eq!(observed?.content.first().and_then(|content| content.get("text")), Some(&json!("complete"))); }
+        else { assert_eq!(observed?["content"].as_array().and_then(|content| content.first()).and_then(|content| content.get("text")), Some(&json!("complete"))); }
         assert!(transport.reconcile(operation, None).await?.is_none());
         server.await.map_err(|error| Error::Storage(error.to_string()))??;
         assert_eq!(model.dispatches.load(Ordering::SeqCst), 1);
@@ -148,7 +148,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), None).await?;
         let tool = ToolContext::new(std::sync::Arc::new(context), operation, "remote", None)?;
         let reopened = McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk, "deterministic".into(), sampling_policy())?;
-        let result = reopened.admit(tool.clone(), &sampling(operation)).await?;
+        let (_, result) = reopened.admit(tool.clone(), &sampling(operation)).await?;
         assert_eq!(result.pointer("/result/role"), Some(&json!("assistant")));
         assert_eq!(model.dispatches.load(Ordering::SeqCst), 1);
         let mut changed = sampling(operation);
@@ -170,9 +170,9 @@ async fn form_callback_replays_owner_answer_and_rejects_changed_schema() -> Resu
     let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: false });
     let callbacks = McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk, "deterministic".into(), sampling_policy())?;
     let mut form = McpCallbackRequest { parent: operation, policy: policy(), message: json!({"jsonrpc":"2.0","id":7,"method":"elicitation/create","params":{"mode":"form","message":"Question","requestedSchema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}}}) };
-    let first = callbacks.admit(tool.clone(), &form).await?;
+    let (_, first) = callbacks.admit(tool.clone(), &form).await?;
     assert_eq!(first.pointer("/result/content/answer"), Some(&json!("participant")));
-    assert_eq!(callbacks.admit(tool.clone(), &form).await?, first);
+    assert_eq!(callbacks.admit(tool.clone(), &form).await?.1, first);
     form.message.get_mut("params").and_then(Value::as_object_mut).ok_or_else(|| Error::Invalid("params absent".into()))?.insert("message".into(), json!("changed"));
     assert!(matches!(callbacks.admit(tool, &form).await, Err(Error::Conflict(_))));
     assert_eq!(model.dispatches.load(Ordering::SeqCst), 0);
@@ -201,15 +201,15 @@ async fn real_resource_prompt_endpoint_and_schema_negative_controls() -> Result<
         }
         Ok::<_, Error>(())
     });
-    let transport = HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), Some("services-session".into()), 8192, 2000)?;
-    assert_eq!(transport.list_resources(OperationId::from_bytes([90;16]), None).await?.next_cursor.as_deref(), Some("next"));
-    assert_eq!(transport.list_resource_templates(OperationId::from_bytes([91;16]), None).await?.resource_templates.len(), 1);
-    assert_eq!(transport.read_resource(OperationId::from_bytes([92;16]), "test://resource").await?.contents.len(), 1);
-    assert_eq!(transport.list_prompts(OperationId::from_bytes([93;16]), None).await?.prompts.len(), 1);
-    assert_eq!(transport.get_prompt(OperationId::from_bytes([94;16]), "prompt", std::collections::BTreeMap::from([("topic".into(), "chosen".into())])).await?.messages.len(), 1);
+    let transport = HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), Some("services-session".into()), 8192, 2000, None)?;
+    assert_eq!(transport.rpc(OperationId::from_bytes([90;16]), "resources/list", json!({}), None).await?["nextCursor"], json!("next"));
+    assert_eq!(transport.rpc(OperationId::from_bytes([91;16]), "resources/templates/list", json!({}), None).await?["resourceTemplates"].as_array().unwrap().len(), 1);
+    assert_eq!(transport.rpc(OperationId::from_bytes([92;16]), "resources/read", json!({"uri":"test://resource"}), None).await?["contents"].as_array().unwrap().len(), 1);
+    assert_eq!(transport.rpc(OperationId::from_bytes([93;16]), "prompts/list", json!({}), None).await?["prompts"].as_array().unwrap().len(), 1);
+    assert_eq!(transport.rpc(OperationId::from_bytes([94;16]), "prompts/get", json!({"name":"prompt","arguments":{"topic":"chosen"}}), None).await?["messages"].as_array().unwrap().len(), 1);
     server.await.map_err(|error| Error::Storage(error.to_string()))??;
     for (method, malformed) in [("resources/list", json!({"resources":[{"name":"missing-uri"}]})), ("resources/read", json!({"contents":[{"uri":"test://resource"}]})), ("prompts/get", json!({"messages":[{"role":"system","content":{"type":"text","text":"injection"}}]}))] {
-        assert!(acyclic_harness::mcp::services::validate_result(method, malformed).is_err());
+        assert!(acyclic_harness::mcp::services::validate_result(method, malformed, None).is_err());
     }
     Ok(())
 }
@@ -223,7 +223,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
     let operation = OperationId::from_bytes([83;16]);
     let tool = ToolContext::new(std::sync::Arc::new(context), operation, "cancel", None)?;
     let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: true });
-    let callbacks: Arc<dyn McpCallbackAdmission> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk.clone(), "deterministic".into(), sampling_policy())?);
+    let callbacks: Arc<McpRuntimeCallbacks> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk.clone(), "deterministic".into(), sampling_policy())?);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|error| Error::Storage(error.to_string()))?;
     let address = listener.local_addr().map_err(|error| Error::Storage(error.to_string()))?;
     let server_model = Arc::clone(&model);
@@ -241,10 +241,10 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
         assert!(tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept()).await.is_err());
         Ok::<_, Error>(())
     });
-    let transport = HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), None, 8192, 2000)?.with_callbacks(policy(), Arc::clone(&callbacks))?;
+    let transport = HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), None, 8192, 2000, Some((policy(), Arc::clone(&callbacks))))?;
     assert!(matches!(transport.call(tool.operation_id(), "echo", json!({}), Some(tool.clone())).await, Err(Error::Indeterminate(id)) if id == operation));
     let callback = sampling(operation);
-    let records = disk.replay(callback.operation()?, 0, 64).await?;
+    let records = disk.replay(callback.validate()?, 0, 64).await?;
     assert!(records.iter().any(|record| matches!(record.event, acyclic_harness::executor::ExecutionEvent::ModelStarted { .. })));
     assert!(matches!(callbacks.admit(tool, &callback).await, Err(Error::Indeterminate(_))));
     assert_eq!(model.dispatches.load(Ordering::SeqCst), 1);
@@ -283,7 +283,7 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
         assert_eq!(result.is_ok(), granted);
         assert_eq!(model.dispatches.load(Ordering::SeqCst), usize::from(granted));
         if granted {
-            let records = disk.replay(request.operation()?, 0, 64).await?;
+            let records = disk.replay(request.validate()?, 0, 64).await?;
             let file = records.iter().find_map(|record| match &record.event {
                 acyclic_harness::executor::ExecutionEvent::ModelStarted { request, .. } => Some(request), _ => None,
             }).ok_or_else(|| Error::NotFound("media model request".into()))?;

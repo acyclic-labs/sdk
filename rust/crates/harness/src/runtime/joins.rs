@@ -1,7 +1,6 @@
 use super::*;
 
 /// Local or durable typed handle; durable observation is host-authoritative.
-
 pub enum RuntimeTask<O> {
     /// Process-local task; its future is never persisted.
     Live(TaskHandle<Result<O>>),
@@ -30,7 +29,6 @@ impl<O> RuntimeTask<O> {
 }
 
 /// Observes every admitted task in input order without cancelling siblings.
-
 pub async fn join_runtime<O: DeserializeOwned + Send + 'static>(
     tasks: Vec<RuntimeTask<O>>,
 ) -> Vec<Result<Outcome<O>>> {
@@ -43,7 +41,6 @@ pub async fn join_runtime<O: DeserializeOwned + Send + 'static>(
 }
 
 /// An impossible quorum retains both partial successes and non-successes.
-
 pub struct QuorumFailure<O> {
     /// Caller-specified threshold that was not met.
     pub required: usize,
@@ -87,7 +84,12 @@ impl<O: DeserializeOwned> RuntimeTask<O> {
                 extensions: _,
             } => match host.wait_outcome(task_id).await? {
                 Outcome::Succeeded(value) => {
-                    crate::contract::validate_json_schema_value(&output_schema, &value, "task output", &mut None)?;
+                    crate::contract::validate_json_schema_value(
+                        &output_schema,
+                        &value,
+                        "task output",
+                        &mut None,
+                    )?;
                     let value = serde_json::from_value(value)
                         .map_err(|error| Error::Invalid(error.to_string()))?;
                     Ok(Outcome::Succeeded(value))

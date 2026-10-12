@@ -106,7 +106,7 @@ impl NativeJoinPlan {
                 ApplyOptions {
                     if_target,
                     idempotency_key,
-                },
+                }, std::collections::BTreeMap::new(),
                 acyclic_fs::PublicationPermit::Unrestricted,
             )
             .await

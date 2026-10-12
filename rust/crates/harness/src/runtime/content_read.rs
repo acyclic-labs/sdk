@@ -9,7 +9,6 @@ pub(super) struct ContextContentVerifier<P: acyclic_stream::StreamProvider> {
 }
 
 /// Retains an issued context's content reader under its exact original owner.
-
 #[cfg(feature = "filesystem")]
 pub fn content_residency_verifier<P>(
     context: Arc<TaskContext>,
@@ -167,26 +166,7 @@ where
 }
 
 impl TaskContext {
-    pub(super) fn installed_root_output_content(&self) -> Option<&ContentBindings> {
-        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-        {
-            return self.native_root_output.get().map(|binding| &binding.1);
-        }
-        #[cfg(not(all(feature = "native-execution", not(target_arch = "wasm32"))))]
-        None
-    }
-
     pub(super) fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
-        if let Some(binding) = self.installed_root_output_content() {
-            if volume.is_none_or(|volume| {
-                binding
-                    .writer
-                    .as_ref()
-                    .is_some_and(|writer| writer.volume() == volume)
-            }) {
-                return Some(binding);
-            }
-        }
         self.output_content
             .as_ref()
             .filter(|binding| {
@@ -202,7 +182,6 @@ impl TaskContext {
     }
 
     /// Reads one immutable file through the owner's authenticated provider.
-
     pub async fn read_file(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.read_bound_file(
             self.content_binding(Some(file.volume())),
@@ -214,7 +193,6 @@ impl TaskContext {
     }
 
     /// Reads through the original bound provider on the caller's native ledger.
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn read_file_with_native_work(
         &self,
@@ -251,7 +229,6 @@ impl TaskContext {
     }
 
     /// Resolves an immutable artifact without coupling its provider to the workspace/content binding.
-
     pub async fn read_artifact(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.read_bound_file(
             self.scope
@@ -265,7 +242,6 @@ impl TaskContext {
     }
 
     /// Discovers a private owner directory without a prior `FileRef`.
-
     pub async fn list_private_directory(
         &self,
         volume: &VolumeRef,
@@ -320,7 +296,6 @@ impl TaskContext {
     }
 
     /// Resolves the current file at a named private path into verified pinned bytes; the returned `FileRef` can later be shared independently.
-
     pub async fn read_private_path(
         &self,
         volume: &VolumeRef,
@@ -443,7 +418,6 @@ impl TaskContext {
     }
 
     /// Observes the original once-publication, never a refreshed source/head.
-
     pub async fn observe_staged_file_once(
         &self,
         operation_id: OperationId,
@@ -522,7 +496,6 @@ impl TaskContext {
     }
 
     /// Reads through the exact original task scope and owner-backed reader.
-
     #[cfg(feature = "filesystem")]
     pub async fn read_file_measured(
         &self,
