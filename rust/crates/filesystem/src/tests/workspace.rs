@@ -268,7 +268,7 @@ async fn first_fork_record(
             .await;
         __authority_work.receipt(__authority_result)
     }) {
-        Ok(records) => Ok(records.value.into_iter().next()),
+        Ok(records) => Ok(records.value.0.into_iter().next()),
         Err(failure) if matches!(failure.error, crate::storage::AuthorityStoreError::Missing) => {
             Ok(None)
         }

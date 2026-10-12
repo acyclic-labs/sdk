@@ -56,7 +56,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_create(
             || {
                 context.source.create_file(
                     &path,
-                    create_metadata(mode, mode::IFREG, uid, gid),
+                    create_metadata(mode, libc::S_IFREG as u32, uid, gid),
                     None,
                     work,
                 )
@@ -81,7 +81,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_release(
     ffi(address, &span, false, |context, work| {
         if handle != 0 {
             let mut files = context.files.write().map_err(|_| driver_errno(libc::EIO))?;
-            work.charge(scan_work(files.capacity() as u64))?;
+
             files
                 .remove(&handle)
                 .ok_or_else(|| driver_errno(libc::ESTALE))?;

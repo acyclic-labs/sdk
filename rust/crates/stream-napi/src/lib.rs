@@ -199,9 +199,7 @@ fn connect_error(error: &grpc::ConnectError) -> NativeStreamErrorMetadata {
         grpc::ConnectError::Endpoint(_) | grpc::ConnectError::PlatformVerifier(_) => "transport",
         grpc::ConnectError::InsecureEndpoint
         | grpc::ConnectError::InvalidCredential
-        | grpc::ConnectError::InvalidCaCertificate
-        | grpc::ConnectError::NoEndpoints
-        | grpc::ConnectError::EndpointLimit => "configuration",
+        | grpc::ConnectError::InvalidCaCertificate => "configuration",
     };
     NativeStreamErrorMetadata {
         code: code.to_owned(),
@@ -499,7 +497,7 @@ impl NativeStreamClient {
             let request = decode::<wire::AcknowledgeDeliveryRequest>(&request, "acknowledge_delivery")?;
             run_with_cancellation(
                 async {
-                    self.provider.acknowledge_delivery(0, request.delivery_token)
+                    self.provider.acknowledge_delivery(request.delivery_token)
                         .await.map_err(|error| stream_error(&error))
                 },
                 cancellation_state(cancellation),
