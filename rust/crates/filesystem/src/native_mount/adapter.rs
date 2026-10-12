@@ -597,9 +597,9 @@ async fn native_node_if_bound_with_carrier<A: AsyncAuthorityStore, O: AsyncObjec
     use super::lazy::{mount_demand_error, mount_engine_error};
     let original_native = carrier.original_native_work();
     let value = if let Some(original) = original_native.as_ref() {
-        let mut inspector = checkout.inspector_with_native_work(original, cancellation)
+        let mut inspector = checkout.inspector(original, cancellation)
             .map_err(MountSourceError::Filesystem)?;
-        let accepted = inspector.lookup_no_follow_with_native_work(path, original, cancellation)
+        let accepted = inspector.lookup_no_follow(path, original, cancellation)
             .await.map_err(MountSourceError::Filesystem);
         inspector.proof_data_take_completed_work();
         accepted?
@@ -2588,7 +2588,7 @@ impl<A, O> SharedCheckout<A, O> {
         ).await?;
         let times = ContentTimes::Stamp(content_change_time()?);
         let accepted = if let Some(original) = carrier.original_native_work() {
-            candidate.checkout.change_content_with_native_work(file_id, change, times, &original, cancellation).await.map_err(MountSourceError::Filesystem)
+            candidate.checkout.change_content(file_id, change, times, &original, cancellation).await.map_err(MountSourceError::Filesystem)
         } else {
             let (budget, prior_live) = carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
@@ -2647,7 +2647,7 @@ impl<A, O> SharedCheckout<A, O> {
             let _view = observation._view;
             let mut observer = observation.observer;
             if let Some(original) = &original {
-                let accepted = observer.read_file_record_by_id_with_native_work(
+                let accepted = observer.read_file_record_by_id(
                     file_id, original, cancellation,
                 ).await.map_err(mount_engine_error);
                 observer.proof_data_take_completed_work();
@@ -2865,7 +2865,7 @@ impl<A, O> SharedCheckout<A, O> {
         ).await?;
         let native = carrier.original_native_work();
         let projection = if let Some(native) = &native {
-            checkout.checkout.private_candidate_with_native_work(native, cancellation)
+            checkout.checkout.private_candidate(native, cancellation)
                 .map_err(MountSourceError::Filesystem)?
         } else {
             let (budget, prior_live) = carrier.with_work(|work| {
@@ -3566,7 +3566,7 @@ impl<A, O> SharedCheckout<A, O> {
             owner, carrier, cancellation, lifetime,
         ).await?;
         let observer = if let Some(original) = carrier.original_native_work() {
-            observation.observer_with_native_work(&original, cancellation).map_err(MountSourceError::Filesystem)?
+            observation.observer(&original, cancellation).map_err(MountSourceError::Filesystem)?
         } else {
             let budget = carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
             let receipt = observation.observer(budget, cancellation);
@@ -3742,7 +3742,7 @@ impl<A, O> SharedCheckoutState<A, O> {
         }
         let clone = |carrier: &mut NativeDemandCarrier<'_>| {
             if let Some(original) = carrier.original_native_work() {
-                return self.checkout.private_candidate_with_native_work(
+                return self.checkout.private_candidate(
                     &original, cancellation,
                 ).map_err(MountSourceError::Filesystem);
             }
@@ -4157,9 +4157,9 @@ impl InstalledCaptureAccounting<'_> {
                 Ok(mount_accept(work, result, mount_engine_error)?.record)
             }
             Self::Native(scratch) => {
-                let mut inspector = checkout.inspector_with_native_work(scratch.work, cancellation)
+                let mut inspector = checkout.inspector(scratch.work, cancellation)
                     .map_err(MountSourceError::Filesystem)?;
-                Ok(inspector.lookup_no_follow_with_native_work(
+                Ok(inspector.lookup_no_follow(
                     path, scratch.work, cancellation,
                 ).await.map_err(MountSourceError::Filesystem)?.record)
             }
@@ -4419,7 +4419,7 @@ impl<A, O> CheckoutDetachedFile<A, O> {
             self.state.lock(), carrier, cancellation, Some(&self.cancellation),
         ).await?;
         let metadata = if let Some(original) = carrier.original_native_work() {
-            state.file.read_metadata_with_native_work(&original, cancellation)
+            state.file.read_metadata(&original, cancellation)
                 .await.map_err(MountSourceError::Filesystem)?
         } else {
             state.metadata
@@ -4445,7 +4445,7 @@ impl<A, O> CheckoutDetachedFile<A, O> {
             &self.ledger, &ViewChange::Node(state.file.file_id()), carrier,
         )?;
         if let Some(original) = carrier.original_native_work() {
-            state.file.set_attributes_with_native_work(
+            state.file.set_attributes(
                 metadata, logical_bytes, &original, &cancellation,
             ).await.map_err(MountSourceError::Filesystem)?;
             state.metadata = metadata;
@@ -4497,7 +4497,7 @@ impl<A, O> CheckoutDetachedFile<A, O> {
         let file = &state.file;
         let range = ByteRange { offset, length };
         if let Some(original) = carrier.original_native_work() {
-            let read = file.read_range_with_native_work(range, &original, &cancellation)
+            let read = file.read_range(range, &original, &cancellation)
                 .await.map_err(MountSourceError::Filesystem)?;
             original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
@@ -4539,7 +4539,7 @@ impl<A, O> CheckoutDetachedFile<A, O> {
             &self.ledger, &ViewChange::Node(state.file.file_id()), carrier,
         )?;
         let original = carrier.original_native_work().expect("detached changes use native work");
-        let result = state.file.change_content_with_native_work(
+        let result = state.file.change_content(
             change, stamped, &original, cancellation,
         ).await;
         if result.is_ok() {
@@ -4780,10 +4780,10 @@ where
             let state = await_measured_lock_with_carrier(
                 self.state.lock(), &mut carrier, &cancellation, Some(&self.cancellation),
             ).await?;
-            state.file.seek_with_native_work(offset, match target {
+            state.file.seek(offset, match target {
                 MountSeekTarget::Data => ExtentSeekTarget::Data,
                 MountSeekTarget::Hole => ExtentSeekTarget::Hole,
-            }, &work, &cancellation).await.map_err(MountSourceError::Filesystem)
+            }, work, &cancellation).await.map_err(MountSourceError::Filesystem)
         }, meter.as_ref()).map_err(capture_io_error)?
     }
 
@@ -4814,7 +4814,7 @@ where
             let state = await_measured_lock_with_carrier(
                 self.state.lock(), &mut carrier, &cancellation, Some(&self.cancellation),
             ).await?;
-            let packet = state.file.read_named_attribute_with_native_work(
+            let packet = state.file.read_named_attribute(
                 &name, &original, &cancellation,
             ).await.map_err(MountSourceError::Filesystem)?;
             original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
@@ -4909,8 +4909,8 @@ where
                 { scratch.items(1)?; }, {},
                 spans.len().checked_add(1).and_then(usize::checked_next_power_of_two).ok_or(MountSourceError::Stale)?,
                 "sparse seek made no forward progress",
-                |position, target| state.file.seek_with_native_work(position, target, &original, &cancellation),
-                |range| state.file.read_range_with_native_work(range, &original, &cancellation)
+                |position, target| state.file.seek(position, target, &original, &cancellation),
+                |range| state.file.read_range(range, &original, &cancellation)
             )?;
             original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
@@ -5282,11 +5282,11 @@ where
         let cancellation = work.native_read_meter().lock().cancellation().clone();
         let original = work.clone();
         let read = if up_to {
-            observer.read_file_up_to_by_id_with_native_work(
+            observer.read_file_up_to_by_id(
                 self.file_id, offset, length, &original, &cancellation,
             ).await
         } else {
-            observer.read_file_range_by_id_with_native_work(
+            observer.read_file_range_by_id(
                 self.file_id, ByteRange { offset, length: u64::from(length) },
                 &original, &cancellation,
             ).await
@@ -5326,10 +5326,10 @@ where
             let cancellation = meter.lock().cancellation().clone();
             let result: Result<MountLookup, MountSourceError> = async {
                 let original = work.clone();
-                let record = observer.read_file_record_by_id_with_native_work(
+                let record = observer.read_file_record_by_id(
                     self.file_id, &original, &cancellation,
                 ).await.map_err(MountSourceError::Filesystem)?;
-                let metadata = observer.read_metadata_by_id_with_native_work(
+                let metadata = observer.read_metadata_by_id(
                     self.file_id, &original, &cancellation,
                 ).await.map_err(MountSourceError::Filesystem)?;
                 meter.lock().check().map_err(mount_demand_error)?;
@@ -5366,7 +5366,7 @@ where
             let (_view, mut observer) = self.observer(work).await?;
             let cancellation = meter.lock().cancellation().clone();
             let original = work.clone();
-            let accepted = observer.seek_file_extent_by_id_with_native_work(self.file_id, offset, match target {
+            let accepted = observer.seek_file_extent_by_id(self.file_id, offset, match target {
                 MountSeekTarget::Data => ExtentSeekTarget::Data,
                 MountSeekTarget::Hole => ExtentSeekTarget::Hole,
             }, &original, &cancellation).await.map_err(MountSourceError::Filesystem);
@@ -5388,7 +5388,7 @@ where
             let (mut candidate, epoch, stamp) = self.checkout.prepare_native_phase_with_carrier(
                 &mut carrier, &cancellation, Some(&self.cancellation),
             ).await?;
-            let accepted = candidate.checkout.set_attributes_by_id_with_native_work(
+            let accepted = candidate.checkout.set_attributes_by_id(
                 self.file_id, metadata, logical_bytes, &original, &cancellation,
             ).await.map_err(MountSourceError::Filesystem);
             let installed = self.checkout.finish_native_phase_with_carrier(
@@ -5415,7 +5415,7 @@ where
             let name = owned_name.0;
             let (_view, mut observer) = self.observer(work).await?;
             let cancellation = meter.lock().cancellation().clone();
-            let accepted = observer.read_named_attribute_by_id_with_native_work(
+            let accepted = observer.read_named_attribute_by_id(
                 self.file_id, &name,
                 &original, &cancellation,
             ).await.map_err(MountSourceError::Filesystem);
@@ -5531,9 +5531,9 @@ where
                     })?; },
                     spans.capacity().checked_mul(2).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?.max(1),
                     "sparse seek moved backwards",
-                    |position, target| observer.seek_file_extent_by_id_with_native_work(
+                    |position, target| observer.seek_file_extent_by_id(
                         self.file_id, position, target, &original, &cancellation),
-                    |range| observer.read_file_range_by_id_with_native_work(self.file_id, range, &original, &cancellation)
+                    |range| observer.read_file_range_by_id(self.file_id, range, &original, &cancellation)
                 )?;
                 meter.lock().check().map_err(mount_demand_error)?;
                 self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
@@ -6063,13 +6063,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         let result = match range {
-            Some(range) => observer.read_file_range_with_native_work(
+            Some(range) => observer.read_file_range(
                 &namespace, range, &original, &cancellation,
             ).await.map(|read| {
                 let capacity = read.logical_owned_bytes();
                 crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity)
             }),
-            None => observer.read_symbolic_link_with_native_work(
+            None => observer.read_symbolic_link(
                 &namespace, &original, &cancellation,
             ).await,
         };
@@ -6552,7 +6552,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         use super::lazy::{mount_demand_error, mount_engine_error};
         let original = carrier.original_native_work();
         let inspector = if let Some(original) = original.as_ref() {
-            checkout.inspector_with_native_work(original, cancellation).map_err(MountSourceError::Filesystem)?
+            checkout.inspector(original, cancellation).map_err(MountSourceError::Filesystem)?
         } else {
             let (budget, prior_live) = carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
@@ -6567,7 +6567,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             let mut nodes = [None, None];
             for (index, path) in [source, destination].into_iter().enumerate() {
                 let accepted = if let Some(original) = original.as_ref() {
-                    inspector.lookup_no_follow_with_native_work(
+                    inspector.lookup_no_follow(
                         path, original, cancellation,
                     ).await.map_err(MountSourceError::Filesystem)
                 } else {
@@ -6789,10 +6789,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let _view = observation._view;
         let mut observer = observation.observer;
         let accepted = if with_lookup {
-            observer.lookup_no_follow_with_metadata_with_native_work(&namespace.0, &original, &cancellation)
+            observer.lookup_no_follow_with_metadata(&namespace.0, &original, &cancellation)
                 .await.map(|value| value.map(|value| (value.record, Some(value.metadata))))
         } else {
-            observer.lookup_no_follow_with_native_work(&namespace.0, &original, &cancellation)
+            observer.lookup_no_follow(&namespace.0, &original, &cancellation)
                 .await.map(|value| value.record.map(|record| (record, None)))
         };
         observer.proof_data_take_completed_work();
@@ -7034,7 +7034,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         ).await?;
         let _view = observation._view;
         let mut observer = observation.observer;
-        let lookup = observer.lookup_no_follow_with_metadata_with_native_work(
+        let lookup = observer.lookup_no_follow_with_metadata(
             &namespace.0, &original, &cancellation,
         ).await.map_err(mount_engine_error);
         observer.proof_data_take_completed_work();
@@ -7045,7 +7045,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                 text: "only regular files can own detached native handles",
             });
         }
-        let file = observer.detached_from_record_with_native_work(
+        let file = observer.detached_from_record(
             lookup.record, &original, &cancellation,
         ).map_err(mount_engine_error)?;
         observer.proof_data_take_completed_work();
@@ -7084,7 +7084,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             owner, carrier, &cancellation, Some(&self.cancellation),
         ).await?;
         let observer = if let Some(original) = carrier.original_native_work() {
-            checkout.observer_with_native_work(&original, &cancellation).map_err(mount_engine_error)?
+            checkout.observer(&original, &cancellation).map_err(mount_engine_error)?
         } else {
             let budget = carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
             let observed = checkout.observer(budget, &cancellation);
@@ -7114,7 +7114,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let mut input = NativeCarrierOwned { value: Some(namespace), carrier, bytes };
         let (namespace, carrier) = input.parts();
         let observer = if let Some(original) = carrier.original_native_work() {
-            checkout.inspector_with_native_work(&original, &cancellation).map_err(mount_engine_error)?
+            checkout.inspector(&original, &cancellation).map_err(mount_engine_error)?
         } else {
             let budget = carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
             let inspected = checkout.inspector(budget, &cancellation);
@@ -7135,7 +7135,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         observer.work.with_work(|work| work.check().map_err(mount_demand_error))?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         let accepted = if let Some(original) = observer.work.original_native_work() {
-            observer.lookup_no_follow_with_metadata_with_native_work(
+            observer.lookup_no_follow_with_metadata(
                 namespace, &original, cancellation,
             ).await.map_err(mount_engine_error)
         } else {
@@ -7262,7 +7262,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         ).await?;
         let mut observer = LookupObserverOwned::new_in(observation.observer, carrier.reborrow())?;
         let accepted = if let Some(original) = observer.work.original_native_work() {
-            observer.read_file_record_by_id_with_native_work(file_id, &original, &cancellation)
+            observer.read_file_record_by_id(file_id, &original, &cancellation)
                 .await.map_err(MountSourceError::Filesystem)
         } else {
             let budget = observer.work.with_work(|work| work.remaining().map_err(mount_demand_error))?;
@@ -7350,7 +7350,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             owner, carrier, cancellation, Some(&self.cancellation),
         ).await?;
         if let Some(original) = carrier.original_native_work() {
-            observation.detached_from_record_with_native_work(record, &original, cancellation)
+            observation.detached_from_record(record, &original, cancellation)
                 .map_err(super::lazy::mount_engine_error)
         } else {
             self.detached_identity_create_with_carrier(carrier, cancellation, |budget| {
@@ -8859,7 +8859,7 @@ where
             &candidate.checkout, path, work, &cancellation,
         ).await?.ok_or(MountSourceError::NotFound)?;
         let accepted = if let Some(original) = namespace.carrier.original_native_work() {
-            candidate.checkout.set_attributes_by_id_with_native_work(
+            candidate.checkout.set_attributes_by_id(
                 node, metadata, logical_bytes, &original, &cancellation,
             ).await.map_err(MountSourceError::Filesystem)
         } else {
@@ -9951,7 +9951,7 @@ where
             let mut observer = observation.observer;
             original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-            let result = observer.read_named_attribute_with_native_work(
+            let result = observer.read_named_attribute(
                 &namespace, &name, &original, &cancellation,
             ).await;
             observer.proof_data_take_completed_work();
