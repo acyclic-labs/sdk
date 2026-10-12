@@ -179,8 +179,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
             cancellation.check().map_err(FsError::from)?;
-            let observed = ({ let __authority_args = (volume_authority_id(workspace.id), operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }).map_err(FsError::from)?;
-            native = Some((observed.0, KernelOwnedAllocation::NativeOriginal(observed.1)));
+            let observed = ({ let __authority_args = (volume_authority_id(workspace.id), operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result }).map_err(FsError::from)?;
+            native = Some((observed, KernelOwnedAllocation::Standalone));
         }
         let observed = match native {
             Some(observed) => observed, None => {
@@ -216,8 +216,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let mut native = None;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                let observed = ({ let __authority_args = (volume_authority_id(target.id), witness.operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }).map_err(FsError::from)?;
-                native = Some((observed.0, KernelOwnedAllocation::NativeOriginal(observed.1)));
+                let observed = ({ let __authority_args = (volume_authority_id(target.id), witness.operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result }).map_err(FsError::from)?;
+                native = Some((observed, KernelOwnedAllocation::Standalone));
             }
             let observed = match native {
                 Some(observed) => observed, None => {

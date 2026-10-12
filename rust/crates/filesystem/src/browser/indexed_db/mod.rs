@@ -862,7 +862,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         request: GuardedAppend,
         context: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
-    ) -> Result<(AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+    ) -> Result<AppendOutcome, crate::AuthorityError<G::Error>> {
         crate::async_storage::seal(guard.as_deref_mut(), context).await?;
         let budget = context.remaining()?;
         let cancellation = context.cancellation;
@@ -967,8 +967,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             Ok(io.receipt(AppendOutcome::Committed(durable)))
         }
         .await;
-        let value = context.accept(result)?;
-        Ok((value, None))
+        Ok(context.accept(result)?)
     }
     async fn reserve_publication(
         &self,
@@ -1127,7 +1126,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         authority: AuthorityId,
         operation: OperationId,
         context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Option<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+    ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
         let budget = context.remaining()?;
         let cancellation = context.cancellation;
         let result: AuthorityResult<Option<DurableCommit>> = async {
@@ -1162,8 +1161,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             Ok(io.receipt(Some(durable)))
         }
         .await;
-        let value = context.accept(result)?;
-        Ok((value, None))
+        context.accept(result)
     }
     async fn replay(
         &self,
@@ -1569,7 +1567,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
         cancellation

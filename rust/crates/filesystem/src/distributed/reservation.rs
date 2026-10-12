@@ -67,21 +67,13 @@ pub(super) fn reservation_request(
         &mut conditions,
         CommitCondition::Absent { path: retirement },
     )?;
-    let mut records = meter.vec::<acyclic_stream::OwnedBytes>(1)?;
     let body = if snapshot.is_none() {
         acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE)
     } else {
         meter.stream_bytes(PUBLICATION_GATE_ACTIVE, &[&operation.into_bytes()])?
     };
-    meter.push(&mut records, body)?;
     let mut mutations = meter.vec::<CommitMutation>(1)?;
-    meter.push(
-        &mut mutations,
-        CommitMutation::Append {
-            path: gate,
-            records,
-        },
-    )?;
+    meter.append_record(&mut mutations, gate, [body])?;
     let copies = WorkCounters {
         bytes_copied: 40,
         ..WorkCounters::UNCHARGED

@@ -159,28 +159,28 @@ pub(super) fn write_path<W: NativeHostWork>(
     }
     write_all(file, &bytes[..used], work)
 }
-pub(super) fn with_read_native_path<W: NativeHostWork, T>(
+pub(super) fn read_path<W: NativeHostWork>(
     file: &mut std::fs::File,
     remaining: &mut u64,
     work: &mut W,
-    operation: impl FnOnce(&Path, &mut std::fs::File, &mut u64, &mut W) -> Result<T, W::Error>,
-) -> Result<T, W::Error>
+) -> Result<(PathBuf, W::Allocation), W::Error>
 where
     W::Error: From<NativeExchangeError>,
 {
+    use std::os::windows::ffi::OsStringExt as _;
     if *remaining < 8 {
         return Err(NativeExchangeError::IncompatibleJournal.into());
     }
-    let mut encoded_length = [0u8; 8];
-    read_exact(file, &mut encoded_length, work)?;
-    let length = u64::from_le_bytes(encoded_length);
+    let mut header = [0u8; 8];
+    read_exact(file, &mut header, work)?;
+    let length = u64::from_le_bytes(header);
     let bytes = length.checked_mul(2).ok_or(crate::WorkError::Overflow)?;
     let consumed = bytes.checked_add(8).ok_or(crate::WorkError::Overflow)?;
     if consumed > *remaining {
         return Err(NativeExchangeError::IncompatibleJournal.into());
     }
-    let allocation = work.claim(bytes)?;
-    let result = (|| {
+    let units_allocation = work.claim(bytes)?;
+    let decoded: Result<(PathBuf, W::Allocation), W::Error> = (|| {
         let length = usize::try_from(length).map_err(|_| crate::WorkError::Overflow)?;
         let mut units = Vec::new();
         units
@@ -193,12 +193,40 @@ where
             *unit = u16::from_le(*unit);
         }
         *remaining -= consumed;
-        with_windows_path(&units, work, |path, work| {
-            operation(path, file, remaining, work)
-        })
+        let maximum = length.checked_mul(3).ok_or(crate::WorkError::Overflow)? as u64;
+        let mut allocation = work.reserve_opaque_decode(maximum)?;
+        let result: Result<PathBuf, W::Error> = (|| {
+            work.admit(crate::WorkCounters {
+                bytes_encoded: maximum,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+            let path = PathBuf::from(std::ffi::OsString::from_wide(&units));
+            let encoded = path.as_os_str().as_encoded_bytes().len() as u64;
+            let reconciled = work.reconcile_allocation(&mut allocation, path.capacity() as u64);
+            let recorded = work.record(crate::WorkCounters {
+                bytes_encoded: encoded,
+                ..crate::WorkCounters::UNCHARGED
+            });
+            reconciled?;
+            recorded?;
+            Ok(path)
+        })();
+        match result {
+            Ok(path) => Ok((path, allocation)),
+            Err(error) => {
+                work.release(allocation)?;
+                Err(error)
+            }
+        }
     })();
-    work.release(allocation)?;
-    result
+    if let Err(error) = work.release(units_allocation) {
+        if let Ok((path, allocation)) = decoded {
+            drop(path);
+            work.release(allocation)?;
+        }
+        return Err(error);
+    }
+    decoded
 }
 #[allow(
     unsafe_code,
@@ -209,34 +237,4 @@ pub(super) fn utf16_bytes_mut(units: &mut [u16]) -> &mut [u8] {
     // Every possible result of the read is a valid u16 value, and the exclusive
     // borrow prevents simultaneous access through the original typed slice.
     unsafe { std::slice::from_raw_parts_mut(units.as_mut_ptr().cast::<u8>(), units.len() * 2) }
-}
-pub(super) fn with_windows_path<W: NativeHostWork, T>(
-    units: &[u16],
-    work: &mut W,
-    operation: impl FnOnce(&Path, &mut W) -> Result<T, W::Error>,
-) -> Result<T, W::Error> {
-    use std::os::windows::ffi::OsStringExt as _;
-    let logical_max = units
-        .len()
-        .checked_mul(3)
-        .ok_or(crate::WorkError::Overflow)?;
-    let mut allocation = work.reserve_opaque_decode(logical_max as u64)?;
-    let result = (|| {
-        work.admit(crate::WorkCounters {
-            bytes_encoded: logical_max as u64,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        let path = PathBuf::from(std::ffi::OsString::from_wide(units));
-        let encoded = path.as_os_str().as_encoded_bytes().len() as u64;
-        let reconciled = work.reconcile_allocation(&mut allocation, path.capacity() as u64);
-        let recorded = work.record(crate::WorkCounters {
-            bytes_encoded: encoded,
-            ..crate::WorkCounters::UNCHARGED
-        });
-        reconciled?;
-        recorded?;
-        operation(&path, work)
-    })();
-    work.release(allocation)?;
-    result
 }

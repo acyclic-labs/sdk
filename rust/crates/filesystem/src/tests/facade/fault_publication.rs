@@ -286,7 +286,7 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
     ));
     assert_eq!(checkout_state(&checkout), before);
     assert!(({ let __authority_args = (volume_authority_id(volume.id()), operation_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =
-        AsyncAuthorityStore::find_operation(&*authority, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
+        AsyncAuthorityStore::find_operation(&*authority, __authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?
         .value
         .is_some()
     );

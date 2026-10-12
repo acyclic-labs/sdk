@@ -938,7 +938,7 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
         request: crate::GuardedAppend,
         work: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
-    ) -> Result<(AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+    ) -> Result<AppendOutcome, crate::AuthorityError<G::Error>> {
         work.cancellation
             .check()
             .map_err(|_| AuthorityStoreError::Cancelled)?;
@@ -1167,7 +1167,7 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
         authority: AuthorityId,
         operation: OperationId,
         work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Option<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+    ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
         work.cancellation
             .check()
             .map_err(|_| AuthorityStoreError::Cancelled)?;
@@ -1530,21 +1530,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
 
 
 
-    async fn prepare_generation_publication(&self, request: &crate::kernel::PublishGenerationRequest, proof: &crate::kernel::GenerationProof, append: &crate::GuardedAppend, scope: crate::PublicationScope<'_>, context: &mut crate::AuthorityWork<'_>) -> Result<(), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = context.original {
-            let cancellation = context.cancellation;
-            return async {
-        ({ let __object_args = (request, proof, append, scope, original, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.4, __object_args.5); let __object_result = self.inner.prepare_generation_publication(__object_args.0, __object_args.1, __object_args.2, __object_args.3, &mut __object_work).await; __object_result })
-     }.await;
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-        ({ let __object_args = (request, proof, append, scope, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.4, __object_args.5); let __object_result = self.inner.prepare_generation_publication(__object_args.0, __object_args.1, __object_args.2, __object_args.3, &mut __object_work).await; __object_work.receipt(__object_result) })
-     }.await;
-        context.accept(result)
-    }
+
 
 
 
@@ -1564,7 +1550,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         }
      }.await;
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);

@@ -269,7 +269,7 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
     let CreateAuthorityOutcome::Created(head) =({ let __authority_args = (authority_id, initial.epoch, BUDGET, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =  AsyncAuthorityStore::create_authority(&offline, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?.value else {
         return Err("offline fixture authority already existed".into());
     };
-    let AppendOutcome::Committed(committed) =({ let __authority_args = (authority_id, initial.epoch, head, ProposedCommit { operation_id: initial.operation_id, fingerprint: initial.fingerprint, payload: initial.payload }, BUDGET, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result =  AsyncAuthorityStore::compare_and_append(&offline, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?.value else {
+    let AppendOutcome::Committed(committed) =({ let __authority_args = (authority_id, initial.epoch, head, ProposedCommit { operation_id: initial.operation_id, fingerprint: initial.fingerprint, payload: initial.payload }, BUDGET, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result =  AsyncAuthorityStore::compare_and_append(&offline, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?.value else {
         return Err("offline actual Memory authority did not commit".into());
     };
     assert_eq!(committed.settled_at_micros, None);
@@ -355,7 +355,7 @@ let value = self.inner.fork_authority(source, destination, operation, work, None
 if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
 Ok(value)
 }
-async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>> {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::AuthorityStoreError::Rejected("authority backend cannot atomically evaluate operation leases".to_owned()).into()); }
@@ -398,7 +398,7 @@ if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOrigin
 self.inner.fence(authority, expected, work).await
 
 }
-async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError,
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<Option<crate::DurableCommit>, crate::AuthorityStoreError,
     > {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
@@ -518,7 +518,7 @@ impl crate::AsyncObjectStore for OriginalArchive {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             {

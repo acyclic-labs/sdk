@@ -1,165 +1,5 @@
 use super::*;
 
-/// Adds the authority creation and first durable record to one transaction.
-pub(super) fn first_record_commit(
-    request: &mut acyclic_stream::CommitRequest,
-    authority: AuthorityId,
-    commit: &ProposedCommit,
-    lineage: Option<(acyclic_stream::StreamPath, u64, GenerationId)>,
-    meter: &mut AuthorityWork<'_>,
-) -> Result<(), AuthorityStoreError> {
-    use acyclic_stream::CommitCondition::Absent;
-    use acyclic_stream::CommitMutation::Append;
-    let epoch = Epoch::GENESIS;
-    let sequence = Sequence::new(1);
-    let previous = Head::genesis(epoch);
-    let mut durable = crate::streams_record::BorrowedStreamsDurableRecord {
-        epoch,
-        sequence,
-        operation_id: commit.operation_id,
-        fingerprint: commit.fingerprint,
-        previous_digest: previous.digest,
-        digest: Digest::from_bytes([0; 32]),
-        payload: &commit.payload,
-    };
-    durable.digest = meter.durable_digest(authority, &durable)?;
-    let encoded = StreamsDurableRecord::encode_borrowed_with(
-        &durable,
-        STREAM_RECORD_LIMIT,
-        |domain, fields| meter.stream_bytes(domain, fields),
-    )
-    .map_err(|error| {
-        if meter.is_native() {
-            AuthorityStoreError::DurableCodec(error)
-        } else {
-            AuthorityStoreError::Rejected(error.to_string())
-        }
-    })??;
-    let root = meter.path(authority, "", None)?;
-    let records = meter.path(authority, "/records", None)?;
-    let epochs = meter.path(authority, "/epochs", None)?;
-    let gate = meter.path(authority, "/publication-gate", None)?;
-    for path in [&root, &records, &epochs, &gate] {
-        let condition = Absent { path: path.clone() };
-        meter.push(&mut request.conditions, condition)?;
-    }
-    meter.append_record(
-        &mut request.mutations,
-        root,
-        acyclic_stream::OwnedBytes::from_static(AUTHORITY_MARKER),
-    )?;
-    let generation = generation_from_payload(authority, sequence, durable.payload, meter)?;
-    lineage_commit(request, authority, lineage, generation, meter)?;
-    let mut record_values = meter.vec(2)?;
-    let genesis = meter.stream_bytes(GENESIS_DOMAIN, &[&epoch.get().to_le_bytes()])?;
-    meter.push(&mut record_values, genesis)?;
-    meter.push(&mut record_values, encoded)?;
-    meter.push(
-        &mut request.mutations,
-        Append {
-            path: records,
-            records: record_values,
-        },
-    )?;
-    let mut epoch_values = meter.vec(1)?;
-    let epoch_record = meter.stream_bytes(EPOCH_DOMAIN, &[&epoch.get().to_le_bytes()])?;
-    meter.push(&mut epoch_values, epoch_record)?;
-    meter.push(
-        &mut request.mutations,
-        Append {
-            path: epochs,
-            records: epoch_values,
-        },
-    )?;
-    meter.append_record(
-        &mut request.mutations,
-        gate,
-        acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE),
-    )?;
-    Ok(())
-}
-
-/// Adds the forked prefix and newly published generation to the authority lineage.
-pub(super) fn lineage_commit(
-    request: &mut acyclic_stream::CommitRequest,
-    authority: AuthorityId,
-    lineage: Option<(acyclic_stream::StreamPath, u64, GenerationId)>,
-    generation: Option<GenerationId>,
-    meter: &mut AuthorityWork<'_>,
-) -> Result<(), AuthorityStoreError> {
-    use acyclic_stream::CommitCondition::Absent;
-    use acyclic_stream::CommitMutation::{Append, Fork};
-    if lineage.is_none() && generation.is_none() {
-        return Ok(());
-    }
-    let lineage_path = meter.path(authority, "/lineage", None)?;
-    let condition = Absent {
-        path: lineage_path.clone(),
-    };
-    meter.push(&mut request.conditions, condition)?;
-    let mut entries = meter.vec(usize::from(generation.is_some()))?;
-    if let Some(generation) = generation {
-        let entry = meter.stream_bytes(LINEAGE_DOMAIN, &[generation.digest().as_bytes()])?;
-        meter.push(&mut entries, entry)?;
-    }
-    let mut tail = 0;
-    let mut forked_locator = None;
-    match lineage {
-        Some((source_lineage, forked_at, source_generation)) => {
-            let locator = meter.path(authority, "/generations/", Some(source_generation))?;
-            let condition = Absent {
-                path: locator.clone(),
-            };
-            meter.push(&mut request.conditions, condition)?;
-            meter.push(
-                &mut request.mutations,
-                Fork {
-                    source: source_lineage,
-                    destination: lineage_path,
-                    at_tail: forked_at,
-                    records: entries,
-                },
-            )?;
-            let mut locator_values = meter.vec(1)?;
-            let locator_record =
-                meter.stream_bytes(LINEAGE_TAIL_DOMAIN, &[&forked_at.to_le_bytes()])?;
-            meter.push(&mut locator_values, locator_record)?;
-            let append = Append {
-                path: locator.clone(),
-                records: locator_values,
-            };
-            meter.push(&mut request.mutations, append)?;
-            tail = forked_at;
-            forked_locator = Some(locator);
-        }
-        None => meter.push(
-            &mut request.mutations,
-            Append {
-                path: lineage_path,
-                records: entries,
-            },
-        )?,
-    }
-    if let Some(generation) = generation {
-        let locator = meter.path(authority, "/generations/", Some(generation))?;
-        if forked_locator.as_ref() == Some(&locator) {
-            return Err(AuthorityStoreError::Rejected(
-                "a fork cannot publish its source generation again".to_owned(),
-            ));
-        }
-        let locator_record = meter.stream_bytes(
-            LINEAGE_TAIL_DOMAIN,
-            &[&tail.saturating_add(1).to_le_bytes()],
-        )?;
-        let condition = Absent {
-            path: locator.clone(),
-        };
-        meter.push(&mut request.conditions, condition)?;
-        meter.append_record(&mut request.mutations, locator, locator_record)?;
-    }
-    Ok(())
-}
-
 pub(super) async fn seal<G: AuthorityGuard>(
     meter: &mut AuthorityWork<'_>,
     mut guard: Option<&mut G>,
@@ -185,71 +25,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         mut guard: Option<&mut G>,
     ) -> Result<CreateAuthorityOutcome, AuthorityError<G::Error>> {
         let mut meter = AuthorityWork::operation(work)?;
-        let result = async {
-            let meter = &mut meter;
-
-            match self.fork_snapshot(authority, meter).await {
-                Ok(snapshot) => {
-                    self.fork_gate(authority, meter).await?;
-                    seal(meter, guard.as_deref_mut()).await?;
-                    return Ok(CreateAuthorityOutcome::Existing(snapshot.head));
-                }
-                Err(failure) if authority_missing(&failure) => {}
-                Err(failure) => return Err(failure.into()),
-            }
-            let idempotency_key = meter.stream_key(b"create", &authority.into_bytes())?;
-            let mut conditions = meter.vec(4)?;
-            let mut mutations = meter.vec(4)?;
-            for (suffix, domain, static_value) in [
-                ("", None, Some(AUTHORITY_MARKER)),
-                ("/records", Some(GENESIS_DOMAIN), None),
-                ("/epochs", Some(EPOCH_DOMAIN), None),
-                ("/publication-gate", None, Some(PUBLICATION_GATE_FREE)),
-            ] {
-                let path = meter.path(authority, suffix, None)?;
-                let condition = acyclic_stream::CommitCondition::Absent { path: path.clone() };
-                meter.push(&mut conditions, condition)?;
-                let mut records = meter.vec(1)?;
-                let value = if let Some(value) = static_value {
-                    acyclic_stream::OwnedBytes::from_static(value)
-                } else {
-                    meter.stream_bytes(
-                        domain.expect("epoch record domain"),
-                        &[&epoch.get().to_le_bytes()],
-                    )?
-                };
-                meter.push(&mut records, value)?;
-                meter.push(
-                    &mut mutations,
-                    acyclic_stream::CommitMutation::Append { path, records },
-                )?;
-            }
-            let request = acyclic_stream::CommitRequest {
-                conditions,
-                mutations,
-                idempotency_key,
-            };
-            let result = self
-                .commit(request, None, meter, guard.as_deref_mut())
-                .await?;
-            if !meter.is_native() {
-                meter.release_request()?;
-            }
-            let value = match &result.0 {
-                acyclic_stream::CommitOutcome::Committed(_) => {
-                    seal(meter, guard.as_deref_mut()).await?;
-                    CreateAuthorityOutcome::Created(Head::genesis(epoch))
-                }
-                acyclic_stream::CommitOutcome::Conflict(_) => {
-                    let snapshot = self.fork_snapshot(authority, meter).await?;
-                    self.fork_gate(authority, meter).await?;
-                    seal(meter, guard.as_deref_mut()).await?;
-                    CreateAuthorityOutcome::Existing(snapshot.head)
-                }
-            };
-            Ok(value)
-        }
-        .await;
+        let result =
+            super::creation::creation(self, authority, epoch, &mut meter, guard.as_deref_mut())
+                .await;
         work.record(meter.spent())?;
         result
     }
@@ -261,77 +39,13 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         mut guard: Option<&mut G>,
     ) -> Result<bool, AuthorityError<G::Error>> {
         let mut meter = AuthorityWork::operation(work)?;
-        let result = async {
-            let meter = &mut meter;
-
-            meter.check()?;
-            let idempotency_key = meter.operation_key(authority, commit.operation_id)?;
-            let mut request = acyclic_stream::CommitRequest {
-                conditions: meter.vec(7)?,
-                mutations: meter.vec(7)?,
-                idempotency_key,
-            };
-            first_record_commit(&mut request, authority, &commit, None, meter)?;
-            let result = self
-                .commit(request, None, meter, guard.as_deref_mut())
-                .await;
-            if !meter.is_native() {
-                meter.release_request()?;
-            }
-            match result {
-                Ok(outcome) => match &outcome.0 {
-                    acyclic_stream::CommitOutcome::Committed(_) => {
-                        // An ACK confirms this operation, including keyed replay.
-                        seal(meter, guard.as_deref_mut()).await?;
-                        return Ok(true);
-                    }
-                    acyclic_stream::CommitOutcome::Conflict(_) => {}
-                },
-                Err(AuthorityError::Authority(failure))
-                    if matches!(
-                        authority_stream_error(&failure),
-                        Some(acyclic_stream::StreamError::IdempotencyMismatch)
-                    ) =>
-                {
-                    return Ok(false);
-                }
-                Err(AuthorityError::Authority(failure)) => return Err(failure.into()),
-                Err(AuthorityError::Owner(error)) => return Err(AuthorityError::Owner(error)),
-            }
-            let records = meter.path(authority, "/records", None)?;
-            let path_bytes = records.as_str().len() as u64;
-            let tail = self.tail(records.clone(), meter).await;
-            let value = match tail {
-                Ok(tail) if tail >= 2 => {
-                    let record = self.record(records, 1, meter).await?;
-                    let first = meter.decode_durable(&record.0.value)?;
-                    let digest = meter.durable_digest(authority, &first)?;
-                    if digest != first.digest {
-                        return Err(AuthorityStoreError::CorruptStatic(
-                            "Stream durable record digest mismatch",
-                        )
-                        .into());
-                    }
-                    first.sequence == Sequence::new(1)
-                        && first.operation_id == commit.operation_id
-                        && first.fingerprint == commit.fingerprint
-                }
-                Ok(_) => {
-                    drop(records);
-                    false
-                }
-                Err(failure) if authority_missing(&failure) => {
-                    drop(records);
-                    false
-                }
-                Err(failure) => return Err(failure.into()),
-            };
-            meter.release(path_bytes)?;
-            if value {
-                seal(meter, guard.as_deref_mut()).await?;
-            }
-            Ok(value)
-        }
+        let result = super::creation::first_record(
+            self,
+            authority,
+            commit,
+            &mut meter,
+            guard.as_deref_mut(),
+        )
         .await;
         work.record(meter.spent())?;
         result
@@ -344,85 +58,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         mut guard: Option<&mut G>,
     ) -> Result<WorkspaceForkOutcome, AuthorityError<G::Error>> {
         let mut meter = AuthorityWork::operation(work)?;
-        let result = async {
-            let meter = &mut meter;
-
-            if !matches!(permit, PublicationPermit::Unrestricted) {
-                return Err(AuthorityStoreError::RejectedStatic(
-                    "workspace fork does not support a publication reservation",
-                )
-                .into());
-            }
-            let request = async {
-                let meter = &mut *meter;
-                let idempotency_key =
-                    meter.operation_key(fork.destination, fork.creation.operation_id)?;
-                let mut request = acyclic_stream::CommitRequest {
-                    conditions: meter.vec(14)?,
-                    mutations: meter.vec(14)?,
-                    idempotency_key,
-                };
-                let lineage = match fork.lineage {
-                    Some(source) if source.lineage == crate::GenerationFork::PublishedPrefix => {
-                        let (source_lineage, forked_at) = self
-                            .resolve_source_fork_point(source.authority, source.generation, meter)
-                            .await?;
-                        Some((source_lineage, forked_at, source.generation))
-                    }
-                    Some(_) | None => None,
-                };
-                first_record_commit(&mut request, fork.retention, &fork.retained, None, meter)?;
-                first_record_commit(
-                    &mut request,
-                    fork.destination,
-                    &fork.creation,
-                    lineage,
-                    meter,
-                )?;
-                Ok::<_, AuthorityStoreError>(request)
-            }
-            .await?;
-            let result = match self
-                .commit(request, None, meter, guard.as_deref_mut())
-                .await
-            {
-                Ok(output) => Some(output),
-                Err(AuthorityError::Authority(failure))
-                    if matches!(
-                        authority_stream_error(&failure),
-                        Some(acyclic_stream::StreamError::IdempotencyMismatch)
-                    ) =>
-                {
-                    None
-                }
-                Err(AuthorityError::Authority(failure)) => return Err(failure.into()),
-                Err(AuthorityError::Owner(error)) => return Err(AuthorityError::Owner(error)),
-            };
-            if !meter.is_native() {
-                meter.release_request()?;
-            }
-            match result.as_ref().map(|output| &output.0) {
-                Some(acyclic_stream::CommitOutcome::Committed(_)) => {
-                    seal(meter, guard.as_deref_mut()).await?;
-                    return Ok(WorkspaceForkOutcome::Committed);
-                }
-                Some(acyclic_stream::CommitOutcome::Conflict(_)) | None => {}
-            }
-            {
-                let mut child = meter.operation_work()?;
-                let result = crate::async_storage::workspace_fork(
-                    self,
-                    fork,
-                    permit,
-                    &mut child,
-                    guard.as_deref_mut(),
-                )
+        let result =
+            super::creation::workspace_fork(self, fork, permit, &mut meter, guard.as_deref_mut())
                 .await;
-                meter.absorb(&child)?;
-                result
-            }
-        }
-        .await;
         work.record(meter.spent())?;
         result
     }
@@ -445,134 +83,14 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 .await;
         }
         let mut meter = AuthorityWork::operation(work)?;
-        let result = async {
-            let meter = &mut meter;
-
-            meter.check()?;
-            let (source_lineage, forked_at) = self
-                .resolve_source_fork_point(source.authority, source.generation, meter)
-                .await?;
-            if let Some(snapshot) = self
-                .existing_fork_destination(
-                    destination_authority,
-                    source.generation,
-                    forked_at,
-                    meter,
-                )
-                .await?
-            {
-                self.fork_gate(destination_authority, meter).await?;
-                seal(meter, guard.as_deref_mut()).await?;
-                return Ok(CreateAuthorityOutcome::Existing(snapshot.head));
-            }
-            let request = (|| {
-                let meter = &mut *meter;
-                let root = meter.path(destination_authority, "", None)?;
-                let records_path = meter.path(destination_authority, "/records", None)?;
-                let epochs_path = meter.path(destination_authority, "/epochs", None)?;
-                let locator_path = meter.path(
-                    destination_authority,
-                    "/generations/",
-                    Some(source.generation),
-                )?;
-                let lineage = meter.path(destination_authority, "/lineage", None)?;
-                let gate_path = meter.path(destination_authority, "/publication-gate", None)?;
-                use acyclic_stream::{CommitCondition, CommitMutation};
-                let mut conditions = meter.vec::<CommitCondition>(6)?;
-                for path in [
-                    &root,
-                    &records_path,
-                    &epochs_path,
-                    &locator_path,
-                    &lineage,
-                    &gate_path,
-                ] {
-                    let path = path.clone();
-                    meter.push(&mut conditions, CommitCondition::Absent { path })?;
-                }
-                let mut mutations = meter.vec::<CommitMutation>(6)?;
-                meter.append_record(
-                    &mut mutations,
-                    root,
-                    acyclic_stream::OwnedBytes::from_static(AUTHORITY_MARKER),
-                )?;
-                meter.push(
-                    &mut mutations,
-                    CommitMutation::Fork {
-                        source: source_lineage,
-                        destination: lineage,
-                        at_tail: forked_at,
-                        records: Vec::new(),
-                    },
-                )?;
-                let genesis =
-                    meter.stream_bytes(GENESIS_DOMAIN, &[&Epoch::GENESIS.get().to_le_bytes()])?;
-                meter.append_record(&mut mutations, records_path, genesis)?;
-                let epoch =
-                    meter.stream_bytes(EPOCH_DOMAIN, &[&Epoch::GENESIS.get().to_le_bytes()])?;
-                meter.append_record(&mut mutations, epochs_path, epoch)?;
-                let locator =
-                    meter.stream_bytes(LINEAGE_TAIL_DOMAIN, &[&forked_at.to_le_bytes()])?;
-                meter.append_record(&mut mutations, locator_path, locator)?;
-                meter.append_record(
-                    &mut mutations,
-                    gate_path,
-                    acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE),
-                )?;
-                let idempotency_key =
-                    meter.stream_key(b"fork-authority", &operation_id.into_bytes())?;
-                Ok::<_, AuthorityStoreError>(acyclic_stream::CommitRequest {
-                    conditions,
-                    mutations,
-                    idempotency_key,
-                })
-            })()?;
-            let committed = match self
-                .commit(request, None, meter, guard.as_deref_mut())
-                .await
-            {
-                Ok(output) => Some(output),
-                Err(AuthorityError::Authority(failure))
-                    if matches!(
-                        authority_stream_error(&failure),
-                        Some(acyclic_stream::StreamError::IdempotencyMismatch)
-                    ) =>
-                {
-                    None
-                }
-                Err(AuthorityError::Authority(failure)) => return Err(failure.into()),
-                Err(AuthorityError::Owner(error)) => return Err(AuthorityError::Owner(error)),
-            };
-            if !meter.is_native() {
-                meter.release_request()?;
-            }
-            match committed.as_ref().map(|output| &output.0) {
-                Some(acyclic_stream::CommitOutcome::Committed(_)) => {
-                    seal(meter, guard.as_deref_mut()).await?;
-                    Ok(CreateAuthorityOutcome::Created(Head::genesis(
-                        Epoch::GENESIS,
-                    )))
-                }
-                Some(acyclic_stream::CommitOutcome::Conflict(_)) | None => {
-                    let snapshot = self
-                        .existing_fork_destination(
-                            destination_authority,
-                            source.generation,
-                            forked_at,
-                            meter,
-                        )
-                        .await?
-                        .ok_or_else(|| {
-                            AuthorityStoreError::RejectedStatic(
-                                "generation fork conflicted without creating its destination",
-                            )
-                        })?;
-                    self.fork_gate(destination_authority, meter).await?;
-                    seal(meter, guard.as_deref_mut()).await?;
-                    Ok(CreateAuthorityOutcome::Existing(snapshot.head))
-                }
-            }
-        }
+        let result = super::creation::generation_fork(
+            self,
+            source,
+            destination_authority,
+            operation_id,
+            &mut meter,
+            guard.as_deref_mut(),
+        )
         .await;
         work.record(meter.spent())?;
         result
@@ -582,20 +100,14 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         request: crate::GuardedAppend,
         work: &mut AuthorityWork<'_>,
         mut guard: Option<&mut G>,
-    ) -> Result<(FsAppendOutcome, AuthorityAllocation), AuthorityError<G::Error>> {
+    ) -> Result<FsAppendOutcome, AuthorityError<G::Error>> {
         let mut meter = AuthorityWork::operation(work)?;
         #[cfg(not(target_arch = "wasm32"))]
-        let allocation = if let Some(original) = meter.original {
-            Some(
-                original
-                    .claim(0, 0, WorkCounters::UNCHARGED)
-                    .map_err(AuthorityStoreError::from)?,
-            )
-        } else {
-            None
-        };
-        #[cfg(target_arch = "wasm32")]
-        let allocation = None;
+        if let Some(original) = meter.original {
+            original
+                .admit(WorkCounters::UNCHARGED)
+                .map_err(AuthorityStoreError::from)?;
+        }
         let result = async {
             let meter = &mut meter;
 
@@ -744,15 +256,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 deadline = Some(expires_at_millis);
             }
             let mut mutations = meter.vec(3)?;
-            let mut record_values = meter.vec(1)?;
-            meter.push(&mut record_values, encoded)?;
-            meter.push(
-                &mut mutations,
-                CommitMutation::Append {
-                    path: records.clone(),
-                    records: record_values,
-                },
-            )?;
+            meter.append_record(&mut mutations, records.clone(), [encoded])?;
             if let Some(generation) =
                 generation_from_payload(authority_id, sequence, &durable.payload, meter)?
             {
@@ -816,30 +320,14 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                                 path: locator.clone(),
                             },
                         )?;
-                        let mut entries = meter.vec(1)?;
                         let entry = meter
                             .stream_bytes(LINEAGE_DOMAIN, &[generation.digest().as_bytes()])?;
-                        meter.push(&mut entries, entry)?;
-                        meter.push(
-                            &mut mutations,
-                            CommitMutation::Append {
-                                path: lineage,
-                                records: entries,
-                            },
-                        )?;
-                        let mut locations = meter.vec(1)?;
+                        meter.append_record(&mut mutations, lineage, [entry])?;
                         let location = meter.stream_bytes(
                             LINEAGE_TAIL_DOMAIN,
                             &[&lineage_tail.saturating_add(1).to_le_bytes()],
                         )?;
-                        meter.push(&mut locations, location)?;
-                        meter.push(
-                            &mut mutations,
-                            CommitMutation::Append {
-                                path: locator,
-                                records: locations,
-                            },
-                        )?;
+                        meter.append_record(&mut mutations, locator, [location])?;
                     }
                     Ok(_) => {
                         return Err(authority_corrupt(
@@ -980,7 +468,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         }
         .await;
         work.record(meter.spent())?;
-        result.map(|value| (value, allocation))
+        result
     }
     async fn head(
         &self,
@@ -1053,20 +541,14 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         authority: AuthorityId,
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(Option<DurableCommit>, AuthorityAllocation), AuthorityStoreError> {
+    ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
         let mut meter = AuthorityWork::operation(work)?;
         #[cfg(not(target_arch = "wasm32"))]
-        let allocation = if let Some(original) = meter.original {
-            Some(
-                original
-                    .claim(0, 0, WorkCounters::UNCHARGED)
-                    .map_err(AuthorityStoreError::from)?,
-            )
-        } else {
-            None
-        };
-        #[cfg(target_arch = "wasm32")]
-        let allocation = None;
+        if let Some(original) = meter.original {
+            original
+                .admit(WorkCounters::UNCHARGED)
+                .map_err(AuthorityStoreError::from)?;
+        }
         let result = self
             .authority_find_operation(authority, operation, &mut meter)
             .await
@@ -1078,7 +560,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 }
             });
         work.record(meter.spent())?;
-        result.map(|value| (value, allocation))
+        result
     }
 
     async fn publication_reservation(

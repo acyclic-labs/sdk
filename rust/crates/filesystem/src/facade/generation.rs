@@ -30,7 +30,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> FsResult<Option<DurableCommit>> {
         let receipt = ({ let __authority_args = (volume_authority_id(volume_id), operation_id, budget, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self
             .inner
-            .authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
+            .authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| {
                 OperationFailure::new(FsError::Authority(failure.error), *failure.work)
             })?;

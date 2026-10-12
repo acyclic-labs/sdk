@@ -62,7 +62,7 @@ async fn ambiguous_append_is_durable_and_retry_resolves_identity()
             )
             .await
             .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
+            ;
         __authority_work.receipt(__authority_result)
     })
     .await;
@@ -98,7 +98,7 @@ async fn ambiguous_append_is_durable_and_retry_resolves_identity()
             )
             .await
             .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
+            ;
         __authority_work.receipt(__authority_result)
     })
     .await?;
@@ -172,7 +172,7 @@ async fn duplicate_replay_and_fence_change_are_observable_without_hidden_repair(
             )
             .await
             .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
+            ;
         __authority_work.receipt(__authority_result)
     })
     .await?;
@@ -234,7 +234,7 @@ async fn duplicate_replay_and_fence_change_are_observable_without_hidden_repair(
             )
             .await
             .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
+            ;
         __authority_work.receipt(__authority_result)
     })
     .await?;
@@ -308,7 +308,7 @@ async fn fence_before_append_preserves_nested_budget_failure_work()
             )
             .await
             .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
+            ;
         __authority_work.receipt(__authority_result)
     })
     .await;

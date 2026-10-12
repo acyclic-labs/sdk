@@ -122,7 +122,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         .record
         .is_some()
     );
-    let lookup = (async { let __authority_args = (volume_authority_id(volume_id), operation_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::find_operation(&volume.fs.inner.authority, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await?;
+    let lookup = (async { let __authority_args = (volume_authority_id(volume_id), operation_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::find_operation(&volume.fs.inner.authority, __authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await?;
     let mut recovered = (volume.checkout(
         GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
     )).await?.value;

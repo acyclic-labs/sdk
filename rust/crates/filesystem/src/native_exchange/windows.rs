@@ -222,132 +222,81 @@ where
     let mut remaining = witness_length
         .checked_sub(96)
         .ok_or(NativeExchangeError::IncompatibleJournal)?;
-    let published = with_read_native_path(
-        &mut file,
-        &mut remaining,
-        work,
-        |left_parent_path, file, remaining, work| {
-            if !left_parent_path.is_absolute() {
+    let (path, allocation) = read_path(&mut file, &mut remaining, work)?;
+    let checked: Result<(), W::Error> = (|| {
+        if !path.is_absolute() {
+            return Err(NativeExchangeError::IncompatibleJournal.into());
+        }
+        let named_left = crate::native_host::open_root_directory(&path, work)?.0;
+        if crate::native_host::directory_identity(&named_left, work)? != parents[0] {
+            return Err(NativeExchangeError::IncompatibleJournal.into());
+        }
+        Ok(())
+    })();
+    drop(path);
+    work.release(allocation)?;
+    checked?;
+    let (path, allocation) = read_path(&mut file, &mut remaining, work)?;
+    let matches = path == left_name;
+    drop(path);
+    work.release(allocation)?;
+    if !matches {
+        return Err(NativeExchangeError::IncompatibleJournal.into());
+    }
+    let (path, allocation) = read_path(&mut file, &mut remaining, work)?;
+    let opened: Result<cap_std::fs::Dir, W::Error> = (|| {
+        if !path.is_absolute() {
+            return Err(NativeExchangeError::IncompatibleJournal.into());
+        }
+        let right = crate::native_host::open_root_directory(&path, work)?.0;
+        if crate::native_host::directory_identity(&right, work)? != parents[1] {
+            return Err(NativeExchangeError::IncompatibleJournal.into());
+        }
+        Ok(right)
+    })();
+    drop(path);
+    work.release(allocation)?;
+    let right = opened?;
+    let (right_name, allocation) = read_path(&mut file, &mut remaining, work)?;
+    let published: Result<bool, W::Error> = (|| {
+        validate_leaf(&right_name).map_err(W::Error::from)?;
+        if let Some((requested_parent, requested_name)) = requested_right {
+            if requested_name != right_name
+                || crate::native_host::directory_identity(requested_parent, work)? != parents[1]
+            {
                 return Err(NativeExchangeError::IncompatibleJournal.into());
             }
-            let named_left = crate::native_host::open_root_directory(left_parent_path, work)
-                .map(|(directory, _)| directory)?;
-            if crate::native_host::directory_identity(&named_left, work)? != parents[0] {
-                return Err(NativeExchangeError::IncompatibleJournal.into());
+        }
+        let (identity, length) = crate::native_host::file_identity_and_length(&file, work)?;
+        if remaining != 0 || length != witness_length || identity != witness_identity {
+            return Err(NativeExchangeError::IncompatibleJournal.into());
+        }
+        let current = (
+            crate::native_host::entry_identity(left, left_name, work)?,
+            crate::native_host::entry_identity(&right, &right_name, work)?,
+            crate::native_host::entry_identity(left, scratch_name, work)?,
+        );
+        match current {
+            (Some(original), Some(replacement), None) if [original, replacement] == roots => {
+                Ok(false)
             }
-            with_read_native_path(
-                file,
-                remaining,
-                work,
-                |original_name, file, remaining, work| {
-                    if original_name != left_name {
-                        return Err(NativeExchangeError::IncompatibleJournal.into());
-                    }
-                    with_read_native_path(
-                        file,
-                        remaining,
-                        work,
-                        |right_parent_path, file, remaining, work| {
-                            if !right_parent_path.is_absolute() {
-                                return Err(NativeExchangeError::IncompatibleJournal.into());
-                            }
-                            let right =
-                                crate::native_host::open_root_directory(right_parent_path, work)
-                                    .map(|(directory, _)| directory)?;
-                            if crate::native_host::directory_identity(&right, work)? != parents[1] {
-                                return Err(NativeExchangeError::IncompatibleJournal.into());
-                            }
-                            with_read_native_path(
-                                file,
-                                remaining,
-                                work,
-                                |right_name, file, remaining, work| {
-                                    validate_leaf(right_name).map_err(W::Error::from)?;
-                                    if let Some((requested_parent, requested_name)) =
-                                        requested_right
-                                    {
-                                        if requested_name != right_name
-                                            || crate::native_host::directory_identity(
-                                                requested_parent,
-                                                work,
-                                            )? != parents[1]
-                                        {
-                                            return Err(
-                                                NativeExchangeError::IncompatibleJournal.into()
-                                            );
-                                        }
-                                    }
-                                    let (identity, length) =
-                                        crate::native_host::file_identity_and_length(file, work)?;
-                                    if *remaining != 0
-                                        || length != witness_length
-                                        || identity != witness_identity
-                                    {
-                                        return Err(NativeExchangeError::IncompatibleJournal.into());
-                                    }
-                                    let current_left =
-                                        crate::native_host::entry_identity(left, left_name, work)?;
-                                    let current_right = crate::native_host::entry_identity(
-                                        &right, right_name, work,
-                                    )?;
-                                    let current_scratch = crate::native_host::entry_identity(
-                                        left,
-                                        scratch_name,
-                                        work,
-                                    )?;
-                                    let published =
-                                        match (current_left, current_right, current_scratch) {
-                                            (Some(original), Some(replacement), None)
-                                                if [original, replacement] == roots =>
-                                            {
-                                                false
-                                            }
-                                            (None, Some(replacement), Some(original))
-                                                if [original, replacement] == roots =>
-                                            {
-                                                rename_durable_held(
-                                                    left,
-                                                    scratch_name,
-                                                    left,
-                                                    left_name,
-                                                    roots[0],
-                                                    work,
-                                                )?;
-                                                false
-                                            }
-                                            (Some(replacement), None, Some(original))
-                                                if [original, replacement] == roots =>
-                                            {
-                                                rename_durable_held(
-                                                    left,
-                                                    scratch_name,
-                                                    &right,
-                                                    right_name,
-                                                    roots[0],
-                                                    work,
-                                                )?;
-                                                true
-                                            }
-                                            (Some(replacement), Some(original), None)
-                                                if [original, replacement] == roots =>
-                                            {
-                                                true
-                                            }
-                                            _ => {
-                                                return Err(
-                                                    NativeExchangeError::IncompatibleJournal.into(),
-                                                );
-                                            }
-                                        };
-                                    Ok(published)
-                                },
-                            )
-                        },
-                    )
-                },
-            )
-        },
-    )?;
+            (None, Some(replacement), Some(original)) if [original, replacement] == roots => {
+                rename_durable_held(left, scratch_name, left, left_name, roots[0], work)?;
+                Ok(false)
+            }
+            (Some(replacement), None, Some(original)) if [original, replacement] == roots => {
+                rename_durable_held(left, scratch_name, &right, &right_name, roots[0], work)?;
+                Ok(true)
+            }
+            (Some(replacement), Some(original), None) if [original, replacement] == roots => {
+                Ok(true)
+            }
+            _ => Err(NativeExchangeError::IncompatibleJournal.into()),
+        }
+    })();
+    drop(right_name);
+    work.release(allocation)?;
+    let published = published?;
     // On Windows the named deletion is complete only after the reader releases
     // its share-delete handle. The subsequent barrier covers actual cleanup.
     drop(file);

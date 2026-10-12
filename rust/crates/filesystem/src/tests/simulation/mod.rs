@@ -139,7 +139,7 @@ async fn exercise_authority_before_work(
                 )
                 .await
                 .map_err(|error| error.into_error(std::convert::identity))
-                .map(|(value, _allocation)| value);
+                ;
             __authority_work.receipt(__authority_result)
         })
         .await,
@@ -207,7 +207,7 @@ async fn exercise_authority_before_work(
                     &mut __authority_work,
                 )
                 .await
-                .map(|(value, _allocation)| value);
+                ;
             __authority_work.receipt(__authority_result)
         })
         .await,
@@ -349,7 +349,7 @@ impl crate::AsyncAuthorityStore for OpaqueOriginalAuthority {
         request: crate::GuardedAppend,
         work: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
-    ) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>>
+    ) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>>
     {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
@@ -431,7 +431,7 @@ impl crate::AsyncAuthorityStore for OpaqueOriginalAuthority {
         operation: crate::OperationId,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<
-        (Option<crate::DurableCommit>, crate::AuthorityAllocation),
+        Option<crate::DurableCommit>,
         crate::AuthorityStoreError,
     > {
         #[cfg(not(target_arch = "wasm32"))]

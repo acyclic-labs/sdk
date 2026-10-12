@@ -27,7 +27,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for AccountingAuthor
         _: crate::GuardedAppend,
         _: &mut AuthorityWork<'_>,
         _: Option<&mut G>,
-    ) -> Result<(FsAppendOutcome, AuthorityAllocation), AuthorityError<G::Error>> {
+    ) -> Result<FsAppendOutcome, AuthorityError<G::Error>> {
         Err(AuthorityStoreError::Retired.into())
     }
 
@@ -85,7 +85,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for AccountingAuthor
         _: AuthorityId,
         _: OperationId,
         _: &mut AuthorityWork<'_>,
-    ) -> Result<(Option<DurableCommit>, AuthorityAllocation), AuthorityStoreError> {
+    ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
         Err(AuthorityStoreError::Retired)
     }
 }

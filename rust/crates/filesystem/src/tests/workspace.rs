@@ -299,7 +299,7 @@ async fn creation_operation(
     key: IdempotencyKey,
 ) -> Result<bool, Box<dyn Error>> {
     use crate::AsyncAuthorityStore as _;
-    let found = ({ let __authority_args = (crate::kernel::volume_authority_id(destination.volume_id()), key.operation_id(), WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream)).find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
+    let found = ({ let __authority_args = (crate::kernel::volume_authority_id(destination.volume_id()), key.operation_id(), WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream)).find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
         .map_err(|failure| failure.error)?;
     Ok(found
         .value

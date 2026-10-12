@@ -61,7 +61,7 @@ let value = delegate!(self, AsyncAuthorityStore, authority, fork_authority(sourc
 if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
 Ok(value)
 }
-async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>> {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::AuthorityStoreError::Rejected("authority backend cannot atomically evaluate operation leases".to_owned()).into()); }
@@ -89,7 +89,7 @@ if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOrigin
 delegate!(self, AsyncAuthorityStore, authority, fence(authority, expected, work))
 
 }
-async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<Option<crate::DurableCommit>, crate::AuthorityStoreError> {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 

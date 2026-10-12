@@ -255,7 +255,7 @@ let value = crate::AsyncAuthorityStore::create_authority(&self.inner, authority,
 if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
 Ok(value)
 }
-async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>> {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::AuthorityStoreError::Rejected("authority backend cannot atomically evaluate operation leases".to_owned()).into()); }
@@ -287,7 +287,7 @@ work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
 if self.control.should_fail() { let failure = Self::failure(false); work.record(*failure.work)?; return Err(failure.error.into()); }
 crate::AsyncAuthorityStore::fence(&self.inner, authority, expected, work).await
 }
-async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError,
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<Option<crate::DurableCommit>, crate::AuthorityStoreError,
     > {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
@@ -377,7 +377,7 @@ impl crate::async_storage::AsyncObjectStore for FaultObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
         cancellation.check().map_err(|_| {
@@ -521,7 +521,7 @@ impl crate::async_storage::AsyncObjectStore for CountingObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
         cancellation.check().map_err(|_| {
@@ -728,7 +728,7 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
             }
             .await;
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             cancellation.check().map_err(|_| {
@@ -868,7 +868,7 @@ let value = crate::AsyncAuthorityStore::create_authority(self.inner.as_ref(), au
 if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
 Ok(value)
 }
-async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>> {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::AuthorityStoreError::Rejected("authority backend cannot atomically evaluate operation leases".to_owned()).into()); }
@@ -900,7 +900,7 @@ if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOrigin
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
 crate::AsyncAuthorityStore::fence(self.inner.as_ref(), authority, expected, work).await
 }
-async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError,
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<Option<crate::DurableCommit>, crate::AuthorityStoreError,
     > {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
@@ -1183,7 +1183,7 @@ async fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn s
         OperationId::from_bytes([227; 16]), encoded,
         WorkBudget::UNBOUNDED, &CancellationToken::new(),
     )?.value;({ let __authority_args = (expected_authority, head.epoch, Head::genesis(head.epoch), proposal, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result =
-    AsyncAuthorityStore::compare_and_append(&*authority, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?;
+    AsyncAuthorityStore::compare_and_append(&*authority, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?;
     let cancellation = CancellationToken::new();
     assert!(matches!(
         (fs.read_creation_record(expected_volume, WorkBudget::UNBOUNDED, &cancellation)).await,

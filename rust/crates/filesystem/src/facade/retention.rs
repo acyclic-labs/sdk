@@ -106,10 +106,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<Option<(Sequence, Digest)>, FsError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            let found = ({ let __authority_args = (authority_id, operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result })?;
-            return Ok(found.0.as_ref().map(|record| (record.sequence, record.fingerprint)));
+            let found = ({ let __authority_args = (authority_id, operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result })?;
+            return Ok(found.as_ref().map(|record| (record.sequence, record.fingerprint)));
         }
-        let result = ({ let __authority_args = (authority_id, operation_id, accounting.remaining()?, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) });
+        let result = ({ let __authority_args = (authority_id, operation_id, accounting.remaining()?, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) });
         let spent = match &result { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         merge_creation_backend_work(accounting, spent)?;
         result.map(|receipt| receipt.value.map(|record| (record.sequence, record.fingerprint))).map_err(|failure| failure.error.into())

@@ -157,7 +157,7 @@ async fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
                 &mut __authority_work,
             )
             .await
-            .map(|(value, _allocation)| value);
+            ;
         __authority_work.receipt(__authority_result)
     })
     .await?;

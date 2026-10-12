@@ -299,9 +299,7 @@ async fn original_simulation_propagates_opaque_backend_rejection_before_ordinary
                     &mut __authority_work,
                 )
                 .await
-                .map(|(value, allocation)| {
-                    (value, allocation.expect("native authority allocation"))
-                });
+                ;
             __authority_result
         }),
         Err(AuthorityStoreError::NativeOriginalUnsupported)
@@ -384,9 +382,7 @@ async fn original_simulation_mutation_faults_and_unsupported_providers_never_cal
                     .compare_and_append(__authority_args.0, &mut __authority_work, None::<&mut ()>)
                     .await
                     .map_err(|error| error.into_error(std::convert::identity))
-                    .map(|(value, allocation)| {
-                        (value, allocation.expect("native authority allocation"))
-                    });
+                    ;
                 __authority_result
             }),
             Err(AuthorityStoreError::RejectedStatic(_))
@@ -412,9 +408,7 @@ async fn original_simulation_mutation_faults_and_unsupported_providers_never_cal
                     )
                     .await
                     .map_err(|error| error.into_error(std::convert::Into::into))
-                    .map(|(value, allocation)| {
-                        (value, allocation.expect("native authority allocation"))
-                    });
+                    ;
                 __authority_result
             }),
             Err(SimulationOwnerFailure::Authority(
@@ -453,9 +447,7 @@ async fn original_simulation_mutation_faults_and_unsupported_providers_never_cal
                 .compare_and_append(__authority_args.0, &mut __authority_work, None::<&mut ()>)
                 .await
                 .map_err(|error| error.into_error(std::convert::identity))
-                .map(|(value, allocation)| {
-                    (value, allocation.expect("native authority allocation"))
-                });
+                ;
             __authority_result
         }),
         Err(AuthorityStoreError::NativeOriginalUnsupported)
@@ -480,9 +472,7 @@ async fn original_simulation_mutation_faults_and_unsupported_providers_never_cal
                 )
                 .await
                 .map_err(|error| error.into_error(std::convert::Into::into))
-                .map(|(value, allocation)| {
-                    (value, allocation.expect("native authority allocation"))
-                });
+                ;
             __authority_result
         }),
         Err(SimulationOwnerFailure::Authority(

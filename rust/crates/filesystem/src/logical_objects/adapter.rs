@@ -101,28 +101,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         Ok(crate::PublicationHold::none())
     }
 
-    async fn prepare_generation_publication(
-        &self, _request: &crate::kernel::PublishGenerationRequest,
-        _proof: &crate::kernel::GenerationProof, _append: &crate::GuardedAppend,
-        _scope: crate::PublicationScope<'_>,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = context.original {
-            let cancellation = context.cancellation;
-            return async {
-        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
-        original.admit(WorkCounters::UNCHARGED)?;
-        Ok(())
-    }
-            .await;
-        }
-        context
-            .cancellation
-            .check()
-            .map_err(|_| crate::ObjectStoreError::Cancelled)?;
-        Ok(())
-    }
+
 
     async fn read(
         &self,
@@ -146,7 +125,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
             }
             .await;
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);

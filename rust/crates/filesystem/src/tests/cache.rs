@@ -460,7 +460,7 @@ impl AsyncObjectStore for CountingStore {
             }
             .await;
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             self.scalar_reads.fetch_add(1, Ordering::AcqRel);
@@ -589,7 +589,7 @@ impl AsyncObjectStore for ShortBatchStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             {
@@ -712,7 +712,7 @@ impl AsyncObjectStore for GatedStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
         self.reads.fetch_add(1, Ordering::AcqRel);
@@ -1494,7 +1494,7 @@ mod native_cache {
                 }
                 .await;
             }
-            let budget = context.work.remaining(context.budget)?;
+            let budget = context.read_budget()?;
             let token = context.cancellation;
             let result = async {
                 {

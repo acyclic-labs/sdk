@@ -53,27 +53,21 @@ pub async fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
         for request in requests {
             accounting.check()?;
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = accounting.native_work() {
-                let read = {
-                    let __object_args =
-                        (request.object_id, request.maximum_bytes, work, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
-                    store
-                        .read(__object_args.0, __object_args.1, &mut __object_work)
-                        .await
-                }?;
-                values.0.push(read);
+            let mut read_work = match accounting.native_work() {
+                Some(original) => AuthorityWork::native(original, cancellation),
+                None => AuthorityWork::new(accounting.remaining()?, cancellation),
+            };
+            #[cfg(target_arch = "wasm32")]
+            let mut read_work = AuthorityWork::new(accounting.remaining()?, cancellation);
+            let read = store
+                .read(request.object_id, request.maximum_bytes, &mut read_work)
+                .await;
+            #[cfg(not(target_arch = "wasm32"))]
+            if read_work.original.is_some() {
+                values.0.push(read?);
                 continue;
             }
-            let result = {
-                let mut __object_work =
-                    crate::AuthorityWork::new(accounting.remaining()?, cancellation);
-                let __object_result = store
-                    .read(request.object_id, request.maximum_bytes, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
-            };
+            let result = read_work.receipt(read);
             match result {
                 Ok(receipt) => {
                     let retained = match receipt.value.retention {
