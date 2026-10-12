@@ -95,7 +95,7 @@ fn regular(file_id: FileId, metadata: ObjectId) -> Result<FileRecord, Box<dyn st
     })
 }
 
-fn blob(store: &MemoryObjectStore, bytes: &[u8]) -> Result<ObjectId, Box<dyn std::error::Error>> {
+async fn blob(store: &MemoryObjectStore, bytes: &[u8]) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let mut source = std::io::Cursor::new(bytes);
     Ok(build_blob(
         store,
@@ -107,11 +107,12 @@ fn blob(store: &MemoryObjectStore, bytes: &[u8]) -> Result<ObjectId, Box<dyn std
             maximum_blob_bytes: u64::try_from(bytes.len())?,
         },
         WorkBudget::UNBOUNDED,
-    )?
+        &CancellationToken::new(),
+    ).await?
     .root)
 }
 
-fn inline_at(
+async fn inline_at(
     store: &MemoryObjectStore,
     generation: &GenerationRoot,
     value: &str,
@@ -122,7 +123,8 @@ fn inline_at(
         &path(&[value])?,
         config(),
         WorkBudget::UNBOUNDED,
-    )?
+        &CancellationToken::new(),
+    ).await?
     .record
     .ok_or("expected regular-file path is absent")?;
     let FilePayload::InlineRegular(data) = record.payload else {
@@ -369,7 +371,7 @@ fn collect_file_table_records(
     Ok(())
 }
 
-fn assert_generation_matches_model(
+async fn assert_generation_matches_model(
     store: &MemoryObjectStore,
     generation: &GenerationRoot,
     model: &GenerationModel,
@@ -383,7 +385,8 @@ fn assert_generation_matches_model(
             &path(&[candidate])?,
             config(),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .record;
         match (model.bindings.get(candidate), found) {
             (None, None) => {}
@@ -407,7 +410,8 @@ fn assert_generation_matches_model(
             *file_id,
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .record;
         match (model.bytes.get(file_id), found) {
             (None, None) => {}
@@ -527,7 +531,8 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
         &path(&["new"])?,
         config(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(found_new.record.map(|record| record.file_id), Some(new_id));
     let renamed = lookup_path(
         &store,
@@ -535,7 +540,8 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
         &path(&["renamed"])?,
         config(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(renamed.record.map(|record| record.link_count), Some(1));
     assert_eq!(
         renamed.record.map(|record| record.metadata),
@@ -549,7 +555,8 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
                 &path(&[absent])?,
                 config(),
                 WorkBudget::UNBOUNDED,
-            )?
+                &CancellationToken::new(),
+            ).await?
             .record,
             None
         );
@@ -561,7 +568,8 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
             &path(&["a"])?,
             config(),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .record
         .is_some()
     );
@@ -572,7 +580,8 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
             &path(&["new"])?,
             config(),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .record,
         None
     );
@@ -621,7 +630,8 @@ async fn nested_create_uses_new_parent_without_scanning_other_subtrees()
             &path(&["parent", "child"])?,
             config(),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .record
         .map(|record| record.file_id),
         Some(child_id)
@@ -646,7 +656,8 @@ async fn content_executes_and_identity_rejections_precede_candidate_writes()
             maximum_blob_bytes: 1,
         },
         WorkBudget::UNBOUNDED,
-    )?
+        &CancellationToken::new(),
+    ).await?
     .root;
     let content_receipt = apply_generation_mutations(
         &store,
@@ -668,7 +679,8 @@ async fn content_executes_and_identity_rejections_precede_candidate_writes()
         &path(&["a"])?,
         config(),
         WorkBudget::UNBOUNDED,
-    )?
+        &CancellationToken::new(),
+    ).await?
     .record
     .ok_or("content-mutated file disappeared")?;
     let FilePayload::InlineRegular(data) = content_record.payload else {
@@ -704,9 +716,9 @@ async fn mixed_content_batch_observes_candidate_paths_and_hard_link_identity()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let fixture = fixture(&store)?;
-    let x = blob(&store, b"X")?;
-    let y = blob(&store, b"Y")?;
-    let z = blob(&store, b"Z")?;
+    let x = blob(&store, b"X").await?;
+    let y = blob(&store, b"Y").await?;
+    let z = blob(&store, b"Z").await?;
     let destination_id = FileId::from_bytes([4; 16]);
     let mut destination = regular(destination_id, fixture.metadata)?;
     destination.payload = FilePayload::InlineRegular(InlineFileData::new(b"0000000")?);
@@ -760,10 +772,10 @@ async fn mixed_content_batch_observes_candidate_paths_and_hard_link_identity()
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ).await?;
-    assert_eq!(inline_at(&store, &receipt.root, "renamed")?, b"YZyload");
-    assert_eq!(inline_at(&store, &receipt.root, "alias")?, b"YZyload");
-    assert_eq!(inline_at(&store, &receipt.root, "b")?, b"X0YZ000");
-    assert_eq!(inline_at(&store, &fixture.generation, "a")?, b"payload");
+    assert_eq!(inline_at(&store, &receipt.root, "renamed").await?, b"YZyload");
+    assert_eq!(inline_at(&store, &receipt.root, "alias").await?, b"YZyload");
+    assert_eq!(inline_at(&store, &receipt.root, "b").await?, b"X0YZ000");
+    assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
     Ok(())
 }
 
@@ -773,7 +785,7 @@ async fn identity_mutation_observes_same_batch_link_count_transitions()
     let store = MemoryObjectStore::default();
     let fixture = fixture(&store)?;
     let file_id = FileId::from_bytes([2; 16]);
-    let replacement = blob(&store, b"X")?;
+    let replacement = blob(&store, b"X").await?;
 
     let surviving_link = apply_generation_mutations(
         &store,
@@ -802,7 +814,7 @@ async fn identity_mutation_observes_same_batch_link_count_transitions()
         &CancellationToken::new(),
     ).await?;
     assert_eq!(
-        inline_at(&store, &surviving_link.root, "alias")?,
+        inline_at(&store, &surviving_link.root, "alias").await?,
         b"Xayload"
     );
     assert!(
@@ -812,7 +824,8 @@ async fn identity_mutation_observes_same_batch_link_count_transitions()
             &path(&["a"])?,
             config(),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .record
         .is_none()
     );
@@ -846,7 +859,7 @@ async fn identity_mutation_observes_same_batch_link_count_transitions()
         final_unlink.error,
         GenerationMutationError::MissingSource
     ));
-    assert_eq!(inline_at(&store, &fixture.generation, "a")?, b"payload");
+    assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
     Ok(())
 }
 
@@ -883,7 +896,7 @@ async fn identity_clone_uses_two_ids_with_a_one_operation_batch_limit()
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ).await?;
-    assert_eq!(inline_at(&store, &cloned.root, "destination")?, b"payload");
+    assert_eq!(inline_at(&store, &cloned.root, "destination").await?, b"payload");
     Ok(())
 }
 
@@ -920,7 +933,8 @@ async fn rename_over_same_hard_link_identity_is_a_noop() -> Result<(), Box<dyn s
         &path(&["a"])?,
         config(),
         WorkBudget::UNBOUNDED,
-    )?
+        &CancellationToken::new(),
+    ).await?
     .record
     .ok_or("same-identity rename removed source alias")?;
     let alias = lookup_path(
@@ -929,7 +943,8 @@ async fn rename_over_same_hard_link_identity_is_a_noop() -> Result<(), Box<dyn s
         &path(&["alias"])?,
         config(),
         WorkBudget::UNBOUNDED,
-    )?
+        &CancellationToken::new(),
+    ).await?
     .record
     .ok_or("same-identity rename removed destination alias")?;
     assert_eq!(original.file_id, alias.file_id);
@@ -957,7 +972,7 @@ async fn overlapping_same_file_clone_uses_preoperation_snapshot() -> Result<(), 
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ).await?;
-    assert_eq!(inline_at(&store, &receipt.root, "a")?, b"papayld");
+    assert_eq!(inline_at(&store, &receipt.root, "a").await?, b"papayld");
     assert!(receipt.work.bytes_copied >= 4);
     Ok(())
 }
@@ -969,7 +984,7 @@ async fn semantic_capabilities_and_create_identity_reject_before_backend_work()
     let fixture = fixture(&store)?;
     let mut disabled = config();
     disabled.symbolic_links = false;
-    let target = blob(&store, b"target")?;
+    let target = blob(&store, b"target").await?;
     let symbolic = FileRecord {
         file_id: FileId::from_bytes([31; 16]),
         kind: FileKind::SymbolicLink,
@@ -1136,7 +1151,8 @@ async fn removing_directory_after_candidate_child_insert_is_rejected()
             &path(&["dir"])?,
             config(),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .record
         .is_some()
     );
@@ -1175,7 +1191,8 @@ async fn disabled_hard_links_reject_before_work() -> Result<(), Box<dyn std::err
             &path(&["a"])?,
             config(),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .record
         .is_some()
     );
@@ -1186,7 +1203,8 @@ async fn disabled_hard_links_reject_before_work() -> Result<(), Box<dyn std::err
             &path(&["alias"])?,
             config(),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .record
         .is_none()
     );
@@ -1225,7 +1243,8 @@ async fn rename_replace_drops_the_destination_identity_atomically()
             &path(&["a"])?,
             config(),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .record
         .is_none()
     );
@@ -1235,12 +1254,13 @@ async fn rename_replace_drops_the_destination_identity_atomically()
         &path(&["b"])?,
         config(),
         WorkBudget::UNBOUNDED,
-    )?
+        &CancellationToken::new(),
+    ).await?
     .record
     .ok_or("renamed destination is absent")?;
     assert_eq!(replacement.file_id, FileId::from_bytes([2; 16]));
     assert_eq!(replacement.link_count, 1);
-    assert_eq!(inline_at(&store, &receipt.root, "b")?, b"payload");
+    assert_eq!(inline_at(&store, &receipt.root, "b").await?, b"payload");
     assert!(
         lookup_file_record(
             &store,
@@ -1248,11 +1268,12 @@ async fn rename_replace_drops_the_destination_identity_atomically()
             replaced_id,
             DecodeLimits::for_volume(config()),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .record
         .is_none()
     );
-    assert_eq!(inline_at(&store, &fixture.generation, "a")?, b"payload");
+    assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
     Ok(())
 }
 
@@ -1289,7 +1310,8 @@ async fn directory_rename_below_itself_is_rejected_without_publication()
             &path(&["dir"])?,
             config(),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .record
         .is_some()
     );
@@ -1505,7 +1527,7 @@ async fn namespace_and_identity_preconditions_fail_with_exact_terminal_errors()
         assert_eq!(failure.work.backend_write_operations, 0);
     }
 
-    assert_eq!(inline_at(&store, &fixture.generation, "a")?, b"payload");
+    assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
     assert!(
         lookup_path(
             &store,
@@ -1513,7 +1535,8 @@ async fn namespace_and_identity_preconditions_fail_with_exact_terminal_errors()
             &path(&["first"])?,
             config(),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .record
         .is_none()
     );
@@ -1636,7 +1659,8 @@ async fn ordered_path_and_identity_regular_mutations_share_one_candidate()
         file_id,
         DecodeLimits::for_volume(config()),
         WorkBudget::UNBOUNDED,
-    )?
+        &CancellationToken::new(),
+    ).await?
     .record
     .ok_or("mutated file identity disappeared")?;
     assert_eq!(record.metadata, fixture.changed_metadata);
@@ -1645,7 +1669,7 @@ async fn ordered_path_and_identity_regular_mutations_share_one_candidate()
     };
     assert_eq!(logical_bytes, 128);
     assert!(receipt.work.backend_write_operations > 0);
-    assert_eq!(inline_at(&store, &fixture.generation, "a")?, b"payload");
+    assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
     Ok(())
 }
 
@@ -1775,7 +1799,7 @@ async fn generated_generation_histories_match_independent_namespace_and_identity
         let mut model = GenerationModel::fixture(fixture.metadata);
         let mut seed = history + 1;
         let mut created_identity = 10_u8;
-        assert_generation_matches_model(&store, &generation, &model, &names)?;
+        assert_generation_matches_model(&store, &generation, &model, &names).await?;
 
         for step in 0..40_u64 {
             let existing = model.bindings.keys().cloned().collect::<Vec<_>>();
@@ -1898,7 +1922,7 @@ async fn generated_generation_histories_match_independent_namespace_and_identity
                     let content = (0..length)
                         .map(|_| u8::try_from(generated_next(&mut seed) & 0xff).unwrap_or(0))
                         .collect::<Vec<_>>();
-                    let content_root = blob(&store, &content)?;
+                    let content_root = blob(&store, &content).await?;
                     let bytes = next_model
                         .bytes
                         .get_mut(&file_id)
@@ -1999,10 +2023,11 @@ async fn generated_generation_histories_match_independent_namespace_and_identity
             generation = receipt.root;
             model = next_model;
             assert_generation_matches_model(&store, &generation, &model, &names)
+                .await
                 .map_err(|error| format!("history {history}, step {step}: {error}"))?;
         }
 
-        assert_eq!(inline_at(&store, &fixture.generation, "a")?, b"payload");
+        assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
     }
     Ok(())
 }
@@ -2061,12 +2086,12 @@ async fn generated_multi_operation_transactions_observe_the_candidate_in_order()
         let patch = (0..2)
             .map(|_| u8::try_from(generated_next(&mut seed) & 0xff).unwrap_or(0))
             .collect::<Vec<_>>();
-        let patch_root = blob(&store, &patch)?;
+        let patch_root = blob(&store, &patch).await?;
         let large_patch = [
             u8::try_from(generated_next(&mut seed) & 0xff).unwrap_or(0),
             u8::try_from(generated_next(&mut seed) & 0xff).unwrap_or(0),
         ];
-        let large_patch_root = blob(&store, &large_patch)?;
+        let large_patch_root = blob(&store, &large_patch).await?;
         let operations = vec![
             Mutation::Create {
                 path: path(&["x"])?,
@@ -2206,8 +2231,9 @@ async fn generated_multi_operation_transactions_observe_the_candidate_in_order()
             metadata: fixture.metadata,
         };
         assert_generation_matches_model(&store, &receipt.root, &model, &names)
+            .await
             .map_err(|error| format!("history {history}: {error}"))?;
-        assert_eq!(inline_at(&store, &fixture.generation, "a")?, b"payload");
+        assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
     }
     Ok(())
 }

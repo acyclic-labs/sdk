@@ -92,22 +92,22 @@ pub(crate) use types::lowercase_unicode_with_accounting;
 pub use attribute::{
     AttributeClass, AttributeEntry, AttributeError, AttributeName, AttributePage, attribute_page_id, decode_attribute_page, encode_attribute_page};
 pub use attribute_access::{
-    AttributeBatchLookup, AttributeLookup, AttributeLookupError, AttributeLookupFailure, lookup_attribute, lookup_attributes};
+    AttributeLookupError, AttributeLookupFailure, lookup_attribute, lookup_attributes};
 pub(crate) use attribute_access::{
     lookup_attribute_async_with_accounting};
 pub use attribute_list::{
     AttributeListError, AttributeListFailure, AttributeListing, list_attributes};
 pub use attribute_mutation::{
-    AttributeMutation, AttributeMutationError, AttributeMutationFailure, AttributeMutationReceipt, apply_attribute_mutations};
+    AttributeMutation, AttributeMutationError, AttributeMutationFailure, apply_attribute_mutations};
 pub use blob::{
-    AsyncBlobSource, OwnedSourceChunk, BlobBuild, BlobBuildError, BlobBuildFailure, BlobBuildOptions, BlobChild, BlobChunkRef, BlobNode, BlobPage, BlobRead, BlobReadError, BlobReadFailure, blob_page_id, build_blob, build_blob_async, decode_blob_page, encode_blob_page, read_blob_range, read_blob_range_async};
+    AsyncBlobSource, OwnedSourceChunk, BlobBuild, BlobBuildError, BlobBuildFailure, BlobBuildOptions, BlobChild, BlobChunkRef, BlobNode, BlobPage, BlobRead, BlobReadError, BlobReadFailure, blob_page_id, build_blob, decode_blob_page, encode_blob_page, read_blob_range};
 pub use checkpoint::{
-    CheckpointError, CheckpointFailure, CheckpointReceipt, CheckpointRequest, build_checkpoint, build_checkpoint_async};
+    CheckpointError, CheckpointFailure, CheckpointReceipt, CheckpointRequest, build_checkpoint};
 #[cfg(feature = "s3-http")]
 pub(crate) use closure::prove_blob_closure_async;
 pub(crate) use closure::prove_record_closure_async;
 pub use closure::{
-    ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure, prove_generation_closure_async};
+    ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure};
 pub use codec::{
     CanonicalDecodeError, DecodeLimits, EncodeError, EncodeAllocationStep, EncodeWorkStep, ReadAllocationStep, encode};
 pub(crate) use codec::{
@@ -129,13 +129,13 @@ pub use file_read::{
 pub(crate) use file_read::{
     ReadOwned, read_file_range_with_accounting, read_objects_with_accounting, retained_object_reads_bytes};
 pub use file_table::{
-    FilePayload, FilePayloadKind, FileRecord, FileRecordBatchLookup, FileRecordLookup, FileRecordReadError, FileRecordReadFailure, FileTableError, FileTablePage, InlineFileData, InlineFileDataError, MAXIMUM_INLINE_FILE_BYTES, decode_file_table_page, encode_file_table_page, file_table_page_id, lookup_file_record, lookup_file_record_async, lookup_file_records, lookup_file_records_async};
+    FilePayload, FilePayloadKind, FileRecord, FileRecordBatchLookup, FileRecordLookup, FileRecordReadError, FileRecordReadFailure, FileTableError, FileTablePage, InlineFileData, InlineFileDataError, MAXIMUM_INLINE_FILE_BYTES, decode_file_table_page, encode_file_table_page, file_table_page_id, lookup_file_record, lookup_file_records};
 pub(crate) use file_table::{
     decode_file_record, encode_file_record, encode_file_table_leaf_records, lookup_file_record_async_with_custody, lookup_file_records_async_with_custody};
 pub(crate) use file_table::{
     lookup_file_record_async_with_accounting, lookup_file_records_async_with_accounting};
 pub use file_table_mutation::{
-    FileTableMutation, FileTableMutationError, FileTableMutationFailure, FileTableMutationReceipt, apply_file_table_mutations};
+    FileTableMutation, FileTableMutationError, FileTableMutationFailure, apply_file_table_mutations};
 pub(crate) use file_table_mutation::apply_file_table_mutations_with_accounting;
 pub(crate) use generation::{
     read_generation_root_with_accounting, read_generation_root_with_limits_and_accounting};
@@ -146,7 +146,7 @@ pub use generation_mutation::{
 pub(crate) use list::{
     list_tree_entries_async_with_custody};
 pub use list::{
-    DirectoryPage, DirectoryReadError, DirectoryReadFailure, list_tree_entries, list_tree_entries_async};
+    DirectoryPage, DirectoryReadError, DirectoryReadFailure, list_tree_entries};
 pub use live::{
     LiveMutationOutcome, LivePublicationObservation, LiveRetryAction, LiveRetryError, LiveRetryState};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -169,7 +169,7 @@ pub(crate) use path_access::{
 pub(crate) use path_access::{
     AccountedPath, lookup_path_async_with_accounting, lookup_path_refs_async_with_accounting, lookup_paths_async_with_accounting, lookup_paths_selected_async_with_accounting, observe_path_async_with_accounting, observe_path_refs_async_with_accounting, observe_paths_async_with_accounting};
 pub use path_access::{
-    ObservedPathBatch, ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup, PathLookupError, PathLookupFailure, lookup_path, lookup_path_async, lookup_path_refs, lookup_path_refs_async, lookup_paths, lookup_paths_async, observe_path_async, observe_paths_async};
+    ObservedPathBatch, ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup, PathLookupError, PathLookupFailure, lookup_path, lookup_path_refs, lookup_paths, observe_path_async, observe_paths_async};
 pub(crate) use persistent_point::{
     Owned, retire_allocation};
 pub(crate) use persistent_pagination::{
@@ -182,14 +182,14 @@ pub(crate) use publication::encode_publication_payload;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use publication::NativePublicationPayload;
 pub use publication::{
-    PublicationError, PublicationFailure, PublicationReceipt, PublishGenerationRequest, PublishedGeneration, decode_published_generation, publish_generation, publish_generation_async};
+    PublicationError, PublicationFailure, PublicationReceipt, PublishGenerationRequest, PublishedGeneration, decode_published_generation, publish_generation};
 pub(crate) use publication::{
     PublicationIntent, permit_context_with_accounting, publish_generation_async_guarded, publish_generation_async_with_permit, BorrowedPublicationEvidence, decode_publication_evidence_with_accounting, contextual_publication_fingerprint_from_payload_with_accounting};
 pub use range::{
-    ExtentPlan, ExtentRangeRequest, ExtentReadError, ExtentReadFailure, ExtentSeekRequest, ExtentSeekTarget, ExtentSlice, plan_extent_range, plan_extent_range_async, seek_extent, seek_extent_async};
+    ExtentPlan, ExtentRangeRequest, ExtentReadError, ExtentReadFailure, ExtentSeekRequest, ExtentSeekTarget, ExtentSlice, plan_extent_range, seek_extent};
 pub(crate) use range::seek_extent_with_accounting;
 pub use read::{
-    TreeBatchLookup, TreeLookup, TreeReadError, TreeReadFailure, lookup_tree_entries, lookup_tree_entries_async, lookup_tree_entry, lookup_tree_entry_async};
+    TreeBatchLookup, TreeLookup, TreeReadError, TreeReadFailure, lookup_tree_entries, lookup_tree_entry};
 pub(crate) use read::lookup_tree_entry_async_with_custody;
 pub(crate) use read::{
     lookup_tree_entries_async_with_accounting, lookup_tree_entry_async_with_accounting};
@@ -220,7 +220,7 @@ pub use transfer::{
 pub use tree::{
     decode_tree_page, encode_tree_page, tree_page_id};
 pub use tree_mutation::{
-    TreeMutation, TreeMutationError, TreeMutationFailure, TreeMutationReceipt, apply_tree_mutations};
+    TreeMutation, TreeMutationError, TreeMutationFailure, apply_tree_mutations};
 pub(crate) use tree_mutation::apply_tree_mutations_with_accounting;
 pub use types::{
     Extent, ExtentChild, ExtentKind, ExtentPage, ExtentPageError, FileKind, LogicalName, NameEncoding, TreeEntry, TreePage, TreePageError};

@@ -19,7 +19,7 @@ use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{
     ByteRange, HashedObject, ObjectId, ObjectKind, ObjectReadRequest,
-    ObjectReadRetention, ObjectStore, ObjectStoreError, object_digest,
+    ObjectReadRetention, ObjectStoreError, object_digest,
 };
 use bytes::Bytes;
 use std::future::Future;
@@ -451,28 +451,24 @@ pub trait AsyncBlobSource {
     }
 }
 
-struct ImmediateBlobSource<'a, T>(&'a mut T);
-
-impl<T: Read> AsyncBlobSource for ImmediateBlobSource<'_, T> {
-    async fn read<'a>(
-        &'a mut self,
-        destination: &'a mut [u8],
-        budget: WorkBudget,
-        cancellation: &'a CancellationToken,
-    ) -> std::io::Result<usize> {
-        if cancellation.is_cancelled() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "blob source read cancelled",
-            ));
-        }
-        let maximum = destination.len().min(usize::try_from(budget.source_bytes_read).unwrap_or(usize::MAX));
-        if maximum == 0 && !destination.is_empty() {
-            return Err(std::io::Error::other("blob source byte budget exhausted"));
-        }
-        Read::read(self.0, destination.get_mut(..maximum)
-            .ok_or_else(|| std::io::Error::other("invalid bounded source buffer"))?)
+fn read_source<T: Read>(
+    source: &mut T,
+    destination: &mut [u8],
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> std::io::Result<usize> {
+    if cancellation.is_cancelled() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "blob source read cancelled",
+        ));
     }
+    let maximum = destination.len().min(usize::try_from(budget.source_bytes_read).unwrap_or(usize::MAX));
+    if maximum == 0 && !destination.is_empty() {
+        return Err(std::io::Error::other("blob source byte budget exhausted"));
+    }
+    Read::read(source, destination.get_mut(..maximum)
+        .ok_or_else(|| std::io::Error::other("invalid bounded source buffer"))?)
 }
 
 impl<T: AsRef<[u8]>> AsyncBlobSource for std::io::Cursor<T> {
@@ -480,7 +476,7 @@ impl<T: AsRef<[u8]>> AsyncBlobSource for std::io::Cursor<T> {
         &'a mut self, destination: &'a mut [u8], budget: WorkBudget,
         cancellation: &'a CancellationToken,
     ) -> std::io::Result<usize> {
-        ImmediateBlobSource(self).read(destination, budget, cancellation).await
+        read_source(self, destination, budget, cancellation)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -515,7 +511,7 @@ impl AsyncBlobSource for &[u8] {
         &'a mut self, destination: &'a mut [u8], budget: WorkBudget,
         cancellation: &'a CancellationToken,
     ) -> std::io::Result<usize> {
-        ImmediateBlobSource(self).read(destination, budget, cancellation).await
+        read_source(self, destination, budget, cancellation)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -540,7 +536,7 @@ impl AsyncBlobSource for std::fs::File {
         &'a mut self, destination: &'a mut [u8], budget: WorkBudget,
         cancellation: &'a CancellationToken,
     ) -> std::io::Result<usize> {
-        ImmediateBlobSource(self).read(destination, budget, cancellation).await
+        read_source(self, destination, budget, cancellation)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -566,24 +562,7 @@ impl AsyncBlobSource for std::fs::File {
 }
 
 /// Streams a source into fixed-size authenticated chunks and a bounded index.
-pub fn build_blob<S: crate::ImmediateObjectStore, R: Read>(
-    store: &S,
-    source: &mut R,
-    options: BlobBuildOptions,
-    budget: WorkBudget,
-) -> Result<BlobBuild, BlobBuildFailure> {
-    let cancellation = CancellationToken::new();
-    crate::async_storage::poll_immediate(build_blob_async(
-        store,
-        &mut ImmediateBlobSource(source),
-        options,
-        budget,
-        &cancellation,
-    ))
-}
-
-/// Asynchronously streams a source into authenticated chunks and a bounded, incremental blob index.
-pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
+pub async fn build_blob<S: AsyncObjectStore, R: AsyncBlobSource>(
     store: &S, source: &mut R, options: BlobBuildOptions, budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<BlobBuild, BlobBuildFailure> {
@@ -1343,37 +1322,7 @@ impl BlobRead {
 }
 
 /// Reads only blob-index pages and chunks intersecting one exact range.
-pub fn read_blob_range<S: ObjectStore>(
-    store: &S, root: ObjectId, range: ByteRange, limits: DecodeLimits, budget: WorkBudget,
-) -> Result<BlobRead, BlobReadFailure> {
-    let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(budget, &cancellation);
-    let result = (|| {
-        let mut machine = BlobRangeMachine::new(root, range, limits, &mut accounting)?;
-        while !machine.pending.is_empty() {
-            let pending = machine.prepare(&mut accounting)?;
-            let (object, maximum) = pending.request(limits);
-            let result = ObjectStore::read(store, object, maximum, accounting.remaining()?);
-            let (read, retained) = super::file_read::accept_standalone_object_read(result, &mut accounting)?;
-            match pending {
-                PendingBlobRead::Page { expected_first, expected_end, height, .. } => {
-                    let decoded = ReadOwned::decoded(decode_blob_page_with_accounting(&read, limits, &mut accounting)?);
-                    machine.accept_decoded_page(&decoded.value.0, expected_first, expected_end, height, &mut accounting)?;
-                    drop(decoded.value.0);
-                    release_read_allocation(decoded.value.1, decoded.custody, &mut accounting)?;
-                }
-                PendingBlobRead::Chunk(chunk) => machine.accept_chunk(&read, chunk, &mut accounting)?,
-            }
-            drop(read);
-            super::file_read::release_standalone_read_bytes(retained, &mut accounting)?;
-        }
-        machine.finish(&mut accounting)
-    })();
-    result.map_err(|error| failed(blob_error(error), accounting.spent()))
-}
-
-/// Asynchronously reads an authenticated range through the same transition machine as the synchronous and original-ledger readers.
-pub async fn read_blob_range_async<S: AsyncObjectStore>(
+pub async fn read_blob_range<S: AsyncObjectStore>(
     store: &S, root: ObjectId, range: ByteRange, limits: DecodeLimits, budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<BlobRead, BlobReadFailure> {

@@ -701,26 +701,7 @@ pub(super) fn path_error(error: crate::FsError) -> PathLookupError {
 }
 
 /// Resolves one exact path without following terminal or intermediate links.
-pub fn lookup_path<S: crate::ImmediateObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    path: &NamespacePath,
-    config: VolumeConfig,
-    budget: WorkBudget,
-) -> Result<PathLookup, PathLookupFailure> {
-    let cancellation = CancellationToken::new();
-    async_storage::poll_immediate(lookup_path_async(
-        store,
-        generation,
-        path,
-        config,
-        budget,
-        &cancellation,
-    ))
-}
-
-/// Asynchronously resolves one exact no-follow path through authenticated frontiers.
-pub async fn lookup_path_async<S: AsyncObjectStore>(
+pub async fn lookup_path<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
     path: &NamespacePath,
@@ -757,26 +738,7 @@ pub(crate) async fn observe_path_edges_async<S: AsyncObjectStore>(
 }
 
 /// Resolves a non-empty exact path batch through shared authenticated prefixes.
-pub fn lookup_paths<S: crate::ImmediateObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    paths: &[NamespacePath],
-    config: VolumeConfig,
-    budget: WorkBudget,
-) -> Result<PathBatchLookup, PathLookupFailure> {
-    let cancellation = CancellationToken::new();
-    async_storage::poll_immediate(lookup_paths_async(
-        store,
-        generation,
-        paths,
-        config,
-        budget,
-        &cancellation,
-    ))
-}
-
-/// Asynchronously resolves a non-empty no-follow path batch with shared work.
-pub async fn lookup_paths_async<S: AsyncObjectStore>(
+pub async fn lookup_paths<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
     paths: &[NamespacePath],
@@ -837,7 +799,7 @@ pub async fn observe_paths_async<S: AsyncObjectStore>(
 }
 
 /// Resolves borrowed paths without first cloning their names into an owned batch.
-pub async fn lookup_path_refs_async<S: AsyncObjectStore>(
+pub async fn lookup_path_refs<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
     paths: &[&NamespacePath],
@@ -858,24 +820,6 @@ pub async fn lookup_path_refs_async<S: AsyncObjectStore>(
     )
     .await
     .map(|observed| observed.lookup)
-}
-
-/// Synchronously resolves borrowed paths without constructing owned path copies.
-pub fn lookup_path_refs<S: crate::ImmediateObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    paths: &[&NamespacePath],
-    config: VolumeConfig,
-    budget: WorkBudget,
-) -> Result<PathBatchLookup, PathLookupFailure> {
-    async_storage::poll_immediate(lookup_path_refs_async(
-        store,
-        generation,
-        paths,
-        config,
-        budget,
-        &CancellationToken::new(),
-    ))
 }
 
 #[derive(Clone, Copy)]

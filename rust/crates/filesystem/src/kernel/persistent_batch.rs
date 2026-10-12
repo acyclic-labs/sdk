@@ -72,29 +72,6 @@ struct Match {
     queries: Range<usize>,
 }
 
-pub(crate) fn lookup<S, F>(
-    store: &S,
-    root: ObjectId,
-    keys: &[F::Key],
-    maximum_queries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<OperationReceipt<Vec<Option<F::Value>>>, Failure>
-where
-    S: crate::ImmediateObjectStore,
-    F: Format,
-{
-    crate::async_storage::poll_immediate(lookup_async::<S, F>(
-        store,
-        root,
-        keys,
-        maximum_queries,
-        limits,
-        budget,
-        &CancellationToken::new(),
-    ))
-}
-
 pub(crate) async fn lookup_async<S, F>(
     store: &S, root: ObjectId, keys: &[F::Key], maximum_queries: u32,
     limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
