@@ -80,25 +80,16 @@ impl<P: StreamProvider> Transport<P> {
 impl<P: StreamProvider> McpToolTransport for Transport<P> {
     fn call<'a>(
         &'a self,
-        _: OperationId,
-        _: &'a str,
-        _: Value,
-    ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
-        Box::pin(async { Err(Error::Unauthorized("admitted task context required".into())) })
-    }
-    fn reconcile<'a>(
-        &'a self,
-        _: OperationId,
-    ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
-        Box::pin(async { Err(Error::Unauthorized("admitted task context required".into())) })
-    }
-    fn call_with_context<'a>(
-        &'a self,
-        context: ToolContext,
+        operation: OperationId,
         name: &'a str,
         arguments: Value,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
         Box::pin(async move {
+            let context = context.ok_or_else(|| Error::Unauthorized("admitted task context required".into()))?;
+            if context.operation_id() != operation {
+                return Err(Error::Unauthorized("admitted operation changed".into()));
+            }
             self.authorize(&context)?;
             let descriptor = self.descriptor()?;
             if descriptor.method != McpStdioMethod::CallTool
@@ -124,11 +115,16 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
             .await
         })
     }
-    fn reconcile_with_context<'a>(
+    fn reconcile<'a>(
         &'a self,
-        context: ToolContext,
+        operation: OperationId,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
         Box::pin(async move {
+            let context = context.ok_or_else(|| Error::Unauthorized("admitted task context required".into()))?;
+            if context.operation_id() != operation {
+                return Err(Error::Unauthorized("admitted operation changed".into()));
+            }
             self.authorize(&context)?;
             self.reconciliations.fetch_add(1, Ordering::SeqCst);
             let binding = &self.approved;
@@ -218,7 +214,7 @@ pub(super) async fn run<P: StreamProvider>(
             .ok_or_else(|| Error::Invalid("approved text missing".into()))? = json!("unapproved");
         if !matches!(
             transport
-                .call_with_context(context.clone(), "echo", changed)
+                .call(context.operation_id(), "echo", changed, Some(context.clone()))
                 .await,
             Err(Error::Unauthorized(_))
         ) {

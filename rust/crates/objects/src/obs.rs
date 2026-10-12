@@ -108,17 +108,10 @@ impl BodyStream {
         body: std::pin::Pin<Box<S>>, allocation: acyclic_native_runtime::ReadAllocation,
     ) -> Self
     where S: futures::Stream<Item = Result<bytes::Bytes, crate::Error>> + Send + 'static {
-        Self {
-            inner: Scoped::new(
-                BodyState {
-                    body,
-                    lifetime: Lifetime(None),
-                    context: Some(Span::none()),
-                    _allocation: Some(allocation),
-                },
-                tracing::dispatcher::get_default(Clone::clone),
-            ),
-        }
+        let body: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>> = body;
+        let mut stream = Self::from(body);
+        stream.inner.inner_mut().expect("new body retains its producer")._allocation = Some(allocation);
+        stream
     }
 }
 impl futures::Stream for BodyStream {

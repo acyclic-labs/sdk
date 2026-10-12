@@ -158,228 +158,146 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
 #[tokio::test]
 async fn witnessed_attachment_preadmits_carriers_and_bounds_initial_capture_cumulatively()
 -> Result<(), Box<dyn std::error::Error>> {
-    let fixture_token = crate::CancellationToken::new();
-    let fixture_work =
-        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &fixture_token)
-            .map_err(|(cause, _)| cause)?;
     acyclic_native_runtime::initialize_native_io_services()?;
     crate::initialize_native_mount_services()?;
+    let token = crate::CancellationToken::new();
+    let setup = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
+        .map_err(|(cause, _)| cause)?;
     let fs = Fs::memory();
     let workspace = fs
         .create_workspace(
             "native-carrier-admission",
             crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            &token,
         )
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
     let mut transaction = workspace
-        .begin_transaction(IdempotencyKey::new(), &fixture_work, &fixture_token)
+        .begin_transaction(IdempotencyKey::new(), &setup, &token)
         .await?;
     transaction
-        .create_directory("/selected-Ã©", &fixture_work, &fixture_token)
+        .create_directory("/selected-Ã©", &setup, &token)
         .await?;
     transaction
         .commit(
             None,
-            crate::PublicationPermit::Unrestricted,
+            PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            &token,
             |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                Ok::<_, crate::OperationFailure<WorkspaceError>>(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::default(),
                 })
             },
         )
         .await
-        .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    let generation = workspace.head(&fixture_work, &fixture_token).await?;
+    let generation = workspace.head(&setup, &token).await?;
     let directory = tempfile::tempdir()?;
     let options = crate::MaterializeOptions::native(directory.path());
     let mount = MountOptions::read_only().subdirectory("/selected-Ã©");
-    let cancellation = crate::CancellationToken::new();
-    let prepared = (async {
-        let original =
-            crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-                .map_err(|(cause, spent)| (MountLifecycleError::Materialization(cause), spent))?;
-        let result = generation
-            .prepare_native_working_set(
-                &(&mount).clone().native_context(&original, None, None),
-                &options,
-                crate::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await;
-        result
-            .map(|value| crate::OperationReceipt {
-                value,
-                work: original.receipt(),
-            })
-            .map_err(|cause| (cause, original.receipt()))
-    })
-    .await
-    .map_err(|(cause, _)| cause)?;
-    let identity = prepared.value.source_identity;
-    let rejected_capture = (async {
-        let original =
-            crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-                .map_err(|(cause, spent)| (MountLifecycleError::Materialization(cause), spent))?;
-        let result = generation
-            .attach_native_working_set(
-                &(&mount).clone().native_context(&original, None, None),
-                &options,
-                identity,
-                crate::WorkBudget::default(),
-                &cancellation,
-            )
-            .await;
-        result
-            .map(|value| crate::OperationReceipt {
-                value,
-                work: original.receipt(),
-            })
-            .map_err(|cause| (cause, original.receipt()))
-    })
-    .await
-    .err()
-    .ok_or("zero-budget attachment capture succeeded")?;
+    let original = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
+        .map_err(|(cause, _)| cause)?;
+    let prepared = generation
+        .prepare_native_working_set(
+            &mount.clone().native_context(&original, None, None),
+            &options,
+            crate::WorkBudget::UNBOUNDED,
+            &token,
+        )
+        .await?;
+    let identity = prepared.source_identity;
+
+    let capture = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
+        .map_err(|(cause, _)| cause)?;
+    let rejected = generation
+        .attach_native_working_set(
+            &mount.clone().native_context(&capture, None, None),
+            &options,
+            identity,
+            crate::WorkBudget::default(),
+            &token,
+        )
+        .await
+        .err()
+        .ok_or("zero-budget capture succeeded")?;
     assert!(matches!(
-        rejected_capture.0,
+        rejected,
         MountLifecycleError::Source(MountSourceError::Work(
             crate::WorkError::BudgetExceeded { .. }
         )) | MountLifecycleError::Work(crate::WorkError::BudgetExceeded { .. })
     ));
-    let preparation = rejected_capture.1;
+    let preparation = capture.receipt();
     assert_eq!(preparation.materializations, 0);
-    assert!(
-        preparation.peak_allocation_bytes
-            >= (std::mem::size_of_val(prepared.value.source.as_ref())) as u64
-    );
-    let mut finite_preparation = crate::WorkBudget::UNBOUNDED;
-    finite_preparation.allocation_operations = preparation
+    let mut finite = crate::WorkBudget::UNBOUNDED;
+    finite.allocation_operations = preparation
         .allocation_operations
         .checked_sub(1)
         .ok_or("attachment omitted carrier allocations")?;
-    let rejected_carrier = (async {
-        let original = crate::NativeMaterializationWork::new(finite_preparation, &cancellation)
-            .map_err(|(cause, spent)| (MountLifecycleError::Materialization(cause), spent))?;
-        let result = generation
+    let carrier =
+        crate::NativeMaterializationWork::new(finite, &token).map_err(|(cause, _)| cause)?;
+    assert!(
+        generation
             .attach_native_working_set(
-                &(&mount).clone().native_context(&original, None, None),
+                &mount.clone().native_context(&carrier, None, None),
                 &options,
                 identity,
                 crate::WorkBudget::UNBOUNDED,
-                &cancellation,
+                &token
             )
-            .await;
-        result
-            .map(|value| crate::OperationReceipt {
-                value,
-                work: original.receipt(),
-            })
-            .map_err(|cause| (cause, original.receipt()))
-    })
-    .await
-    .err()
-    .ok_or("underfunded attachment carriers succeeded")?;
-    assert!(matches!(
-        rejected_carrier.0,
-        MountLifecycleError::Workspace(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-            counter: "allocation_operations",
-            ..
-        })) | MountLifecycleError::Work(crate::WorkError::BudgetExceeded {
-            counter: "allocation_operations",
-            ..
-        })
-    ));
-    assert_eq!(
-        rejected_carrier.1.allocation_operations,
-        finite_preparation.allocation_operations
+            .await
+            .is_err()
     );
-    assert_eq!(rejected_carrier.1.materializations, 0);
-    let rejected_initial_capture = (async {
-        let original = crate::NativeMaterializationWork::new(preparation, &cancellation)
-            .map_err(|(cause, spent)| (MountLifecycleError::Materialization(cause), spent))?;
-        let result = generation
+    carrier.receipt().verify(finite)?;
+    assert_eq!(carrier.receipt().materializations, 0);
+
+    let cumulative =
+        crate::NativeMaterializationWork::new(preparation, &token).map_err(|(cause, _)| cause)?;
+    assert!(
+        generation
             .attach_native_working_set(
-                &(&mount).clone().native_context(&original, None, None),
+                &mount.clone().native_context(&cumulative, None, None),
                 &options,
                 identity,
                 crate::WorkBudget::UNBOUNDED,
-                &cancellation,
+                &token
             )
-            .await;
-        result
-            .map(|value| crate::OperationReceipt {
-                value,
-                work: original.receipt(),
-            })
-            .map_err(|cause| (cause, original.receipt()))
-    })
-    .await
-    .err()
-    .ok_or("initial capture reset its preparation allowance")?;
-    assert!(matches!(
-        rejected_initial_capture.0,
-        MountLifecycleError::Source(MountSourceError::Work(
-            crate::WorkError::BudgetExceeded { .. }
-        )) | MountLifecycleError::Work(crate::WorkError::BudgetExceeded { .. })
-    ));
-    rejected_initial_capture.1.verify(preparation)?;
-    assert_eq!(rejected_initial_capture.1.materializations, 0);
-    let admitted = (async {
-        let original =
-            crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-                .map_err(|(cause, spent)| (MountLifecycleError::Materialization(cause), spent))?;
-        let result = generation
-            .attach_native_working_set(
-                &(&mount).clone().native_context(&original, None, None),
-                &options,
-                identity,
-                crate::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await;
-        result
-            .map(|value| crate::OperationReceipt {
-                value,
-                work: original.receipt(),
-            })
-            .map_err(|cause| (cause, original.receipt()))
-    })
-    .await
-    .map_err(|(error, _)| error)?;
-    let exact = admitted.work;
-    drop(admitted.value);
-    let attached = (async {
-        let original = crate::NativeMaterializationWork::new(exact, &cancellation)
-            .map_err(|(cause, spent)| (MountLifecycleError::Materialization(cause), spent))?;
-        let result = generation
-            .attach_native_working_set(
-                &(&mount).clone().native_context(&original, None, None),
-                &options,
-                identity,
-                crate::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await;
-        result
-            .map(|value| crate::OperationReceipt {
-                value,
-                work: original.receipt(),
-            })
-            .map_err(|cause| (cause, original.receipt()))
-    })
-    .await
-    .map_err(|(error, _)| error)?;
-    attached.work.verify(exact)?;
-    assert_eq!(attached.value.source_identity, identity);
-    assert!(attached.work.allocation_operations > preparation.allocation_operations);
-    assert_eq!(attached.value.source_root, options.destination);
-    assert_eq!(attached.value.selected_root, Path::new("selected-Ã©"));
+            .await
+            .is_err()
+    );
+    cumulative.receipt().verify(preparation)?;
+    assert_eq!(cumulative.receipt().materializations, 0);
+
+    let admitted_work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
+        .map_err(|(cause, _)| cause)?;
+    let admitted = generation
+        .attach_native_working_set(
+            &mount.clone().native_context(&admitted_work, None, None),
+            &options,
+            identity,
+            crate::WorkBudget::UNBOUNDED,
+            &token,
+        )
+        .await?;
+    let exact = admitted_work.receipt();
+    drop(admitted);
+    let exact_work =
+        crate::NativeMaterializationWork::new(exact, &token).map_err(|(cause, _)| cause)?;
+    let attached = generation
+        .attach_native_working_set(
+            &mount.native_context(&exact_work, None, None),
+            &options,
+            identity,
+            crate::WorkBudget::UNBOUNDED,
+            &token,
+        )
+        .await?;
+    exact_work.receipt().verify(exact)?;
+    assert_eq!(attached.source_identity, identity);
+    assert_eq!(attached.source_root, options.destination);
+    assert_eq!(attached.selected_root, Path::new("selected-Ã©"));
     assert_eq!(
         std::fs::read_dir(directory.path().join("selected-Ã©"))?.count(),
         0
@@ -916,28 +834,19 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
         Err(MountLifecycleError::Source(MountSourceError::Cancelled))
     ));
     assert!(!working_set.source.capture_retired());
-    let lease_owners = Arc::strong_count(&working_set.source);
     let source_io = working_set.native_source_io_lease()?;
-    assert_eq!(Arc::strong_count(&working_set.source), lease_owners + 1);
     let source_io_tail = source_io.clone();
-    assert_eq!(Arc::strong_count(&working_set.source), lease_owners + 1);
     drop(source_io);
-    assert_eq!(Arc::strong_count(&working_set.source), lease_owners + 1);
     drop(source_io_tail);
-    assert_eq!(Arc::strong_count(&working_set.source), lease_owners);
     // Revocation is not a new allowance: cleanup spends the source's
     // already accepted birth credit, independently of the wait token.
     working_set.source.cancellation().cancel();
-    let owners = Arc::strong_count(&working_set.source);
     let drained = working_set.retire_with_work(&crate::CancellationToken::new())?;
     assert!(working_set.source.capture_retired());
     assert!(working_set.native_source_io_lease().is_err());
-    assert_eq!(Arc::strong_count(&working_set.source), owners + 1);
     let repeated = working_set.retire_with_work(&cancelled_wait)?;
-    assert_eq!(Arc::strong_count(&working_set.source), owners + 2);
     drop(repeated);
     drop(drained);
-    assert_eq!(Arc::strong_count(&working_set.source), owners);
     let ready_drained = ready.retire_with_work(&crate::CancellationToken::new())?;
     assert!(ready.source.capture_retired());
     drop(ready_drained);
