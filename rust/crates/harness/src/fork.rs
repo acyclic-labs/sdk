@@ -2724,6 +2724,9 @@ mod physical_clones {
         })
     }
 
+    impl ResourceRevision {
+        crate::core::physical_clone_factory!(copy, ResourceRevision, revision, self);
+    }
     impl ForkReport {
         crate::core::physical_clone_factory!(copy, ForkReport, report, self);
     }
