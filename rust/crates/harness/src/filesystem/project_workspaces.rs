@@ -72,7 +72,7 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
     }
 
     fn require_scope(&self, scope: &Scope) -> Result<()> {
-        self.verifier.verify(scope)?;
+        self.verifier.verify(scope, &mut None)?;
         if scope != &self.scope {
             return Err(Error::Unauthorized(
                 "project operation belongs to another parent scope".into(),
@@ -130,7 +130,7 @@ where
                     "import is outside the bound destination conversation".into(),
                 ));
             }
-            source.stream_path()?;
+            source.stream_path(&mut None)?;
             let plan = self
                 .controller()
                 .prepare_project_import(source_project, source_generation)
@@ -184,13 +184,13 @@ where
                     "project join child is not a conversation".into(),
                 ));
             }
-            child.stream_path()?;
+            child.stream_path(&mut None)?;
             if &self.child != child {
                 return Err(Error::Unauthorized(
                     "project join child is not the inspected fork".into(),
                 ));
             }
-            notice.validate()?;
+            notice.validate(&mut None)?;
             if notice.kind != crate::conversation::MessageKind::Merge {
                 return Err(Error::Invalid("project join notice is not a merge".into()));
             }
@@ -285,7 +285,7 @@ pub(super) fn encode_conflict(conflict: &MergeConflict) -> Vec<u8> {
 }
 
 pub(super) fn decode_conflict(key: &[u8], io: Option<&super::PreparationIo>) -> Result<MergeConflict> {
-    let invalid = |message| super::fork_preparer_io::invalid(io, message);
+    let invalid = |message| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, message);
     if let Some(io) = io { io.retain_owned(std::mem::size_of::<MergeConflict>() as u64)?; }
     let (tag, rest) = key.split_first().ok_or_else(|| invalid("empty conflict key"))?;
     let id_bytes: [u8; 16] = rest.get(..16).ok_or_else(|| invalid("short conflict key"))?

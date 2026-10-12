@@ -29,7 +29,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let gate = owner.lock_root_binding().await
             .ok_or_else(|| guarded_boundary(work, crate::wire::ErrorCode::Unauthorized, "published children use their canonical child binding, not ROOT binding"))?;
         if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
-        let intent = crate::core::canonical_intent_with_work(&command, work)?;
+        let intent = crate::contract::canonical_json_digest_with_work(&command, crate::store::default_projection_read_limits().maximum_bytes, work)?;
         owner.check_root_binding(self.reducer.authority(), command.operation_id, intent, &mut None)?;
         const ROOT_CHOICE_DOMAIN: &[u8] = b"harness/v2/root-bind-choice\0";
         let audience = self.reducer.authority();
@@ -89,10 +89,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let (proof, custody) = proof;
-            match custody {
-                Some(custody) => { owner.retain_root_binding_with_native_custody(proof, custody)?; },
-                None => owner.retain_root_binding(proof)?,
-            }
+            owner.retain_root_binding(proof, custody)?;
         }
         #[cfg(target_arch = "wasm32")]
         owner.retain_root_binding(proof)?;
@@ -106,7 +103,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         write: crate::distributed::JournalWrite, return_event: bool,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<(ApplyResult, u64)> {
-        if let Some(owner) = owner { owner.verify(write.settlement(), work).await?; }
+        if let Some(owner) = owner { owner.verify(matches!(write, crate::distributed::JournalWrite::Settlement), work).await?; }
         if let Some(result) = self.replay(&command, return_event, default_projection_read_limits().maximum_bytes, work).await? {
             let returned_owned = result.1;
             let mut returned_custody = crate::wire_codec::CodecQuota::from_retained(work, returned_owned);
@@ -115,7 +112,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 self.fork_verifier.as_ref().ok_or_else(||
                     guarded_boundary(returned_custody.work(), crate::wire::ErrorCode::Unsupported,
                         "fork seed verifier is not bound"))?
-                    .release_private_fence_with_work(seed, returned_custody.work()).await?;
+                    .release_private_fence(seed, returned_custody.work()).await?;
             }
             returned_custody.transfer();
             return Ok((value, returned_owned));
@@ -165,7 +162,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Some(self.fork_verifier.as_ref().ok_or_else(||
                 guarded_boundary(transient.work(), crate::wire::ErrorCode::Unsupported,
                     "fork seed verifier is not bound"))?
-                .activate_with_work(seed, transient.work()).await?)
+                .activate(seed, transient.work()).await?)
         } else { None };
         let mut append_phase = crate::distributed::CommitPhase::NotCalled;
         let appended = async {
@@ -175,8 +172,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
             }
             let request = publication.request_with_work(
                 &self.client, key.take().expect("publication key"), transient.work()).await?;
-            let (outcome, retained) = crate::distributed::commit_prepared(
-                &self.client, request, command.operation_id, Some(&mut append_phase), None, None,
+            let (outcome, retained) = crate::distributed::commit(
+                request, &self.client, Some(command.operation_id), Some(&mut append_phase), None, None,
             ).await?;
             let mut acknowledged = crate::wire_codec::CodecQuota::from_retained(transient.work(), retained);
             match outcome {
@@ -201,7 +198,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Ok(false) => {
                 let _ = released_key;
                 let _ = released_publication;
-                if let Some(guard) = fork_guard.as_deref() {
+                if let Some(guard) = fork_guard.as_ref().map(|guard| guard.guard.as_ref()) {
                     crate::fork::release_fork_guard_with_work(guard, transient.work()).await?;
                 }
                 return Err(guarded_boundary(transient.work(), crate::wire::ErrorCode::Conflict,
@@ -212,7 +209,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 let _ = released_publication;
                 if matches!(append_phase, crate::distributed::CommitPhase::NotCalled
                     | crate::distributed::CommitPhase::Conflict | crate::distributed::CommitPhase::Failed)
-                    && let Some(guard) = fork_guard.as_deref() {
+                    && let Some(guard) = fork_guard.as_ref().map(|guard| guard.guard.as_ref()) {
                     let _ = crate::fork::release_fork_guard_with_work(guard, transient.work()).await;
                 }
                 return Err(error);
@@ -221,10 +218,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let (cloned, returned_owned) = crate::core::native_event_clone_with_custody(
             &event, transient.work())?;
         transient.adopt(returned_owned)?;
-        let applied = self.reducer.apply_committed_with_work(cloned, transient.work())
+        let applied = self.reducer.apply_committed(cloned, transient.work())
             .and_then(|result| self.reducer.mark_indexed_terminal_effect_with_work(
                 &event, transient.work()).map(|()| result));
-        if let Some(guard) = fork_guard.as_deref() {
+        if let Some(guard) = fork_guard.as_ref().map(|guard| guard.guard.as_ref()) {
             crate::fork::release_fork_guard_with_work(guard, transient.work()).await
                 .map_err(|error| guarded_publication_error(error, command.operation_id))?;
         }

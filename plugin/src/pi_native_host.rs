@@ -22,7 +22,7 @@ use acyclic_harness::{Error, JsonValueSchema, OperationId, Outcome, Result, Task
     resources::GenerationRef, runtime::{ContentBindings, DurableTaskHost, NativeTaskContext, TaskAdmissionRecord, TaskContext},
     scheduler::{LeaseFence, ResourceSnapshot}, store::{HistoryReadLimits, HistoryReader},
     workflow::WorkflowCommand};
-use acyclic_stream::{BoxProviderFuture, LocalStream, StreamClient};
+use acyclic_stream::{BoxProviderFuture, LocalStream};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::{Arc, RwLock}};
 
@@ -164,7 +164,7 @@ impl LiveHandles {
     ) -> Result<()> {
         if let Some(session) = self.project_startup_owner.as_mut() {
             let volume_work = self.project_work.as_ref().ok_or(Error::Indeterminate(command))?;
-            let stopped = session.stop_with_meter(&volume_work.native_mount_work())
+            let stopped = session.stop_with_meter(&volume_work)
                 .map_err(|cause| pi_native::native_view_error(
                     acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
             if !stopped || !session.cleanup_state().cleanup_complete {
@@ -209,7 +209,7 @@ impl NativeEntry {
 pub(crate) struct PiNativeCommandHost {
     runtime: Arc<PiNativeRuntime>,
     filesystem: Arc<PiNativeFilesystem>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     resources: ServiceResources,
     protected: Arc<PiOwnerConfig>,
     entries: RwLock<BTreeMap<TaskId, Arc<NativeEntry>>>,
@@ -220,7 +220,7 @@ pub(crate) struct PiNativeCommandHost {
 impl PiNativeCommandHost {
 
     pub(crate) fn new(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
-        stream: StreamClient<LocalStream>, resources: &ServiceResources, protected: PiOwnerConfig,
+        stream: std::sync::Arc<LocalStream>, resources: &ServiceResources, protected: PiOwnerConfig,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         runtime.verify_owner_with_native_work(&protected, work)?;
@@ -885,7 +885,7 @@ impl PiNativeCommandHost {
         if let Some(project) = handles.project.as_ref() {
             creator.authorize_settlement_with_native_work(&owner, meter).await?;
             let volume_work = handles.project_work.as_ref().ok_or(Error::Indeterminate(command))?;
-            project.abandon_with_work(&volume_work.native_mount_work()).map_err(pi_native::native_view_error)?;
+            project.abandon_with_work(&volume_work).map_err(pi_native::native_view_error)?;
             handles.project = None;
         }
         if let Some(seed) = handles.root_seed.as_ref() {

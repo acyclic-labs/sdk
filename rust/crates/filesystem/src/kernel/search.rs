@@ -1,15 +1,7 @@
 //! Binary searches that report how many elements they probed.
-//!
-//! Work receipts charge every probe, so the probe sequence is part of the
-//! observable contract: each search always probes the midpoint of the range
-//! still in question, and the count depends only on the slice and predicate.
 
 use std::cmp::Ordering;
 
-/// [`slice::binary_search_by`] that also returns how many elements it probed.
-///
-/// With repeated matches it may return a different matching index than the
-/// standard library, which reserves the right to change its probe order.
 pub(crate) fn counted_binary_search<T>(
     items: &[T],
     compare: impl FnMut(&T) -> Ordering,
@@ -47,8 +39,6 @@ fn binary_search_engine<T, E>(
     Ok((Err(base), probes))
 }
 
-/// [`slice::partition_point`] that also returns how many elements it probed,
-/// probing exactly as [`counted_binary_search`] does.
 pub(crate) fn counted_partition_point<T>(
     items: &[T],
     mut before: impl FnMut(&T) -> bool,
@@ -63,7 +53,6 @@ pub(crate) fn counted_partition_point<T>(
     (index, probes)
 }
 
-/// Admits before each comparison and retains its completed original prefix.
 pub(crate) fn binary_search_with_accounting<T>(
     items: &[T],
     accounting: &mut super::allocation::KernelAccounting<'_>,

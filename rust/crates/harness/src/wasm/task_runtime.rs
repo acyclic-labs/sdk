@@ -14,7 +14,7 @@ use crate::{
         FilesystemHost, FilesystemSchedulerPayloadStore, FilesystemTaskRuntime, StockTurnMachine,
         TaskWakeCursor, TaskWorkerAttempt, TaskWorkerOutcome,
     },
-    model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
     runtime::{DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry},
     scheduler::SessionLimits,
@@ -28,7 +28,7 @@ use acyclic_fs::{
     EmbeddedCapabilities, Fs,
     browser::{IndexedDbAuthorityStore, IndexedDbObjectStore},
 };
-use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits, StreamClient};
+use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits};
 use js_sys::{Function, Promise};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -472,12 +472,15 @@ impl ModelProvider for HostModel {
         ))
     }
 
-    fn reconcile<'a>(
-        &'a self,
-        attempt: ModelAttempt,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async move {
-            let attempt = to_js(&attempt)
+            #[derive(serde::Serialize)]
+            struct AttemptWire<'a> {
+                #[serde(flatten)]
+                dispatch: crate::model::ModelDispatch,
+                observed: &'a [crate::model::ModelEvent],
+            }
+            let attempt = to_js(&AttemptWire { dispatch, observed })
                 .map_err(|_| Error::Invalid("model attempt encoding failed".into()))?;
             let pending = self
                 .reconcile
@@ -605,7 +608,7 @@ impl WasmTaskRegistry {
 #[wasm_bindgen]
 pub struct WasmTaskRuntime {
     runtime: Arc<BrowserRuntime>,
-    stream: StreamClient<BrowserStream>,
+    stream: std::sync::Arc<BrowserStream>,
     filesystem: Arc<BrowserFilesystem>,
     volume: VolumeRef,
     scope: Scope,
@@ -625,7 +628,7 @@ impl WasmTaskRuntime {
     ) -> std::result::Result<WasmTaskRuntime, JsValue> {
         let options: WasmBrowserTaskOptions = from_js(options)?;
         let scope: Scope = from_js(signed_scope)?;
-        let verifier = owner.issuer.verifier();
+        let verifier = owner.issuer.verifier(&mut None).expect("verifier copy");
         ContentGrant::verify(&verifier, &scope, &options.volume, VolumeOperation::Write)
             .map_err(js_error)?;
         let root = RuntimeScope::new(
@@ -653,7 +656,7 @@ impl WasmTaskRuntime {
             .map_err(js_error)?,
         );
         let limits = options.stream_limits;
-        let stream = StreamClient::new(Arc::new(
+        let stream = Arc::new(
             BrowserStream::open(
                 &options.stream_database,
                 BrowserStreamLimits {
@@ -671,7 +674,7 @@ impl WasmTaskRuntime {
             )
             .await
             .map_err(|error| js_error(Error::Storage(error.to_string())))?,
-        ));
+        );
         let source = options.recursive_tools.map(|config| {
             let graph_root = config.project_policy_graph_root;
             let source = default_tools::BrowserToolSource::new(

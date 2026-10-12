@@ -11,7 +11,7 @@ use acyclic_harness::conversation::{
 use acyclic_harness::executor::{Executor, StockExecutor, TurnInput};
 use acyclic_harness::filesystem::MemoryHarnessStorage;
 use acyclic_harness::model::{
-    FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelDispatch,
+    FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelDispatch,
     ModelEvent, ModelMessage, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
 };
 use acyclic_harness::tool::{ToolDefinition, ToolRegistry};
@@ -91,10 +91,7 @@ impl ModelProvider for SummaryModel {
         ]))
     }
 
-    fn reconcile<'a>(
-        &'a self,
-        _: ModelAttempt,
-    ) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, _dispatch: acyclic_harness::model::ModelDispatch, _observed: &'a [acyclic_harness::model::ModelEvent]) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async { Err(Error::Unsupported("no uncertain fixture attempt".into())) })
     }
 }
@@ -247,12 +244,12 @@ async fn lost_pair_ack_recovers_both_records_without_exposing_raw_source() -> Re
             .await,
         Err(Error::Storage(_))
     ));
-    assert_eq!(provider.tail_revision().await?, 2);
+    assert_eq!(provider.tail_revision(None).await?, 2);
     assert_eq!(provider.latest().await?, compacted);
     let pair = provider
         .append_compaction(0, source, compacted.clone(), reference, key)
         .await?;
-    assert_eq!(provider.tail_revision().await?, 2);
+    assert_eq!(provider.tail_revision(None).await?, 2);
     let pin = provider
         .latest_revision()
         .await?
@@ -291,12 +288,12 @@ async fn malformed_pair_receipts_preserve_exact_recovery() -> Result<()> {
                 .await,
             Err(Error::Storage(_))
         ));
-        assert_eq!(provider.tail_revision().await?, 2);
+        assert_eq!(provider.tail_revision(None).await?, 2);
         assert_eq!(provider.latest().await?, compacted);
         provider
             .append_compaction(0, source, compacted, reference, key)
             .await?;
-        assert_eq!(provider.tail_revision().await?, 2);
+        assert_eq!(provider.tail_revision(None).await?, 2);
     }
     Ok(())
 }
@@ -824,7 +821,7 @@ async fn assert_checkpoint_history_cut(
     use acyclic_harness::store::HistoryReader;
     use acyclic_harness::{executor::load_canonical_checkpoint_at, runtime::RuntimeScope};
 
-    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier())?;
+    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier(&mut None).expect("verifier copy"))?;
     let cursor = history.pin(0).await?;
     let scope = RuntimeScope::new(storage.owner_scope().capabilities().clone(), limits)?;
     let bytes = MAX_RECORD_BYTES as u64 * 2;
@@ -1084,7 +1081,7 @@ async fn assert_checkpoint_tail_source(
         store::{HistoryReadLimits, HistoryReader},
     };
 
-    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier())?;
+    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier(&mut None).expect("verifier copy"))?;
     let cursor = history.pin(0).await?;
     let content = StoredContent(storage.clone());
     let budget = HistoryReadLimits {
@@ -1182,7 +1179,7 @@ async fn assert_checkpoint_tail_source(
     let mut aggregate = acyclic_harness::store::StreamAggregate::open(
         storage.stream(),
         storage.conversation().clone(),
-        storage.verifier(),
+        storage.verifier(&mut None).expect("verifier copy"),
         acyclic_harness::core::SchemaRegistry::new(),
     )
     .await?
@@ -2336,7 +2333,7 @@ async fn append_private_checkpoint_metadata(
     let mut history = acyclic_harness::store::StreamAggregate::open(
         storage.stream(),
         storage.conversation().clone(),
-        storage.verifier(),
+        storage.verifier(&mut None).expect("verifier copy"),
         acyclic_harness::core::SchemaRegistry::new(),
     )
     .await?

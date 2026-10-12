@@ -1,13 +1,14 @@
 use super::*;
 use crate::foundation::Digest;
 use crate::kernel::{
-    AttributeChild, AttributeClass, AttributePage, attribute_page_id, encode_attribute_page,
+    AttributeClass, AttributePage, attribute_page_id, encode_attribute_page,
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore};
 use crate::{CachedObjectStore, ObjectCacheOptions};
 use acyclic_stream::OwnedBytes;
 
+use crate::kernel::Child;
 fn name(value: &str) -> Result<AttributeName, Box<dyn std::error::Error>> {
     Ok(AttributeName::new(
         AttributeClass::PosixXattr,
@@ -35,7 +36,7 @@ fn put(
     ObjectStore::put(
         store,
         id,
-        OwnedBytes::from(encode_attribute_page(page, 8)?),
+        OwnedBytes::from(encode_attribute_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -57,16 +58,16 @@ fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error
     put(
         store,
         &AttributePage::Internal(vec![
-            AttributeChild {
-                first_name: name("a")?,
+            Child {
+                first: name("a")?,
                 page: a,
             },
-            AttributeChild {
-                first_name: name("c")?,
+            Child {
+                first: name("c")?,
                 page: c,
             },
-            AttributeChild {
-                first_name: name("e")?,
+            Child {
+                first: name("e")?,
                 page: e,
             },
         ]),
@@ -89,8 +90,8 @@ fn four_leaf_tree(
         if index == 2 {
             third = Some(page);
         }
-        children.push(AttributeChild {
-            first_name: name(value)?,
+        children.push(Child {
+            first: name(value)?,
             page,
         });
     }
@@ -257,8 +258,8 @@ fn forged_child_bounds_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let root = put(
         &store,
-        &AttributePage::Internal(vec![AttributeChild {
-            first_name: name("a")?,
+        &AttributePage::Internal(vec![Child {
+            first: name("a")?,
             page: leaf,
         }]),
     )?;
@@ -431,12 +432,12 @@ fn pagination_admission_height_and_alias_guards_are_fail_closed()
     let alias_root = put(
         &store,
         &AttributePage::Internal(vec![
-            AttributeChild {
-                first_name: name("a")?,
+            Child {
+                first: name("a")?,
                 page: leaf,
             },
-            AttributeChild {
-                first_name: name("c")?,
+            Child {
+                first: name("c")?,
                 page: leaf,
             },
         ]),

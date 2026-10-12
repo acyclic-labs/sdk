@@ -1,7 +1,7 @@
 //! Strict `IndexedDB` command publication around the existing Rust state machine.
 
 use crate::{
-    journal::{Command, decode_command, journal_command, replay},
+    journal::{Command, decode_command, replay},
     *,
 };
 use async_trait::async_trait;
@@ -230,7 +230,7 @@ impl BrowserStream {
                 memory::provider_result(memory::validate_commit_shape(request, &memory::MemoryObserver::default()))?;
             }
         }
-        let journal = journal_command(&command);
+        let journal = crate::wire_codec::CanonicalWire::Journal((&command).into());
         if journal.encoded_len(None, None).map_err(|_| StreamError::InvalidArgument)? > MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
