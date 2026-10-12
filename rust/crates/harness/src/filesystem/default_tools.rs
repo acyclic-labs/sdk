@@ -288,7 +288,7 @@ pub struct RecursiveMergeToolPlan {
 
 /// Installs the same real portable tools for native and browser consumers.
 pub fn recursive_default_tools<P, A, O>(
-    source: Arc<dyn RecursiveDefaultToolSource<P, A, O>>, maximum_request_bytes: u64,
+    source: Option<Arc<dyn RecursiveDefaultToolSource<P, A, O>>>, maximum_request_bytes: u64,
 ) -> Result<RecursiveDefaultToolset>
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
     if maximum_request_bytes == 0 || maximum_request_bytes == u64::MAX {
@@ -1010,7 +1010,7 @@ pub(super) fn recursive_transition_owned_bytes(transition: &MachineTransition, i
 }
 
 struct RecursiveExecutor<P, A, O> {
-    source: Arc<dyn RecursiveDefaultToolSource<P, A, O>>, durable: ResumableTool,
+    source: Option<Arc<dyn RecursiveDefaultToolSource<P, A, O>>>, durable: ResumableTool,
     kind: Kind, maximum_request_bytes: u64,
 }
 
@@ -1020,6 +1020,9 @@ impl Drop for InvocationCancellation {
 }
 impl<P, A, O> RecursiveExecutor<P, A, O>
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
+    fn source(&self) -> Result<&Arc<dyn RecursiveDefaultToolSource<P, A, O>>> {
+        self.source.as_ref().ok_or_else(|| Error::Unsupported("recursive tool provider is not bound".into()))
+    }
     fn invoke<'a>(&'a self, context: ToolContext, invocation: ToolInvocation)
         -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         let cancellation = CancellationToken::new();
@@ -1048,7 +1051,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Option<ToolResult>, acyclic_fs::NativeAllocation)> {
         self.authorize_with_native_context(context, invocation, work)?;
-        let owner = self.source.owner_with_native_work(
+        let owner = self.source()?.owner_with_native_work(
             context, &self.durable, invocation, cancellation, work)?.await?;
         let caller = context.durable_task_id().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized, reason: "recursive native tool has no durable caller",
@@ -1082,7 +1085,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     let payload = stage_with_native_work(context,
                         derived(invocation.operation_id, "source-arguments", Some(&io))?,
                         "source-arguments", &arguments, self.maximum_request_bytes, work).await?;
-                    let selected = self.source.select_with_native_work(
+                    let selected = self.source()?.select_with_native_work(
                         context, &original.0, cancellation, work)?.await?;
                     validate_source_intent(&selected.0, &arguments, Some(&super::PreparationIo::from_native_work(work)?))?;
                     if selected.0.caller != caller || selected.0.request.operation_id != invocation.operation_id {
@@ -1189,7 +1192,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     async fn run(&self, context: ToolContext, invocation: ToolInvocation, cancellation: &CancellationToken) -> Result<Option<ToolResult>> {
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         self.authorize_with_context(&context, &invocation)?;
-        let owner = self.source.owner(&context, &self.durable, &invocation, cancellation).await?;
+        let owner = self.source()?.owner(&context, &self.durable, &invocation, cancellation).await?;
         let caller = context.durable_task_id().ok_or_else(|| Error::Unauthorized("recursive tool has no durable caller".into()))?;
         let admitted = owner.runtime.task_host().observe_admission(caller).await?;
         if admitted.grants != *context.scope().grants() || admitted.limits != context.scope().limits()
@@ -1209,7 +1212,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     original_arguments.source_task(caller, context.scope().limits())?;
                     let payload = stage(&context, derived(invocation.operation_id, "source-arguments", None)?,
                         "source-arguments", &arguments, self.maximum_request_bytes, cancellation).await?;
-                    let intent = self.source.select(&context, &original_arguments, cancellation).await?;
+                    let intent = self.source()?.select(&context, &original_arguments, cancellation).await?;
                     validate_source_intent(&intent, &arguments, None)?;
                     if intent.caller != caller || intent.request.operation_id != invocation.operation_id {
                         return Err(Error::Unauthorized("source selector is not the actual original caller/effect".into()));
@@ -1279,7 +1282,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 let arguments: ForkToolArguments = decode(arguments, None)?;
                 arguments.source_task(caller, context.scope().limits())?;
                 let intent = intent.ok_or_else(|| Error::Unauthorized("fork source choice is not durably pinned".into()))?;
-                let binding = self.source.fork(context, &arguments, intent, None, cancellation).await?;
+                let binding = self.source()?.fork(context, &arguments, intent, None, cancellation).await?;
                 if binding.source.request != intent.request || binding.child.operation_id != intent.child_operation_id {
                     return Err(Error::Unauthorized("source staging changed the selected immutable source/allocation".into()));
                 }
@@ -1299,7 +1302,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
             Kind::Merge => {
                 let arguments: MergeToolArguments = decode(arguments, None)?;
-                let binding = self.source.merge(context, &arguments, None, cancellation).await?;
+                let binding = self.source()?.merge(context, &arguments, None, cancellation).await?;
                 validate_merge_binding(context, arguments.source, &binding, None)?;
                 let controller = ParentProjectController::new(binding.filesystem.as_ref(), binding.destination.reducer(), &binding.verifier, &binding.scope, binding.project.clone())?;
                 let inspected = match &binding.source_read {
@@ -1347,7 +1350,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 let intent = intent.ok_or(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized, reason: "native fork source choice is not durably pinned",
                 })?;
-                let mut binding = self.source.fork_with_native_work(
+                let mut binding = self.source()?.fork_with_native_work(
                     context, &original.0, intent, None, cancellation, work)?.await?;
                 if binding.0.source.request != intent.request
                     || binding.0.child.operation_id != intent.child_operation_id
@@ -1407,7 +1410,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     ) -> Result<(Plan, acyclic_fs::NativeAllocation)> {
         let mut original = recursive_decode_with_native_work::<MergeToolArguments>(arguments, work)?;
         let io = super::PreparationIo::from_native_work(work)?;
-        let mut binding = self.source.merge_with_native_work(
+        let mut binding = self.source()?.merge_with_native_work(
             context, &original.0, None, cancellation, work)?.await?;
         validate_merge_binding(context, original.0.source, &binding.0, Some(&io))?;
         let controller = ParentProjectController::new_with_native_work(
@@ -1483,7 +1486,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Option<Value>, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
-        let binding = self.source.merge_with_native_work(
+        let binding = self.source()?.merge_with_native_work(
             context, &merge.arguments, Some(merge), cancellation, work)?.await?;
         validate_merge_binding(context, merge.arguments.source, &binding.0, Some(&io))?;
         check_merge_binding(merge, &binding.0, Some(&io))?;
@@ -1568,7 +1571,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             child_operation_id: fork.request.child.operation_id,
             allocation_digest: fork.allocation_digest, request: request.0,
         };
-        let mut binding = self.source.fork_with_native_work(
+        let mut binding = self.source()?.fork_with_native_work(
             context, &fork.arguments, &intent, Some(fork), cancellation, work)?.await?;
         validate_fork_binding(context, &fork.arguments, &binding.0, cancellation, Some(&io)).await?;
         if !recursive_encoded_equal(&binding.0.source.request, &fork.request.payload, Some(&io))?
@@ -1730,7 +1733,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     ) -> Result<(Option<Value>, acyclic_fs::NativeAllocation)> {
         use std::fmt::Write as _;
         let io = super::PreparationIo::from_native_work(work)?;
-        let mut binding = self.source.merge_with_native_work(
+        let mut binding = self.source()?.merge_with_native_work(
             context, &merge.arguments, Some(merge), cancellation, work)?.await?;
         validate_merge_binding(context, merge.arguments.source, &binding.0, Some(&io))?;
         check_merge_binding(merge, &binding.0, Some(&io))?;
@@ -1809,7 +1812,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     child_operation_id: fork.request.child.operation_id,
                     allocation_digest: fork.allocation_digest, request: decode(&fork.request.payload, None)?,
                 };
-                let mut binding = self.source.fork(context, &fork.arguments, &intent, Some(fork), cancellation).await?;
+                let mut binding = self.source()?.fork(context, &fork.arguments, &intent, Some(fork), cancellation).await?;
                 validate_fork_binding(context, &fork.arguments, &binding, cancellation, None).await?;
                 if encode(&binding.source.request, None)? != fork.request.payload || binding.child_message_pointer != fork.child_message_pointer
                     || binding.child_message_file_pointer != fork.child_message_file_pointer
@@ -1841,7 +1844,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 Ok(Some(encode(seed, None)?))
             }
             (Plan::Merge(merge), Stage::MergeApply) => {
-                let binding = self.source.merge(context, &merge.arguments, Some(merge), cancellation).await?;
+                let binding = self.source()?.merge(context, &merge.arguments, Some(merge), cancellation).await?;
                 validate_merge_binding(context, merge.arguments.source, &binding, None)?;
                 check_merge_binding(merge, &binding, None)?;
                 let controller = ParentProjectController::new(binding.filesystem.as_ref(), binding.destination.reducer(), &binding.verifier, &binding.scope, binding.project.clone())?;
@@ -1875,7 +1878,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 Ok(Some(value))
             }
             (Plan::Merge(merge), Stage::MergePublish) => {
-                let mut binding = self.source.merge(context, &merge.arguments, Some(merge), cancellation).await?;
+                let mut binding = self.source()?.merge(context, &merge.arguments, Some(merge), cancellation).await?;
                 validate_merge_binding(context, merge.arguments.source, &binding, None)?; check_merge_binding(merge, &binding, None)?;
                 let receipt = receipt.ok_or_else(|| Error::Invalid("merge publication has no provider receipt".into()))?;
                 validate_merge_receipt(merge, receipt, None)?;
@@ -1908,6 +1911,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         Err(Error::Unauthorized("recursive tools require the original durable ToolContext".into()))
     }
     fn authorize_with_context(&self, context: &ToolContext, invocation: &ToolInvocation) -> Result<()> {
+        self.source()?;
         invocation.validate()?;
         if context.operation_id() != invocation.operation_id || context.call_id() != invocation.call_id
             || context.durable_task_id().is_none() || invocation.name != self.kind.name()
@@ -1920,7 +1924,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_execution(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         work.remaining()?;
-        if !self.source.supports_native_source() || !self.durable.machine.supports_native_work() {
+        if !self.source.as_ref().is_some_and(|source| source.supports_native_source())
+            || !self.durable.machine.supports_native_work() {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
                 reason: "recursive producer has no original native execution callbacks" });
         }
@@ -2060,7 +2065,7 @@ async fn stage_with_native_work(
 ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
     use std::fmt::Write as _;
     let io = super::PreparationIo::from_native_work(work)?;
-    let bytes = io.encode_json(value, maximum.min(context.effective_scope().limits().file_bytes), true)?;
+    let bytes = io.encode(value, maximum.min(context.effective_scope().limits().file_bytes), true)?;
     let path_bytes = "recursive-tools/".len() + 36 + 1 + label.len() + ".json".len();
     let path = recursive_text_with_native_io(&io, path_bytes, |path|
         write!(path, "recursive-tools/{}/{label}.json", context.operation_id()))?;
@@ -2092,7 +2097,7 @@ async fn retained_payload_with_native_work(
 async fn stage(context: &ToolContext, operation: OperationId, label: &str, value: &Value, maximum: u64,
     cancellation: &CancellationToken) -> Result<FileRef> {
     let io = super::fork_preparer::PreparationIo::from_budget(finite_budget(maximum, maximum), cancellation)?;
-    let bytes = io.encode_json(value, maximum.min(context.scope().limits().file_bytes), true)?;
+    let bytes = io.encode(value, maximum.min(context.scope().limits().file_bytes), true)?;
     io.receive_content(context.stage_file_once_measured(operation,
         &format!("recursive-tools/{}/{label}.json", context.operation_id()), &bytes,
         "application/json", &format!("{label}.json"), io.remaining()?, cancellation).await)

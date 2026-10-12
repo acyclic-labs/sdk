@@ -297,7 +297,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let config_path = root.join("native-config.json");
     let target_workspace = filesystem.open_workspace(logical_root.project.storage_name()?).await
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let target_generation = target_workspace.head().await.map_err(|error| Error::Storage(error.to_string()))?;
+    let target_generation = target_workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| Error::Storage(error.to_string()))?;
     target_generation.pin("graphcoder-native-exact-approved-target").await
         .map_err(|error| Error::Storage(error.to_string()))?;
     let publication_operation = OperationId::new();
@@ -392,24 +392,31 @@ impl Producer {
         let approval = InteractionId::new_v4();
         let issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, caller.binding.authority.clone());
         let verifier = issuer.verifier();
-        let owner = Arc::new(self.runtime.task_host().journal_owner(caller.task,
-            LeaseFence::from(&caller.lease.reservation)).await?);
         let budget = self.config.tools.content_budget;
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &self.cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let fence = LeaseFence::from(&caller.lease.reservation);
+        let owner = self.runtime.task_host().journal_owner_with_native_work(caller.task, &fence, &work)
+            .await?.into_native_shared(&work)?;
+        let context = self.runtime.task_context_with_native_work(caller.task, &fence, &work).await?;
+        let guards = [context.volume_callback_guard_with_native_work(&owner, &work).await?];
         let namespace = self.root.join("native-command-view");
         let preparation = self.root.join("native-command-preparation");
         for directory in [&namespace, &preparation, &preparation.join("target"), &preparation.join("backup")] {
             tokio::fs::create_dir_all(directory).await.map_err(|error| Error::Storage(error.to_string()))?;
         }
         let options = NativeViewOptions { root: namespace.clone(), maximum_volumes: 1, work_per_volume: budget };
-        let allocation = NativePreparationRoot::witness(namespace.clone(), preparation, budget, &self.cancellation)
-            .await.map_err(|failure| failure.0)?.value;
+        let (allocation, _allocation_custody) = NativePreparationRoot::witness(
+            &namespace, &preparation, &work)?.await?;
         let generation = self.files.resolve(&workspace_ref(self.config.filesystem_provider.clone(),
             &caller.project.storage_name()?)?).await?.generation;
-        let view = NativeVolumeView::prepare(&owner, allocation, options, vec![BorrowedNativeVolumeBinding {
+        let volumes = [BorrowedNativeVolumeBinding {
             host: self.files.as_ref(), volume: &caller.project, generation: &generation,
             namespace: &NativeVolumeNamespace::MaterializedDirectory, path: "project", writable: false,
             verifier: &verifier, scope: &caller.binding.scope, publication: acyclic_fs::PublicationPermit::Unrestricted,
-        }], &self.cancellation).await.map_err(|failure| failure.0)?.value;
+        }];
+        let view = NativeVolumeView::prepare(&owner, &guards, &allocation, &options,
+            &volumes, &[None], &work)?.await?;
         #[cfg(windows)]
         let (executable, argv) = (PathBuf::from(std::env::var_os("SystemRoot")
             .ok_or_else(|| Error::NotFound("SystemRoot".into()))?).join("System32/cmd.exe"),
@@ -432,8 +439,8 @@ impl Producer {
             &serde_json::to_vec(&interaction).map_err(|error| Error::Invalid(error.to_string()))?,
             "application/json", "approval.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-approval")?).await?;
         let interactions = FilesystemInteractionHost::new(self.stream.clone(), self.files.clone(),
-            caller.binding.authority.clone(), verifier, SchemaRegistry::default(), caller.binding.scope.clone(),
-            caller.private.clone(), PAYLOAD_BYTES)?;
+            &caller.binding.authority, &verifier, &SchemaRegistry::default(), &caller.binding.scope,
+            &caller.private, PAYLOAD_BYTES, None)?;
         let ticket = InteractionTicket { id: approval, kind: InteractionKind::Approval, request: prompt,
             deadline_unix_ms: None, approval: Some(ApprovalBinding { operation_id: operation, action_digest: digest }) };
         interactions.open(OperationId::new(), caller.binding.scope.clone(), ticket.clone()).await?;
@@ -671,7 +678,7 @@ async fn aggregate(stream: &StreamClient<LocalStream>, files: Arc<Files>,
     owner: &AuthorityBinding, config: &Config) -> Result<StreamAggregate<LocalStream>>
 {
     let verifier = AuthorityIssuer::new(&owner.issuer, owner.key, owner.authority.clone()).verifier();
-    let content = Arc::new(FilesystemContentVerifier::new(files.clone(), verifier.clone(), owner.scope.clone(), PAYLOAD_BYTES)?);
+    let content = Arc::new(FilesystemContentVerifier::new(files.clone(), &verifier, &owner.scope, PAYLOAD_BYTES, None)?);
     let forks = Arc::new(CompositeForkVerifier::new(vec![
         Arc::new(FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES)?),
         Arc::new(StreamHistoryForkVerifier::new(config.stream_provider.clone())?),

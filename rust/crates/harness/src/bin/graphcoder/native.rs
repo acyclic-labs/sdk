@@ -251,8 +251,8 @@ impl NativeSession {
         let mut context = config.context.clone();
         if context.discovered.is_none() {
             if let Some(discovery) = &context.discovery {
-                let reader = FilesystemContentVerifier::new(files.clone(), config.owner.verifier()?,
-                    config.owner.scope.clone(), MAX_FRAME_BYTES as u64)?;
+                let reader = FilesystemContentVerifier::new(files.clone(), &config.owner.verifier()?,
+                    &config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
                 context.discovered = Some(discovery.capture(&reader).await?);
             }
         }
@@ -272,8 +272,8 @@ impl NativeSession {
 
     pub async fn configure_context(&self, mut context: WorkflowContext) -> Result<String> {
         if let Some(discovery) = &context.discovery {
-            let reader = FilesystemContentVerifier::new(self.files.clone(), self.config.owner.verifier()?,
-                self.config.owner.scope.clone(), MAX_FRAME_BYTES as u64)?;
+            let reader = FilesystemContentVerifier::new(self.files.clone(), &self.config.owner.verifier()?,
+                &self.config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
             context.discovered = Some(discovery.capture(&reader).await?);
         }
         context.pipeline()?;
@@ -353,8 +353,8 @@ impl NativeSession {
             return Err(Error::Invalid("published prompt command exceeds terminal bounds".into()));
         }
         let publisher = FilesystemContentPublisher::new(
-            self.files.clone(), self.config.private_volume.clone(), &self.config.owner.verifier()?,
-            &self.config.owner.scope, MAX_FRAME_BYTES as u64,
+            self.files.clone(), &self.config.private_volume, &self.config.owner.verifier()?,
+            &self.config.owner.scope, MAX_FRAME_BYTES as u64, None,
         )?;
         let payload = publisher.stage_once(operation, &format!("graphcoder-inputs/{operation}.json"),
             &bytes, "application/json", "GraphCoder prompt command").await?;
@@ -447,8 +447,8 @@ impl NativeSession {
             .find(|binding| binding.authority == report.request.child)
             .ok_or_else(|| Error::Unsupported("explicit child conversation provider binding unavailable".into()))?;
         let content = Arc::new(FilesystemContentVerifier::new(
-            self.files.clone(), parent_binding.owner.verifier()?, parent_binding.owner.scope.clone(),
-            MAX_FRAME_BYTES as u64,
+            self.files.clone(), &parent_binding.owner.verifier()?, &parent_binding.owner.scope,
+            MAX_FRAME_BYTES as u64, None,
         )?);
         let mut parent = StreamAggregate::open_with_read_limits(
             &self.stream, parent_binding.owner.authority.clone(), parent_binding.owner.verifier()?,
@@ -535,7 +535,7 @@ impl HarnessWireApi for NativeSession {
             let binding = self.binding(&wire_authority)?;
             let verifier = binding.verifier()?;
             let reader = Arc::new(FilesystemContentVerifier::new(
-                self.files.clone(), verifier.clone(), binding.scope.clone(), MAX_FRAME_BYTES as u64,
+                self.files.clone(), &verifier, &binding.scope, MAX_FRAME_BYTES as u64, None,
             )?);
             let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new()).await?
                 .with_content_verifier(reader)
