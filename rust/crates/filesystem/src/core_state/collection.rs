@@ -174,8 +174,8 @@ impl LocalCoreStateStore {
             let root = &root;
             root.with_log(|log| {
                 let mut change = Change::default();
-                change.put::<WorkspaceLineageRecord>(workspace, None);
-                change.put::<LazyWorkspaceState>(workspace, None);
+                change.put((RecordKey::Lineage(workspace), None).into())?;
+                change.put((RecordKey::LazyWorkspace(workspace), None).into())?;
                 log.commit(root, change)
             })?;
             // Unsynchronized: a removal a crash undoes is found again by the
@@ -359,18 +359,10 @@ pub(super) fn load_content_addressed<T: DeserializeOwned + Serialize>(
     let Some(value) = read_locked(&mut namespace.record(family, &address)?)? else {
         return Ok(None);
     };
-    verify_content_address(address, &value)?;
-    Ok(Some(value))
-}
-
-pub(super) fn verify_content_address<T: Serialize>(
-    address: [u8; 32],
-    value: &T,
-) -> Result<(), LocalCoreStateStoreError> {
-    if content_address(value)? != address {
+    if content_address(&value)? != address {
         return Err(LocalCoreStateStoreError::Integrity);
     }
-    Ok(())
+    Ok(Some(value))
 }
 
 pub(super) fn content_address<T: Serialize>(
