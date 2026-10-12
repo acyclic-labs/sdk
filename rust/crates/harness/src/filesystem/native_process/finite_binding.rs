@@ -6,8 +6,7 @@ pub(super) fn require_family(
     bound: &NativeMaterializationWork, work: &NativeMaterializationWork,
 ) -> Result<()> {
     if !bound.shares_ledger(work) {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-            reason: "native provider work differs from its original binding" });
+        return Err(boundary(crate::wire::ErrorCode::Conflict, "native provider work differs from its original binding"));
     }
     Ok(())
 }
@@ -146,7 +145,7 @@ pub(super) fn assemble<P: StreamProvider>(
     let plan = arc(plan, &io)?;
     let authority = arc(authority, &io)?;
     let history = arc(history, &io)?;
-    let supervisor = arc(NativeSupervisorControl { active: Mutex::new(None), completion: tokio::sync::Notify::new(), process: Mutex::new(None) }, &io)?;
+    let supervisor = arc(NativeSupervisorControl { active: Mutex::new(None), completion: tokio::sync::Notify::new() }, &io)?;
     let retained = io.owned_bytes()?;
     Ok(NativeProcessProvider { owner, command, plan, invocation, approval, authority,
         supervisor, effect_id, history, _arc_custody: None,

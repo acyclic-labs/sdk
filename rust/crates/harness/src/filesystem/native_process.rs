@@ -1,5 +1,6 @@
 //! Approved one-shot process effects, using the task's existing fenced Stream.
 
+use super::native_execution::boundary;
 use super::{
     NATIVE_PROCESS_EFFECT_KIND, NativeProcessRequest, NativeProcessResult, NativeProcessStop,
     NativeProcessStopKind, NativeProcessView, NativePublicationFailure, NativeViewManifest,
@@ -41,7 +42,7 @@ impl NativeProcessRequest {
                 "literal stdin and MCP exchange are mutually exclusive"));
         }
         if let Some(exchange) = &self.mcp_stdio {
-            let work = io.original_native_work().ok_or(receipt_error("native invocation requires its original work ledger"))?;
+            let work = io.original_native_work().ok_or(boundary(crate::wire::ErrorCode::Storage, "native invocation requires its original work ledger"))?;
             let (exchange, first, custody) = exchange.exchange(Some(work))?;
             drop((exchange, first, custody));
         }
@@ -142,6 +143,7 @@ struct NativeActiveAttempt {
     stop_requested: bool,
     quiescent: bool,
     completed: bool,
+    process: Option<NativeRetainedProcess>,
 }
 
 struct NativeRetainedProcess {
@@ -153,7 +155,6 @@ struct NativeRetainedProcess {
 struct NativeSupervisorControl {
     active: Mutex<Option<NativeActiveAttempt>>,
     completion: tokio::sync::Notify,
-    process: Mutex<Option<NativeRetainedProcess>>,
 }
 
 impl NativeSupervisorControl {
@@ -161,13 +162,11 @@ impl NativeSupervisorControl {
         &self, original: &acyclic_fs::NativeMaterializationWork,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        let mut retained = self.process.lock().map_err(|_| Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Storage, reason: "original supervisor process custody is poisoned",
-        })?;
-        if let Some(retained) = retained.as_mut() {
+        let mut state = self.active.lock().map_err(|_| boundary(crate::wire::ErrorCode::Storage, "original supervisor process custody is poisoned"))?;
+        let Some(active) = state.as_mut() else { return Ok(()); };
+        if let Some(retained) = active.process.as_mut() {
             if !retained._custody.work().shares_ledger(original) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                    reason: "original supervisor tree belongs to another work family" });
+                return Err(boundary(crate::wire::ErrorCode::Conflict, "original supervisor tree belongs to another work family"));
             }
             retained.process.terminate(Some(work.runtime_meter()))
                 .map_err(|error| Error::NativeWork {
@@ -175,33 +174,33 @@ impl NativeSupervisorControl {
         } else {
             return Ok(());
         }
-        retained.take();
-        self.record_quiescence(true)
-            .map_err(|error| Error::NativeWork { cause: error.into(), custody: None })
+        active.process.take();
+        active.quiescent = true;
+        Ok(())
     }
 
-    fn begin(&self, attempt: crate::EffectAttemptId) -> std::result::Result<(), Error> {
+    fn begin(&self, attempt: crate::EffectAttemptId) -> Result<()> {
         let mut active = self.active.lock()
-            .map_err(|_| receipt_error("native supervisor control was poisoned"))?;
+            .map_err(|_| boundary(crate::wire::ErrorCode::Storage, "native supervisor control was poisoned"))?;
         if active.is_some() {
-            return Err(receipt_error("native provider already owns an original supervisor"));
+            return Err(boundary(crate::wire::ErrorCode::Storage, "native provider already owns an original supervisor"));
         }
         *active = Some(NativeActiveAttempt {
             attempt, stop_requested: false,
-            quiescent: true, completed: false,
+            quiescent: true, completed: false, process: None,
         });
         Ok(())
     }
 
     fn snapshot(
         &self, attempt: crate::EffectAttemptId,
-    ) -> std::result::Result<(bool, bool), Error> {
+    ) -> Result<(bool, bool)> {
         let active = self.active.lock()
-            .map_err(|_| receipt_error("original supervisor control is poisoned"))?;
+            .map_err(|_| boundary(crate::wire::ErrorCode::Storage, "original supervisor control is poisoned"))?;
         let active = active.as_ref()
-            .ok_or(receipt_error("original owned supervisor is unavailable; launch intent cannot hydrate process control"))?;
+            .ok_or(boundary(crate::wire::ErrorCode::Storage, "original owned supervisor is unavailable; launch intent cannot hydrate process control"))?;
         if active.attempt != attempt {
-            return Err(receipt_error("stop attempt differs from the original owned supervisor"));
+            return Err(boundary(crate::wire::ErrorCode::Storage, "stop attempt differs from the original owned supervisor"));
         }
         Ok((active.completed, active.quiescent))
     }
@@ -285,10 +284,6 @@ fn examine(work: &acyclic_fs::NativeMaterializationWork, compare: impl FnOnce() 
     Ok(compare())
 }
 
-fn receipt_error(reason: &'static str) -> Error {
-    Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason }
-}
-
 fn receipt_backend(source: StreamError) -> Error {
     Error::NativeStream { code: crate::wire::ErrorCode::Storage, source, custody: None }
 }
@@ -304,8 +299,7 @@ pub struct NativeProcessPublishedVolume {
 }
 
 /// Authenticated original attempt and its durable native diagnostic.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Serialize)]
 pub struct NativeProcessReceipt {
     /// Original task, never reconstructed from native paths.
     pub task: crate::TaskId,
@@ -324,23 +318,22 @@ pub struct NativeProcessReceipt {
     /// Original capture/staging failure, not silently flattened into uncertainty.
     pub invocation_failure: Option<String>,
     /// Actual final SDK snapshot data committed in the original observation.
-    #[serde(default)]
     pub published: Vec<NativeProcessPublishedVolume>,
     /// Selected native view's exact filesystem capture/publication work.
     pub work: acyclic_fs::WorkCounters,
     #[serde(skip)]
-    _custody: Option<acyclic_fs::NativeAllocation>,
+    _custody: acyclic_fs::NativeAllocation,
 }
 
 impl NativeProcessReceipt {
     /// Moves the observed effect together with its original measured payload custody.
     pub fn into_effect(
         self,
-    ) -> std::result::Result<(EffectObservation, acyclic_fs::NativeAllocation), Error> {
+    ) -> Result<(EffectObservation, acyclic_fs::NativeAllocation)> {
         let Self { original_fence, effect, diagnostic, publication_failure,
             invocation_failure, published, _custody, .. } = self;
         drop((original_fence, diagnostic, publication_failure, invocation_failure, published));
-        let mut custody = _custody.ok_or(receipt_error("native receipt has no original measured custody"))?;
+        let mut custody = _custody;
         custody.substitute(receipt_observation::effect_bytes(&effect)?)?;
         Ok((effect, custody))
     }
@@ -373,9 +366,9 @@ where
         &self, attempt: crate::EffectAttemptId,
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
-    ) -> std::result::Result<(), Error> {
+    ) -> Result<()> {
         if !work.remaining()?.has_finite_allowances() {
-            return Err(receipt_error("native stop requires a finite original work allowance"));
+            return Err(boundary(crate::wire::ErrorCode::Storage, "native stop requires a finite original work allowance"));
         }
         crate::NativeFutureBundle::new(work, ||
             self.signal_stop_original(attempt, work, cleanup_cancellation, work))?.await
@@ -386,7 +379,7 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
         original: &acyclic_fs::NativeMaterializationWork,
-    ) -> std::result::Result<(), Error> {
+    ) -> Result<()> {
         cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         work.charge(acyclic_fs::WorkCounters {
             items_examined: 1, ..acyclic_fs::WorkCounters::default()
@@ -402,11 +395,11 @@ where
             items_examined: 1, ..acyclic_fs::WorkCounters::default()
         })?;
         let mut active = self.supervisor.active.lock()
-            .map_err(|_| receipt_error("original supervisor control is poisoned"))?;
+            .map_err(|_| boundary(crate::wire::ErrorCode::Storage, "original supervisor control is poisoned"))?;
         let active = active.as_mut()
-            .ok_or(receipt_error("original owned supervisor disappeared"))?;
+            .ok_or(boundary(crate::wire::ErrorCode::Storage, "original owned supervisor disappeared"))?;
         if active.attempt != attempt {
-            return Err(receipt_error("stop attempt differs from the original owned supervisor"));
+            return Err(boundary(crate::wire::ErrorCode::Storage, "stop attempt differs from the original owned supervisor"));
         }
         if !active.completed { active.stop_requested = true; }
         Ok(())
@@ -417,19 +410,19 @@ where
         &self, attempt: crate::EffectAttemptId,
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
-    ) -> std::result::Result<NativeProcessReceipt, Error> {
+    ) -> Result<NativeProcessReceipt> {
         if !work.remaining()?.has_finite_allowances() {
-            return Err(receipt_error("native stop wait requires a finite original work allowance"));
+            return Err(boundary(crate::wire::ErrorCode::Storage, "native stop wait requires a finite original work allowance"));
         }
         crate::NativeFutureBundle::new(work, || async {
             let quiescent = self.wait_for_original_collection(attempt, work, cleanup_cancellation, work).await?;
             let receipt = self.receipt(attempt, work, None).await?
-                .ok_or(receipt_error("original supervisor completed without a retained launch receipt"))?;
+                .ok_or(boundary(crate::wire::ErrorCode::Storage, "original supervisor completed without a retained launch receipt"))?;
             if !receipt.observed {
-                return Err(receipt_error("original supervisor completion has no durable observed receipt"));
+                return Err(boundary(crate::wire::ErrorCode::Storage, "original supervisor completion has no durable observed receipt"));
             }
             if !quiescent {
-                return Err(receipt_error("original physical process collection remains uncertain"));
+                return Err(boundary(crate::wire::ErrorCode::Storage, "original physical process collection remains uncertain"));
             }
             Ok(receipt)
         })?.await
@@ -441,7 +434,7 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
         original: &acyclic_fs::NativeMaterializationWork,
-    ) -> std::result::Result<bool, Error> {
+    ) -> Result<bool> {
         self.signal_stop_original(attempt, work, cleanup_cancellation, original).await?;
         let poll_ms = self.invocation()?.request.cancellation_poll_ms;
         loop {
@@ -485,8 +478,7 @@ where
                 || reference.descriptor().byte_length()
                     > u64::from(request.maximum_result_bytes)
             {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "native output differs from admitted result owner or bound" });
+                return Err(boundary(crate::wire::ErrorCode::Unauthorized, "native output differs from admitted result owner or bound"));
             }
             let bytes = self.authority.result_content.read(reference, u64::from(request.maximum_result_bytes), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
             let io = super::PreparationIo::from_native_work(work)?;
@@ -518,10 +510,7 @@ where
     }
 
     fn invocation(&self) -> Result<&Invocation<P>> {
-        self.invocation.as_ref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "receipt-only recovery owns no executable invocation",
-        })
+        self.invocation.as_ref().ok_or(boundary(crate::wire::ErrorCode::Unsupported, "receipt-only recovery owns no executable invocation"))
     }
 
 }
@@ -552,10 +541,10 @@ where
         false
     }
     fn dispatch<'a>(&'a self, _request: EffectDispatch) -> BoxProviderFuture<'a, Result<EffectObservation>> {
-        Box::pin(std::future::ready(Err(receipt_error("native dispatch requires its original work ledger"))))
+        Box::pin(std::future::ready(Err(boundary(crate::wire::ErrorCode::Storage, "native dispatch requires its original work ledger"))))
     }
     fn reconcile<'a>(&'a self, _attempt: crate::EffectAttemptId) -> BoxProviderFuture<'a, Result<Option<EffectObservation>>> {
-        Box::pin(std::future::ready(Err(receipt_error("native reconciliation requires its original work ledger"))))
+        Box::pin(std::future::ready(Err(boundary(crate::wire::ErrorCode::Storage, "native reconciliation requires its original work ledger"))))
     }
     fn dispatch_with_native_work<'a>(
         &'a self, request: EffectDispatch,
