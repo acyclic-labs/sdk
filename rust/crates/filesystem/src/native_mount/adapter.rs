@@ -11918,7 +11918,7 @@ where
                         Some(cursor)
                     } else { None }
                 } else { None };
-                let page = MountDirectoryPage::with_native_allocation(entries, next_cursor, scratch.retain());
+                let page = MountDirectoryPage::new(entries, next_cursor, Some(scratch.retain()));
                 original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
                 self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
                 Ok(page)
