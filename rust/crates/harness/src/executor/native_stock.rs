@@ -311,7 +311,6 @@ pub(crate) async fn stage_json<T: Serialize>(journal: &dyn ExecutionJournal,
     stage_bytes(journal, operation, key, &bytes, None).await
 }
 
-
 pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeScope,
     io: Option<&PreparationIo>) -> Result<Vec<crate::tool::ToolDefinition>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -471,12 +470,11 @@ impl StockExecutor {
         if !provider.supports_native_model(work)? {
             return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native model provider is unavailable"));
         }
-        pipeline.validate_with_native_work(work)?;
+        pipeline.validate(Some(&PreparationIo::from_native_work(work)?))?;
         let io = PreparationIo::from_native_work(work)?;
         io.absorb_native_custody(work.retain_owned(std::mem::size_of::<NativeStockExecutor>() as u64)?)?;
         let model = crate::model::clone_model(model, Some(&io))?;
-        let (pipeline, pipeline_custody) = pipeline.clone_with_native_work(work)?;
-        io.absorb_native_custody(pipeline_custody)?;
+        let pipeline = pipeline.copy(Some(&io))?;
         let (tools, tools_custody) = tools.clone_with_native_work(work)?;
         io.absorb_native_custody(tools_custody)?;
         let stock = Self::new(model, provider, pipeline, tools);
@@ -617,7 +615,7 @@ impl NativeStockExecutor {
             || !context.native_metadata_matches(work) {
             return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "native stock execution differs from its original binding"));
         }
-        native_execution_supported(&self.stock, context, input.operation_id, journal, work)
+        native_execution_supported(&self.stock, context, journal, work)
     }
 
     /// Runs the complete ordinary/native stock loop using borrowed issued inputs.
@@ -642,7 +640,7 @@ impl NativeStockExecutor {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn native_execution_supported(
-    stock: &StockExecutor, context: &Arc<crate::runtime::NativeTaskContext>, operation: OperationId,
+    stock: &StockExecutor, context: &Arc<crate::runtime::NativeTaskContext>,
     journal: &dyn ExecutionJournal, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     work.remaining()?;
@@ -663,7 +661,7 @@ pub(super) fn native_execution_supported(
             return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native stock task owner is unavailable"));
         }
     }
-    stock.context.validate_with_native_work(work)?;
+    stock.context.validate(Some(&PreparationIo::from_native_work(work)?))?;
     for (_, policy) in context.context().stock_tool_policy_binding().into_iter()
         .chain(context.context().stock_tool_policy_overrides()) {
         policy.supports_native_policy(work)?;
@@ -682,7 +680,6 @@ pub(super) fn native_execution_supported(
         return Err(native_boundary(crate::wire::ErrorCode::Unauthorized,
             "stock task context differs from execution binding"));
     }
-    let _ = operation;
     Ok(())
 }
 
@@ -714,57 +711,6 @@ pub(super) fn native_progress<'a>(
         work.remaining()?;
         Ok((progress, io.into_native_custody(retained)?))
     })
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn native_request_digest(session: &StockExecution<'_>, input: &TurnInput) -> Result<[u8; 32]> {
-    #[derive(Serialize)]
-    struct IssuedContext<'a> {
-        admission_operation: OperationId,
-        execution_operation: OperationId,
-        task_id: Option<TaskId>,
-        run_limits: crate::runtime::TaskRunLimits,
-        extensions: Option<&'a crate::core::ExtensionAdmission>,
-    }
-    #[derive(Serialize)]
-    struct Request<'a> {
-        executor: &'static str,
-        input: &'a TurnInput,
-        model: &'a Model,
-        max_output_tokens: Option<u32>,
-        context: &'a [Value],
-        tools: &'a [crate::tool::ToolDefinition],
-        limits: Limits,
-        tool_scope: (&'a crate::Capabilities, Limits),
-        policy: Option<&'a ComponentIdentity>,
-        inherited_prefix: Option<&'a FileRef>,
-        compaction: &'a crate::context::CompactionPolicy,
-        model_capacity: Option<crate::context::ModelContextCapacity>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        task_id: Option<TaskId>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        task_context: Option<IssuedContext<'a>>,
-    }
-    let io = session.io().ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage, "native request binding has no original work"))?;
-    let work = io.original_native_work().ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage, "native request binding has no original work"))?;
-    let (contracts, custody) = session.context_pipeline().contracts_with_native_work(work)?;
-    io.absorb_native_custody(custody)?;
-    let (tools, custody) = session.stock.tools.definitions_with_native_work(work)?;
-    io.absorb_native_custody(custody)?;
-    let task_context = session.original_context().map(|context| IssuedContext {
-        admission_operation: context.id(), execution_operation: input.operation_id,
-        task_id: context.durable_task_id(), run_limits: context.scope().run_limits(),
-        extensions: context.scope().extensions(),
-    });
-    preparation_digest(&Request {
-        executor: "acyclic.stock.v6", input, model: &session.stock.model,
-        max_output_tokens: session.output_tokens(), context: &contracts, tools: &tools,
-        limits: session.stock.limits, tool_scope: (session.stock.tool_scope.grants(), session.stock.tool_scope.limits()),
-        policy: session.stock.policy_identity.as_ref(),
-        inherited_prefix: session.stock.inherited_prefix().map(|(reference, _)| reference),
-        compaction: session.compaction_policy(), model_capacity: session.model_capacity()?,
-        task_id: session.stock.task.as_ref().map(|(_, task, _)| *task), task_context,
-    }, Some(io))
 }
 
 impl StockExecutor {
@@ -993,11 +939,6 @@ pub(super) fn stock_validate_invocation(invocation: &ToolInvocation, io: Option<
     invocation.validate()
 }
 
-pub(super) fn stock_validate_schema(schema: &Value, value: &Value, label: &'static str,
-    io: Option<&PreparationIo>) -> Result<()> {
-    crate::contract::validate_json_schema_value(schema, value, label, io)
-}
-
 pub(super) async fn stock_tool_rejection(
     session: &StockExecution<'_>, journal: &dyn ExecutionJournal, operation: OperationId,
     step: u32, call: &str, kind: ToolFailureKind, error: Error,
@@ -1058,7 +999,7 @@ impl StockExecutor {
     pub(crate) fn supports_native_execution(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         work.remaining()?;
         if !self.provider.supports_native_model(work)? { return Ok(false); }
-        self.context.validate_with_native_work(work)?;
+        self.context.validate(Some(&PreparationIo::from_native_work(work)?))?;
         if let Some((host, _, _)) = &self.task
             && !host.supports_native_execution(work)? { return Ok(false); }
         if let Some(policy) = &self.policy { policy.supports_native_policy(work)?; }
@@ -1073,8 +1014,7 @@ impl StockExecutor {
         let io = PreparationIo::from_native_work(work)?;
         io.absorb_native_custody(work.retain_owned(std::mem::size_of::<NativeStockExecutor>() as u64)?)?;
         let model = crate::model::clone_model(&self.model, Some(&io))?;
-        let (context, custody) = self.context.clone_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
+        let context = self.context.copy(Some(&io))?;
         let (tools, custody) = self.tools.clone_with_native_work(work)?;
         io.absorb_native_custody(custody)?;
         let (tool_scope, custody) = self.tool_scope.clone_with_native_work(work)?;
