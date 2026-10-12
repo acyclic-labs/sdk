@@ -119,48 +119,6 @@ export function assertParentCutCurrent(
   if (Object.entries(current).some(([key, value]) => value !== cut[key as keyof NativeSourceCut])) throw new Error("Pi parent context changed before spawn admission");
 }
 
-/** Construct a separate native manager; the live parent is never passed here. */
-export function childSessionBytes(
-  cut: NativeSourceCut,
-  childSessionId: string,
-  childCwd: string,
-) {
-  if (createHash("sha256").update(cut.entriesJson).digest("hex") !== cut.sha256) throw new Error("Pinned Pi context digest differs");
-  if (childSessionId === cut.parentSessionId) throw new Error("Child Pi session must have its own identity");
-  const entries: SessionEntry[] = JSON.parse(cut.entriesJson);
-  if (!Array.isArray(entries)) throw new Error("Pinned Pi context is not an entry list");
-  let previous: string | null = null;
-  const ids = new Set<string>();
-  for (const entry of entries) {
-    if (!entry || typeof entry.id !== "string" || ids.has(entry.id) || entry.parentId !== previous ||
-        (entry as { type: string }).type === "session") {
-      throw new Error("Pinned Pi context is not the selected parent chain");
-    }
-    ids.add(entry.id);
-    previous = entry.id;
-  }
-  if (previous !== cut.parentLeafId) throw new Error("Pinned Pi context leaf differs");
-  const child = SessionManager.inMemory(childCwd, { id: childSessionId }, entries);
-  // Validate the native projection, including compaction, without rewriting it.
-  const pending = new Set<string>();
-  for (const message of child.buildSessionContext().messages) {
-    if (message.role === "assistant") {
-      if (pending.size) throw new Error("Pinned Pi context has an incomplete tool exchange");
-      for (const part of message.content) {
-        if (part.type === "toolCall") {
-          if (pending.has(part.id)) throw new Error("Pinned Pi context repeats a tool identity");
-          pending.add(part.id);
-        }
-      }
-    } else if (message.role === "toolResult") {
-      if (!pending.delete(message.toolCallId)) throw new Error("Pinned Pi context has an orphan tool result");
-    } else if (pending.size) throw new Error("Pinned Pi context interrupts a tool exchange");
-  }
-  if (pending.size) throw new Error("Pinned Pi context has an incomplete tool exchange");
-  const header = { ...child.getHeader(), timestamp: cut.capturedAt };
-  return [header, ...child.getEntries()].map(entry => JSON.stringify(entry)).join("\n") + "\n";
-}
-
 const maximumContextEntries = 4096;
 const maximumContextBytes = 512 * 1024;
 
@@ -196,11 +154,25 @@ function readNativeSessionManager(source: NativeSessionFile, maximumBytes: numbe
   return SessionManager.inMemory(source.cwd, undefined, entries);
 }
 
-/** Generate one independent native identity; scratch retains only its real header. */
+/** Create one independent native session from a fresh or pinned caller context. */
 export function nativeChildSession(session: ExtensionContext["sessionManager"], childCwd: string, callerCut?: NativeSourceCut) {
   if (callerCut && (callerCut.mode !== "caller_tool" || callerCut.parentSessionId !== session.getSessionId() ||
       callerCut.parentSessionFile !== (session.getSessionFile() ?? null) || callerCut.parentCwd !== session.getCwd())) throw new Error("Pi inherited context must originate from the actual caller native session");
-  const manager = SessionManager.inMemory(childCwd);
+  if (callerCut && createHash("sha256").update(callerCut.entriesJson).digest("hex") !== callerCut.sha256) throw new Error("Pinned Pi context digest differs");
+  const entries: SessionEntry[] = callerCut ? JSON.parse(callerCut.entriesJson) : [];
+  if (!Array.isArray(entries)) throw new Error("Pinned Pi context is not an entry list");
+  let previous: string | null = null;
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    if (!entry || typeof entry.id !== "string" || ids.has(entry.id) || entry.parentId !== previous ||
+        (entry as { type: string }).type === "session") {
+      throw new Error("Pinned Pi context is not the selected parent chain");
+    }
+    ids.add(entry.id);
+    previous = entry.id;
+  }
+  if (previous !== (callerCut ? callerCut.parentLeafId : null)) throw new Error("Pinned Pi context leaf differs");
+  const manager = SessionManager.inMemory(childCwd, undefined, entries);
   const header = manager.getHeader();
   if (!header) throw new Error("Pi SDK omitted the independent child header");
   const cut: NativeSourceCut = callerCut ?? {
@@ -210,9 +182,27 @@ export function nativeChildSession(session: ExtensionContext["sessionManager"], 
     capturedAt: header.timestamp, entriesJson: "[]",
     sha256: createHash("sha256").update("[]").digest("hex"),
   };
+  if (manager.getSessionId() === cut.parentSessionId) throw new Error("Child Pi session must have its own identity");
+  // Validate the native projection, including compaction, without rewriting it.
+  const pending = new Set<string>();
+  for (const message of manager.buildSessionContext().messages) {
+    if (message.role === "assistant") {
+      if (pending.size) throw new Error("Pinned Pi context has an incomplete tool exchange");
+      for (const part of message.content) {
+        if (part.type === "toolCall") {
+          if (pending.has(part.id)) throw new Error("Pinned Pi context repeats a tool identity");
+          pending.add(part.id);
+        }
+      }
+    } else if (message.role === "toolResult") {
+      if (!pending.delete(message.toolCallId)) throw new Error("Pinned Pi context has an orphan tool result");
+    } else if (pending.size) throw new Error("Pinned Pi context interrupts a tool exchange");
+  }
+  if (pending.size) throw new Error("Pinned Pi context has an incomplete tool exchange");
   return {
     cut, native_session_id: manager.getSessionId(),
-    session_bytes: callerCut ? childSessionBytes(cut, manager.getSessionId(), childCwd) : JSON.stringify(header) + "\n",
+    session_bytes: [{ ...header, timestamp: cut.capturedAt }, ...manager.getEntries()]
+      .map(entry => JSON.stringify(entry)).join("\n") + "\n",
   };
 }
 
@@ -223,17 +213,14 @@ const privateControlKeys: Record<string, true> = {
 };
 
 /** Strip private protocol fields at every level, without rewriting text payloads. */
-function visibleControlValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(visibleControlValue);
+export function visibleControlResult(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(visibleControlResult);
   if (value === null || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value).filter(([key]) =>
     !Object.hasOwn(privateControlKeys, key.replaceAll("_", "").toLowerCase()),
-  ).map(([key, entry]) => [key, visibleControlValue(entry)]));
+  ).map(([key, entry]) => [key, visibleControlResult(entry)]));
 }
 
-export function visibleControlResult(result: Readonly<Record<string, unknown>>) {
-  return visibleControlValue(result) as Record<string, unknown>;
-}
 
 /** Missing transport acknowledgement does not authorize another invocation. */
 export class PiControlAcknowledgementError extends Error {
@@ -246,27 +233,27 @@ export class PiControlAcknowledgementError extends Error {
 }
 
 /** Retain one SDK invocation, including rejection, without a second effect attempt. */
-export class PiToolOperations {
-  private readonly invocations = new Map<string, { request: string; result: Promise<Record<string, unknown>> }>();
+export function piToolOperations() {
+  const invocations = new Map<string, { request: string; result: Promise<Record<string, unknown>> }>();
 
-  run(session: string, operation: string, fields: Readonly<Record<string, unknown>>,
-    invoke: () => Promise<Record<string, unknown>>) {
+  return (session: string, operation: string, fields: Readonly<Record<string, unknown>>,
+    invoke: () => Promise<Record<string, unknown>>) => {
     if (!operation) throw new Error("Pi controls require the original SDK tool call identity");
     const key = JSON.stringify([session, operation]);
     const request = JSON.stringify(fields);
-    const retained = this.invocations.get(key);
+    const retained = invocations.get(key);
     if (retained) {
       if (retained.request !== request) throw new Error("Pi operation identity was reused with changed arguments");
       return retained.result;
     }
-    if (this.invocations.size >= 4096) throw new Error("Pi retained control invocation bound exceeded");
+    if (invocations.size >= 4096) throw new Error("Pi retained control invocation bound exceeded");
     const result = Promise.resolve().then(invoke).catch(error => {
       if (error instanceof PiControlAcknowledgementError) throw new PiControlAcknowledgementError(operation);
       throw error;
     });
-    this.invocations.set(key, { request, result });
+    invocations.set(key, { request, result });
     return result;
-  }
+  };
 }
 
 /** Only passive observations repeat; the original task/operation never changes. */
@@ -337,8 +324,8 @@ export async function approvePiWriteback(
     ui: Pick<ExtensionContext["ui"], "confirm">; model?: ExtensionContext["model"];
   },
   control: (fields: Readonly<Record<string, unknown>>) => Promise<Record<string, unknown>>,
-  signal?: AbortSignal,
-  observation?: PiWritebackObservation,
+  signal: AbortSignal | undefined,
+  observation: PiWritebackObservation,
 ) {
   signal?.throwIfAborted();
   const session = ctx.sessionManager;
@@ -371,7 +358,7 @@ export async function approvePiWriteback(
       { signal },
     );
     current();
-    if (!observation?.decide) throw new Error("Pi native UI approval requires the trusted host operator transport");
+    if (!observation.decide) throw new Error("Pi native UI approval requires the trusted host operator transport");
     await observation.decide(operation, digest, approved ? "approve" : "decline");
     current();
   }
@@ -379,9 +366,8 @@ export async function approvePiWriteback(
   const descriptor = {
     operation, source: prepared.source, root: prepared.root, paths: [...fields.paths], approval_digest: digest,
   };
-  if (!ctx.hasUI) observation?.prepared(descriptor);
+  if (!ctx.hasUI) observation.prepared(descriptor);
   current();
-  if (!observation) return { ...descriptor, status: "pending", approval: "required" };
   const bounds = observation.bounds ?? { maximumObservations: 240, timeoutMs: 60_000, intervalMs: 250 };
   let last: Record<string, unknown> = { ...descriptor, status: "pending", approval: "required" };
   try {
@@ -455,7 +441,7 @@ const inboxMessageType = "acyclic_mail";
 
 /** A queued message is not a receipt; only the own-task persisted native branch is. */
 export function persistedPiInboxCursor(session: ExtensionContext["sessionManager"], task: string) {
-  const candidates: SessionEntry[] = [];
+  const candidates = new Map<SessionEntry, number>();
   const seen = new Set<string>();
   let next = session.getLeafId();
   while (next !== null) {
@@ -470,12 +456,12 @@ export function persistedPiInboxCursor(session: ExtensionContext["sessionManager
         if (typeof details.sequence !== "number" || !Number.isSafeInteger(details.sequence) || details.sequence <= 0 ||
             typeof details.message_id !== "string" || !details.message_id ||
             (details.kind !== "message" && details.kind !== "steer")) throw new Error("Pi inbox native receipt is malformed");
-        candidates.push(entry);
+        candidates.set(entry, details.sequence);
       }
     }
     next = entry.parentId;
   }
-  if (!candidates.length) return 0;
+  if (!candidates.size) return 0;
   const file = session.getSessionFile();
   if (!file) throw new Error("Pi inbox requires an actual persisted native session");
   let persisted: SessionManager;
@@ -489,12 +475,10 @@ export function persistedPiInboxCursor(session: ExtensionContext["sessionManager
     throw error;
   }
   let cursor = 0;
-  for (const entry of candidates) {
+  for (const [entry, sequence] of candidates) {
     const actual = persisted.getEntry(entry.id);
     if (actual && JSON.stringify(actual) === JSON.stringify(entry)) {
-      if (entry.type !== "custom_message" || !entry.details || typeof entry.details !== "object" ||
-          !("sequence" in entry.details) || typeof entry.details.sequence !== "number") throw new Error("Pi inbox receipt lost its validated native sequence");
-      cursor = Math.max(cursor, entry.details.sequence);
+      cursor = Math.max(cursor, sequence);
     }
   }
   return cursor;
@@ -510,8 +494,9 @@ export async function consumePiInbox(
   pending: { item?: PiInboxMessage },
 ) {
   const nativeSession = ctx.sessionManager.getSessionId();
-  const deadline = AbortSignal.timeout(30_000);
-  const polling = AbortSignal.any([signal, deadline]);
+  const deadline = new AbortController();
+  const timeout = setTimeout(() => deadline.abort(new DOMException("Pi inbox deadline exceeded", "TimeoutError")), 30_000);
+  const polling = AbortSignal.any([signal, deadline.signal]);
   try {
     for (let observation = 0; observation < 120; observation++) {
       polling.throwIfAborted();
@@ -543,8 +528,8 @@ export async function consumePiInbox(
       if (observation < 119) await delay(250, undefined, { signal: polling });
     }
   } catch (error) {
-    if (!signal.aborted && !deadline.aborted) throw error;
-  }
+    if (!signal.aborted && !deadline.signal.aborted) throw error;
+  } finally { clearTimeout(timeout); }
 }
 
 const maximumBuiltinBytes = 262144;
@@ -700,7 +685,7 @@ export default function acyclic(pi: ExtensionAPI) {
       caller = result.caller;
       callerSession = current;
     }
-    return visibleControlResult(result as Record<string, unknown>);
+    return visibleControlResult(result) as Record<string, unknown>;
   };
   const builtinControl = async (
     event: "NativeBuiltinRead" | "NativeBuiltinWrite" | "NativeBuiltinEdit",
@@ -728,14 +713,14 @@ export default function acyclic(pi: ExtensionAPI) {
         (event === "NativeBuiltinEdit" && (!("phase" in result) || result.phase !== fields.phase))) throw new Error("Pi builtin response differs from its original task, invocation or proven native namespace");
     return result;
   };
-  const operations = new PiToolOperations();
+  const operations = piToolOperations();
   const toolResult = (result: Record<string, unknown>) => ({
     content: [{ type: "text" as const, text: JSON.stringify(result) }], details: result,
   });
   const effect = (operation: PiControlOperation, id: string, fields: Readonly<Record<string, unknown>>,
     ctx: ExtensionContext, signal?: AbortSignal,
     invoke = () => control(operation, ctx, { operation: id, ...fields }, signal),
-  ) => operations.run(ctx.sessionManager.getSessionId(), id, { control: operation, ...fields }, invoke);
+  ) => operations(ctx.sessionManager.getSessionId(), id, { control: operation, ...fields }, invoke);
   pi.on("session_start", async (_event, ctx) => {
     const entrypoint = process.argv[1];
     if (!entrypoint || !isAbsolute(entrypoint)) throw new Error("Pi CLI entrypoint is not absolute");
@@ -896,7 +881,7 @@ export default function acyclic(pi: ExtensionAPI) {
       const model = ctx.model;
       if (!model) throw new Error("Pi has no selected native provider/model");
       const fields = { ...params, context: params.context ?? "scratch", provider: model.provider, model: model.id };
-      const result = await operations.run(ctx.sessionManager.getSessionId(), operation, { control: "Spawn", ...fields }, async () => {
+      const result = await operations(ctx.sessionManager.getSessionId(), operation, { control: "Spawn", ...fields }, async () => {
         const parentCut = fields.context === "native_cut"
           ? captureParentCut(ctx.sessionManager, operation, maximumContextEntries, maximumContextBytes)
           : undefined;

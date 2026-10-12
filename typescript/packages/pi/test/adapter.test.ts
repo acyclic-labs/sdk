@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { piDefaultProvider, piProvider, projectPiEvent, projectPiRequest, type PiEvent } from "../src/index.ts";
+import { piProvider, projectPiEvent, projectPiRequest, type PiEvent } from "../src/index.ts";
 import { descriptorFor, NativeContracts, type FileRef, type ModelRequest } from "@acyclic-labs/harness";
 
 const request: ModelRequest = { model: { provider: "pi", name: "x", revision: "1", options: {} }, messages: [{ role: "user", content: "hello" }], tools: [] };
 test("Pi bridge receives the typed request and preserves terminal metadata", async () => {
-  const events: readonly PiEvent<{ readonly session: string }>[] = [
+  const events: readonly PiEvent[] = [
     { type: "text_delta", text: "ok" }, { type: "complete", metadata: { session: "s" } },
   ];
   const provider = piProvider({
@@ -58,7 +58,7 @@ test("Pi default projection resolves bounded text and leaves image and document 
   expect(projected.messages[0]?.content[3]).toMatchObject({ type: "text" });
   expect(reads).toEqual([textFile.path]);
   let seen = false;
-  const provider = piDefaultProvider({ resolveFile, maxResolvedBytes: 64,
+  const provider = piProvider({ project: request => projectPiRequest(request, { resolveFile, maxResolvedBytes: 64 }),
     run: async function* (value) { seen = value.messages[0]?.content.length === 4; yield { type: "complete" as const, metadata: null }; },
     async reconcile() { return undefined; },
   });
@@ -119,10 +119,9 @@ test("Pi accounting forwards the exact model and prepared request without dispat
     async *run() { dispatched++; yield { type: "complete" as const, metadata: null }; },
     async reconcile() { return undefined; },
   };
-  for (const provider of [piProvider(bridge), piDefaultProvider(bridge)]) {
-    expect(provider.contextCapacity(request.model)).toBe(capacity);
-    expect(provider.countTokens(prepared)).toBe(count);
-  }
+  const provider = piProvider(bridge);
+  expect(provider.contextCapacity(request.model)).toBe(capacity);
+  expect(provider.countTokens(prepared)).toBe(count);
   expect(projected).toBe(0);
   expect(dispatched).toBe(0);
 });
@@ -133,8 +132,7 @@ test("Pi accounting rejects absent capacity and counts without guessing", () => 
     async *run() { yield { type: "complete" as const, metadata: null }; },
     async reconcile() { return undefined; },
   };
-  for (const provider of [piProvider(bridge), piDefaultProvider(bridge)]) {
-    expect(() => provider.contextCapacity(request.model)).toThrow("explicit model capacity accounting");
-    expect(() => provider.countTokens({ ...request, serializedInput: new Uint8Array() })).toThrow("explicit token accounting");
-  }
+  const provider = piProvider(bridge);
+  expect(() => provider.contextCapacity(request.model)).toThrow("explicit model capacity accounting");
+  expect(() => provider.countTokens({ ...request, serializedInput: new Uint8Array() })).toThrow("explicit token accounting");
 });

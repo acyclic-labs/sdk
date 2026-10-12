@@ -1,4 +1,4 @@
-//! Span helpers for `docs/observability.md`. Each expands to nothing on wasm32,
+//! Span helpers for `docs/observability.md`.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::{
@@ -55,11 +55,6 @@ impl<T> Outcome for Result<T, crate::v1::NativeObjectsError> {
         self.as_ref().err().map(native_failure)
     }
 }
-impl<T> Outcome for Result<T, crate::body::BodyError> {
-    fn failure(&self) -> Option<&'static str> {
-        self.as_ref().err().map(|_| "unavailable")
-    }
-}
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 impl<T> Outcome for Result<T, crate::physical::PhysicalError> {
     fn failure(&self) -> Option<&'static str> {
@@ -75,60 +70,13 @@ impl<T> Outcome for Result<T, crate::physical::PhysicalError> {
 #[cfg(not(target_arch = "wasm32"))]
 struct Lifetime(Option<Span>);
 
-// Polling and destruction must both use the owner: closing a child may close
-// its parent through the current dispatcher. Pin::set drops without moving T.
 #[cfg(not(target_arch = "wasm32"))]
-pin_project_lite::pin_project! {
-    struct Origin<T> {
-        #[pin]
-        inner: Option<T>,
-        dispatch: tracing::Dispatch,
-    }
-    impl<T> PinnedDrop for Origin<T> {
-        fn drop(this: Pin<&mut Self>) {
-            let mut this = this.project();
-            tracing::dispatcher::with_default(this.dispatch, || this.inner.set(None));
-        }
-    }
-}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T> Origin<T> {
-    fn new(inner: T, dispatch: tracing::Dispatch) -> Self {
-        Self {
-            inner: Some(inner),
-            dispatch,
-        }
-    }
-}
-#[cfg(not(target_arch = "wasm32"))]
-impl<F: Future> Future for Origin<F> {
-    type Output = F::Output;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        tracing::dispatcher::with_default(this.dispatch, || {
-            this.inner
-                .as_pin_mut()
-                .map_or(Poll::Pending, |inner| inner.poll(cx))
-        })
-    }
-}
-#[cfg(not(target_arch = "wasm32"))]
-impl<S: futures::Stream> futures::Stream for Origin<S> {
-    type Item = S::Item;
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.project();
-        tracing::dispatcher::with_default(this.dispatch, || {
-            this.inner
-                .as_pin_mut()
-                .map_or(Poll::Ready(None), |inner| inner.poll_next(cx))
-        })
-    }
-}
+use acyclic_native_runtime::obs::Scoped;
 
 /// Decoded chunks with their originating dispatcher and optional RPC lifetime.
 pub struct BodyStream {
     #[cfg(not(target_arch = "wasm32"))]
-    inner: Origin<BodyState>,
+    inner: Scoped<BodyState>,
     #[cfg(target_arch = "wasm32")]
     inner: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>,
 }
@@ -143,7 +91,7 @@ impl From<futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>
     fn from(body: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         return Self {
-            inner: Origin::new(
+            inner: Scoped::new(
                 BodyState {
                     body,
                     lifetime: Lifetime(None),
@@ -165,7 +113,7 @@ impl BodyStream {
     ) -> Self
     where S: futures::Stream<Item = Result<bytes::Bytes, crate::Error>> + Send + 'static {
         Self {
-            inner: Origin::new(
+            inner: Scoped::new(
                 BodyState {
                     body,
                     lifetime: Lifetime(None),
@@ -183,6 +131,9 @@ impl futures::Stream for BodyStream {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return std::pin::Pin::new(&mut self.get_mut().inner).poll_next_retained(cx);
+        #[cfg(target_arch = "wasm32")]
         std::pin::Pin::new(&mut self.get_mut().inner).poll_next(cx)
     }
 }
@@ -211,8 +162,7 @@ impl futures::Stream for BodyState {
     }
 }
 
-// Field recording follows the owned operation, even when its span is filtered.
-// tracing's current span may be a visible ancestor in that case.
+// Record on the owned operation, including when filtered.
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
     static RECORDING: std::cell::Cell<Option<Span>> = const { std::cell::Cell::new(None) };
@@ -302,7 +252,7 @@ pub(crate) fn traced<R: Outcome>(
     #[cfg(not(target_arch = "wasm32"))]
     let dispatch = lifetime.dispatch();
     #[cfg(not(target_arch = "wasm32"))]
-    return Origin::new(
+    return Scoped::new(
         tracing::Instrument::instrument(
             async move {
                 let mut future = std::pin::pin!(future);
@@ -332,7 +282,7 @@ pub(crate) fn download(
     let mut lifetime = Lifetime(Some(span.clone()));
     let context = span.clone().or_current();
     let dispatch = lifetime.dispatch();
-    Origin::new(
+    Scoped::new(
         tracing::Instrument::instrument(
             async move {
                 let mut future = std::pin::pin!(future);
@@ -341,8 +291,8 @@ pub(crate) fn download(
                         .await;
                 match result {
                     Ok(mut download) => {
-                        download.body.inner.dispatch = lifetime.dispatch();
-                        if let Some(body) = download.body.inner.inner.as_mut() {
+                        download.body.inner.set_dispatch(lifetime.dispatch());
+                        if let Some(body) = download.body.inner.inner_mut() {
                             body.lifetime = lifetime;
                             body.context = Some(context);
                         }

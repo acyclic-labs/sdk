@@ -1,5 +1,5 @@
 import { create, fromBinary, toBinary, type MessageShape } from "@bufbuild/protobuf";
-import { observed, resolveObserver, type AcyclicObserver } from "./observe.js";
+import { observed, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 import { installWorkersMethods, type WorkersClientMethods, type WorkersMethod } from "./generated/workers-service.js";
 import type { WorkersClientOptions, WorkersCallOptions as RustCallOptions, WorkersFailure } from "./generated/semantic/workers/readonly.js";
 import { loadBinding, type RustClient } from "./binding.js";
@@ -67,7 +67,6 @@ export class WorkersClient {
 }
 export interface WorkersClient extends WorkersClientMethods {}
 export { WorkersClient as HttpWorkersClient };
-export type HttpWorkersOptions = WorkersOptions;
 export const createWorkersGrpcClient = (options: WorkersOptions): WorkersClient => new WorkersClient(options);
 function abortable<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (signal === undefined) return pending;

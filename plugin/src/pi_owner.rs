@@ -12,7 +12,7 @@ use acyclic_harness::{
     scheduler::SessionLimits,
 };
 use acyclic_native_runtime::{Durability, sync_file, sync_parent};
-use acyclic_stream::{StreamClient, StreamProvider};
+use acyclic_stream::{StreamProvider};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{self, Read},
@@ -178,13 +178,9 @@ impl PiOwnerConfig {
         );
         let authority = PiRuntimeAuthority {
             verifier: issuer.verifier(),
-            signed: issuer.root_for_agent(
-                self.policy.agent,
-                self.policy.root_task.to_string(),
-                storage_grants,
-            ),
+            signed: issuer.issue(&self.policy.root_task.to_string(), &storage_grants, Some(self.policy.agent), None, &mut None).expect("scope proof"),
             scope: RuntimeScope::new(self.policy.grants.clone(), self.policy.limits)?
-                .with_run_limits(self.policy.run_limits)?,
+                .with_run_limits(self.policy.run_limits, &mut None)?,
             session_limits: self.policy.session_limits,
             concurrency: self.policy.concurrency,
             maximum_payload_bytes: self.policy.maximum_payload_bytes,
@@ -221,7 +217,7 @@ impl PiOwnerConfig {
         let mut scope = RuntimeScope::new_with_native_work(
             self.policy.grants.clone_with_native_work(work)?, self.policy.limits, work,
         )?;
-        scope.0 = scope.0.with_run_limits_with_native_work(self.policy.run_limits, work)?;
+        scope.0 = scope.0.with_run_limits(self.policy.run_limits, &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let owned = (PiRuntimeAuthority {
             issuer: issuer.0, verifier: verifier.0, signed: signed.0, scope: scope.0,
             session_limits: self.policy.session_limits, concurrency: self.policy.concurrency,
@@ -498,7 +494,7 @@ pub(crate) mod tests;
 
 /// Consumes genuine original effect metadata before its protected owner moves into the Root provider.
 pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     authority: (Authority, AuthorityIssuer, acyclic_harness::core::Scope),
     custody: NativeAllocation,
     content: Arc<dyn ContentResidencyVerifier>,
@@ -515,7 +511,7 @@ pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
             reason: "Pi root allocation provider identity differs",
         });
     }
-    let mut providers = EffectRegistry::new_with_native_work(work)?
+    let mut providers = EffectRegistry::new(Some(work))?
         .with_result_resolver_with_native_work(content.clone(), work)?;
     providers.register_with_native_work(provider, work)?;
     let ((audience, issuer, scope), custody) = authorization;

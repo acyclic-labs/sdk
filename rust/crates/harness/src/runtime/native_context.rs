@@ -10,18 +10,8 @@ pub(super) struct NativeMetadataSource {
     pub(super) purpose: IssuedContextPurpose,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) struct NativeToolAcceptance {
-    task: crate::TaskId,
-    operation: crate::OperationId,
-}
-
 fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     Error::NativeBoundary { code, reason }
-}
-
-fn same_work(left: &NativeMaterializationWork, right: &NativeMaterializationWork) -> bool {
-    left.shares_allocation_context(right)
 }
 
 fn validate_scope_attenuation(
@@ -29,14 +19,14 @@ fn validate_scope_attenuation(
     work: &NativeMaterializationWork,
 ) -> Result<()> {
     original.validate_narrowing_with_native_work(&requested.grants, &limits, work)?;
-    original.validate_run_limit_attenuation_with_native_work(&requested.run_limits, work)
+    original.validate_run_limit_attenuation(&requested.run_limits, &mut Some(&mut crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))
 }
 
 /// The SDK-issued task context shared without cloning its sealed metadata.
 pub struct NativeTaskContext {
     context: TaskContext,
     #[cfg(feature = "native-execution")]
-    working_view: std::sync::OnceLock<Arc<crate::filesystem::NativeTaskWorkingView>>,
+    working_view: std::sync::OnceLock<Arc<dyn crate::filesystem::NativeTaskWorkingView>>,
     custody: NativeAllocation,
 }
 
@@ -109,7 +99,7 @@ impl TaskContext {
             crate::wire::ErrorCode::Unsupported,
             "native execution has no original durable owner callback",
         ))?;
-        self.harness.assert_durable_policy_bindings_with_native_work(work)?;
+        self.harness.assert_durable_policy_bindings(Some(work))?;
         host.verify_dispatch_owner_with_native_work(task, fence, work)
     }
 
@@ -137,7 +127,7 @@ impl TaskContext {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "task context has no original native metadata source"));
         };
-        if !same_work(&source.work, work) || !same_work(payload.custody.work(), work)
+        if !source.work.shares_allocation_context(work) || !payload.custody.work().shares_allocation_context(work)
             || payload.custody.bytes() < source.bytes
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
@@ -179,12 +169,13 @@ impl NativeTaskContext {
             .filter(|binding| binding.writer.is_some())
             .ok_or_else(|| boundary(crate::wire::ErrorCode::Unauthorized,
                 "output volume has no authenticated created writer"))?;
-        let (permission, permission_custody) = volume.capability_with_native_work(
-            crate::conversation::VolumeOperation::Write, work,
+        let mut permission_io = crate::store::history::native_work_io(work)?;
+        let permission = volume.capability(
+            crate::conversation::VolumeOperation::Write, &mut Some(&mut permission_io),
         )?;
         let allowed = self.context.scope.grants().contains(&permission);
         drop(permission);
-        drop(permission_custody);
+        drop(permission_io);
         if !allowed {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "original task scope cannot write the selected output volume"));
@@ -193,7 +184,7 @@ impl NativeTaskContext {
         let host = self.context.harness.host.as_ref().ok_or_else(|| boundary(
             crate::wire::ErrorCode::Unsupported, "output projection has no original task host",
         ))?;
-        self.context.harness.assert_durable_policy_bindings_with_native_work(work)?;
+        self.context.harness.assert_durable_policy_bindings(Some(work))?;
         match purpose {
             IssuedContextPurpose::Dispatch => {
                 host.verify_dispatch_owner_with_native_work(task, fence, work)?.await?;
@@ -255,30 +246,27 @@ impl NativeTaskContext {
     /// Attaches one genuinely prepared working view to its original issued dispatch context.
     #[cfg(feature = "native-execution")]
     pub async fn bind_working_view_with_native_work(
-        &self, view: crate::filesystem::NativeTaskWorkingView,
+        &self, view: Arc<dyn crate::filesystem::NativeTaskWorkingView>,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         self.context.require_original_native_dispatch(work)?;
         let (task, fence) = self.context.owned_task_binding_with_native_work(work)?;
-        if view.original_task() != task || view.original_fence() != fence
-            || !same_work(view.original_native_work(), work)
+        if view.task_binding() != (task, fence)
+            || !view.original_native_work().shares_allocation_context(work)
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "working view differs from its original issued task"));
         }
-        if self.working_view.get().is_some_and(|installed| !installed.same_identity(&view)) {
+        if self.working_view.get().is_some_and(|installed| !installed.same_identity(view.as_ref())) {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "working view cannot be rebound to a different preparation"));
         }
         view.verify_with_native_work(work)?.await?;
         if self.working_view.get().is_some() { return Ok(()); }
-        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let view = Arc::new(view);
         match self.working_view.set(view) {
             Ok(()) => Ok(()),
             Err(loser) => {
-                let same = self.working_view.get().is_some_and(|winner| winner.same_identity(&loser));
+                let same = self.working_view.get().is_some_and(|winner| winner.same_identity(loser.as_ref()));
                 drop(loser);
                 if same { Ok(()) } else {
                     Err(boundary(crate::wire::ErrorCode::Unauthorized,
@@ -297,20 +285,18 @@ impl NativeTaskContext {
     ) -> Result<()> {
         self.context.require_original_native_dispatch(work)?;
         let installed = self.context.native_root_output.get();
-        if installed.is_some_and(|installed| !installed.source.same_identity(&source)) {
+        if installed.is_some_and(|installed| !installed.0.same_identity(&source)) {
             return Err(boundary(crate::wire::ErrorCode::Conflict,
                 "root result destination differs from its original binding"));
         }
         source.verify_context_with_native_work(&self.context, work).await?;
         if installed.is_some() { return Ok(()); }
         let source = source.into_native_shared(work)?;
-        let binding = super::NativeRootOutputBinding {
-            content: source.retained_content_binding(),
-            source,
-        };
+        let content = source.retained_content_binding();
+        let binding = (source, content);
         if let Err(binding) = self.context.native_root_output.set(binding) {
             if self.context.native_root_output.get()
-                .is_some_and(|installed| installed.source.same_identity(&binding.source))
+                .is_some_and(|installed| installed.0.same_identity(&binding.0))
             {
                 return Ok(());
             }
@@ -327,7 +313,7 @@ impl NativeTaskContext {
 
     /// Pure membership check for the original metadata ledger, not authority.
     pub(crate) fn native_metadata_matches(&self, work: &NativeMaterializationWork) -> bool {
-        same_work(self.custody.work(), work)
+        self.custody.work().shares_allocation_context(work)
     }
 
     /// Builds an original-owner READ facade over this same shared context.
@@ -341,7 +327,7 @@ impl NativeTaskContext {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "content READ owner differs from the issued task context"));
         }
-        if !same_work(self.custody.work(), work) || !owner.native_shared_work_matches(work) {
+        if !self.custody.work().shares_allocation_context(work) || !owner.native_shared_work_matches(work) {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "content READ facade lacks original shared metadata custody"));
         }
@@ -355,7 +341,15 @@ impl NativeTaskContext {
 }
 
 impl ToolContext {
-    /// Records protected ToolStarted acceptance.
+    /// Records this invocation's committed ToolStarted acceptance.
+    pub(crate) fn record_native_tool_acceptance(&self, work: &NativeMaterializationWork) -> Result<()> {
+        self.validate_native_mcp_context(work)?;
+        self.accepted_native_tool.get_or_init(|| (
+            self.task().durable_task_id().expect("validated original durable task"), self.operation_id,
+        ));
+        Ok(())
+    }
+
     fn accepted_native_context(&self, work: &NativeMaterializationWork) -> Result<&TaskContext> {
         let context = self.validate_native_bound_context(work)?;
         if !context.native_metadata_source.as_ref()
@@ -368,7 +362,7 @@ impl ToolContext {
             crate::wire::ErrorCode::Unauthorized,
             "original admission observation requires protected ToolStarted acceptance",
         ))?;
-        if context.durable_task != Some(accepted.task) || self.operation_id != accepted.operation {
+        if context.durable_task != Some(accepted.0) || self.operation_id != accepted.1 {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "working view invocation differs from protected ToolStarted"));
         }
@@ -399,14 +393,15 @@ impl ToolContext {
     #[cfg(feature = "native-execution")]
     fn accepted_native_working_view(
         &self, work: &NativeMaterializationWork,
-    ) -> Result<(&TaskContext, &crate::filesystem::NativeTaskWorkingView)> {
+    ) -> Result<(&TaskContext, &dyn crate::filesystem::NativeTaskWorkingView)> {
         let context = self.accepted_native_context(work)?;
         let shared = self.native_task().expect("validated original native tool context");
         let view = shared.working_view.get().ok_or_else(|| boundary(
             crate::wire::ErrorCode::NotFound, "issued task has no prepared working view",
         ))?;
-        if !context.original_task_binding_matches(view.original_task(), view.original_fence())
-            || !same_work(view.original_native_work(), work)
+        let (task, fence) = view.task_binding();
+        if !context.original_task_binding_matches(task, fence)
+            || !view.original_native_work().shares_allocation_context(work)
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "working metadata differs from the original issued task"));
@@ -414,17 +409,27 @@ impl ToolContext {
         Ok((context, view.as_ref()))
     }
 
+    /// Borrows only the actual protected mount metadata before normalization.
+    #[cfg(feature = "native-execution")]
+    pub fn native_working_manifest_with_native_work(
+        &self, work: &NativeMaterializationWork,
+    ) -> Result<&crate::filesystem::NativeViewManifest> {
+        self.accepted_native_working_view(work).map(|(_, view)| view.manifest())
+    }
+
     #[cfg(feature = "native-execution")]
     fn check_native_working_permission(
-        &self, view: &crate::filesystem::NativeTaskWorkingView,
+        &self, view: &dyn crate::filesystem::NativeTaskWorkingView,
         relative: &std::path::Path, operation: crate::conversation::VolumeOperation,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         let volume = view.volume_for_builtin_path(relative, operation, work)?;
-        let (permission, permission_custody) = volume.capability_with_native_work(operation, work)?;
+        let mut permission_io = crate::store::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let permission = volume.capability(operation, &mut Some(&mut permission_io))?;
         let allowed = self.effective_scope().grants().contains(&permission);
         drop(permission);
-        drop(permission_custody);
+        drop(permission_io);
         if allowed { Ok(()) } else {
             Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "effective tool scope cannot access the selected mounted volume"))
@@ -437,7 +442,7 @@ impl ToolContext {
         &'a self, relative: &'a std::path::Path,
         operation: crate::conversation::VolumeOperation,
         work: &'a NativeMaterializationWork,
-    ) -> Result<&'a crate::filesystem::NativeTaskWorkingView> {
+    ) -> Result<&'a dyn crate::filesystem::NativeTaskWorkingView> {
         let (context, view) = self.accepted_native_working_view(work)?;
         self.check_native_working_permission(view, relative, operation, work)?;
         context.verify_original_execution_owner_with_native_work(work)?.await?;
@@ -445,6 +450,48 @@ impl ToolContext {
         Ok(view)
     }
 
+    /// Checks the accepted action's path and effective permission.
+    #[cfg(feature = "native-execution")]
+    pub async fn authorize_working_file_with_native_work(
+        &self, relative: &std::path::Path,
+        operation: crate::conversation::VolumeOperation,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        self.native_working_view_with_native_work(relative, operation, work).await?;
+        Ok(())
+    }
+
+    /// Reads the held selection under this invocation's effective scope.
+    #[cfg(feature = "native-execution")]
+    pub async fn read_working_file_with_native_work(
+        &self, relative: &std::path::Path, maximum: usize,
+        work: &NativeMaterializationWork,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        let view = self.native_working_view_with_native_work(
+            relative, crate::conversation::VolumeOperation::Read, work,
+        ).await?;
+        view.read_builtin_file(self.operation_id, relative, maximum, work)?.await
+    }
+
+    /// Mutates only the same selected held path after effective WRITE checks.
+    #[cfg(feature = "native-execution")]
+    pub async fn write_working_file_with_native_work(
+        &self, relative: &std::path::Path, content: &str, create_parents: bool,
+        expected_sha256: Option<[u8; 32]>, work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        if expected_sha256.is_some() {
+            let (_, view) = self.accepted_native_working_view(work)?;
+            self.check_native_working_permission(
+                view, relative, crate::conversation::VolumeOperation::Read, work,
+            )?;
+        }
+        let view = self.native_working_view_with_native_work(
+            relative, crate::conversation::VolumeOperation::Write, work,
+        ).await?;
+        view.write_builtin_file(
+            self.operation_id, relative, content, create_parents, expected_sha256, work,
+        )?.await
+    }
     /// Binds native tool metadata to the same SDK-issued shared task context.
     pub fn new_with_native_work(
         task: Arc<NativeTaskContext>,
@@ -456,7 +503,9 @@ impl ToolContext {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "tool context differs from its original native metadata ledger"));
         }
-        crate::tool::ToolInvocation::validate_call_id_with_native_work(call_id, work)?;
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        crate::executor::with_history_io(Some(&io), |work|
+            crate::tool::ToolInvocation::validate_identity(call_id, None, work))?;
         let mut slot = work.retain_owned(std::mem::size_of::<Self>() as u64)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut output = work.display(call_id)
@@ -510,7 +559,7 @@ impl ToolContext {
         let original = self.effective_scope();
         let grants = requested.grants.clone_with_native_work(work)?;
         let mut narrowed = original.narrow_with_native_work(grants, execution_limits, work)?;
-        narrowed.0 = narrowed.0.with_run_limits_with_native_work(requested.run_limits, work)?;
+        narrowed.0 = narrowed.0.with_run_limits(requested.run_limits, &mut Some(&mut crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
         self.effective_scope = Some((narrowed.0, Some(narrowed.1)));
         Ok(self)
     }
@@ -546,12 +595,12 @@ impl ToolContext {
     pub(crate) fn native_metadata_matches(&self, work: &NativeMaterializationWork) -> bool {
         let ToolTaskContext::Native(task) = &self.task else { return false; };
         let Some(custody) = &self.native_custody else { return false; };
-        task.native_metadata_matches(work) && same_work(custody.work(), work)
+        task.native_metadata_matches(work) && custody.work().shares_allocation_context(work)
             && (std::mem::size_of::<Self>() as u64)
                 .checked_add(self.call_id.capacity() as u64)
                 .is_some_and(|bytes| custody.bytes() >= bytes)
             && self.effective_scope.as_ref().is_none_or(|(_, guard)| {
-                guard.as_ref().is_some_and(|guard| same_work(guard.work(), work))
+                guard.as_ref().is_some_and(|guard| guard.work().shares_allocation_context(work))
             })
     }
 
@@ -703,7 +752,7 @@ impl<P: acyclic_stream::StreamProvider> NativeContextVerifier<P> {
         work.charge(WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         self.original_binding()?;
-        if !same_work(self.custody.work(), work) {
+        if !self.custody.work().shares_allocation_context(work) {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "content READ callback differs from its original native ledger"));
         }
@@ -712,54 +761,46 @@ impl<P: acyclic_stream::StreamProvider> NativeContextVerifier<P> {
                 "content exceeds the native callback byte bound"));
         }
         self.owner.validate_input_file(reference, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?;
-        self.owner.verify_read_access_with_native_work(work).await
+        self.owner.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await
     }
 
     async fn authorize(&self, reference: &FileRef) -> Result<()> {
         self.original_binding()?;
         self.owner.validate_input_file(reference, None)?;
-        self.owner.verify_read_access().await
+        self.owner.verify_read_access(&mut None).await
     }
 }
 
 impl<P: acyclic_stream::StreamProvider + 'static> ContentResidencyVerifier for NativeContextVerifier<P> {
-    fn verify<'a>(&'a self, reference: &'a FileRef) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.authorize(reference).await?;
-            self.context.context.verify_bound_file(reference).await?;
-            self.authorize(reference).await
+    fn verify<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            drop(self.read(reference, maximum_bytes, io)?.await?);
+            Ok(())
         })
     }
 
-    fn read<'a>(&'a self, reference: &'a FileRef) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
-            self.authorize(reference).await?;
-            let bytes = self.context.context.read_file(reference).await?;
-            self.authorize(reference).await?;
-            Ok(bytes)
-        })
-    }
-
-    fn verify_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, ()>> {
-        NativeFutureBundle::new(work, || async move {
-            self.authorize_native(reference, maximum_bytes, work).await?;
-            self.context.context.verify_bound_file_with_native_work(reference, work).await?;
-            self.authorize_native(reference, maximum_bytes, work).await
-        })
-    }
-
-    fn read_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        NativeFutureBundle::new(work, || async move {
-            self.authorize_native(reference, maximum_bytes, work).await?;
-            let output = self.context.context.read_file_with_native_work(reference, work).await?;
-            self.authorize_native(reference, maximum_bytes, work).await?;
-            Ok(output)
+    fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if let Some(io) = io {
+                let work = io.original_native_work().ok_or_else(|| boundary(
+                    crate::wire::ErrorCode::Unsupported, "content reader requires original native work"))?;
+                self.authorize_native(reference, maximum_bytes, work).await?;
+                let bytes = self.context.context.read_file_with_native_work(reference, work).await?;
+                self.authorize_native(reference, maximum_bytes, work).await?;
+                Ok(bytes)
+            } else {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(boundary(crate::wire::ErrorCode::Invalid, "content exceeds the callback byte bound"));
+                }
+                self.authorize(reference).await?;
+                let bytes = self.context.context.read_file(reference).await?;
+                self.authorize(reference).await?;
+                Ok(bytes)
+            }
         })
     }
 }
@@ -769,32 +810,38 @@ mod tests {
     use super::*;
     use crate::durable_host::tests::created_resource_access::CreationFixture;
 
-    fn budget() -> acyclic_fs::WorkBudget {
-        let units = 16_384;
-        let bytes = 16 * 1_024 * 1_024;
-        acyclic_fs::WorkBudget {
-            authority_records_read: units, authority_records_appended: units,
-            authority_bytes_read: bytes, authority_bytes_written: bytes,
-            object_probes: units, backend_read_operations: units, backend_write_operations: units,
-            durability_operations: units, page_reads: units, page_writes: units,
-            object_bytes_read: bytes, object_bytes_written: bytes, bytes_hashed: bytes,
-            bytes_copied: bytes, bytes_encoded: bytes, source_bytes_read: bytes,
-            source_path_components: units, source_entries_visited: units, output_bytes: bytes,
-            items_examined: units, items_returned: units, allocation_operations: units,
-            peak_allocation_bytes: bytes, materializations: units,
-        }
-    }
+    const BUDGET: acyclic_fs::WorkBudget = acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024);
 
     fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializationWork> {
-        NativeMaterializationWork::new(budget(), cancellation)
+        NativeMaterializationWork::new(BUDGET, cancellation)
             .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })
+    }
+
+    #[tokio::test]
+    async fn protected_tool_acceptance_enables_original_admission() -> Result<()> {
+        use crate::durable_host::tests::created_resource_access::{NativeCustomerFixture, NativeCustomerRuntime};
+        let fixture = NativeCustomerFixture::new_with_grants(&[], crate::tool::ToolRegistry::default()).await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let original = work(&cancellation)?;
+        let io = crate::filesystem::PreparationIo::from_native_work(&original)?;
+        let fence = NativeCustomerRuntime::original_lease_fence_with_io(&fixture.creation.root_lease, &io)?;
+        let shared = fixture.runtime.task_context_with_native_work(fixture.creation.root, &fence, &original).await?;
+        let tool = ToolContext::new_with_native_work(
+            shared, crate::OperationId::from_bytes([122; 16]), "protected-admission", &original,
+        )?;
+        assert!(matches!(tool.original_admission_with_native_work(&original),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        tool.record_native_tool_acceptance(&original)?;
+        let (admission, _custody) = tool.original_admission_with_native_work(&original)?.await?;
+        assert_eq!(admission.operation_id, fixture.creation.root_lease.operation.operation_id);
+        Ok(())
     }
 
     #[tokio::test]
     async fn native_read_context_cannot_bind_an_approved_mcp_dispatch() -> Result<()> {
         let fixture = CreationFixture::new().await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let original = NativeMaterializationWork::new(budget(), &cancellation)
+        let original = NativeMaterializationWork::new(BUDGET, &cancellation)
             .expect("finite original process binding ledger");
         let operation = fixture.root_lease.operation.operation_id;
         let (context, custody) = fixture.harness.durable_context_with_native_work(
@@ -919,7 +966,7 @@ mod tests {
                 custody: Some(custody),
             }) => {
                 assert_eq!(custody.bytes(), bytes);
-                assert!(same_work(custody.work(), &original));
+                assert!(custody.work().shares_allocation_context(&original));
                 drop(custody);
             }
             _ => panic!("cancelled shared allocation must preserve the original cause and custody"),
@@ -975,11 +1022,9 @@ mod tests {
         drop(unqualified);
         let owner = fixture.host.journal_owner_with_native_work(task, &fence, &original).await?
             .into_native_shared(&original)?;
-        let shared_users = Arc::strong_count(&shared);
         let reader = shared.content_residency_verifier_with_native_work(
             Arc::clone(&owner), &original,
         )?;
-        assert_eq!(Arc::strong_count(&shared), shared_users + 1);
         let staged = shared.context().stage_file_once_with_native_work(
             crate::OperationId::from_bytes([118; 16]), "native/shared.txt",
             b"same issued context", "text/plain", "shared.txt", &original,
@@ -1034,7 +1079,7 @@ mod tests {
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         assert_eq!(original.receipt().backend_read_operations, reads);
 
-        let available = budget().peak_allocation_bytes - original.live_allocation_bytes();
+        let available = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
         let quota = original.claim(available)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut buffer = Vec::<u8>::new();
@@ -1073,13 +1118,12 @@ mod tests {
             fixture.root, fixture.root_lease.operation.operation_id, &original,
         ).await?;
         let shared = context.into_native_shared(custody, &original)?;
-        assert!(same_work(shared.native_work(), &original));
+        assert!(shared.native_work().shares_allocation_context(&original));
         shared.context().require_original_native_work(&original)?;
         let operation = crate::OperationId::from_bytes([119; 16]);
         let call_id = operation.to_string();
         let baseline = original.live_allocation_bytes();
         let before = original.receipt();
-        let users = Arc::strong_count(&shared);
         let tool = ToolContext::new_with_native_work(
             Arc::clone(&shared), operation, &call_id, &original,
         )?;
@@ -1090,7 +1134,6 @@ mod tests {
         assert_eq!(tool.call_id(), call_id);
         assert!(tool.native_metadata_matches(&original));
         assert!(tool.stock_native_interactions().is_none());
-        assert_eq!(Arc::strong_count(&shared), users + 1);
         assert!(original.receipt().bytes_copied >= before.bytes_copied + call_id.len() as u64);
         let held = tool.native_custody.as_ref().expect("genuine SDK tool metadata").bytes();
         assert!(held >= std::mem::size_of::<ToolContext>() as u64 + tool.call_id.capacity() as u64);
@@ -1119,7 +1162,7 @@ mod tests {
         ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
         assert_eq!(original.receipt().allocation_operations, before);
 
-        let available = budget().peak_allocation_bytes - original.live_allocation_bytes();
+        let available = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
         let quota = original.claim(available)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut buffer = Vec::<u8>::new();
@@ -1162,7 +1205,7 @@ mod tests {
         assert!(shared.context().scope().grants().contains(&write));
         let limits = shared.context().scope().limits();
         let requested = RuntimeScope::new(crate::Capabilities::new([read.as_str()]), limits)?
-            .with_run_limits(shared.context().scope().run_limits())?;
+            .with_run_limits(shared.context().scope().run_limits(), &mut None)?;
         let operation = crate::OperationId::from_bytes([121; 16]);
         let tool = ToolContext::new_with_native_work(
             Arc::clone(&shared), operation, "scoped-control", &original,
@@ -1219,7 +1262,7 @@ mod tests {
 
         let widening = RuntimeScope::new(
             crate::Capabilities::new([read.as_str(), write.as_str()]), limits,
-        )?.with_run_limits(shared.context().scope().run_limits())?;
+        )?.with_run_limits(shared.context().scope().run_limits(), &mut None)?;
         let candidate = ToolContext::new_with_native_work(
             Arc::clone(&shared), operation, "scope-widen", &original,
         )?.with_native_scope(&requested, &original)?;

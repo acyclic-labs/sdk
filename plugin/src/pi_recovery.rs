@@ -180,7 +180,7 @@ where
             let mut request = decode_recovery_value::<acyclic_harness::resource_preparation::ResourcePreparationRequest>(
                 std::mem::take(&mut admission.0.input),
                 acyclic_harness::JsonValueSchema::ResourcePreparationRequest, work)?;
-            request.0.validate()?;
+            request.0.validate(&mut None)?;
             let child = decode_recovery_value::<PiTaskInput>(
                 std::mem::take(&mut request.0.child.input), acyclic_harness::JsonValueSchema::None, work)?;
             if admission.0.task != *preparation_definition.as_ref()
@@ -574,12 +574,12 @@ mod allocation_tests {
             &cancellation).unwrap();
         let second = NativeMaterializationWork::new(super::super::pi_root_provider::allocation_budget(),
             &cancellation).unwrap();
-        let mut retained = Some(first.retain_owned(8).unwrap());
-        let mut observed = NativeOwned::native(("original producer", second.retain_owned(16).unwrap()));
-        assert!(matches!(transfer_custody(&mut retained, &mut observed),
+        let mut retained = first.retain_owned(8).unwrap();
+        let mut observed = ("original producer", second.retain_owned(16).unwrap());
+        assert!(matches!(retained.absorb(&mut observed.1).map_err(native_error),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::InvalidLayout, .. })));
-        assert_eq!(retained.as_ref().unwrap().bytes(), 8);
-        assert_eq!(observed.custody.as_ref().unwrap().bytes(), 16);
+        assert_eq!(retained.bytes(), 8);
+        assert_eq!(observed.1.bytes(), 16);
         assert_eq!(second.live_allocation_bytes(), 16);
         drop(observed);
         drop(retained);

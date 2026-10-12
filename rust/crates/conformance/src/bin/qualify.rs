@@ -27,7 +27,7 @@ use acyclic_objects::v1::{
     local::{LocalObjects, LocalOptions as LocalObjectsLimits},
     wire,
 };
-use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits};
 use bytes::Bytes;
 use futures::StreamExt as _;
 use serde::Serialize;
@@ -256,9 +256,8 @@ async fn stream_history(root: &Path, seed: u64) -> Result<(), String> {
     let provider = LocalStream::open(root, LocalStreamLimits::default())
         .await
         .map_err(|error| error.to_string())?;
-    let client = StreamClient::new(Arc::new(provider));
-    let stream = client
-        .stream("consumer/history")
+    let client = Arc::new(provider);
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), "consumer/history")
         .map_err(|error| error.to_string())?;
     let mut rng = seed | 1;
     let mut expected = Vec::<Bytes>::new();
@@ -323,9 +322,8 @@ async fn stream_history(root: &Path, seed: u64) -> Result<(), String> {
     let reopened = LocalStream::open(root, LocalStreamLimits::default())
         .await
         .map_err(|error| error.to_string())?;
-    let client = StreamClient::new(Arc::new(reopened));
-    let stream = client
-        .stream("consumer/history")
+    let client = Arc::new(reopened);
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), "consumer/history")
         .map_err(|error| error.to_string())?;
     let recovered = stream
         .read(
@@ -610,8 +608,8 @@ async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> Result<(), S
     let fs = Box::pin(Fs::local(LocalOptions::new(&root)))
         .await
         .map_err(|error| error.to_string())?;
-    let workspace = Box::pin(fs.create_workspace("consumer-history"))
-        .await
+    let workspace = Box::pin(fs.create_workspace("consumer-history", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| error.to_string())?;
     let mut rng = seed | 1;
     let mut expected = std::collections::BTreeMap::<String, Bytes>::new();
@@ -642,17 +640,17 @@ async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> Result<(), S
             }
         }
     }
-    Box::pin(workspace.write("/unicode-é›ª.txt", Bytes::from_static(b"utf8 path")))
+    Box::pin(workspace.write("/unicode-雪.txt", Bytes::from_static(b"utf8 path")))
         .await
         .map_err(|error| error.to_string())?;
-    expected.insert("/unicode-é›ª.txt".into(), Bytes::from_static(b"utf8 path"));
+    expected.insert("/unicode-雪.txt".into(), Bytes::from_static(b"utf8 path"));
     drop(workspace);
     drop(fs);
     let reopened = Box::pin(Fs::local(LocalOptions::new(&root)))
         .await
         .map_err(|error| error.to_string())?;
-    let workspace = Box::pin(reopened.open_workspace("consumer-history"))
-        .await
+    let workspace = Box::pin(reopened.open_workspace("consumer-history", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| error.to_string())?;
     for (path, value) in expected {
         let observed = Box::pin(async { workspace.read(&path, 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
@@ -806,7 +804,7 @@ async fn run_sqlite_child(mode: &str, path: &Path) -> Result<(), String> {
             std::time::Duration::from_secs(120),
             8 * 1024 * 1024,
         )
-    })
+    }, None).expect("unmetered task construction cannot fail")
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
@@ -826,8 +824,8 @@ async fn filesystem_sqlite_wal(root: std::path::PathBuf) -> Result<(), String> {
     let fs = Box::pin(Fs::local(LocalOptions::new(&store)))
         .await
         .map_err(|error| error.to_string())?;
-    let workspace = Box::pin(fs.create_workspace("sqlite-wal"))
-        .await
+    let workspace = Box::pin(fs.create_workspace("sqlite-wal", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| error.to_string())?;
     let mount = workspace
         .mount(&destination, MountOptions::read_write())

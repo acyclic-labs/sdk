@@ -21,7 +21,7 @@ use acyclic_harness::{
     store::StreamAggregate,
     tool::{ToolInvocation, ToolProjection, ToolRegistry, ToolResult},
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use std::{
@@ -234,7 +234,7 @@ type LocalJournal = FilesystemExecutionJournal<
 >;
 
 async fn bind_conversation(
-    stream: &StreamClient<LocalStream>,
+    stream: &std::sync::Arc<LocalStream>,
     issuer: &AuthorityIssuer,
     agent: AgentId,
 ) -> Result<()> {
@@ -244,16 +244,15 @@ async fn bind_conversation(
             kind: AggregateKind::Conversation,
             id: "mcp-fault".into(),
         },
-        issuer.verifier(),
-        SchemaRegistry::new(),
-    )
+        issuer.verifier(&mut None).expect("verifier copy"),
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     aggregate
         .execute(Command {
             operation_id: OperationId::from_bytes([45; 16]),
             idempotency_key: IdempotencyKey::new("bind:mcp-fault")?,
             expected_revision: 0,
-            scope: issuer.root("owner", Capabilities::new(["conversation:bind"])),
+            scope: issuer.issue("owner", &Capabilities::new(["conversation:bind"]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::BindConversation { agent },
         }, #[cfg(feature = "filesystem")] None, &mut None)
@@ -287,10 +286,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
             id: "mcp-fault".into(),
         },
     );
-    let signed = issuer.root_for_agent(
-        agent,
-        "agent",
-        Capabilities::new([
+    let signed = issuer.issue("agent", &Capabilities::new([
             private.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Write)?,
             "mcp:install:fixture".into(),
@@ -300,23 +296,22 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
                 "interaction:respond:{}",
                 InteractionId::from_bytes([47; 16])
             ),
-        ]),
-    );
-    let stream = StreamClient::new(Arc::new(
+        ]), Some(agent), None, &mut None).expect("scope proof");
+    let stream = Arc::new(
         LocalStream::open(root.join("stream"), LocalStreamLimits::default())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-    ));
+    );
     if create {
         bind_conversation(&stream, &issuer, agent).await?;
     }
     let journal = Arc::new(FilesystemExecutionJournal::new(
         stream,
         host,
-        private,
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
-        signed.clone(),
-        8192,
+        &private,
+        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+        &signed,
+        8192, None,
     )?);
     if create {
         let operation = OperationId::from_bytes([46; 16]);
@@ -460,7 +455,7 @@ async fn phase(
                 operation: OperationId::from_bytes([46; 16]),
                 interaction: InteractionId::from_bytes([47; 16]),
                 scope: &signed,
-                verifier: &issuer.verifier(),
+                verifier: &issuer.verifier(&mut None).expect("verifier copy"),
                 approval: approval.as_ref(),
                 maximum_tools: 1,
                 maximum_bytes: 8192,

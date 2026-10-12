@@ -59,7 +59,7 @@ pub enum NativeVolumeNamespace {
 }
 
 impl NativeViewOptions {
-    pub(super) fn budget_for_volume_count(&self, count: usize) -> Result<WorkBudget> {
+    pub(crate) fn budget_for_volume_count(&self, count: usize) -> Result<WorkBudget> {
         use crate::Error;
         let budget = self.work_per_volume;
         if !budget.has_finite_allowances() || count == 0 {
@@ -123,7 +123,7 @@ impl NativeViewManifest {
             if let Some(io) = io {
                 io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
             }
-            mapping.volume.validate()?;
+            mapping.volume.validate(&mut None)?;
             mapping.generation.validate()?;
             if mapping.generation.as_resource().provider() != mapping.volume.provider()
                 || !mapping.path.is_absolute()
@@ -248,9 +248,9 @@ impl NativeProcessRequest {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
-        io.decode_preparation_with_code::<Self>(
+        crate::filesystem::native_decoded(io.decode_preparation::<Self>(
             bytes, crate::wire::ErrorCode::Storage,
-        )?.into_native_parts()
+        )?)
     }
 
     /// Checks only capture/control/result arithmetic, without consulting the OS.
@@ -294,7 +294,7 @@ impl NativeProcessRequest {
         let value = (NATIVE_PROCESS_EFFECT_KIND, task, command, self);
         let Some(io) = io else { return crate::contract::canonical_json_digest(&value); };
         let guard;
-        let encoded = io.encode_json(&value, io.remaining()?.bytes_encoded, true)?;
+        let encoded = io.encode(&value, io.remaining()?.bytes_encoded, true)?;
         guard = io.guard_bytes(&encoded)?;
         io.charge(acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() })?;
         let digest = *blake3::hash(&encoded).as_bytes();
@@ -353,21 +353,21 @@ impl NativeProcessResult {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
-        let mut decoded = io.decode_preparation_with_code::<Self>(
+        let mut decoded = io.decode_preparation::<Self>(
             bytes, crate::wire::ErrorCode::Storage,
         )?;
         let owned = (std::mem::size_of::<Self>() as u64)
-            .checked_add(decoded.stdout.capacity() as u64)
-            .and_then(|bytes| bytes.checked_add(decoded.stderr.capacity() as u64))
+            .checked_add(decoded.0.stdout.capacity() as u64)
+            .and_then(|bytes| bytes.checked_add(decoded.0.stderr.capacity() as u64))
             .and_then(|bytes| bytes.checked_add(
-                decoded.stop.as_ref().map_or(0, |stop| stop.message.capacity() as u64),
+                decoded.0.stop.as_ref().map_or(0, |stop| stop.message.capacity() as u64),
             ))
             .ok_or(crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Storage,
                 reason: "native result ownership overflow",
             })?;
-        decoded.substitute_owned(owned)?;
-        decoded.into_native_parts()
+        decoded.1.substitute(owned)?;
+        crate::filesystem::native_decoded(decoded)
     }
 }
 

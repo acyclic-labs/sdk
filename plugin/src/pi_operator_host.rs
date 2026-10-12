@@ -10,7 +10,7 @@ use acyclic_harness::{Error, Result, Capabilities, OperationId, NativeTaskContex
     core::SchemaRegistry, executor::ExecutionJournal,
     interaction::{Interaction, InteractionResponse, InteractionOutcome}, tool::ToolApprovalVerifier,
     workflow::WorkflowCommand};
-use acyclic_stream::{LocalStream, StreamClient};
+use acyclic_stream::{LocalStream};
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -61,7 +61,7 @@ fn validate_descriptor(protected: &PiOwnerConfig, descriptor: &PiPreparedApprova
     pi_operator::parse_digest(&descriptor.approval_digest)?;
     Ok(())
 }
-fn conversation_journal<'a>(filesystem: &Arc<PiNativeFilesystem>, stream: &StreamClient<LocalStream>,
+fn conversation_journal<'a>(filesystem: &Arc<PiNativeFilesystem>, stream: &std::sync::Arc<LocalStream>,
     protected: &PiOwnerConfig, descriptor: impl Into<PiPreparedApproval<&'a str, &'a acyclic_harness::conversation::VolumeRef, &'a [String], &'a acyclic_fs::MaterializationJournal>>, work: &NativeMaterializationWork) -> Result<Journal> {
     let descriptor = descriptor.into();
     validate_descriptor(protected, &descriptor, work)?;
@@ -105,7 +105,7 @@ pub(crate) async fn open_prepared_approval(runtime: &PiNativeRuntime, filesystem
     owner.verify_with_native_work(false, work).await
 }
 
-pub(crate) async fn require_resolved_approval<'a>(filesystem: &Arc<PiNativeFilesystem>, stream: &StreamClient<LocalStream>,
+pub(crate) async fn require_resolved_approval<'a>(filesystem: &Arc<PiNativeFilesystem>, stream: &std::sync::Arc<LocalStream>,
     protected: &PiOwnerConfig, descriptor: impl Into<PiPreparedApproval<&'a str, &'a acyclic_harness::conversation::VolumeRef, &'a [String], &'a acyclic_fs::MaterializationJournal>>, work: &NativeMaterializationWork) -> Result<()> {
     let descriptor = descriptor.into();
     let journal = conversation_journal(filesystem, stream, protected, descriptor, work)?;
@@ -180,7 +180,7 @@ struct PiInspectionResponse<'a> {
     file_evidence_complete: Option<&'a Value>,
 }
 
-async fn observe_writeback(filesystem: &Arc<PiNativeFilesystem>, stream: &StreamClient<LocalStream>,
+async fn observe_writeback(filesystem: &Arc<PiNativeFilesystem>, stream: &std::sync::Arc<LocalStream>,
     resources: &crate::ServiceResources, protected: &PiOwnerConfig, descriptor: &PiPreparedApproval,
     work: &NativeMaterializationWork) -> Result<(&'static str, Option<acyclic_fs::OwnedMaterializationJournal>)> {
     let journal = conversation_journal(filesystem, stream, protected, descriptor, work)?;
@@ -214,7 +214,7 @@ async fn observe_writeback(filesystem: &Arc<PiNativeFilesystem>, stream: &Stream
     Ok((status, native))
 }
 
-pub(crate) async fn writeback_status(filesystem: &Arc<PiNativeFilesystem>, stream: &StreamClient<LocalStream>,
+pub(crate) async fn writeback_status(filesystem: &Arc<PiNativeFilesystem>, stream: &std::sync::Arc<LocalStream>,
     resources: &crate::ServiceResources, protected: &PiOwnerConfig, descriptor: &PiPreparedApproval,
     work: &NativeMaterializationWork) -> Result<(Value, acyclic_fs::NativeAllocation)> {
     let (status, native) = observe_writeback(filesystem, stream, resources, protected, descriptor, work).await?;
@@ -253,7 +253,7 @@ pub(crate) async fn stage_operator_command(runtime: &PiNativeRuntime, protected:
     Ok((WorkflowCommand { operation_id, kind: kind.0, payload: staged.0 }, staged.1))
 }
 
-pub(crate) async fn inspect_operator(runtime: &PiNativeRuntime, filesystem: &Arc<PiNativeFilesystem>, stream: &StreamClient<LocalStream>,
+pub(crate) async fn inspect_operator(runtime: &PiNativeRuntime, filesystem: &Arc<PiNativeFilesystem>, stream: &std::sync::Arc<LocalStream>,
     resources: &crate::ServiceResources, protected: &PiOwnerConfig, session: &str,
     retained: &crate::AdapterState, roots: &std::collections::BTreeMap<String, crate::pi_root_provider::PiRootHandle>,
     request: &PiOperatorRequest, work: &NativeMaterializationWork) -> Result<(Value, acyclic_fs::NativeAllocation)> {
@@ -300,7 +300,7 @@ pub(crate) async fn inspect_operator(runtime: &PiNativeRuntime, filesystem: &Arc
 }
 
 /// Caller proof is verified by the existing actor before entering this passive API.
-pub(crate) async fn passive_status(runtime: &PiNativeRuntime, filesystem: &Arc<PiNativeFilesystem>, stream: &StreamClient<LocalStream>,
+pub(crate) async fn passive_status(runtime: &PiNativeRuntime, filesystem: &Arc<PiNativeFilesystem>, stream: &std::sync::Arc<LocalStream>,
     resources: &crate::ServiceResources, protected: &PiOwnerConfig, session: &str, native_session: &str, caller: acyclic_harness::TaskId,
     sdk_operation: &str, source: acyclic_harness::TaskId, root: &str, paths: &[String],
     work: &NativeMaterializationWork) -> Result<(Value, acyclic_fs::NativeAllocation)> {

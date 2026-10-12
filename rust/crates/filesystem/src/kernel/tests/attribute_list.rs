@@ -1,13 +1,14 @@
 use super::*;
 use crate::foundation::Digest;
 use crate::kernel::{
-    AttributeChild, AttributeClass, AttributePage, attribute_page_id, encode_attribute_page,
+    AttributeClass, AttributePage, attribute_page_id, encode_attribute_page,
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore};
 use crate::{CachedObjectStore, ObjectCacheOptions};
 use acyclic_stream::OwnedBytes;
 
+use crate::kernel::Child;
 fn name(value: &str) -> Result<AttributeName, Box<dyn std::error::Error>> {
     Ok(AttributeName::new(
         AttributeClass::PosixXattr,
@@ -35,7 +36,7 @@ fn put(
     ObjectStore::put(
         store,
         id,
-        OwnedBytes::from(encode_attribute_page(page, 8)?),
+        OwnedBytes::from(encode_attribute_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -57,16 +58,16 @@ fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error
     put(
         store,
         &AttributePage::Internal(vec![
-            AttributeChild {
-                first_name: name("a")?,
+            Child {
+                first: name("a")?,
                 page: a,
             },
-            AttributeChild {
-                first_name: name("c")?,
+            Child {
+                first: name("c")?,
                 page: c,
             },
-            AttributeChild {
-                first_name: name("e")?,
+            Child {
+                first: name("e")?,
                 page: e,
             },
         ]),
@@ -89,8 +90,8 @@ fn four_leaf_tree(
         if index == 2 {
             third = Some(page);
         }
-        children.push(AttributeChild {
-            first_name: name(value)?,
+        children.push(Child {
+            first: name(value)?,
             page,
         });
     }
@@ -100,13 +101,13 @@ fn four_leaf_tree(
     ))
 }
 
-#[test]
-fn bounded_attribute_listing_exposes_one_authenticated_metadata_successor()
+#[tokio::test]
+async fn bounded_attribute_listing_exposes_one_authenticated_metadata_successor()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, expected) = four_leaf_tree(&store)?;
     let limits = DecodeLimits::default();
-    let page = list_attributes(&store, root, None, 1, limits, WorkBudget::UNBOUNDED)?;
+    let page = list_attributes(&store, root, None, 1, limits, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(
         page.entries
             .iter()
@@ -129,8 +130,8 @@ fn bounded_attribute_listing_exposes_one_authenticated_metadata_successor()
     Ok(())
 }
 
-#[test]
-fn attributes_share_the_bounded_cursor_engine() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn attributes_share_the_bounded_cursor_engine() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = tree(&store)?;
     let page = list_attributes(
@@ -140,7 +141,8 @@ fn attributes_share_the_bounded_cursor_engine() -> Result<(), Box<dyn std::error
         2,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(
         page.entries
             .iter()
@@ -153,8 +155,8 @@ fn attributes_share_the_bounded_cursor_engine() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-#[test]
-fn cached_attribute_pagination_reuses_shared_internal_and_leaf_pages()
+#[tokio::test]
+async fn cached_attribute_pagination_reuses_shared_internal_and_leaf_pages()
 -> Result<(), Box<dyn std::error::Error>> {
     let backend = MemoryObjectStore::new(1024 * 1024)?;
     let root = tree(&backend)?;
@@ -169,7 +171,7 @@ fn cached_attribute_pagination_reuses_shared_internal_and_leaf_pages()
     )?;
     let cursor = name("b")?;
     let cancellation = CancellationToken::new();
-    let cold = crate::async_storage::poll_ready(list_attributes_async(
+    let cold = list_attributes(
         &store,
         root,
         Some(&cursor),
@@ -177,8 +179,7 @@ fn cached_attribute_pagination_reuses_shared_internal_and_leaf_pages()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("cache-backed cold attribute pagination suspended")??;
+    ).await?;
     assert_eq!(
         cold.entries
             .iter()
@@ -194,7 +195,7 @@ fn cached_attribute_pagination_reuses_shared_internal_and_leaf_pages()
     assert!(!cold.has_more);
     assert_eq!(cold.work.backend_read_operations, 4);
 
-    let warm = crate::async_storage::poll_ready(list_attributes_async(
+    let warm = list_attributes(
         &store,
         root,
         Some(&cursor),
@@ -202,8 +203,7 @@ fn cached_attribute_pagination_reuses_shared_internal_and_leaf_pages()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("cache-backed warm attribute pagination suspended")??;
+    ).await?;
     assert_eq!(warm.entries, cold.entries);
     assert_eq!(warm.work.backend_read_operations, 0);
     assert_eq!(warm.work.object_bytes_read, 0);
@@ -211,13 +211,13 @@ fn cached_attribute_pagination_reuses_shared_internal_and_leaf_pages()
     Ok(())
 }
 
-#[test]
-fn pre_cancel_and_output_admission_do_no_backend_work() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn pre_cancel_and_output_admission_do_no_backend_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = tree(&store)?;
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = crate::async_storage::poll_ready(list_attributes_async(
+    let failure = list_attributes(
         &store,
         root,
         None,
@@ -225,8 +225,8 @@ fn pre_cancel_and_output_admission_do_no_backend_work() -> Result<(), Box<dyn st
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancelled,
-    ))
-    .ok_or("memory future remained pending")?
+    )
+    .await
     .err()
     .ok_or("cancelled listing succeeded")?;
     assert!(matches!(failure.error, AttributeListError::Cancelled));
@@ -234,7 +234,8 @@ fn pre_cancel_and_output_admission_do_no_backend_work() -> Result<(), Box<dyn st
 
     let mut budget = WorkBudget::UNBOUNDED;
     budget.items_returned = 1;
-    let failure = list_attributes(&store, root, None, 2, DecodeLimits::default(), budget)
+    let failure = list_attributes(&store, root, None, 2, DecodeLimits::default(), budget, &CancellationToken::new())
+        .await
         .err()
         .ok_or("unadmitted listing succeeded")?;
     assert!(matches!(
@@ -248,8 +249,8 @@ fn pre_cancel_and_output_admission_do_no_backend_work() -> Result<(), Box<dyn st
     Ok(())
 }
 
-#[test]
-fn forged_child_bounds_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn forged_child_bounds_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let leaf = put(
         &store,
@@ -257,8 +258,8 @@ fn forged_child_bounds_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let root = put(
         &store,
-        &AttributePage::Internal(vec![AttributeChild {
-            first_name: name("a")?,
+        &AttributePage::Internal(vec![Child {
+            first: name("a")?,
             page: leaf,
         }]),
     )?;
@@ -269,7 +270,9 @@ fn forged_child_bounds_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
         1,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("forged child bound unexpectedly succeeded")?;
     assert!(matches!(
@@ -280,8 +283,8 @@ fn forged_child_bounds_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[test]
-fn one_byte_short_peak_budget_rejects_the_same_plan() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn one_byte_short_peak_budget_rejects_the_same_plan() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = tree(&store)?;
     let cursor = name("c")?;
@@ -292,7 +295,8 @@ fn one_byte_short_peak_budget_rejects_the_same_plan() -> Result<(), Box<dyn std:
         2,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = baseline
         .work
@@ -306,7 +310,9 @@ fn one_byte_short_peak_budget_rejects_the_same_plan() -> Result<(), Box<dyn std:
         2,
         DecodeLimits::default(),
         budget,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("one-byte-short peak budget unexpectedly succeeded")?;
     assert!(matches!(
@@ -319,8 +325,8 @@ fn one_byte_short_peak_budget_rejects_the_same_plan() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[test]
-fn cursors_before_inside_and_after_the_tree_are_exact_and_bounded()
+#[tokio::test]
+async fn cursors_before_inside_and_after_the_tree_are_exact_and_bounded()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = tree(&store)?;
@@ -337,7 +343,8 @@ fn cursors_before_inside_and_after_the_tree_are_exact_and_bounded()
             maximum,
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
-        )?;
+            &CancellationToken::new(),
+        ).await?;
         assert_eq!(
             page.entries
                 .iter()
@@ -351,8 +358,8 @@ fn cursors_before_inside_and_after_the_tree_are_exact_and_bounded()
     Ok(())
 }
 
-#[test]
-fn pagination_admission_height_and_alias_guards_are_fail_closed()
+#[tokio::test]
+async fn pagination_admission_height_and_alias_guards_are_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = tree(&store)?;
@@ -368,7 +375,9 @@ fn pagination_admission_height_and_alias_guards_are_fail_closed()
             1,
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
+        .await
         .err()
         .ok_or("wrong attribute root kind succeeded")?,
         list_attributes(
@@ -378,7 +387,9 @@ fn pagination_admission_height_and_alias_guards_are_fail_closed()
             0,
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
+        .await
         .err()
         .ok_or("zero attribute page limit succeeded")?,
         list_attributes(
@@ -391,7 +402,9 @@ fn pagination_admission_height_and_alias_guards_are_fail_closed()
                 ..DecodeLimits::default()
             },
             WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
+        .await
         .err()
         .ok_or("invalid attribute decode limits succeeded")?,
     ];
@@ -418,7 +431,9 @@ fn pagination_admission_height_and_alias_guards_are_fail_closed()
             ..DecodeLimits::default()
         },
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("height-limited attribute traversal succeeded")?;
     assert!(matches!(height.error, AttributeListError::HeightExceeded));
@@ -431,12 +446,12 @@ fn pagination_admission_height_and_alias_guards_are_fail_closed()
     let alias_root = put(
         &store,
         &AttributePage::Internal(vec![
-            AttributeChild {
-                first_name: name("a")?,
+            Child {
+                first: name("a")?,
                 page: leaf,
             },
-            AttributeChild {
-                first_name: name("c")?,
+            Child {
+                first: name("c")?,
                 page: leaf,
             },
         ]),
@@ -448,7 +463,9 @@ fn pagination_admission_height_and_alias_guards_are_fail_closed()
         4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("aliased attribute page succeeded")?;
     assert!(matches!(alias.error, AttributeListError::CycleOrAlias));

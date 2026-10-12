@@ -14,34 +14,7 @@ use crate::{AsyncAuthorityStore, CancellationToken, Fs, GenerationForkSource, Id
 use std::error::Error;
 use std::sync::Arc;
 
-fn budget() -> WorkBudget {
-    WorkBudget {
-        authority_records_read: 4096,
-        authority_records_appended: 4096,
-        authority_bytes_read: 16 * 1024 * 1024,
-        authority_bytes_written: 16 * 1024 * 1024,
-        object_probes: 4096,
-        backend_read_operations: 4096,
-        backend_write_operations: 4096,
-        durability_operations: 4096,
-        page_reads: 4096,
-        page_writes: 4096,
-        object_bytes_read: 16 * 1024 * 1024,
-        object_bytes_written: 16 * 1024 * 1024,
-        bytes_hashed: 16 * 1024 * 1024,
-        bytes_copied: 16 * 1024 * 1024,
-        bytes_encoded: 16 * 1024 * 1024,
-        source_bytes_read: 16 * 1024 * 1024,
-        source_path_components: 4096,
-        source_entries_visited: 4096,
-        output_bytes: 16 * 1024 * 1024,
-        items_examined: 4096,
-        items_returned: 4096,
-        allocation_operations: 4096,
-        peak_allocation_bytes: 16 * 1024 * 1024,
-        materializations: 4096,
-    }
-}
+const BUDGET: WorkBudget = crate::performance::work_budget(4096, 16 * 1024 * 1024);
 
 fn fixture() -> (MemoryFs, StreamAuthorityStore<acyclic_stream::MemoryStream>, MemoryObjectBackend) {
     let stream = Arc::new(acyclic_stream::MemoryStream::default());
@@ -62,7 +35,7 @@ async fn records(
     Ok(authority.replay(
         authority_id, Sequence::GENESIS,
         ReplayLimit { records: 256, payload_bytes: 1024 * 1024 },
-        budget(), &CancellationToken::new(),
+        BUDGET, &CancellationToken::new(),
     ).await?.value)
 }
 
@@ -70,7 +43,7 @@ async fn records(
 async fn dense_accounting_pages_preserve_old_generations_and_cursor_after_later_append()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("dense-accounting").await?;
+    let workspace = fs.create_workspace("dense-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "old").await?;
     let old = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     workspace.write_text("/file", "newer").await?;
@@ -78,7 +51,7 @@ async fn dense_accounting_pages_preserve_old_generations_and_cursor_after_later_
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let cancellation = CancellationToken::new();
     let first = accounting_page(
-        &authority, &objects, authority_id, AccountingCursor::genesis(), 1, budget(), &cancellation,
+        &authority, &objects, authority_id, AccountingCursor::genesis(), 1, BUDGET, &cancellation,
     ).await?;
     assert_eq!(first.facts.len(), 1);
     assert_eq!(first.next.sequence, Sequence::new(1));
@@ -87,7 +60,7 @@ async fn dense_accounting_pages_preserve_old_generations_and_cursor_after_later_
     workspace.write_text("/file", "latest!").await?;
     let latest = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     let second = accounting_page(
-        &authority, &objects, authority_id, first.next, 2, budget(), &cancellation,
+        &authority, &objects, authority_id, first.next, 2, BUDGET, &cancellation,
     ).await?;
     assert_eq!(second.facts.len(), 2);
     assert_eq!(second.next.sequence, Sequence::new(3));
@@ -102,7 +75,7 @@ async fn dense_accounting_pages_preserve_old_generations_and_cursor_after_later_
         logical_regular_file_bytes: 5,
     });
     let last = authority.accounting_page(
-        &objects, authority_id, second.next, 1, budget(), &cancellation,
+        &objects, authority_id, second.next, 1, BUDGET, &cancellation,
     ).await?;
     assert!(last.complete);
     assert_eq!(last.facts.len(), 1);
@@ -124,17 +97,17 @@ async fn dense_accounting_pages_preserve_old_generations_and_cursor_after_later_
     assert_eq!(Some(last.watermark_settled_at_micros), durable[3].settled_at_micros);
     assert!(first.work.authority_records_read > 0);
     assert!(second.work.object_bytes_read > 0);
-    first.work.verify(budget())?;
-    second.work.verify(budget())?;
-    last.work.verify(budget())?;
+    first.work.verify(BUDGET)?;
+    second.work.verify(BUDGET)?;
+    last.work.verify(BUDGET)?;
     let empty = authority.accounting_page(
-        &objects, authority_id, last.next, 2, budget(), &cancellation,
+        &objects, authority_id, last.next, 2, BUDGET, &cancellation,
     ).await?;
     assert!(empty.complete);
     assert!(empty.facts.is_empty());
     assert_eq!(empty.next, last.next);
     let replayed = accounting_page(
-        &authority, &objects, authority_id, first.next, 2, budget(), &cancellation,
+        &authority, &objects, authority_id, first.next, 2, BUDGET, &cancellation,
     ).await?;
     assert_eq!(replayed.facts, second.facts);
     assert_eq!(replayed.next, second.next);
@@ -145,7 +118,7 @@ async fn dense_accounting_pages_preserve_old_generations_and_cursor_after_later_
 async fn accounting_projects_retention_and_deleted_workspace_without_reopening_retired_authority()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("retained-accounting").await?;
+    let workspace = fs.create_workspace("retained-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "retained").await?;
     let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     workspace.checkpoint("checkpoint").await?;
@@ -154,7 +127,7 @@ async fn accounting_projects_retention_and_deleted_workspace_without_reopening_r
     for (kind, label) in [(RetentionKind::Checkpoint, "checkpoint"), (RetentionKind::Pin, "pin")] {
         let authority_id = retention_authority_id(workspace.id().volume_id(), kind, label);
         let page = authority.accounting_page(
-            &objects, authority_id, AccountingCursor::genesis(), 1, budget(), &cancellation,
+            &objects, authority_id, AccountingCursor::genesis(), 1, BUDGET, &cancellation,
         ).await?;
         assert!(page.complete);
         assert_eq!(page.facts.len(), 1);
@@ -168,13 +141,13 @@ async fn accounting_projects_retention_and_deleted_workspace_without_reopening_r
     let fork = workspace.fork(
         "accounting-fork",
         crate::ForkOptions::from_generation(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()),
-    ).await?;
+    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let fork_retention = retention_authority_id(
         workspace.id().volume_id(), RetentionKind::ForkBase,
         &hex::encode(fork.id().volume_id().into_bytes()),
     );
     let retained = authority.accounting_page(
-        &objects, fork_retention, AccountingCursor::genesis(), 1, budget(), &cancellation,
+        &objects, fork_retention, AccountingCursor::genesis(), 1, BUDGET, &cancellation,
     ).await?;
     assert!(retained.complete);
     assert_eq!(retained.facts.len(), 1);
@@ -186,12 +159,12 @@ async fn accounting_projects_retention_and_deleted_workspace_without_reopening_r
     assert_eq!(retained.facts[0].operation_class, AccountingOperationClass::InternalForkRetention);
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let before = authority.accounting_page(
-        &objects, authority_id, AccountingCursor::genesis(), 2, budget(), &cancellation,
+        &objects, authority_id, AccountingCursor::genesis(), 2, BUDGET, &cancellation,
     ).await?;
     assert!(before.complete);
     workspace.delete(IdempotencyKey::new()).await?;
     let deleted = authority.accounting_page(
-        &objects, authority_id, before.next, 1, budget(), &cancellation,
+        &objects, authority_id, before.next, 1, BUDGET, &cancellation,
     ).await?;
     assert!(deleted.complete);
     assert_eq!(deleted.facts.len(), 1);
@@ -200,15 +173,15 @@ async fn accounting_projects_retention_and_deleted_workspace_without_reopening_r
     });
     assert_eq!(deleted.facts[0].operation_class, AccountingOperationClass::CustomerMutation);
     for failure in [
-        authority.head(authority_id, budget(), &cancellation).await.err(),
+        authority.head(authority_id, BUDGET, &cancellation).await.err(),
         authority.fence(authority_id, Head {
             epoch: Epoch::GENESIS, sequence: deleted.next.sequence, digest: deleted.next.digest,
-        }, budget(), &cancellation).await.err(),
+        }, BUDGET, &cancellation).await.err(),
     ] {
         assert!(matches!(failure.ok_or("retired ordinary authority operation succeeded")?.error, AuthorityStoreError::Retired));
     }
     let repeated = authority.accounting_page(
-        &objects, authority_id, before.next, 1, budget(), &cancellation,
+        &objects, authority_id, before.next, 1, BUDGET, &cancellation,
     ).await?;
     assert_eq!(repeated.facts, deleted.facts);
     assert_eq!(repeated.next, deleted.next);
@@ -219,7 +192,7 @@ async fn accounting_projects_retention_and_deleted_workspace_without_reopening_r
 async fn accounting_requires_original_objects_and_authoritative_time_not_offline_defaults()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("fail-closed-accounting").await?;
+    let workspace = fs.create_workspace("fail-closed-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "original").await?;
     workspace.write_text("/file", "different current head").await?;
     let authority_id = volume_authority_id(workspace.id().volume_id());
@@ -228,7 +201,7 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
     let (absent, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
     let absent = crate::LogicalObjectStore::new(Arc::new(absent), bucket);
     assert!(matches!(accounting_page(
-        &authority, &absent, authority_id, AccountingCursor::genesis(), 2, budget(), &cancellation,
+        &authority, &absent, authority_id, AccountingCursor::genesis(), 2, BUDGET, &cancellation,
     ).await, Err(AccountingError::Proof(_))));
     // Simulate collection of old closures while preserving the complete current
     // closure in an actual independent Objects provider.
@@ -245,13 +218,13 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
             hard_links: true,
             sparse_files: true,
         },
-        budget(), &cancellation,
+        BUDGET, &cancellation,
     ).await?;
     for object in current.objects {
         let bytes = crate::AsyncObjectStore::read(
-            &objects, object, 16 * 1024 * 1024, budget(), &cancellation,
+            &objects, object, 16 * 1024 * 1024, BUDGET, &cancellation,
         ).await?.value.bytes;
-        crate::AsyncObjectStore::put(&absent, object, bytes, budget(), &cancellation).await?;
+        crate::AsyncObjectStore::put(&absent, object, bytes, BUDGET, &cancellation).await?;
     }
     let durable = records(&authority, authority_id).await?;
     let cursor = |record: &DurableCommit| -> Result<AccountingCursor, Box<dyn Error>> {
@@ -262,7 +235,7 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
         })
     };
     let present = accounting_page(
-        &authority, &absent, authority_id, cursor(&durable[1])?, 1, budget(), &cancellation,
+        &authority, &absent, authority_id, cursor(&durable[1])?, 1, BUDGET, &cancellation,
     ).await?;
     assert!(present.complete);
     assert_eq!(present.facts[0].transition, AccountingTransition::Published {
@@ -270,25 +243,25 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
         logical_regular_file_bytes: 22,
     });
     assert!(matches!(accounting_page(
-        &authority, &absent, authority_id, cursor(&durable[0])?, 1, budget(), &cancellation,
+        &authority, &absent, authority_id, cursor(&durable[0])?, 1, BUDGET, &cancellation,
     ).await, Err(AccountingError::Proof(_))));
     let initial = records(&authority, authority_id).await?.remove(0);
     let offline = MemoryAuthorityStore::default();
     let CreateAuthorityOutcome::Created(head) = AuthorityStore::create_authority(
-        &offline, authority_id, initial.epoch, budget(),
+        &offline, authority_id, initial.epoch, BUDGET,
     )?.value else {
         return Err("offline fixture authority already existed".into());
     };
     let AppendOutcome::Committed(committed) = AuthorityStore::compare_and_append(
         &offline, authority_id, initial.epoch, head,
         ProposedCommit { operation_id: initial.operation_id, fingerprint: initial.fingerprint, payload: initial.payload },
-        budget(),
+        BUDGET,
     )?.value else {
         return Err("offline actual Memory authority did not commit".into());
     };
     assert_eq!(committed.settled_at_micros, None);
     assert!(matches!(accounting_page(
-        &offline, &objects, authority_id, AccountingCursor::genesis(), 1, budget(), &cancellation,
+        &offline, &objects, authority_id, AccountingCursor::genesis(), 1, BUDGET, &cancellation,
     ).await, Err(AccountingError::MissingTime)));
     Ok(())
 }
@@ -297,12 +270,12 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
 async fn accounting_rejects_malformed_cursor_and_unbounded_admission()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("cursor-accounting").await?;
+    let workspace = fs.create_workspace("cursor-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "a").await?;
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let cancellation = CancellationToken::new();
     let first = accounting_page(
-        &authority, &objects, authority_id, AccountingCursor::genesis(), 1, budget(), &cancellation,
+        &authority, &objects, authority_id, AccountingCursor::genesis(), 1, BUDGET, &cancellation,
     ).await?;
     for cursor in [
         AccountingCursor { digest: Digest::ZERO, ..first.next },
@@ -310,7 +283,7 @@ async fn accounting_rejects_malformed_cursor_and_unbounded_admission()
         AccountingCursor { sequence: Sequence::new(99), ..first.next },
     ] {
         assert!(matches!(accounting_page(
-            &authority, &objects, authority_id, cursor, 1, budget(), &cancellation,
+            &authority, &objects, authority_id, cursor, 1, BUDGET, &cancellation,
         ).await, Err(AccountingError::InvalidHistory)));
     }
     for cursor in [
@@ -318,12 +291,12 @@ async fn accounting_rejects_malformed_cursor_and_unbounded_admission()
         AccountingCursor { settled_at_micros: 1, ..AccountingCursor::genesis() },
     ] {
         assert!(matches!(accounting_page(
-            &authority, &objects, authority_id, cursor, 1, budget(), &cancellation,
+            &authority, &objects, authority_id, cursor, 1, BUDGET, &cancellation,
         ).await, Err(AccountingError::InvalidBounds)));
     }
     for maximum in [0, 257] {
         assert!(matches!(accounting_page(
-            &authority, &objects, authority_id, AccountingCursor::genesis(), maximum, budget(), &cancellation,
+            &authority, &objects, authority_id, AccountingCursor::genesis(), maximum, BUDGET, &cancellation,
         ).await, Err(AccountingError::InvalidBounds)));
     }
     assert!(matches!(accounting_page(
@@ -415,7 +388,7 @@ impl AsyncAuthorityStore for DamagedReplay<'_> {
 async fn accounting_checks_actual_replayed_digest_operation_and_time_before_producing_facts()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("damaged-accounting").await?;
+    let workspace = fs.create_workspace("damaged-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "actual").await?;
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let durable = records(&authority, authority_id).await?;
@@ -425,13 +398,13 @@ async fn accounting_checks_actual_replayed_digest_operation_and_time_before_prod
     for damage in [ReplayDamage::Digest, ReplayDamage::Operation, ReplayDamage::RegressingTime(later)] {
         assert!(matches!(accounting_page(
             &DamagedReplay { inner: &authority, damage }, &objects, authority_id,
-            AccountingCursor::genesis(), 2, budget(), &cancellation,
+            AccountingCursor::genesis(), 2, BUDGET, &cancellation,
         ).await, Err(AccountingError::InvalidHistory)));
     }
     for damage in [ReplayDamage::MissingTime, ReplayDamage::ZeroTime] {
         assert!(matches!(accounting_page(
             &DamagedReplay { inner: &authority, damage }, &objects, authority_id,
-            AccountingCursor::genesis(), 2, budget(), &cancellation,
+            AccountingCursor::genesis(), 2, BUDGET, &cancellation,
         ).await, Err(AccountingError::MissingTime)));
     }
     Ok(())
@@ -454,7 +427,7 @@ async fn prove_original(
             hard_links: config.hard_links,
             sparse_files: config.sparse_files,
         },
-        budget(), &CancellationToken::new(),
+        BUDGET, &CancellationToken::new(),
     ).await?)
 }
 
@@ -542,13 +515,13 @@ impl crate::AsyncObjectStore for OriginalArchive {
 async fn accounting_uses_protected_original_archive_after_old_closure_is_absent()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("original-archive-accounting").await?;
+    let workspace = fs.create_workspace("original-archive-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "original").await?;
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let original_records = records(&authority, authority_id).await?;
     let initial = &original_records[0];
     let original = &original_records[1];
-    let created = crate::kernel::decode_volume_created(&initial.payload, 4096)?;
+    let created = crate::kernel::decode_volume_created(&initial.payload, 4096, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?;
     let original_root = root(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id());
     // Capture the actual original root and complete proof before advancing head.
     let proof = prove_original(&objects, original_root, created.config).await?;
@@ -602,10 +575,10 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
     };
     let cancellation = CancellationToken::new();
     assert!(!crate::AsyncObjectStore::contains(
-        &archive.inner, original_root, budget(), &cancellation,
+        &archive.inner, original_root, BUDGET, &cancellation,
     ).await?.value);
     assert!(!crate::AsyncObjectStore::contains(
-        &archive.inner, current_root, budget(), &cancellation,
+        &archive.inner, current_root, BUDGET, &cancellation,
     ).await?.value);
     let cursor = AccountingCursor {
         sequence: initial.sequence,
@@ -613,7 +586,7 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
         settled_at_micros: initial.settled_at_micros.ok_or("initial Stream timestamp missing")?,
     };
     let page = accounting_page(
-        &authority, &archive, authority_id, cursor, 1, budget(), &cancellation,
+        &authority, &archive, authority_id, cursor, 1, BUDGET, &cancellation,
     ).await?;
     assert_eq!(page.facts.len(), 1);
     assert!(!page.complete);
@@ -627,7 +600,7 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
     // A valid archive of the current head cannot serve an older committed fact.
     archive.evidence = current_evidence;
     assert!(matches!(accounting_page(
-        &authority, &archive, authority_id, cursor, 1, budget(), &cancellation,
+        &authority, &archive, authority_id, cursor, 1, BUDGET, &cancellation,
     ).await, Err(AccountingError::Proof(_))));
     Ok(())
 }
@@ -636,10 +609,10 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
 async fn original_initial_and_retention_evidence_bind_actual_stream_records_and_reject_sha_forgery()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("initial-retention-original").await?;
+    let workspace = fs.create_workspace("initial-retention-original", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let initial = records(&authority, authority_id).await?.remove(0);
-    let created = crate::kernel::decode_volume_created(&initial.payload, 4096)?;
+    let created = crate::kernel::decode_volume_created(&initial.payload, 4096, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?;
     let initial_proof = prove_original(&objects, created.initial_generation_root, created.config).await?;
     let initial_append = original_append(authority_id, &initial);
     let initial_evidence = crate::kernel::encode_original_generation_evidence(
@@ -700,12 +673,12 @@ proptest::proptest! {
     ) {
         let result: Result<(), Box<dyn Error>> = futures::executor::block_on(async {
             let (fs, authority, objects) = fixture();
-            let workspace = fs.create_workspace("property-accounting").await?;
+            let workspace = fs.create_workspace("property-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let authority_id = volume_authority_id(workspace.id().volume_id());
-            let mut expected = vec![(root(workspace.head().await?.id()), 0_u128)];
+            let mut expected = vec![(root(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id()), 0_u128)];
             for (index, length) in lengths.iter().copied().enumerate() {
                 workspace.write("/file", bytes::Bytes::from(vec![index as u8 + 1; length])).await?;
-                expected.push((root(workspace.head().await?.id()), length as u128));
+                expected.push((root(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id()), length as u128));
             }
             let original_records = records(&authority, authority_id).await?;
             assert_eq!(original_records.len(), expected.len());
@@ -715,13 +688,13 @@ proptest::proptest! {
             let mut all_facts = Vec::new();
             loop {
                 let page = authority.accounting_page(
-                    &objects, authority_id, cursor, page_size, budget(), &cancellation,
+                    &objects, authority_id, cursor, page_size, BUDGET, &cancellation,
                 ).await?;
                 assert!(!page.facts.is_empty());
                 assert!(page.facts.len() <= page_size as usize);
                 assert_eq!(page.watermark_sequence, original_records.last().ok_or("no actual records")?.sequence);
                 assert_eq!(page.facts[0].sequence.get(), cursor.sequence.get() + 1);
-                page.work.verify(budget())?;
+                page.work.verify(BUDGET)?;
                 pages.push((cursor, page.facts.clone()));
                 all_facts.extend(page.facts);
                 cursor = page.next;
@@ -744,7 +717,7 @@ proptest::proptest! {
                 });
             }
             workspace.write("/file", bytes::Bytes::from(vec![99; 73])).await?;
-            let later_root = root(workspace.head().await?.id());
+            let later_root = root(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id());
             let later_records = records(&authority, authority_id).await?;
             let later_record = later_records.last().ok_or("later actual record missing")?;
             let deletion_key = IdempotencyKey::new();
@@ -753,12 +726,12 @@ proptest::proptest! {
             // immutable facts after a later publication and terminal retirement.
             for (anchor, facts) in pages {
                 let replay = authority.accounting_page(
-                    &objects, authority_id, anchor, facts.len() as u32, budget(), &cancellation,
+                    &objects, authority_id, anchor, facts.len() as u32, BUDGET, &cancellation,
                 ).await?;
                 assert_eq!(replay.facts, facts);
             }
             let terminal = authority.accounting_page(
-                &objects, authority_id, cursor, 2, budget(), &cancellation,
+                &objects, authority_id, cursor, 2, BUDGET, &cancellation,
             ).await?;
             assert!(terminal.complete);
             assert_eq!(terminal.facts.len(), 2);
@@ -781,7 +754,7 @@ proptest::proptest! {
                     sequence: terminal.next.sequence,
                     digest: terminal.next.digest,
                 },
-                budget(), &cancellation,
+                BUDGET, &cancellation,
             ).await.err().ok_or("retired fence unexpectedly succeeded")?;
             assert!(matches!(failure.error, AuthorityStoreError::Retired));
             Ok(())

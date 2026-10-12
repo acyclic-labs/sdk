@@ -231,18 +231,6 @@ pub fn namespaced_call_turn(
     )
 }
 
-/// Whether a request already carries a tool result (the model's next step).
-pub fn has_tool_output(request: &Recorded) -> bool {
-    request.body["input"].as_array().is_some_and(|input| {
-        input.iter().any(|item| {
-            matches!(
-                item["type"].as_str(),
-                Some("function_call_output" | "custom_tool_call_output")
-            )
-        })
-    })
-}
-
 // ------------------------------------------------------------------- meter
 
 /// Records every usage; stops once `stop_after` calls have completed.

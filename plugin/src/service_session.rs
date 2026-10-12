@@ -4,7 +4,7 @@ use super::*;
 use acyclic_harness::{
     Error as RootError, Outcome, TaskId, conversation::FileRef, filesystem::FilesystemHost, runtime::DurableTaskHost,
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 
 type PiRuntime = pi_runtime::PiTaskRuntime<LocalStream>;
 
@@ -151,7 +151,7 @@ pub(crate) struct PiSession {
     slots: StateSlots,
     runtime: Arc<PiRuntime>,
     filesystem: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     resources: ServiceResources,
     roots: BTreeMap<String, pi_root_provider::PiRootHandle>,
     native: Option<Arc<pi_native_host::PiNativeCommandHost>>,
@@ -257,11 +257,11 @@ impl PiSession {
                 owner.policy().journal.provider().clone(),
             )?,
         );
-        let stream = StreamClient::new(Arc::new(
+        let stream = Arc::new(
             LocalStream::open(stream_path, LocalStreamLimits::default())
                 .await
                 .map_err(|error| RootError::Storage(error.to_string()))?,
-        ));
+        );
         let (runtime, observations, custody) = PiRuntime::reopen(&owner, &state, stream.clone(), filesystem.clone(), work)
             .await?;
         drop(observations);

@@ -109,7 +109,7 @@ fn assemble(adapter: FileTool) -> Result<Tool> {
         projection_schema,
         output_schema,
     };
-    definition.validate()?;
+    definition.validate(&mut None)?;
     let implementation = Arc::new(adapter);
     Ok(Tool {
         definition,
@@ -182,7 +182,7 @@ pub struct FileResult {
 }
 
 fn public_path(path: &str) -> Result<()> {
-    crate::conversation::validate_content_path(path)?;
+    crate::conversation::validate_content_path(path, &mut None)?;
     if crate::conversation::is_internal_path(path) {
         return Err(Error::Unauthorized(
             "file tools cannot access internal storage".into(),
@@ -193,7 +193,7 @@ fn public_path(path: &str) -> Result<()> {
 
 impl FileTool {
     async fn run(&self, context: ToolContext, invocation: ToolInvocation) -> Result<ToolResult> {
-        invocation.validate()?;
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
         let task = context.task();
         self.authorize_with_context(&context, &invocation)?;
         let value = match self {
@@ -240,7 +240,7 @@ impl FileTool {
                 let bytes = task.read_file(&input.file).await?;
                 let source = std::str::from_utf8(&bytes)
                     .map_err(|_| Error::Invalid("patch editing requires UTF-8 content".into()))?;
-                let edited = super::patch::apply_update(source, &input.diff, limits)?;
+                let edited = super::patch::apply_update(source, &input.diff, limits, &mut super::edit::AlgorithmWork::ordinary())?;
                 let file = task
                     .stage_file_at(invocation.operation_id, &input.file, edited.as_bytes())
                     .await?;
@@ -255,7 +255,7 @@ impl FileTool {
                 let text = std::str::from_utf8(&bytes)
                     .map_err(|_| Error::Invalid("exact text edit requires UTF-8 content".into()))?;
                 let edited =
-                    super::edit::exact_replace(text, &input.old_text, &input.new_text, maximum)?;
+                    super::edit::exact_replace(text, &input.old_text, &input.new_text, maximum, &mut super::edit::AlgorithmWork::ordinary())?;
                 let file = task
                     .stage_file_at(invocation.operation_id, &input.file, edited.as_bytes())
                     .await?;
@@ -273,7 +273,7 @@ impl FileTool {
         scope: Option<&RuntimeScope>,
         invocation: &ToolInvocation,
     ) -> Result<()> {
-        invocation.validate()?;
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
         let scope = scope.ok_or_else(|| {
             Error::Unauthorized("file tool requires original runtime scope".into())
         })?;
@@ -299,7 +299,7 @@ impl FileTool {
             })?;
             let file: FileRef = decode(value)?;
             public_path(file.path())?;
-            scope.limits().validate_file(&file)?;
+            scope.limits().validate_file(&file, &mut None)?;
             if !crate::runtime::read_granted(scope.grants(), &file)? {
                 return Err(Error::Unauthorized(
                     "file tool requires original source read grant".into(),
@@ -390,7 +390,7 @@ impl ToolExecutor for FileTool {
             ).await?;
             match &receipt.0 {
                 Some(file) => {
-                    let encoded = super::value_with_native_work(&native::BorrowedFileResult { file }, work)?;
+                    let encoded = super::value(&native::BorrowedFileResult { file }, work.remaining()?.bytes_encoded, work)?;
                     Ok((Some(ToolResult { value: encoded.0 }), encoded.1))
                 }
                 None => Ok((None, receipt.1)),
@@ -563,7 +563,7 @@ impl ToolProjection for ReadFileProjection {
             super::schema::ProjectionMode::Full => super::schema::project_json(text),
             super::schema::ProjectionMode::Reference => {
                 let input: ReadFileInput = decode(&invocation.arguments)?;
-                input.file.descriptor().verify(text.as_bytes())?;
+                input.file.descriptor().verify(text.as_bytes(), &mut None)?;
                 super::schema::project_reference(
                     input.file,
                     format!(
@@ -633,7 +633,7 @@ impl FileTool {
                     invocation.operation_id, &input.0.path, input.0.text.as_bytes(),
                     &input.0.media_type, &input.0.display_name, work,
                 ).await?;
-                let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
+                let encoded = super::value(&native::BorrowedFileResult { file: &file.0 }, work.remaining()?.bytes_encoded, work)?;
                 Ok((ToolResult { value: encoded.0 }, encoded.1))
             }
             Self::Edit => {
@@ -642,14 +642,14 @@ impl FileTool {
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("exact text edit requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
-                let edited = super::edit::exact_replace_engine(
+                let edited = super::edit::exact_replace(
                     source, &input.0.old_text, &input.0.new_text,
                     context.effective_scope().limits().file_bytes, &mut allocation,
                 )?;
                 let file = context.stage_file_at_with_native_work(
                     invocation.operation_id, &input.0.file, edited.as_bytes(), work,
                 ).await?;
-                let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
+                let encoded = super::value(&native::BorrowedFileResult { file: &file.0 }, work.remaining()?.bytes_encoded, work)?;
                 Ok((ToolResult { value: encoded.0 }, encoded.1))
             }
             Self::Patch { maximum_work, maximum_hunks } => {
@@ -667,11 +667,11 @@ impl FileTool {
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("patch editing requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
-                let edited = super::patch::apply_update_engine(source, &input.0.diff, limits, &mut allocation)?;
+                let edited = super::patch::apply_update(source, &input.0.diff, limits, &mut allocation)?;
                 let file = context.stage_file_at_with_native_work(
                     invocation.operation_id, &input.0.file, edited.as_bytes(), work,
                 ).await?;
-                let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
+                let encoded = super::value(&native::BorrowedFileResult { file: &file.0 }, work.remaining()?.bytes_encoded, work)?;
                 Ok((ToolResult { value: encoded.0 }, encoded.1))
             }
         }
@@ -709,7 +709,7 @@ pub(super) mod native {
     }
 
     pub(in crate::tool) fn public_path(path: &str, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        crate::conversation::validate_content_path_with_native_work(path, work)?;
+        crate::conversation::validate_content_path(path, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         if crate::conversation::is_internal_path(path) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized, reason: "file tools cannot access internal storage",
@@ -721,7 +721,7 @@ pub(super) mod native {
     pub(in crate::tool) fn bound<T: Serialize>(value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let diagnostic_bytes = crate::contract::sdk_json_diagnostic_bytes();
-        io.claim(diagnostic_bytes)?;
+        io.retain_owned(diagnostic_bytes)?;
         let custody = io.into_native_custody(diagnostic_bytes)?;
         struct Counter<'a> {
             remaining: u64,

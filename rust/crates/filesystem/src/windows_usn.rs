@@ -193,7 +193,7 @@ fn observe_root(root: &Path) -> Result<(NativeRootIdentity, JournalSnapshot), Wi
     let canonical = root
         .canonicalize()
         .map_err(|error| WindowsUsnError::Io(error.to_string()))?;
-    let root = HostRoot::open(&canonical).map_err(|_| WindowsUsnError::RootIdentityUnavailable)?;
+    let root = HostRoot::open(&canonical, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error).map_err(|_| WindowsUsnError::RootIdentityUnavailable)?;
     Ok((root.identity(), query_journal(&root)?))
 }
 

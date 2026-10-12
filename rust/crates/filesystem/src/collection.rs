@@ -341,21 +341,6 @@ impl Collection {
         Ok(Hold { collection: Arc::clone(self), id, slot_quota })
     }
 
-    pub(crate) fn hold_record_measured(
-        collection: Option<&Arc<Self>>,
-        record: crate::kernel::FileRecord,
-        config: crate::model::VolumeConfig,
-        allocations: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Option<Hold>, crate::FsError> {
-        let mut accounting = KernelAccounting::borrowed_standalone(
-            allocations, work, budget, cancellation,
-        );
-        Self::hold_record_with_accounting(collection, record, config, &mut accounting)
-    }
-
     pub(crate) fn hold_record_with_accounting(
         collection: Option<&Arc<Self>>,
         record: crate::kernel::FileRecord,
@@ -920,7 +905,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = crate::CancellationToken::new();
         let fs = crate::Fs::memory();
-        let workspace = fs.create_workspace("registered-collection-root-custody").await?;
+        let workspace = fs.create_workspace("registered-collection-root-custody", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/seed", "body").await?;
         let checkout = workspace.checkout(
             crate::model::GenerationSelector::Head,
@@ -933,7 +918,7 @@ mod tests {
         ).await?.value;
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
-        let producer = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+        let producer = checkout.private_candidate(&original, &cancellation)?;
         let custody = producer.private_control_custody();
         let meter = original.native_read_meter();
         let baseline = original.live_allocation_bytes();

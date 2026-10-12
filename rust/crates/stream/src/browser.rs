@@ -1,7 +1,7 @@
 //! Strict `IndexedDB` command publication around the existing Rust state machine.
 
 use crate::{
-    journal::{Command, decode_command, journal_command, replay},
+    journal::{Command, decode_command, replay},
     *,
 };
 use async_trait::async_trait;
@@ -152,8 +152,6 @@ impl BrowserStream {
             cache.provider = memory(self.inner.limits.memory, Arc::clone(&self.inner.clock));
             cache.cursor = 0;
         }
-        // Keep invalid throughout every await: cancellation cannot retain a
-        // partially recovered or unpublished state as an authoritative cache.
         cache.valid = false;
         let store = transaction.object_store(JOURNAL).map_err(backend)?;
         let metadata = store
@@ -220,20 +218,20 @@ impl BrowserStream {
         &self,
         mut command: Command,
         deadline: Option<u64>,
-    ) -> Result<Outcome, StreamError> {
+    ) -> Result<IdempotencyOutcome, StreamError> {
         match &mut command {
             Command::Append(request) => {
-                memory::validate_records(&request.records)?;
+                memory::provider_result(memory::validate_records(&request.records, None))?;
                 memory::validate_append_size(request)?;
             }
             Command::Fork(request) => memory::validate_fork_size(request)?,
             Command::Commit(request) => {
-                memory::normalize_commit(request)?;
-                memory::validate_commit_shape(request)?;
+                memory::provider_result(memory::normalize_commit(request, None))?;
+                memory::provider_result(memory::validate_commit_shape(request, None))?;
             }
         }
-        let journal = journal_command(&command);
-        if journal.encoded_len().map_err(|_| StreamError::InvalidArgument)? > MAX_COMMAND_BYTES {
+        let journal = crate::wire_codec::CanonicalWire::Journal(&command);
+        if journal.encoded_len(None, None).map_err(|_| StreamError::InvalidArgument)? > MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
         let encoded = journal.encode_to_vec().map_err(|_| StreamError::Capacity)?;
@@ -254,15 +252,15 @@ impl BrowserStream {
         self.inner.clock.set(millis);
         cache.valid = false;
         let outcome = match command {
-            Command::Append(request) => Outcome::Append(cache.provider.append(request).await?),
-            Command::Fork(request) => Outcome::Fork(cache.provider.fork(request).await?),
-            Command::Commit(request) => Outcome::Commit(match deadline {
+            Command::Append(request) => IdempotencyOutcome::Append(cache.provider.append(request).await?),
+            Command::Fork(request) => IdempotencyOutcome::Fork(cache.provider.fork(request).await?),
+            Command::Commit(request) => IdempotencyOutcome::Commit(match deadline {
                 Some(deadline) => cache.provider.commit_before(request, deadline).await?,
                 None => cache.provider.commit(request).await?,
             }),
         };
         if existing
-            || matches!(outcome, Outcome::Append(AppendOutcome::TailConflict { .. })) && !has_key
+            || matches!(outcome, IdempotencyOutcome::Append(AppendOutcome::TailConflict { .. })) && !has_key
         {
             cache.valid = true;
             return Ok(outcome);
@@ -310,11 +308,6 @@ impl BrowserStream {
 fn memory(limits: MemoryLimits, clock: Arc<ReplayClock>) -> MemoryStream {
     MemoryStream::new_with_commit_clock(limits, Arc::new(BrowserClock), clock)
 }
-enum Outcome {
-    Append(AppendOutcome),
-    Fork(ForkReceipt),
-    Commit(CommitOutcome),
-}
 impl BrowserStreamLimits {
     fn words(self) -> [u64; 8] {
         [
@@ -349,19 +342,19 @@ impl StreamProvider for BrowserStream {
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         match self.execute(Command::Append(request), None).await? {
-            Outcome::Append(value) => Ok(value),
+            IdempotencyOutcome::Append(value) => Ok(value),
             _ => Err(StreamError::Unavailable),
         }
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         match self.execute(Command::Fork(request), None).await? {
-            Outcome::Fork(value) => Ok(value),
+            IdempotencyOutcome::Fork(value) => Ok(value),
             _ => Err(StreamError::Unavailable),
         }
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         match self.execute(Command::Commit(request), None).await? {
-            Outcome::Commit(value) => Ok(value),
+            IdempotencyOutcome::Commit(value) => Ok(value),
             _ => Err(StreamError::Unavailable),
         }
     }
@@ -374,7 +367,7 @@ impl StreamProvider for BrowserStream {
             .execute(Command::Commit(request), Some(deadline))
             .await?
         {
-            Outcome::Commit(value) => Ok(value),
+            IdempotencyOutcome::Commit(value) => Ok(value),
             _ => Err(StreamError::Unavailable),
         }
     }
@@ -401,9 +394,6 @@ impl StreamProvider for BrowserStream {
         if from > self.tail(path.clone()).await? {
             return Err(StreamError::OutOfRange);
         }
-        // Durable polling is the wakeup transport. It observes publication even
-        // when the publishing context dies before sending any notification.
-        // A dropped cursor stops polling; no detached task owns its lifetime.
         Ok(stream::try_unfold(
             (self.clone(), path, memory::HistoryCursor::at(from)),
             |(provider, path, mut cursor)| async move {

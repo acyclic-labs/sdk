@@ -110,7 +110,7 @@ pub(crate) struct PiWritebackPublicationGuard<P> {
     protected: std::sync::Arc<crate::pi_owner::PiOwnerConfig>,
     resources: crate::ServiceResources,
     filesystem: std::sync::Arc<acyclic_harness::filesystem::FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
-    stream: acyclic_stream::StreamClient<P>,
+    stream: std::sync::Arc<P>,
     context: std::sync::Arc<acyclic_harness::NativeTaskContext>,
     owner: std::sync::Arc<TaskJournalOwner<P>>,
     request: crate::pi_root_inputs::PiRootRequest,
@@ -127,7 +127,7 @@ impl<P: StreamProvider + 'static> PiWritebackPublicationGuard<P> {
         protected: std::sync::Arc<crate::pi_owner::PiOwnerConfig>,
         resources: &crate::ServiceResources,
         filesystem: std::sync::Arc<acyclic_harness::filesystem::FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
-        stream: acyclic_stream::StreamClient<P>,
+        stream: std::sync::Arc<P>,
         context: std::sync::Arc<acyclic_harness::NativeTaskContext>,
         owner: std::sync::Arc<TaskJournalOwner<P>>,
         request: (crate::pi_root_inputs::PiRootRequest, acyclic_fs::NativeAllocation),
@@ -310,7 +310,7 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
 
     async fn verify(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         if let Some(guard) = &self.mount_guard {
-            let original_volume = work.native_mount_work();
+            let original_volume = work.clone();
             guard.check(&original_volume)
                 .map_err(|cause| crate::pi_native::native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?
                 .await.map_err(|cause| crate::pi_native::native_view_error(
@@ -833,7 +833,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
     let operation = acyclic_fs::OperationId::from_bytes(operation.into_bytes());
     let value = if let Some(mount) = mount {
         mount.import_selected_work_guarded(checkpoint, plan.0, plan.1, operation, permit,
-            &native_work.native_mount_work(), cancellation, move |original: &acyclic_fs::NativeMaterializationWork| {
+            &native_work, cancellation, move |original: &acyclic_fs::NativeMaterializationWork| {
                 let publication_guard = std::sync::Arc::clone(&publication_guard);
                 let original = original.clone();
                 async move { publication_guard.verify(&original).await }

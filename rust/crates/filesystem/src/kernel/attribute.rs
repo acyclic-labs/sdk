@@ -1,13 +1,26 @@
 //! Authenticated scalable named attributes, alternate streams, and resource forks.
 
+use crate::kernel::Child;
 use super::codec::{
-    CanonicalDecodeError, DecodeLimits, DecodedPageKind, DecodedPageShape, Decoder, Encoder, ReadAllocationStep,
-};
+    CanonicalDecodeError, DecodeLimits, DecodedPageKind, DecodedPageShape, Decoder, Encoder, ReadAllocationStep};
 use super::types::digest_object;
 use crate::foundation::usize_to_u64;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
-use crate::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
+use crate::{WorkCounters, WorkError};
 use thiserror::Error;
+
+/// Encodes one canonical page with before-effect admission.
+pub fn encode_attribute_page<E>(
+    page: &AttributePage, maximum_items: u32,
+    mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E>
+where E: From<CanonicalDecodeError> + From<crate::WorkError> {
+    match page {
+        AttributePage::Leaf(entries) => encode_attribute_leaf_entries(entries, maximum_items, &mut observe, allocation_error),
+        AttributePage::Internal(children) => encode_attribute_internal_children(children.iter().map(|child| (&child.first, child.page)), maximum_items, observe, allocation_error),
+    }
+}
 
 const DOMAIN: &[u8; 8] = b"ACYFSATR";
 const VERSION: u16 = 1;
@@ -46,15 +59,11 @@ impl AttributeClass {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct AttributeName {
     class: AttributeClass,
-    bytes: Vec<u8>,
+    pub(crate) bytes: Vec<u8>,
 }
 
 impl AttributeName {
     /// Validates an exact bounded attribute name.
-    ///
-    /// # Errors
-    ///
-    /// Rejects empty, oversized, or NUL-bearing names.
     pub fn new(
         class: AttributeClass,
         bytes: Vec<u8>,
@@ -69,7 +78,7 @@ impl AttributeName {
         Ok(Self { class, bytes })
     }
 
-    pub(crate) fn try_clone_with_steps<E: From<CanonicalDecodeError>>(
+    pub(crate) fn try_clone<E: From<CanonicalDecodeError>>(
         &self,
         maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
@@ -109,9 +118,6 @@ impl AttributeName {
         self.bytes.capacity()
     }
 
-    pub(crate) fn into_bytes(self) -> Vec<u8> {
-        self.bytes
-    }
 }
 
 /// One named immutable payload.
@@ -125,22 +131,13 @@ pub struct AttributeEntry {
     pub value: ObjectId,
 }
 
-/// One lower-bound-to-page attribute-tree child.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AttributeChild {
-    /// Exact first name in the child subtree.
-    pub first_name: AttributeName,
-    /// Authenticated attribute page.
-    pub page: ObjectId,
-}
-
 /// One authenticated named-attribute B+tree page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttributePage {
     /// Strictly ordered named values.
     Leaf(Vec<AttributeEntry>),
     /// Strictly ordered child lower bounds.
-    Internal(Vec<AttributeChild>),
+    Internal(Vec<Child<AttributeName>>),
 }
 
 impl AttributePage {
@@ -161,7 +158,7 @@ impl AttributePage {
             Self::Internal(children) => {
                 if children.is_empty()
                     || children.windows(2).any(
-                        |pair| matches!(pair, [left, right] if left.first_name >= right.first_name),
+                        |pair| matches!(pair, [left, right] if left.first >= right.first),
                     )
                     || children
                         .iter()
@@ -179,208 +176,7 @@ impl AttributePage {
     }
 }
 
-/// Encodes one canonical attribute page.
-///
-/// # Errors
-///
-/// Rejects invalid ordering, object classes, names, or item bounds.
-pub fn encode_attribute_page(
-    page: &AttributePage,
-    maximum_items: u32,
-) -> Result<Vec<u8>, CanonicalDecodeError> {
-    match page {
-        AttributePage::Leaf(entries) => encode_attribute_leaf_entries(entries, maximum_items),
-        AttributePage::Internal(children) => encode_attribute_internal_children(
-            children.iter().map(|child| (&child.first_name, child.page)), maximum_items,
-        ),
-    }
-}
-
-pub(crate) fn encode_attribute_leaf_entries(
-    entries: &[AttributeEntry],
-    maximum_items: u32,
-) -> Result<Vec<u8>, CanonicalDecodeError> {
-    encode_attribute_leaf_entries_engine(entries, maximum_items, WorkBudget::UNBOUNDED, None)
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error.into_canonical())
-}
-
-pub(crate) fn encode_attribute_internal_children<'a, I>(
-    children: I,
-    maximum_items: u32,
-) -> Result<Vec<u8>, CanonicalDecodeError>
-where
-    I: Clone + ExactSizeIterator<Item = (&'a AttributeName, ObjectId)>,
-{
-    encode_attribute_internal_children_engine(children, maximum_items, WorkBudget::UNBOUNDED, None)
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error.into_canonical())
-}
-
-/// Encodes one canonical page using actual bounded validation and buffer writes.
-///
-/// Borrowed names and page storage are caller-owned. Newly authored buffers
-/// retained by the caller must be reserved in the nested permit beforehand.
-///
-/// # Errors
-///
-/// Returns canonical, cancellation, allocation, or budget failures with spent work.
-pub fn encode_attribute_page_measured(
-    page: &AttributePage,
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, AttributeEncodeError> {
-    match page {
-        AttributePage::Leaf(entries) => encode_attribute_leaf_entries_measured(entries, maximum_items, budget, cancellation),
-        AttributePage::Internal(children) => encode_attribute_internal_children_measured(
-            children.iter().map(|child| (&child.first_name, child.page)),
-            maximum_items, budget, cancellation,
-        ),
-    }
-}
-
-/// Uses the original invocation ledger; destroy bytes before their returned guard.
-pub(crate) fn encode_attribute_page_with_accounting(
-    page: &AttributePage,
-    maximum_items: u32,
-    accounting: &mut super::allocation::KernelAccounting<'_>,
-) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    match page {
-        AttributePage::Leaf(entries) => encode_attribute_leaf_entries_with_accounting(entries, maximum_items, accounting),
-        AttributePage::Internal(children) => encode_attribute_internal_children_with_accounting(
-            children.iter().map(|child| (&child.first_name, child.page)), maximum_items, accounting,
-        ),
-    }
-}
-
-pub(super) fn encode_attribute_leaf_entries_with_accounting(
-    entries: &[AttributeEntry],
-    maximum_items: u32,
-    accounting: &mut super::allocation::KernelAccounting<'_>,
-) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let original = accounting.native_work().is_some();
-    #[cfg(target_arch = "wasm32")]
-    let original = false;
-    let mut funding = super::codec::EncodeAccounting::new(accounting);
-    let result = encode_attribute_leaf_entries_with_steps(
-        entries, maximum_items, |step| funding.observe(step),
-        |source| attribute_encode_error(AttributeEncodeError::AllocationFailed(source), original),
-    );
-    funding.finish(result)
-}
-
-pub(super) fn encode_attribute_internal_children_with_accounting<'a, I>(
-    children: I,
-    maximum_items: u32,
-    accounting: &mut super::allocation::KernelAccounting<'_>,
-) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError>
-where
-    I: Clone + ExactSizeIterator<Item = (&'a AttributeName, ObjectId)>,
-{
-    #[cfg(not(target_arch = "wasm32"))]
-    let original = accounting.native_work().is_some();
-    #[cfg(target_arch = "wasm32")]
-    let original = false;
-    let mut funding = super::codec::EncodeAccounting::new(accounting);
-    let result = encode_attribute_internal_children_with_steps(
-        children, maximum_items, |step| funding.observe(step),
-        |source| attribute_encode_error(AttributeEncodeError::AllocationFailed(source), original),
-    );
-    funding.finish(result)
-}
-
-pub(super) fn attribute_encode_error(error: AttributeEncodeError, original: bool) -> crate::FsError {
-    #[cfg(target_arch = "wasm32")]
-    let _ = original;
-    match error {
-        AttributeEncodeError::Canonical(error) => error.into(),
-        AttributeEncodeError::Work(error) => error.into(),
-        AttributeEncodeError::Cancelled(error) => error.into(),
-        #[cfg(not(target_arch = "wasm32"))]
-        AttributeEncodeError::AllocationFailed(error) if original => crate::FsError::NativeKernel(
-            crate::NativeTreeMaterializationError::AllocationFailed(error),
-        ),
-        AttributeEncodeError::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed.into(),
-    }
-}
-
-/// Failure from the actual bounded canonical attribute encoder.
-#[derive(Debug, Error)]
-pub enum AttributeEncodeError {
-    /// Canonical validation or allocation failed.
-    #[error(transparent)]
-    Canonical(#[from] CanonicalDecodeError),
-    /// A work admission failed.
-    #[error(transparent)]
-    Work(#[from] WorkError),
-    /// Encoding was cancelled.
-    #[error(transparent)]
-    Cancelled(#[from] crate::CancellationError),
-    /// The actual fallible canonical-buffer reservation failed.
-    #[error("canonical attribute allocation failed: {0}")]
-    AllocationFailed(#[source] std::collections::TryReserveError),
-}
-
-impl AttributeEncodeError {
-    fn into_canonical(self) -> CanonicalDecodeError {
-        match self {
-            Self::Canonical(error) => error,
-            Self::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed,
-            Self::Work(error) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Work(error)),
-            Self::Cancelled(_) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("filesystem operation was cancelled")),
-        }
-    }
-}
-
-pub(crate) fn encode_attribute_leaf_entries_measured(
-    entries: &[AttributeEntry],
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, AttributeEncodeError> {
-    encode_attribute_leaf_entries_engine(entries, maximum_items, budget, Some(cancellation))
-}
-
-fn encode_attribute_leaf_entries_engine(
-    entries: &[AttributeEntry],
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, AttributeEncodeError> {
-    let mut work = WorkCounters::default();
-    let mut allocations = super::allocation::AllocationLedger::default();
-    let result = encode_attribute_leaf_entries_with_allocations(
-        entries, maximum_items, &mut allocations, &mut work, budget, cancellation,
-    );
-    result.map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(error, work))
-}
-
-pub(super) fn encode_attribute_leaf_entries_with_allocations(
-    entries: &[AttributeEntry],
-    maximum_items: u32,
-    allocations: &mut super::allocation::AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-) -> Result<Vec<u8>, AttributeEncodeError> {
-    let before = allocations.live_bytes();
-    let result = encode_attribute_leaf_entries_with_steps(
-        entries, maximum_items,
-        |step| observe_attribute_encoding(step, allocations, work, budget, cancellation),
-        AttributeEncodeError::AllocationFailed,
-    );
-    if result.is_err() {
-        let owned = allocations.live_bytes().checked_sub(before).ok_or(WorkError::Overflow)?;
-        allocations.release(owned)
-            .map_err(|error| error.into_work_or(AttributeEncodeError::Work(WorkError::Overflow)))?;
-    }
-    result
-}
-
-pub(super) fn encode_attribute_leaf_entries_with_steps<E>(
+pub(crate) fn encode_attribute_leaf_entries<E>(
     entries: &[AttributeEntry],
     maximum_items: u32,
     mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
@@ -416,7 +212,7 @@ where
         items_examined: usize_to_u64(entries.len()), bytes_encoded: usize_to_u64(length),
         bytes_copied: copied, ..WorkCounters::default()
     }))?;
-    let mut encoder = Encoder::with_exact_capacity_with_steps(
+    let mut encoder = Encoder::with_exact_capacity(
         DOMAIN, VERSION, length,
         |step| observe(EncodeWorkStep::Allocation(step)), allocation_error,
     )?;
@@ -440,62 +236,7 @@ where
     Ok(encoder.finish())
 }
 
-pub(crate) fn encode_attribute_internal_children_measured<'a, I>(
-    children: I,
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, AttributeEncodeError>
-where
-    I: Clone + ExactSizeIterator<Item = (&'a AttributeName, ObjectId)>,
-{
-    encode_attribute_internal_children_engine(children, maximum_items, budget, Some(cancellation))
-}
-
-fn encode_attribute_internal_children_engine<'a, I>(
-    children: I,
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, AttributeEncodeError>
-where
-    I: Clone + ExactSizeIterator<Item = (&'a AttributeName, ObjectId)>,
-{
-    let mut work = WorkCounters::default();
-    let mut allocations = super::allocation::AllocationLedger::default();
-    let result = encode_attribute_internal_children_with_allocations(
-        children, maximum_items, &mut allocations, &mut work, budget, cancellation,
-    );
-    result.map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(error, work))
-}
-
-pub(super) fn encode_attribute_internal_children_with_allocations<'a, I>(
-    children: I,
-    maximum_items: u32,
-    allocations: &mut super::allocation::AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-) -> Result<Vec<u8>, AttributeEncodeError>
-where
-    I: Clone + ExactSizeIterator<Item = (&'a AttributeName, ObjectId)>,
-{
-    let before = allocations.live_bytes();
-    let result = encode_attribute_internal_children_with_steps(
-        children, maximum_items,
-        |step| observe_attribute_encoding(step, allocations, work, budget, cancellation),
-        AttributeEncodeError::AllocationFailed,
-    );
-    if result.is_err() {
-        let owned = allocations.live_bytes().checked_sub(before).ok_or(WorkError::Overflow)?;
-        allocations.release(owned)
-            .map_err(|error| error.into_work_or(AttributeEncodeError::Work(WorkError::Overflow)))?;
-    }
-    result
-}
-
-pub(super) fn encode_attribute_internal_children_with_steps<'a, E, I>(
+pub(crate) fn encode_attribute_internal_children<'a, E, I>(
     children: I,
     maximum_items: u32,
     mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
@@ -533,7 +274,7 @@ where
         items_examined: u64::from(item_count), bytes_encoded: usize_to_u64(length),
         bytes_copied: copied, ..WorkCounters::default()
     }))?;
-    let mut encoder = Encoder::with_exact_capacity_with_steps(
+    let mut encoder = Encoder::with_exact_capacity(
         DOMAIN, VERSION, length,
         |step| observe(EncodeWorkStep::Allocation(step)), allocation_error,
     )?;
@@ -554,50 +295,6 @@ where
         observe(EncodeWorkStep::Completed(encoded))?;
     }
     Ok(encoder.finish())
-}
-
-fn observe_attribute_encoding(
-    step: super::codec::EncodeWorkStep,
-    allocations: &mut super::allocation::AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-) -> Result<(), AttributeEncodeError> {
-    use super::codec::{EncodeAllocationStep, EncodeWorkStep};
-    let completed = match step {
-        EncodeWorkStep::Check => {
-            cancellation.map_or(Ok(()), CancellationToken::check)?;
-            return Ok(());
-        }
-        EncodeWorkStep::Admit(delta) => {
-            work.admit(&delta, &budget)?;
-            return Ok(());
-        }
-        EncodeWorkStep::Completed(delta) => delta,
-        EncodeWorkStep::Allocation(EncodeAllocationStep::Reserve { capacity }) => {
-            allocations.claim_elements::<u8>(capacity, work, budget)
-                .map_err(|error| error.into_work_or(AttributeEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
-            return Ok(());
-        }
-        EncodeWorkStep::Allocation(EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes }) => {
-            if actual_bytes > admitted_bytes {
-                allocations.record_owned_bytes(actual_bytes - admitted_bytes, work)
-                    .map_err(|error| error.into_work_or(AttributeEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
-            }
-            work.verify(budget)?;
-            return Ok(());
-        }
-        EncodeWorkStep::Allocation(EncodeAllocationStep::BeforeHeader { bytes }) => {
-            work.admit(&WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() }, &budget)?;
-            return Ok(());
-        }
-        EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes }) =>
-            WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() },
-    };
-    work.try_add_assign(&completed)?;
-    work.verify(budget)?;
-    cancellation.map_or(Ok(()), CancellationToken::check)?;
-    Ok(())
 }
 
 pub(crate) fn attribute_leaf_page_encoded_length(
@@ -645,14 +342,13 @@ pub(crate) fn attribute_internal_item_encoded_length(name: &AttributeName) -> Re
         .ok_or(CanonicalDecodeError::LengthOverflow)
 }
 
-
 pub(crate) fn attribute_page_decode_shape(
     bytes: &[u8],
     limits: DecodeLimits,
 ) -> Result<DecodedPageShape, CanonicalDecodeError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes())?;
-    let tag = decoder.u8()?;
-    let item_count = decoder.u32()?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let tag = decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let item_count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     if item_count > limits.maximum_page_items {
         return Err(CanonicalDecodeError::FieldTooLarge {
             observed: item_count,
@@ -663,15 +359,15 @@ pub(crate) fn attribute_page_decode_shape(
     let kind = match tag {
         1 | 2 => {
             for _ in 0..item_count {
-                decoder.u8()?;
+                decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                 let name_bytes = decoder.skip_bounded_bytes(limits.maximum_name_bytes)?;
                 nested_bytes = nested_bytes
                     .checked_add(usize_to_u64(name_bytes))
                     .ok_or(CanonicalDecodeError::LengthOverflow)?;
                 if tag == 1 {
-                    decoder.u64()?;
+                    decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                 }
-                let _: [u8; 32] = decoder.fixed()?;
+                let _: [u8; 32] = decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
             }
             if tag == 1 {
                 DecodedPageKind::Leaf
@@ -694,47 +390,18 @@ pub(crate) fn attribute_page_decode_shape(
     })
 }
 
-/// Decodes one bounded canonical attribute page.
-///
-/// # Errors
-///
-/// Fails closed on malformed bytes, names, tags, ordering, bounds, or trailing data.
-pub fn decode_attribute_page(
-    bytes: &[u8],
-    limits: DecodeLimits,
-) -> Result<AttributePage, CanonicalDecodeError> {
-    decode_attribute_page_with_steps(bytes, limits, &mut |_| Ok(()))
-}
-
-/// Observes allocation, copy, and completed-item boundaries in the canonical decoder.
-pub(crate) fn decode_attribute_page_with_steps<E: From<CanonicalDecodeError>>(
+/// Decodes one canonical object with before-effect admission.
+pub fn decode_attribute_page<E>(
     bytes: &[u8],
     limits: DecodeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
-) -> Result<AttributePage, E> {
-    decode_attribute_page_mapped_with_steps(
-        bytes, limits, observe, AttributePage::Leaf, AttributePage::Internal,
-        |first_name, page| AttributeChild { first_name, page },
-        |child| &child.first_name,
-    )
-}
-
-// Build the caller's child representation directly in the admitted vector.
-pub(crate) fn decode_attribute_page_mapped_with_steps<E, C, P>(
-    bytes: &[u8],
-    limits: DecodeLimits,
-    observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
-    leaf: impl FnOnce(Vec<AttributeEntry>) -> P,
-    internal: impl FnOnce(Vec<C>) -> P,
-    child: impl Fn(AttributeName, ObjectId) -> C,
-    child_name: impl Fn(&C) -> &AttributeName,
-) -> Result<P, E>
+) -> Result<AttributePage, E>
 where
     E: From<CanonicalDecodeError>,
 {
-    let mut decoder = Decoder::new_with_steps(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes(), observe)?;
-    let tag = decoder.u8_with_steps(observe)?;
-    let item_count = decoder.u32_with_steps(observe)?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes(), observe)?;
+    let tag = decoder.u8(observe)?;
+    let item_count = decoder.u32(observe)?;
     if item_count > limits.maximum_page_items {
         return Err(CanonicalDecodeError::FieldTooLarge {
             observed: item_count,
@@ -759,61 +426,56 @@ where
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 entries.push(AttributeEntry {
-                    name: decode_name_with_steps(&mut decoder, limits.maximum_name_bytes, observe)?,
-                    value_bytes: decoder.u64_with_steps(observe)?,
-                    value: digest_object(ObjectKind::Blob, decoder.fixed_with_steps::<32, E>(observe)?),
+                    name: decode_name(&mut decoder, limits.maximum_name_bytes, observe)?,
+                    value_bytes: decoder.u64(observe)?,
+                    value: digest_object(ObjectKind::Blob, decoder.fixed::<32, E>(observe)?),
                 });
                 observe(ReadAllocationStep::Item)?;
             }
             decoder.finish()?;
             let page = AttributePage::Leaf(entries);
             page.validate(limits.maximum_page_items).map_err(invariant)?;
-            let AttributePage::Leaf(entries) = page else { unreachable!() };
-            Ok(leaf(entries))
+            Ok(page)
         }
         2 => {
             let mut children = Vec::new();
-            let admitted_bytes = usize_to_u64(capacity.checked_mul(std::mem::size_of::<C>())
+            let admitted_bytes = usize_to_u64(capacity.checked_mul(std::mem::size_of::<Child<AttributeName>>())
                 .ok_or(CanonicalDecodeError::LengthOverflow)?);
-            observe(ReadAllocationStep::Allocate { bytes: admitted_bytes, operations: u64::from(capacity != 0 && std::mem::size_of::<C>() != 0) })?;
+            observe(ReadAllocationStep::Allocate { bytes: admitted_bytes, operations: u64::from(capacity != 0) })?;
             if let Err(error) = children.try_reserve_exact(capacity) {
                 observe(ReadAllocationStep::ReserveFailed(error))?;
                 return Err(CanonicalDecodeError::AllocationFailed.into());
             }
             observe(ReadAllocationStep::Capacity {
                 admitted_bytes,
-                actual_bytes: usize_to_u64(children.capacity() * std::mem::size_of::<C>()),
+                actual_bytes: usize_to_u64(children.capacity() * std::mem::size_of::<Child<AttributeName>>()),
             })?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
-                let first_name = decode_name_with_steps(&mut decoder, limits.maximum_name_bytes, observe)?;
-                let page = digest_object(ObjectKind::AttributePage, decoder.fixed_with_steps::<32, E>(observe)?);
-                children.push(child(first_name, page));
+                let first = decode_name(&mut decoder, limits.maximum_name_bytes, observe)?;
+                let page = digest_object(ObjectKind::AttributePage, decoder.fixed::<32, E>(observe)?);
+                children.push(Child { first, page });
                 observe(ReadAllocationStep::Item)?;
             }
             decoder.finish()?;
             if children.is_empty()
-                || children.windows(2).any(|pair| matches!(pair, [left, right] if child_name(left) >= child_name(right)))
+                || children.windows(2).any(|pair| matches!(pair, [left, right] if left.first >= right.first))
             {
                 return Err(invariant(AttributeError::InvalidPage).into());
             }
             // Child object kinds are fixed by the canonical constructor above.
-            Ok(internal(children))
+            Ok(AttributePage::Internal(children))
         }
         tag => Err(CanonicalDecodeError::UnknownTag { field: "attribute_page", tag }.into()),
     }
 }
 
 /// Computes one typed authenticated attribute-page identity.
-///
-/// # Errors
-///
-/// Returns the same validation errors as [`encode_attribute_page`].
 pub fn attribute_page_id(
     page: &AttributePage,
     maximum_items: u32,
 ) -> Result<ObjectId, CanonicalDecodeError> {
-    let bytes = encode_attribute_page(page, maximum_items)?;
+    let bytes = encode_attribute_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     Ok(ObjectId {
         kind: ObjectKind::AttributePage,
         digest: object_digest(ObjectKind::AttributePage, &bytes),
@@ -842,13 +504,13 @@ fn encode_name(encoder: &mut Encoder, name: &AttributeName) -> Result<(), Canoni
     encoder.bounded_bytes(name.as_bytes())
 }
 
-fn decode_name_with_steps<E: From<CanonicalDecodeError>>(
+fn decode_name<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
     maximum_bytes: u32,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
 ) -> Result<AttributeName, E> {
-    let class = AttributeClass::from_tag(decoder.u8_with_steps(observe)?).map_err(invariant)?;
-    let bytes = decoder.bounded_bytes_with_steps(maximum_bytes, observe)?;
+    let class = AttributeClass::from_tag(decoder.u8(observe)?).map_err(invariant)?;
+    let bytes = decoder.bounded_bytes(maximum_bytes, observe)?;
     AttributeName::new(class, bytes, maximum_bytes).map_err(|error| invariant(error).into())
 }
 

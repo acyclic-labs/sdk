@@ -124,16 +124,16 @@ pub(super) fn prepare_native_cleanup_credit<W: SourceDemandReadWork>(
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) fn reserve_cleanup_credits(work: &mut DemandWork, delta: WorkCounters) -> Result<(), DemandError> {
     use acyclic_native_runtime::NativeOperationKind::{Read, Write};
-    work.reserve(Read, delta.backend_read_operations, false)
+    work.reserve(crate::demand::DemandWork::operation_credit(Read), delta.backend_read_operations).map_err(|error| work.record_native_io_failure(error))
         .map_err(|error| work.take_native_io_failure().unwrap_or(DemandError::Io(error)))?;
-    if let Err(error) = work.reserve(Write, delta.backend_write_operations, false) {
+    if let Err(error) = work.reserve(crate::demand::DemandWork::operation_credit(Write), delta.backend_write_operations).map_err(|error| work.record_native_io_failure(error)) {
         let error = work.take_native_io_failure().unwrap_or(DemandError::Io(error));
-        work.refund(Read, delta.backend_read_operations, false);
+        work.refund(crate::demand::DemandWork::operation_credit(Read), delta.backend_read_operations).expect("original reservation is balanced");
         return Err(error);
     }
-    if let Err(error) = work.reserve_pending_items(delta.items_examined) {
-        work.refund(Read, delta.backend_read_operations, false);
-        work.refund(Write, delta.backend_write_operations, false);
+    if let Err(error) = work.reserve(crate::materializer::NativeResourceCredit::Items, delta.items_examined) {
+        work.refund(crate::demand::DemandWork::operation_credit(Read), delta.backend_read_operations).expect("original reservation is balanced");
+        work.refund(crate::demand::DemandWork::operation_credit(Write), delta.backend_write_operations).expect("original reservation is balanced");
         return Err(error);
     }
     Ok(())
@@ -142,9 +142,9 @@ pub(super) fn reserve_cleanup_credits(work: &mut DemandWork, delta: WorkCounters
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) fn cancel_cleanup_credits(work: &mut DemandWork, delta: WorkCounters) {
     use acyclic_native_runtime::NativeOperationKind::{Read, Write};
-    work.refund(Read, delta.backend_read_operations, false);
-    work.refund(Write, delta.backend_write_operations, false);
-    work.refund_pending_items(delta.items_examined);
+    work.refund(crate::demand::DemandWork::operation_credit(Read), delta.backend_read_operations).expect("original reservation is balanced");
+    work.refund(crate::demand::DemandWork::operation_credit(Write), delta.backend_write_operations).expect("original reservation is balanced");
+    work.refund(crate::materializer::NativeResourceCredit::Items, delta.items_examined).expect("original reservation is balanced");
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -153,12 +153,12 @@ pub(super) fn record_cleanup_credits(work: &mut DemandWork, delta: WorkCounters)
     let mut result = Ok(());
     for (kind, count) in [(Read, delta.backend_read_operations), (Write, delta.backend_write_operations)] {
         for _ in 0..count {
-            let recorded = work.complete(kind, 1, 1, false)
+            let recorded = work.complete(crate::demand::DemandWork::operation_credit(kind), 1, 1).map_err(|error| work.record_native_io_failure(error))
                 .map_err(|error| work.take_native_io_failure().unwrap_or(DemandError::Io(error)));
             result = result.and(recorded);
         }
     }
-    result.and(work.record_pending_items(delta.items_examined))
+    result.and(work.complete(crate::materializer::NativeResourceCredit::Items, delta.items_examined, delta.items_examined))
 }
 
 /// One change the host reported beneath a watched root.
@@ -836,7 +836,7 @@ impl NativeSourceWatch {
         } else { None };
         let result = PlatformWatch::start_with_work(directory, delivery, work).and_then(|platform| {
             if let Some(failure) = failure {
-                if let Err(error) = work.commit_output() {
+                if let Err(error) = work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::ReturnedItems, 1, 1)) {
                     return Err(failure.retain_failed_platform(error, platform));
                 }
             }
@@ -1076,7 +1076,7 @@ fn measured_admission_on_recursive_hosts_does_not_spend_work() -> Result<(), Box
     }
     let root = tempfile::tempdir()?;
     let watch = NativeSourceWatch::start(
-        &crate::native_host::HostRoot::open(root.path())?,
+        &crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?,
         Arc::new(Ignored),
     )?;
     let cancellation = crate::cancellation::CancellationToken::new();

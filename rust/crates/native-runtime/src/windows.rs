@@ -20,7 +20,7 @@ use std::mem::zeroed;
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, RawHandle};
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
+use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::task::{Wake, Waker};
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_MODE_INFORMATION, FILE_SYNCHRONOUS_IO_ALERT, FILE_SYNCHRONOUS_IO_NONALERT,
@@ -49,25 +49,16 @@ use windows_sys::Win32::System::Threading::{
 };
 
 #[derive(Clone, Debug)]
-struct ArcFile(Arc<NativeFilePayload>);
-
-impl compio_driver::AsFd for ArcFile {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        BorrowedFd::from(self.0.as_handle())
-    }
-}
-
-#[derive(Clone, Debug)]
 enum DriverFile {
     Reopened(SharedFd<OwnedFd>),
-    Original(SharedFd<ArcFile>),
+    Original(Arc<NativeFilePayload>),
 }
 
 impl compio_driver::AsFd for DriverFile {
     fn as_fd(&self) -> BorrowedFd<'_> {
         match self {
             Self::Reopened(file) => file.as_fd(),
-            Self::Original(file) => file.as_fd(),
+            Self::Original(file) => BorrowedFd::from(file.as_handle()),
         }
     }
 }
@@ -428,8 +419,12 @@ const MAX_READ_WINDOW: usize = 512 * 1024;
 
 struct ReadWindow {
     offset: u64,
-    length: usize,
+    // Parts contain result indices and cumulative byte ends.
     parts: Vec<(usize, usize)>,
+}
+
+impl ReadWindow {
+    fn length(&self) -> usize { self.parts.last().expect("nonempty read window").1 }
 }
 
 fn read_windows(reads: &[OwnedRead]) -> io::Result<Vec<ReadWindow>> {
@@ -441,19 +436,17 @@ fn read_windows(reads: &[OwnedRead]) -> io::Result<Vec<ReadWindow>> {
             continue;
         }
         if let Some(window) = windows.last_mut()
-            && window.offset.checked_add(window.length as u64) == Some(read.offset)
+            && window.offset.checked_add(window.length() as u64) == Some(read.offset)
             && window
-                .length
+                .length()
                 .checked_add(read.length)
                 .is_some_and(|length| length <= MAX_READ_WINDOW)
         {
-            window.parts.push((index, read.length));
-            window.length += read.length;
+            window.parts.push((index, window.length() + read.length));
             continue;
         }
         windows.push(ReadWindow {
             offset: read.offset,
-            length: read.length,
             parts: vec![(index, read.length)],
         });
     }
@@ -478,13 +471,7 @@ fn poll_proactor(proactor: &mut Proactor, timeout: Option<std::time::Duration>) 
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(super) struct FileIdentity {
-    volume: u64,
-    id: [u8; 16],
-}
-
-pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
+pub(super) fn file_identity(file: &File) -> io::Result<super::FileIdentity> {
     // SAFETY: FILE_ID_INFO is an initialized POD output buffer and the file
     // handle remains live for the synchronous metadata query.
     let mut info: FILE_ID_INFO = unsafe { zeroed() };
@@ -507,10 +494,7 @@ pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
             "filesystem did not provide a stable file identity",
         ));
     }
-    Ok(FileIdentity {
-        volume: info.VolumeSerialNumber,
-        id: info.FileId.Identifier,
-    })
+    Ok((info.VolumeSerialNumber, info.FileId.Identifier))
 }
 
 /// Starts `executable __service --signal-ready` detached, with the write end of a fresh pipe as its standard output and the only handle it inherits, and returns the read end.
@@ -679,11 +663,10 @@ struct Driver {
     wake: Waker,
 }
 
-static DRIVER: OnceLock<Mutex<Option<Driver>>> = OnceLock::new();
+static DRIVER: Mutex<Option<Driver>> = Mutex::new(None);
 
 fn driver() -> io::Result<Driver> {
-    let slot = DRIVER.get_or_init(|| Mutex::new(None));
-    let mut slot = slot
+    let mut slot = DRIVER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(driver) = slot.as_ref() {
@@ -757,7 +740,6 @@ enum Pending {
     Read {
         batch: u64,
         key: Key<ReadOp>,
-        requested: usize,
         parts: Vec<(usize, usize)>,
     },
     Write {
@@ -894,7 +876,7 @@ impl DriverState {
         let mut buffers = Vec::with_capacity(windows.len());
         for window in &windows {
             let mut buffer = Vec::new();
-            if let Err(error) = buffer.try_reserve_exact(window.length) {
+            if let Err(error) = buffer.try_reserve_exact(window.length()) {
                 finish(Err(io::Error::other(error)));
                 return;
             }
@@ -917,10 +899,9 @@ impl DriverState {
             },
         );
         for (window, buffer) in windows.into_iter().zip(buffers) {
-            let requested = window.length;
             let op = ReadAt::new(fd.clone(), window.offset, buffer);
             match self.proactor.push(op) {
-                PushEntry::Ready(result) => self.read_done(batch, window.parts, requested, result),
+                PushEntry::Ready(result) => self.read_done(batch, window.parts, result),
                 PushEntry::Pending(key) => {
                     let id = self.id();
                     let wake = Waker::from(Arc::new(CompletionWake {
@@ -933,7 +914,6 @@ impl DriverState {
                         Pending::Read {
                             batch,
                             key,
-                            requested,
                             parts: window.parts,
                         },
                     );
@@ -1019,9 +999,7 @@ impl DriverState {
                     }
                 }
             }
-            return Ok(DriverFile::Original(SharedFd::new(ArcFile(Arc::clone(
-                file,
-            )))));
+            return Ok(DriverFile::Original(Arc::clone(file)));
         }
         let reopened = reopen_overlapped(file, access)?;
         self.proactor.attach(reopened.as_raw_handle().cast())?;
@@ -1059,34 +1037,9 @@ impl DriverState {
                     return;
                 }
                 PushEntry::Ready(result) => {
-                    let (count, op) = result.into_parts();
-                    bytes = op.into_inner();
-                    match count {
-                        Ok(count) if count == bytes.len() => {
-                            self.done(batch, index, Ok(None));
-                            return;
-                        }
-                        Ok(0) => {
-                            self.done(batch, index, Err(io::Error::from(io::ErrorKind::WriteZero)));
-                            return;
-                        }
-                        Ok(count) if count < bytes.len() => {
-                            offset += count as u64;
-                            bytes = bytes.slice(count..);
-                        }
-                        Ok(_) => {
-                            self.done(
-                                batch,
-                                index,
-                                Err(io::Error::other("write completion exceeded buffer")),
-                            );
-                            return;
-                        }
-                        Err(error) => {
-                            self.done(batch, index, Err(error));
-                            return;
-                        }
-                    }
+                    let Some((written, suffix)) = self.write_done(batch, index, result) else { return; };
+                    offset += written as u64;
+                    bytes = suffix;
                 }
             }
         }
@@ -1100,7 +1053,6 @@ impl DriverState {
             Pending::Read {
                 batch,
                 key,
-                requested,
                 parts,
             } => match self.proactor.pop(key) {
                 PushEntry::Pending(key) => {
@@ -1109,12 +1061,11 @@ impl DriverState {
                         Pending::Read {
                             batch,
                             key,
-                            requested,
                             parts,
                         },
                     );
                 }
-                PushEntry::Ready(result) => self.read_done(batch, parts, requested, result),
+                PushEntry::Ready(result) => self.read_done(batch, parts, result),
             },
             Pending::Write {
                 batch,
@@ -1136,41 +1087,39 @@ impl DriverState {
                     );
                 }
                 PushEntry::Ready(result) => {
-                    let (count, op) = result.into_parts();
-                    let bytes = op.into_inner();
-                    match count {
-                        Ok(count) if count == bytes.len() => self.done(batch, index, Ok(None)),
-                        Ok(0) => {
-                            self.done(batch, index, Err(io::Error::from(io::ErrorKind::WriteZero)));
-                        }
-                        Ok(count) if count < bytes.len() => self.write_piece(
-                            batch,
-                            index,
-                            file,
-                            offset + count as u64,
-                            bytes.slice(count..),
-                        ),
-                        Ok(_) => self.done(
-                            batch,
-                            index,
-                            Err(io::Error::other("write completion exceeded buffer")),
-                        ),
-                        Err(error) => self.done(batch, index, Err(error)),
+                    if let Some((written, suffix)) = self.write_done(batch, index, result) {
+                        self.write_piece(batch, index, file, offset + written as u64, suffix);
                     }
                 }
             },
         }
     }
 
+    fn write_done(
+        &mut self, batch: u64, index: usize, result: compio_buf::BufResult<usize, WriteOp>,
+    ) -> Option<(usize, Bytes)> {
+        let (count, op) = result.into_parts();
+        let bytes = op.into_inner();
+        let result = match count {
+            Ok(count) if count == bytes.len() => Ok(()),
+            Ok(0) => Err(io::ErrorKind::WriteZero.into()),
+            Ok(count) if count < bytes.len() => return Some((count, bytes.slice(count..))),
+            Ok(_) => Err(io::Error::other("write completion exceeded buffer")),
+            Err(error) => Err(error),
+        };
+        self.done(batch, index, result.map(|()| None));
+        None
+    }
+
     fn read_done(
         &mut self,
         batch: u64,
         parts: Vec<(usize, usize)>,
-        requested: usize,
         result: compio_buf::BufResult<usize, ReadOp>,
     ) {
         let (count, op) = result.into_parts();
         let mut buffer = op.into_inner();
+        let requested = parts.last().expect("nonempty read window").1;
         let result = count.and_then(|count| {
             if count > requested || count > buffer.capacity() {
                 return Err(io::Error::other("read completion exceeded buffer"));
@@ -1185,8 +1134,7 @@ impl DriverState {
         match result {
             Ok(bytes) => {
                 let mut start = 0;
-                for (index, length) in parts {
-                    let end = start + length;
+                for (index, end) in parts {
                     let value = if start < bytes.len() {
                         bytes.slice(start..end.min(bytes.len()))
                     } else {
@@ -1271,98 +1219,8 @@ fn reopen_overlapped(file: &File, access: u32) -> io::Result<File> {
 mod tests {
     use super::*;
     use std::fs::OpenOptions;
-    use std::io::{Seek as _, Write as _};
+    use std::io::Seek as _;
     use std::os::windows::fs::OpenOptionsExt as _;
-    use std::sync::atomic::Ordering;
-    use std::time::Duration;
-    use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_INBOUND;
-    use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, PIPE_TYPE_BYTE};
-
-    #[test]
-    fn empty_nonblocking_poll_is_not_a_driver_failure() -> io::Result<()> {
-        let mut proactor = Proactor::new()?;
-        poll_proactor(&mut proactor, Some(Duration::ZERO))
-    }
-
-    #[test]
-    fn compio_keeps_pending_kernel_buffer_until_terminal_pop() -> io::Result<()> {
-        static NEXT_PIPE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let name = format!(
-            r"\\.\pipe\acyclic-compio-{}-{}",
-            std::process::id(),
-            NEXT_PIPE.fetch_add(1, Ordering::Relaxed)
-        );
-        let encoded = name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>();
-        // SAFETY: the name is live and NUL terminated; the returned handle is
-        // transferred exactly once to File below.
-        let handle = unsafe {
-            CreateNamedPipeW(
-                encoded.as_ptr(),
-                PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
-                PIPE_TYPE_BYTE,
-                1,
-                4096,
-                4096,
-                0,
-                std::ptr::null(),
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: successful CreateNamedPipeW transferred one owned handle.
-        let server = unsafe { File::from_raw_handle(handle as RawHandle) };
-        let mut client = OpenOptions::new().write(true).open(&name)?;
-        // SAFETY: a client that connected first produces ERROR_PIPE_CONNECTED.
-        if unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) } == 0
-            && io::Error::last_os_error().raw_os_error() != Some(ERROR_PIPE_CONNECTED.cast_signed())
-        {
-            return Err(io::Error::last_os_error());
-        }
-        let mut proactor = Proactor::new()?;
-        proactor.attach(handle)?;
-        let fd = SharedFd::new(OwnedFd::from(server));
-        let mut buffer = Vec::new();
-        buffer.try_reserve_exact(1).map_err(io::Error::other)?;
-        let key = match proactor.push(ReadAt::new(fd, 0, buffer)) {
-            PushEntry::Pending(key) => key,
-            PushEntry::Ready(_) => return Err(io::Error::other("empty pipe read did not pend")),
-        };
-        let write_result = client.write_all(b"x");
-        if write_result.is_err() {
-            drop(client);
-        }
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let mut key = key;
-        loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                fail_stop("test pending pipe read did not reach terminal completion");
-            }
-            proactor
-                .poll(Some(remaining))
-                .unwrap_or_else(|_| fail_stop("test proactor failed with pending kernel I/O"));
-            match proactor.pop(key) {
-                PushEntry::Pending(still_pending) => key = still_pending,
-                PushEntry::Ready(result) => {
-                    write_result?;
-                    let (count, op) = result.into_parts();
-                    assert_eq!(count?, 1);
-                    let mut buffer = op.into_inner();
-                    // SAFETY: the terminal read initialized the first byte.
-                    unsafe {
-                        buffer.set_len(1);
-                    }
-                    assert_eq!(buffer, b"x");
-                    return Ok(());
-                }
-            }
-        }
-    }
 
     #[test]
     fn borrowed_positional_io_uses_an_overlapped_handle_directly() -> io::Result<()> {

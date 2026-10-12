@@ -295,7 +295,7 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
     {
         return Err(AccountingError::InvalidHistory);
     }
-    let kind = if let Ok(created) = decode_volume_created(&initial.payload, MAX_EVENT_BYTES) {
+    let kind = if let Ok(created) = decode_volume_created(&initial.payload, MAX_EVENT_BYTES, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(())) {
         if volume_authority_id(created.volume_id) != authority_id {
             return Err(AccountingError::InvalidHistory);
         }
@@ -367,7 +367,7 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
         })?;
         let transition = match &kind {
             AuthorityKind::Volume { volume_id, config } if record.sequence == Sequence::new(1) => {
-                let created = decode_volume_created(&record.payload, MAX_EVENT_BYTES)
+                let created = decode_volume_created(&record.payload, MAX_EVENT_BYTES, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))
                     .map_err(|_| AccountingError::InvalidHistory)?;
                 prove_published(
                     objects,
@@ -382,7 +382,7 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
                 .await?
             }
             AuthorityKind::Volume { volume_id, config } => {
-                if let Ok(published) = decode_published_generation(&record.payload, MAX_EVENT_BYTES)
+                if let Ok(published) = decode_published_generation(&record.payload, MAX_EVENT_BYTES, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))
                 {
                     if published.volume_id != *volume_id {
                         return Err(AccountingError::InvalidHistory);

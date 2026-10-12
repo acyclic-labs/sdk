@@ -9,7 +9,7 @@ use acyclic_harness::{
     scheduler::{LeaseFence, ResourceSnapshot},
     workflow::{MachineCheckpoint, WorkflowCommand},
 };
-use acyclic_stream::{LocalStream, StreamClient};
+use acyclic_stream::{LocalStream};
 
 type Runtime = pi_runtime::PiTaskRuntime<LocalStream>;
 type Filesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
@@ -20,7 +20,7 @@ pub(crate) struct PiWorkflowHost<'a> {
     directory: &'a Path,
     runtime: Arc<Runtime>,
     filesystem: Arc<Filesystem>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     resources: &'a ServiceResources,
     retained: &'a AdapterState,
     root_provider: tokio::sync::Mutex<Option<Arc<RootProvider>>>,
@@ -33,7 +33,7 @@ impl<'a> PiWorkflowHost<'a> {
         directory: &'a Path,
         runtime: Arc<Runtime>,
         filesystem: Arc<Filesystem>,
-        stream: StreamClient<LocalStream>,
+        stream: std::sync::Arc<LocalStream>,
         resources: &'a ServiceResources,
         retained: &'a AdapterState,
         work: acyclic_fs::NativeMaterializationWork,

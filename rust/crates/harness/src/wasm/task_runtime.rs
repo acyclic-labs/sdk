@@ -14,7 +14,7 @@ use crate::{
         FilesystemHost, FilesystemSchedulerPayloadStore, FilesystemTaskRuntime, StockTurnMachine,
         TaskWakeCursor, TaskWorkerAttempt, TaskWorkerOutcome,
     },
-    model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
     runtime::{DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry},
     scheduler::SessionLimits,
@@ -28,7 +28,7 @@ use acyclic_fs::{
     EmbeddedCapabilities, Fs,
     browser::{IndexedDbAuthorityStore, IndexedDbObjectStore},
 };
-use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits, StreamClient};
+use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits};
 use js_sys::{Function, Promise};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -407,7 +407,7 @@ impl ModelProvider for HostModel {
         let callback = self.count_tokens.as_ref().ok_or_else(|| {
             Error::Unsupported("selected model token counting is unavailable".into())
         })?;
-        let digest = to_js(&request.manifest().request_digest)
+        let digest = to_js(&request.request_digest())
             .map_err(|_| Error::Invalid("model counting digest encoding failed".into()))?;
         let value = callback
             .call2(
@@ -418,7 +418,7 @@ impl ModelProvider for HostModel {
             .map_err(|_| Error::Invalid("model token counting callback failed".into()))?;
         let count: ModelTokenCount = from_js(value)
             .map_err(|_| Error::Invalid("model counting callback returned invalid data".into()))?;
-        count.validate(request)?;
+        count.validate(request, &mut None)?;
         Ok(count)
     }
 
@@ -472,12 +472,15 @@ impl ModelProvider for HostModel {
         ))
     }
 
-    fn reconcile<'a>(
-        &'a self,
-        attempt: ModelAttempt,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async move {
-            let attempt = to_js(&attempt)
+            #[derive(serde::Serialize)]
+            struct AttemptWire<'a> {
+                #[serde(flatten)]
+                dispatch: crate::model::ModelDispatch,
+                observed: &'a [crate::model::ModelEvent],
+            }
+            let attempt = to_js(&AttemptWire { dispatch, observed })
                 .map_err(|_| Error::Invalid("model attempt encoding failed".into()))?;
             let pending = self
                 .reconcile
@@ -588,14 +591,14 @@ impl WasmTaskRegistry {
         let identity = machine.identity();
         if !matches!(
             self.tasks
-                .get_version::<Value, Value>(&identity.name, &identity.version),
+                .get_version::<Value, Value>(&identity.name, &identity.version, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None),
             Err(Error::NotFound(_))
         ) {
             return Err(js_error(Error::Conflict(
                 "task version is already registered".into(),
             )));
         }
-        self.machines.register(machine).map_err(js_error)?;
+        self.machines.register(machine, &mut None).map_err(js_error)?;
         self.tasks.register(task).map_err(js_error)?;
         Ok(())
     }
@@ -605,7 +608,7 @@ impl WasmTaskRegistry {
 #[wasm_bindgen]
 pub struct WasmTaskRuntime {
     runtime: Arc<BrowserRuntime>,
-    stream: StreamClient<BrowserStream>,
+    stream: std::sync::Arc<BrowserStream>,
     filesystem: Arc<BrowserFilesystem>,
     volume: VolumeRef,
     scope: Scope,
@@ -625,7 +628,7 @@ impl WasmTaskRuntime {
     ) -> std::result::Result<WasmTaskRuntime, JsValue> {
         let options: WasmBrowserTaskOptions = from_js(options)?;
         let scope: Scope = from_js(signed_scope)?;
-        let verifier = owner.issuer.verifier();
+        let verifier = owner.issuer.verifier(&mut None).expect("verifier copy");
         ContentGrant::verify(&verifier, &scope, &options.volume, VolumeOperation::Write)
             .map_err(js_error)?;
         let root = RuntimeScope::new(
@@ -633,7 +636,7 @@ impl WasmTaskRuntime {
             wasm_limits(options.limits).map_err(js_error)?,
         )
         .map_err(js_error)?
-        .with_run_limits(wasm_run_limits(options.run_limits).map_err(js_error)?)
+        .with_run_limits(wasm_run_limits(options.run_limits).map_err(js_error)?, &mut None)
         .map_err(js_error)?;
         let authority = IndexedDbAuthorityStore::open(
             &options.filesystem_database,
@@ -653,7 +656,7 @@ impl WasmTaskRuntime {
             .map_err(js_error)?,
         );
         let limits = options.stream_limits;
-        let stream = StreamClient::new(Arc::new(
+        let stream = Arc::new(
             BrowserStream::open(
                 &options.stream_database,
                 BrowserStreamLimits {
@@ -671,7 +674,7 @@ impl WasmTaskRuntime {
             )
             .await
             .map_err(|error| js_error(Error::Storage(error.to_string())))?,
-        ));
+        );
         let source = options.recursive_tools.map(|config| {
             let graph_root = config.project_policy_graph_root;
             let source = default_tools::BrowserToolSource::new(
@@ -680,7 +683,7 @@ impl WasmTaskRuntime {
             if let Some(graph_root) = graph_root {
                 source.with_project_source_policy(owner.issuer.clone(), Arc::new(
                     crate::filesystem::FsRootProjectSourceProvider::new(
-                        filesystem.clone(), owner.issuer.audience().clone(), graph_root,
+                        filesystem.clone(), &owner.issuer.audience(), graph_root, None,
                     )?,
                 ))?;
             }
@@ -724,9 +727,7 @@ impl WasmTaskRuntime {
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             None,
             vec![Arc::new(
-                crate::filesystem::FilesystemResourceCreationProvider::new(
-                    filesystem.clone(), owner.issuer.clone(),
-                ).map_err(js_error)?,
+                crate::filesystem::FilesystemResourceCreationProvider::new(filesystem.clone(), &owner.issuer, #[cfg(not(target_arch = "wasm32"))] None).map_err(js_error)?,
             )],
             resumable_tools,
         )
@@ -816,10 +817,10 @@ impl WasmTaskRuntime {
         let operation = OperationId::parse(&operation).map_err(js_error)?;
         let store = FilesystemSchedulerPayloadStore::new(
             self.filesystem.clone(),
-            self.volume.clone(),
+            &self.volume,
             &self.verifier,
             &self.scope,
-            self.maximum_payload_bytes,
+            self.maximum_payload_bytes, None,
         )
         .map_err(js_error)?;
         let file: FileRef = store
@@ -878,7 +879,7 @@ impl WasmTaskRuntime {
         let task = TaskId::parse(&task).map_err(js_error)?;
         match self
             .runtime
-            .run_operation(&worker, task, &self.commands(), maximum_transitions)
+            .run_operation(&worker, task, &self.commands(), maximum_transitions, None)
             .await
             .map_err(js_error)?
         {
@@ -975,7 +976,7 @@ impl WasmTaskRuntime {
         let lease: WorkLease = from_js(lease)?;
         work_to_js(&work_value(
             self.runtime
-                .resume_task(lease, &self.commands(), maximum_transitions)
+                .resume_task(lease, &self.commands(), maximum_transitions, None)
                 .await,
         ))
     }

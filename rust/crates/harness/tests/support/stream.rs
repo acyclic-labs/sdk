@@ -618,7 +618,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         acyclic_stream::NativeProviderFuture::new(&meter, async move {
             self.io.inspections.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.hide_receipt.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original)));
+                return Ok(Err(StreamError::Unavailable));
             }
             let result = self.inner.native_inspect_idempotency(key, original).await?;
             if let Ok(output) = &result
@@ -684,14 +684,14 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 && self.hide_location_read.swap(false, Ordering::SeqCst))
                 || (request.path.as_str().starts_with("harness/v2/aggregate-operations/")
                     && self.hide_aggregate_read.swap(false, Ordering::SeqCst))
-            { return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original))); }
+            { return Ok(Err(StreamError::Unavailable)); }
             let head_race = if request.path.as_str().starts_with("harness/v2/conversation-heads/") {
                 self.message_head_race.lock()
                     .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?.take()
             } else { None };
             if let Some(commit) = head_race {
                 if let Err(error) = self.inner.commit(commit).await {
-                    return Ok(Err(native_fixture_failure(error, &original)));
+                    return Ok(Err(error));
                 }
             }
             let hidden = (request.path.as_str().contains("/effect-heads/")
@@ -730,25 +730,25 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             self.measure_write(&request.records);
             if self.forbid_writes.load(Ordering::SeqCst) {
                 self.observation_writes.fetch_add(1, Ordering::SeqCst);
-                return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original)));
+                return Ok(Err(StreamError::Unavailable));
             }
             if request.path.as_str() == COORDINATOR_PATH
                 && self.location_fault.compare_exchange(4, 0, Ordering::SeqCst, Ordering::SeqCst).is_ok()
-            { return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original))); }
+            { return Ok(Err(StreamError::Unavailable)); }
             let location = request.path.as_str().starts_with("harness/v3/coordinator/intent-locations/");
             let fault = if location { self.location_fault.swap(0, Ordering::SeqCst) } else { 0 };
-            if fault == 1 { return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original))); }
+            if fault == 1 { return Ok(Err(StreamError::Unavailable)); }
             let mut output = match self.inner.native_append(request, original.clone()).await? {
                 Ok(output) => output,
                 Err(error) => return Ok(Err(error)),
             };
             if fault >= 2 {
                 if fault == 3 { self.hide_location_read.store(true, Ordering::SeqCst); }
-                return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original)));
+                return Ok(Err(StreamError::Unavailable));
             }
             if matches!(output.value(), AppendOutcome::Committed(_))
                 && self.lose_ack.swap(false, Ordering::SeqCst)
-            { return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original))); }
+            { return Ok(Err(StreamError::Unavailable)); }
             if let AppendOutcome::Committed(receipt) = output.value_mut() {
                 match self.append_receipt_fault.swap(0, Ordering::SeqCst) {
                     1 => receipt.start = receipt.end,
@@ -776,20 +776,6 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
     ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::CommitOutcome> {
         self.native_commit_with_deadline(request, Some(deadline_unix_millis), meter)
     }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn native_read_commit(
-        &self, id: acyclic_stream::CommitId,
-        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::CommittedEnvelope> {
-        let original = meter.clone();
-        acyclic_stream::NativeProviderFuture::new(&meter, async move {
-            self.io.commit_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let result = self.inner.native_read_commit(id, original).await?;
-            if let Ok(output) = &result { self.measure_received(output.value()); }
-            Ok(result)
-        })
-    }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -801,16 +787,6 @@ struct NativeFaultRecordCursor {
     index: u64,
     previous: Option<acyclic_stream::Record>,
     finished: bool,
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn native_fixture_failure(
-    source: StreamError,
-    meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-) -> acyclic_stream::NativeStreamFailure {
-    acyclic_stream::NativeStreamFailure::new(
-        source, acyclic_native_runtime::ReadAllocation::empty(meter),
-    )
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -847,7 +823,7 @@ fn native_fixture_value(
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl futures::Stream for NativeFaultRecordCursor {
-    type Item = std::io::Result<std::result::Result<acyclic_stream::NativeObservedRecord, acyclic_stream::NativeStreamFailure>>;
+    type Item = std::io::Result<std::result::Result<acyclic_stream::NativeStreamOutput<acyclic_stream::Record>, StreamError>>;
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         context: &mut std::task::Context<'_>,
@@ -857,7 +833,7 @@ impl futures::Stream for NativeFaultRecordCursor {
         if this.finished || this.fault == 3 { return Poll::Ready(None); }
         if this.fault == 6 && this.index != 0 {
             this.finished = true;
-            return Poll::Ready(Some(Ok(Err(native_fixture_failure(StreamError::Unavailable, &this.meter)))));
+            return Poll::Ready(Some(Ok(Err(StreamError::Unavailable))));
         }
         let mut output = match this.source.value_mut().as_mut().poll_next(context) {
             Poll::Pending => return Poll::Pending,
@@ -911,7 +887,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
             self.measure_commit_request(&request);
             if self.forbid_writes.load(Ordering::SeqCst) {
                 self.observation_writes.fetch_add(1, Ordering::SeqCst);
-                return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original)));
+                return Ok(Err(StreamError::Unavailable));
             }
             if self.execution_race.swap(false, Ordering::SeqCst) {
                 let path = request.conditions.iter().find_map(|condition| match condition {
@@ -922,11 +898,11 @@ impl<P: StreamProvider> LostSessionAck<P> {
                     _ => None,
                 });
                 let Some((path, tail)) = path else {
-                    return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original)));
+                    return Ok(Err(StreamError::Unavailable));
                 };
                 if let Err(error) = self.inner.append(acyclic_stream::AppendRequest {
                     path, records: vec![OwnedBytes::from_static(b"dispatch won")], if_tail: Some(tail), idempotency_key: None,
-                }).await { return Ok(Err(native_fixture_failure(error, &original))); }
+                }).await { return Ok(Err(error)); }
             }
             let selected = request.conditions.iter().any(|condition| matches!(condition,
                 acyclic_stream::CommitCondition::Tail { path, expected }
@@ -935,7 +911,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
             let fault = if selected { self.execution_fault.swap(0, Ordering::SeqCst) } else { 0 };
             if fault != 0 { self.execution_faults.fetch_add(1, Ordering::SeqCst); }
             if fault == ExecutionFaultMode::Before as u8 {
-                return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original)));
+                return Ok(Err(StreamError::Unavailable));
             }
             let aggregate = request.mutations.iter().any(|mutation| matches!(mutation,
                 acyclic_stream::CommitMutation::Append { path, .. }
@@ -945,7 +921,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
                 self.aggregate_commit_fault.swap(0, Ordering::SeqCst)
             } else { 0 };
             if aggregate_fault == 1 {
-                return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original)));
+                return Ok(Err(StreamError::Unavailable));
             }
             let result = match deadline {
                 Some(deadline) => self.inner.native_commit_before(request, deadline, original.clone()).await?,
@@ -956,18 +932,18 @@ impl<P: StreamProvider> LostSessionAck<P> {
                 Err(error) => return Ok(Err(error)),
             };
             if let Err(error) = self.measure_committed(output.value()) {
-                return Ok(Err(native_fixture_failure(error, &original)));
+                return Ok(Err(error));
             }
             if aggregate_fault == 3 { self.hide_aggregate_read.store(true, Ordering::SeqCst); }
             if matches!(aggregate_fault, 2 | 3) {
-                return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original)));
+                return Ok(Err(StreamError::Unavailable));
             }
             corrupt_aggregate_receipt(output.value_mut(), aggregate_fault);
             if fault == ExecutionFaultMode::AfterHidden as u8 { self.hide_receipt.store(true, Ordering::SeqCst); }
             if fault != 0
                 || self.commit_lose_ack.swap(false, Ordering::SeqCst)
                 || self.lose_ack.swap(false, Ordering::SeqCst)
-            { return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original))); }
+            { return Ok(Err(StreamError::Unavailable)); }
             Ok(Ok(output))
         })
     }

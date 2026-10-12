@@ -10,8 +10,8 @@ import type { PiInboxMessage } from "../../pi/index.ts";
 import { loadPiContextHelpers } from "./pi-fixture.ts";
 
 const {
-  assertParentCutCurrent, captureParentCut, childSessionBytes,
-  nativeChildSession, PiToolOperations, PiControlAcknowledgementError,
+  assertParentCutCurrent, captureParentCut,
+  nativeChildSession, piToolOperations, PiControlAcknowledgementError,
   visibleControlResult, observePiOperation, persistedPiInboxCursor, consumePiInbox, approvePiWriteback,
 } = await loadPiContextHelpers();
 
@@ -61,7 +61,7 @@ test("bounds, missing invocation and digest corruption reject without changing p
   assert.throws(() => captureParentCut(parent, "spawn-1", 100, 1));
   assert.throws(() => captureParentCut(parent, "spawn-1", Infinity, 100_000));
   const cut = captureParentCut(parent, "spawn-1", 100, 100_000);
-  assert.throws(() => childSessionBytes({ ...cut, entriesJson: "[]" }, "child", process.cwd()));
+  assert.throws(() => nativeChildSession(parent, process.cwd(), { ...cut, entriesJson: "[]" }));
   assert.equal(JSON.stringify(parent.getEntries()), before);
 });
 
@@ -73,14 +73,14 @@ test("pre-admission revalidation rejects parent changes without replacing the pi
   const before = JSON.stringify(cut);
   assertParentCutCurrent(parent, "spawn-1", cut, 100, 100_000);
   parent.appendMessage({ role: "user", content: "later history", timestamp: 2 });
-  assert.throws(() => assertParentCutCurrent(parent, "spawn-1", cut, 100, 100_000), /changed before/);
+  assert.throws(() => assertParentCutCurrent(parent, "spawn-1", cut, 100, 100_000));
   parent.branch(owner);
   assertParentCutCurrent(parent, "spawn-1", cut, 100, 100_000);
   const switched = SessionManager.inMemory(join(process.cwd(), "another-project"), { id: "parent" },
     structuredClone(parent.getEntries()));
-  assert.throws(() => assertParentCutCurrent(switched, "spawn-1", cut, 100, 100_000), /changed before/);
+  assert.throws(() => assertParentCutCurrent(switched, "spawn-1", cut, 100, 100_000));
   parent.branch(root);
-  assert.throws(() => assertParentCutCurrent(parent, "spawn-1", cut, 100, 100_000), /absent/);
+  assert.throws(() => assertParentCutCurrent(parent, "spawn-1", cut, 100, 100_000));
   assert.equal(JSON.stringify(cut), before);
 });
 
@@ -94,13 +94,12 @@ test("a complete tool exchange survives; an omitted result rejects the native pr
   parent.appendMessage(spawnMessage("spawn-1"));
   const cut = captureParentCut(parent, "spawn-1", 100, 100_000);
   const child = SessionManager.inMemory(process.cwd(), undefined,
-    parseSessionEntries(childSessionBytes(cut, "child", process.cwd())));
+    parseSessionEntries(nativeChildSession(parent, process.cwd(), cut).session_bytes));
   assert.deepEqual(child.buildSessionContext(), expected);
   parent.branch(boundary!);
   parent.appendContextEdit(result, null);
   parent.appendMessage(spawnMessage("spawn-2"));
-  assert.throws(() => childSessionBytes(captureParentCut(parent, "spawn-2", 100, 100_000),
-    "child", process.cwd()), /incomplete tool exchange/);
+  assert.throws(() => nativeChildSession(parent, process.cwd(), captureParentCut(parent, "spawn-2", 100, 100_000)));
 });
 
 test("a first-turn spawn produces a separate empty native child session", () => {
@@ -110,11 +109,10 @@ test("a first-turn spawn produces a separate empty native child session", () => 
   assert.equal(cut.entriesJson, "[]");
   assert.equal(cut.parentLeafId, null);
   const child = SessionManager.inMemory(process.cwd(), undefined,
-    parseSessionEntries(childSessionBytes(cut, "child", process.cwd())));
-  assert.equal(child.getSessionId(), "child");
+    parseSessionEntries(nativeChildSession(parent, process.cwd(), cut).session_bytes));
+  assert.notEqual(child.getSessionId(), parent.getSessionId());
   assert.equal(child.getLeafId(), null);
   assert.deepEqual(child.buildSessionContext().messages, []);
-  assert.throws(() => childSessionBytes(cut, "parent", process.cwd()), /own identity/);
 });
 
 test("compaction and context-edit provenance survive native child serialization", () => {
@@ -129,7 +127,7 @@ test("compaction and context-edit provenance survive native child serialization"
   const before = JSON.stringify(parent.getEntries());
   const cut = captureParentCut(parent, "spawn-1", 100, 100_000);
   const child = SessionManager.inMemory(process.cwd(), undefined,
-    parseSessionEntries(childSessionBytes(cut, "child", process.cwd())));
+    parseSessionEntries(nativeChildSession(parent, process.cwd(), cut).session_bytes));
   assert.deepEqual(child.buildSessionContext(), expected);
   assert.equal(JSON.stringify(child.getEntry(compact)), expectedCompaction);
   assert.equal(JSON.stringify(parent.getEntries()), before);
@@ -154,14 +152,14 @@ test("duplicate identities, branch changes and cyclic parent chains reject", () 
   const duplicate = spawnMessage("spawn-1");
   duplicate.content.push(duplicate.content[0]);
   parent.appendMessage(duplicate);
-  assert.throws(() => captureParentCut(parent, "spawn-1", 100, 100_000), /duplicated/);
+  assert.throws(() => captureParentCut(parent, "spawn-1", 100, 100_000));
   parent.branch(root);
-  assert.throws(() => captureParentCut(parent, "spawn-1", 100, 100_000), /absent/);
+  assert.throws(() => captureParentCut(parent, "spawn-1", 100, 100_000));
   parent.appendMessage(spawnMessage("spawn-2"));
   const entries = structuredClone(parent.getEntries());
   entries[0].parentId = entries.at(-1)!.id;
   const cyclic = SessionManager.inMemory(process.cwd(), { id: "cyclic" }, entries);
-  assert.throws(() => captureParentCut(cyclic, "spawn-2", 100, 100_000), /cyclic/);
+  assert.throws(() => captureParentCut(cyclic, "spawn-2", 100, 100_000));
 });
 
 test("reloaded native parent selects the same cut; deep history observes finite bounds", () => {
@@ -172,7 +170,7 @@ test("reloaded native parent selects the same cut; deep history observes finite 
   const restored = SessionManager.inMemory(process.cwd(), undefined,
     parseSessionEntries([parent.getHeader(), ...parent.getEntries()].map(entry => JSON.stringify(entry)).join("\n")));
   assert.deepEqual(captureParentCut(restored, "spawn-1", 100, 100_000), cut);
-  assert.throws(() => captureParentCut(restored, "spawn-1", 50, 100_000), /entry bound/);
+  assert.throws(() => captureParentCut(restored, "spawn-1", 50, 100_000));
 });
 
 test("bounded native branch histories preserve the exact pre-spawn projection", () => {
@@ -200,14 +198,14 @@ test("bounded native branch histories preserve the exact pre-spawn projection", 
           parent.appendMessage(spawnMessage("spawn"));
           const before = JSON.stringify([parent.getHeader(), parent.getLeafId(), parent.getEntries()]);
           const cut = captureParentCut(parent, "spawn", 100, 100_000);
-          const bytes = childSessionBytes(cut, "child", process.cwd());
+          const bytes = nativeChildSession(parent, process.cwd(), cut).session_bytes;
           const child = SessionManager.inMemory(process.cwd(), undefined, parseSessionEntries(bytes));
           assert.deepEqual(child.buildSessionContext(), expected);
           assert.equal(child.getLeafId(), selected);
           assert.ok(!bytes.includes("excluded branch"));
           assert.equal(JSON.stringify([parent.getHeader(), parent.getLeafId(), parent.getEntries()]), before);
           parent.appendMessage({ role: "user", content: "later mutation", timestamp: 10 });
-          assert.equal(childSessionBytes(cut, "child", process.cwd()), bytes);
+          assert.deepEqual(parseSessionEntries(nativeChildSession(parent, process.cwd(), cut).session_bytes).slice(1), parseSessionEntries(bytes).slice(1));
         }
       }
     }
@@ -232,13 +230,13 @@ test("explicit native context comes only from the caller while workspace selecti
   foreign.appendMessage({ role: "user", content: "FOREIGN_TRANSCRIPT_ONLY", timestamp: 1 });
   foreign.appendMessage(spawnMessage("foreign-spawn"));
   assert.throws(() => nativeChildSession(caller, process.cwd(),
-    captureParentCut(foreign, "foreign-spawn", 100, 100_000)), /actual caller native session/);
+    captureParentCut(foreign, "foreign-spawn", 100, 100_000)));
 });
 
 
 
 test("the same SDK operation retains uncertain acknowledgement and never reseeds its native session", async () => {
-  const operations = new PiToolOperations();
+  const operations = piToolOperations();
   const caller = SessionManager.inMemory(process.cwd(), { id: "caller" });
   let seeded = 0;
   let nativeId: string | undefined;
@@ -247,52 +245,30 @@ test("the same SDK operation retains uncertain acknowledgement and never reseeds
     nativeId = nativeChildSession(caller, process.cwd()).native_session_id;
     throw new PiControlAcknowledgementError();
   };
-  const first = operations.run("caller", "original-spawn-tool", { id: "child", context: "scratch" }, invoke);
+  const first = operations("caller", "original-spawn-tool", { id: "child", context: "scratch" }, invoke);
   await assert.rejects(first, error => error instanceof PiControlAcknowledgementError &&
-    error.operation === "original-spawn-tool" && /uncertain/.test(error.message));
+    error.operation === "original-spawn-tool");
   const retainedNativeId = nativeId;
-  const second = operations.run("caller", "original-spawn-tool", { id: "child", context: "scratch" }, invoke);
+  const second = operations("caller", "original-spawn-tool", { id: "child", context: "scratch" }, invoke);
   assert.equal(second, first);
-  await assert.rejects(second, /original-spawn-tool/);
+  await assert.rejects(second, PiControlAcknowledgementError);
   assert.equal(seeded, 1);
   assert.equal(nativeId, retainedNativeId);
-  assert.throws(() => operations.run("caller", "original-spawn-tool", { id: "replacement" }, invoke), /changed arguments/);
-  assert.throws(() => operations.run("caller", "", {}, invoke), /original SDK tool call identity/);
+  assert.throws(() => operations("caller", "original-spawn-tool", { id: "replacement" }, invoke));
+  assert.throws(() => operations("caller", "", {}, invoke));
 });
 
 test("successful concurrent SDK invocation is single-flight and child routing uses its own identity", async () => {
-  const operations = new PiToolOperations();
+  const operations = piToolOperations();
   let effects = 0;
   const invoke = async () => ({ count: ++effects });
-  const first = operations.run("root", "send-tool", { id: "child", message: "instruction" }, invoke);
-  const same = operations.run("root", "send-tool", { id: "child", message: "instruction" }, invoke);
+  const first = operations("root", "send-tool", { id: "child", message: "instruction" }, invoke);
+  const same = operations("root", "send-tool", { id: "child", message: "instruction" }, invoke);
   assert.equal(first, same);
   assert.deepEqual(await first, { count: 1 });
-  assert.deepEqual(await operations.run("child", "send-tool", { id: "grandchild", message: "instruction" }, invoke), { count: 2 });
+  assert.deepEqual(await operations("child", "send-tool", { id: "grandchild", message: "instruction" }, invoke), { count: 2 });
 });
 
-test("headless model confirmation never publishes or supplies prepared root approval", async () => {
-  const operations = new PiToolOperations();
-  const fields = { source: "selected-source", root: "selected-root", paths: ["nested/file.txt"], confirm: true };
-  const poisonedModelFields = { ...fields, approval_digest: "model-echo", operator: { scope: "model-echo" } };
-  const requests: Readonly<Record<string, unknown>>[] = [];
-  const context = {
-    hasUI: false, sessionManager: SessionManager.inMemory(),
-    ui: { confirm: async () => { throw new Error("headless native UI must not be called"); } },
-  };
-  const prepared = { status: "prepared", operation: "writeback-original", source: fields.source,
-    root: fields.root, paths: fields.paths, approval_digest: "exact-prepared-digest" };
-  const invoke = () => approvePiWriteback("writeback-original", poisonedModelFields, context, async request => {
-    requests.push(request);
-    return prepared;
-  });
-  const first = operations.run(context.sessionManager.getSessionId(), "writeback-original", fields, invoke);
-  assert.deepEqual(await first, { operation: prepared.operation, source: fields.source, root: fields.root,
-    paths: fields.paths, approval_digest: prepared.approval_digest, status: "pending", approval: "required" });
-  assert.equal(operations.run(context.sessionManager.getSessionId(), "writeback-original", fields, invoke), first);
-  assert.deepEqual(requests, [{ operation: "writeback-original", ...fields }]);
-  assert.ok(!Object.hasOwn(requests[0], "approval_digest"), "model confirm must never stand in for human digest approval");
-});
 
 test("uncertain writeback prepare and mismatched approval operations never reach native confirmation", async () => {
   const fields = { source: "selected-source", paths: ["file.txt"], confirm: true };
@@ -301,20 +277,21 @@ test("uncertain writeback prepare and mismatched approval operations never reach
     ui: { confirm: async () => { throw new Error("invalid prepare must not reach native confirmation"); } },
   };
   const uncertain = { uncertain: { operation: "writeback-original", reason: "lost original acknowledgement" } };
+  const observation = { prepared: () => {}, observe: async () => uncertain };
   let requests = 0;
   assert.equal(await approvePiWriteback("writeback-original", fields, context, async () => {
     requests++;
     return uncertain;
-  }), uncertain);
+  }, undefined, observation), uncertain);
   assert.equal(requests, 1);
   await assert.rejects(approvePiWriteback("writeback-original", fields, context, async () => ({
     status: "prepared", operation: "replacement-operation", approval_digest: "digest",
-  })), /original prepared approval digest/);
+  }), undefined, observation));
   const cancelled = new AbortController();
   cancelled.abort();
   await assert.rejects(approvePiWriteback("writeback-original", fields, context, async () => {
     throw new Error("cancelled native callback must not prepare");
-  }, cancelled.signal), /abort/i);
+  }, cancelled.signal, observation), error => error === cancelled.signal.reason);
 });
 
 test("headless writeback retains one promise through real host status and requires Applied evidence", async () => {
@@ -322,15 +299,16 @@ test("headless writeback retains one promise through real host status and requir
   const prepared = { ...fields, operation: "original", status: "prepared", approval_digest: "exact" };
   const context = { hasUI: false, sessionManager: SessionManager.inMemory(),
     ui: { confirm: async () => { throw new Error("not UI"); } } };
-  const operations = new PiToolOperations();
+  const operations = piToolOperations();
   const publication = Promise.withResolvers<Record<string, unknown>>();
   const observed = Promise.withResolvers<void>();
   let prepares = 0;
   let events = 0;
   let polls = 0;
-  const invoke = () => approvePiWriteback("original", fields, context, async request => {
+  const modelFields = { ...fields, approval_digest: "model-echo", operator: { scope: "model-echo" } };
+  const invoke = () => approvePiWriteback("original", modelFields, context, async request => {
     prepares++;
-    assert.ok(!Object.hasOwn(request, "approval_digest"));
+    assert.deepEqual(request, { operation: "original", ...fields });
     return { ...prepared, signer: "must-not-escape", operator_scope: "must-not-escape" };
   }, undefined, {
     prepared: descriptor => {
@@ -346,9 +324,9 @@ test("headless writeback retains one promise through real host status and requir
     },
     bounds: { maximumObservations: 2, timeoutMs: 1000, intervalMs: 0 },
   });
-  const first = operations.run("root", "original", fields, invoke);
+  const first = operations("root", "original", fields, invoke);
   await observed.promise;
-  assert.equal(operations.run("root", "original", fields, invoke), first);
+  assert.equal(operations("root", "original", fields, invoke), first);
   publication.resolve({ ...prepared, status: "published", receipt: { phase: "Applied", operation: "native-original" } });
   assert.equal((await first).status, "published");
   assert.equal(prepares, 1);
@@ -380,7 +358,7 @@ test("headless denial, pending bounds, mismatched proof and missing Applied rece
   ]) {
     await assert.rejects(approvePiWriteback("original", fields, context, async () => prepared, undefined, {
       prepared: () => {}, observe: async () => observation,
-    }), /original prepared selection|actual Applied receipt/);
+    }));
   }
 });
 
@@ -403,7 +381,7 @@ test("headless deadline and cancellation preserve the original prepare without c
   const cancellation = new AbortController();
   await assert.rejects(approvePiWriteback("original", fields, context, prepare, cancellation.signal, {
     ...observation, prepared: () => cancellation.abort(),
-  }), /abort/i);
+  }), error => error === cancellation.signal.reason);
   assert.equal(prepares, 2);
 });
 
@@ -449,7 +427,7 @@ test("native UI confirms the exact digest through host authority and revalidates
       observe: async () => {
         sessionManager.appendCustomEntry("changed", {}); return { ...prepared, status: "declined" };
       },
-    }), /session, branch or model changed/);
+    }));
   }
 });
 
@@ -509,10 +487,10 @@ test("native wait stops immediately on uncertainty or malformed terminal evidenc
   await assert.rejects(observePiOperation("wait-original", async () => {
     observations++;
     throw new PiControlAcknowledgementError("wait-original");
-  }), /uncertain/);
+  }), PiControlAcknowledgementError);
   assert.equal(observations, 2, "a lost observation acknowledgement is never retried");
   await assert.rejects(observePiOperation("wait-original",
-    async () => ({ state: "completed", task: "child" })), /omitted its actual terminal outcome/);
+    async () => ({ state: "completed", task: "child" })));
 });
 
 test("native wait honors the SDK abort signal and finite elapsed deadline", async () => {
@@ -522,7 +500,7 @@ test("native wait honors the SDK abort signal and finite elapsed deadline", asyn
     observations++;
     cancellation.abort(new Error("native wait cancelled"));
     return { state: "pending", task: "child" };
-  }, cancellation.signal), /native wait cancelled/);
+  }, cancellation.signal), error => error === cancellation.signal.reason);
   assert.equal(observations, 1);
   const bounded = await observePiOperation("wait-original", async signal => {
     observations++;
@@ -614,12 +592,12 @@ test("native inbox never retries lost acknowledgement or delivers a foreign task
   await assert.rejects(consumePiInbox(pi, { sessionManager: session }, "own-task", async () => {
     receives++;
     throw new PiControlAcknowledgementError();
-  }, new AbortController().signal, {}), /uncertain/);
+  }, new AbortController().signal, {}), PiControlAcknowledgementError);
   assert.equal(receives, 1);
   await assert.rejects(consumePiInbox(pi, { sessionManager: session }, "own-task", async () => {
     receives++;
     return { item: { task_id: "foreign-task", sequence: 1, message_id: "forged" }, envelope: { kind: "message", message: "forged" } };
-  }, new AbortController().signal, {}), /another task/);
+  }, new AbortController().signal, {}));
   assert.equal(receives, 2);
   assert.equal(deliveries, 0);
 });

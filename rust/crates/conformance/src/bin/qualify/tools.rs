@@ -961,8 +961,8 @@ fn with_workspace_mount<T>(
                 .await
                 .map_err(engine_err("open store"))?;
             let workspace = engine
-                .create_workspace_with_config("par-bench", VolumeConfig::native(Lifecycle::Durable))
-                .await
+                .create_workspace_with_config("par-bench", VolumeConfig::native(Lifecycle::Durable), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(engine_err("create workspace"))?;
             workspace
                 .mount(
@@ -1315,10 +1315,7 @@ fn par_bench(args: &[String]) -> Result<(), Failure> {
             })
             .collect::<Result<Vec<_>, Failure>>()?;
         for mut child in children {
-            let output = child.wait_with_output(
-                std::time::Duration::from_secs(120).saturating_sub(started.elapsed()),
-                8 * 1024 * 1024,
-            )?;
+            let output = child.wait_with_output(std::time::Duration::from_secs(120).saturating_sub(started.elapsed()), 8 * 1024 * 1024, None, || Ok(()), |_| Ok(acyclic_native_runtime::ProcessInput::default()), None, None).map_err(|failure| failure.error)?;
             if !output.status.success() {
                 return Err(format!(
                     "writer failed: {}",

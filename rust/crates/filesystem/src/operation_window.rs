@@ -229,7 +229,7 @@ pub enum WorkspaceOperationFinish<A, O> {
 }
 
 /// Durable optimistic-concurrency adapter for operation-window state.
-pub trait OperationWindowStore: crate::async_storage::StorageProvider {
+pub trait OperationWindowStore: acyclic_stream::ProviderPlatform {
     /// Adapter error.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -238,7 +238,7 @@ pub trait OperationWindowStore: crate::async_storage::StorageProvider {
         &self,
         workspace_id: WorkspaceId,
     ) -> impl Future<Output = Result<Option<OperationWindowSnapshot>, Self::Error>>
-    + crate::async_storage::StorageFuture;
+    + acyclic_stream::ProviderTask;
 
     /// Replaces `expected_revision` atomically. Revision zero creates state.
     fn compare_and_swap(
@@ -246,7 +246,7 @@ pub trait OperationWindowStore: crate::async_storage::StorageProvider {
         workspace_id: WorkspaceId,
         expected_revision: u64,
         replacement: OperationWindowSnapshot,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + crate::async_storage::StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + acyclic_stream::ProviderTask;
 }
 
 /// Operation-window state stored beside generation authority in one Stream
@@ -1302,8 +1302,8 @@ mod tests {
         for field in 0..3 {
             let fs = Fs::memory();
             let parent = fs
-                .create_workspace("invalid-limit-parent")
-                .await
+                .create_workspace("invalid-limit-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("parent");
             let child = parent
                 .fork(
@@ -1312,8 +1312,8 @@ mod tests {
                         parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                         IdempotencyKey::new(),
                     ),
-                )
-                .await
+                crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("child");
             let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
             let lease = coordinator
@@ -1363,7 +1363,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [7; 16],
             &crate::WorkspaceName::new("agent").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let first = coordinator
             .begin(workspace, generation(1), "tool-1", 10, 100)
@@ -1409,7 +1410,7 @@ mod tests {
     #[tokio::test]
     async fn parent_advance_after_child_close_rebases_without_another_tool() {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("late-parent").await.expect("parent");
+        let parent = fs.create_workspace("late-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent");
         let child = parent
             .fork(
                 "late-child",
@@ -1417,8 +1418,8 @@ mod tests {
                     parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
-            )
-            .await
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("child");
         child
             .write_text("/child", "local")
@@ -1450,7 +1451,7 @@ mod tests {
             coordinator
                 .parent_advanced_workspace(
                     &child,
-                    parent.head().await.expect("new parent head").id(),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("new parent head").id(),
                     OperationReconcileLimits::default(),
                 )
                 .await
@@ -1458,11 +1459,11 @@ mod tests {
             Some(WorkspaceRebase::Rebased(_))
         ));
         assert_eq!(
-            child.read("/parent", 16).await.expect("upstream").as_slice(),
+            child.read("/parent", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("upstream").as_slice(),
             b"upstream"
         );
         assert_eq!(
-            child.read("/child", 16).await.expect("local").as_slice(),
+            child.read("/child", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("local").as_slice(),
             b"local"
         );
         assert!(matches!(
@@ -1474,7 +1475,7 @@ mod tests {
     #[tokio::test]
     async fn final_close_of_a_current_fork_releases_the_window_in_one_transition() {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("current-parent").await.expect("parent");
+        let parent = fs.create_workspace("current-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent");
         let child = parent
             .fork(
                 "current-child",
@@ -1482,8 +1483,8 @@ mod tests {
                     parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
-            )
-            .await
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("child");
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
@@ -1513,8 +1514,8 @@ mod tests {
     async fn final_close_rebases_onto_a_parent_advance_it_never_observed() {
         let fs = Fs::memory();
         let parent = fs
-            .create_workspace("unobserved-parent")
-            .await
+            .create_workspace("unobserved-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("parent");
         let child = parent
             .fork(
@@ -1523,8 +1524,8 @@ mod tests {
                     parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
-            )
-            .await
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("child");
         parent
             .write_text("/parent", "unobserved")
@@ -1550,7 +1551,7 @@ mod tests {
             WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Rebased(_))
         ));
         assert_eq!(
-            child.read("/parent", 16).await.expect("upstream").as_ref(),
+            child.read("/parent", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("upstream").as_ref(),
             b"unobserved"
         );
         assert_eq!(
@@ -1562,7 +1563,7 @@ mod tests {
     #[tokio::test]
     async fn parent_advance_during_child_tool_rebases_at_final_close() {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("active-parent").await.expect("parent");
+        let parent = fs.create_workspace("active-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent");
         let child = parent
             .fork(
                 "active-child",
@@ -1570,8 +1571,8 @@ mod tests {
                     parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
-            )
-            .await
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("child");
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
@@ -1592,7 +1593,7 @@ mod tests {
             coordinator
                 .parent_advanced_workspace(
                     &child,
-                    parent.head().await.expect("new parent head").id(),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("new parent head").id(),
                     OperationReconcileLimits::default(),
                 )
                 .await
@@ -1607,7 +1608,7 @@ mod tests {
             WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Rebased(_))
         ));
         assert_eq!(
-            child.read("/parent", 16).await.expect("upstream").as_ref(),
+            child.read("/parent", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("upstream").as_ref(),
             b"new"
         );
     }
@@ -1617,7 +1618,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [12; 16],
             &crate::WorkspaceName::new("lease-identity").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease_id = OperationLeaseId::from_bytes([42; 16]);
         let first = coordinator
@@ -1650,7 +1652,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [13; 16],
             &crate::WorkspaceName::new("lease-renewal").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
             .begin(workspace, generation(1), "owner", 1, 10)
@@ -1681,7 +1684,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [8; 16],
             &crate::WorkspaceName::new("agent").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
             .begin(workspace, generation(1), "tool", 10, 100)
@@ -1714,7 +1718,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [9; 16],
             &crate::WorkspaceName::new("expired").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
             .begin(workspace, generation(1), "tool", 10, 20)
@@ -1743,7 +1748,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [10; 16],
             &crate::WorkspaceName::new("overlap-expiry").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let expired = coordinator
             .begin(workspace, generation(1), "expired", 10, 20)
@@ -1778,7 +1784,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [11; 16],
             &crate::WorkspaceName::new("duplicate-expiry").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let first = coordinator
             .begin(workspace, generation(1), "first", 1, 10)

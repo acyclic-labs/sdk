@@ -53,10 +53,6 @@ pub enum MergeConflictSide {
 }
 
 /// Declarative resolution for one exact merge conflict.
-///
-/// Synthesized records and bindings are already-authenticated immutable
-/// inputs. The merge kernel validates their identity and shape before they can
-/// participate in the unpublished candidate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MergeConflictResolution {
     /// Select one of the three immutable input sides.
@@ -75,7 +71,6 @@ pub struct MergeGenerationRequest {
     /// Authenticated common ancestor root.
     pub base: GenerationRoot,
     /// Exact authenticated object for `ours`, when it is already immutable.
-    /// Omitting it creates the required parent checkpoint for a private candidate.
     pub ours_generation: Option<ObjectId>,
     /// Current sparse candidate rooted at `base_generation`.
     pub ours: GenerationRoot,
@@ -93,7 +88,6 @@ pub struct MergeGenerationRequest {
     pub resolutions: BTreeMap<MergeConflict, MergeConflictResolution>,
 }
 
-/// Caller-owned immutable roots for the shared merge core.
 #[derive(Clone, Copy)]
 pub(crate) struct MergeGenerationBorrowedRequest<'a> {
     pub base_generation: ObjectId,
@@ -221,16 +215,6 @@ pub type MergeGenerationResult =
     MeasuredResult<OperationReceipt<MergeGenerationOutcome>, MergeGenerationError>;
 
 /// Performs one sparse bounded three-way merge and constructs its two-parent checkpoint.
-///
-/// Equal Merkle roots are skipped by the shared diff kernels. The complete
-/// algorithm, including directory binding resolution and hard-link deltas, is
-/// owned here so every facade and language binding has identical semantics and
-/// physical work accounting.
-///
-/// # Errors
-///
-/// Rejects malformed or foreign roots, zero/truncated frontiers, cancellation,
-/// storage corruption, sparse application, checkpoint, or work-budget failures.
 #[allow(
     clippy::too_many_lines,
     reason = "one sparse bounded three-way merge and its two-parent checkpoint"
@@ -255,8 +239,6 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
 
 type RecordChange = (Option<FileRecord>, Option<FileRecord>);
 
-/// Each frontier owns its capacity and variable-sized names on the original
-/// invocation. Sorted vectors avoid opaque BTree node allocations.
 struct MergeState {
     records: Owned<Vec<(FileId, RecordChange)>>,
     conflicts: Owned<Vec<MergeConflict>>,
@@ -302,8 +284,6 @@ impl MergeState {
     }
 }
 
-/// Runs the canonical merge on the original caller's ledger. Copied request
-/// roots and supplied resolutions remain in caller custody.
 pub(crate) async fn merge_generation_with_accounting<S: AsyncObjectStore>(
     store: &S, request: MergeGenerationRequest, limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -318,7 +298,6 @@ pub(crate) async fn merge_generation_with_accounting<S: AsyncObjectStore>(
     merge_generation_core(store, inputs, ResolutionView::Map(&request.resolutions), limits, accounting, cancellation).await
 }
 
-/// Borrows ordinary map choices and roots without transferring caller custody.
 pub(crate) async fn merge_generation_with_borrowed_map_resolutions_with_accounting<S: AsyncObjectStore>(
     store: &S, request: &MergeGenerationBorrowedRequest<'_>,
     resolutions: &BTreeMap<MergeConflict, MergeConflictResolution>, limits: DecodeLimits,
@@ -327,7 +306,6 @@ pub(crate) async fn merge_generation_with_borrowed_map_resolutions_with_accounti
     merge_generation_core(store, *request, ResolutionView::Map(resolutions), limits, accounting, cancellation).await
 }
 
-/// Borrows canonical sorted choices and caller-owned roots on the original ledger.
 pub(crate) async fn merge_generation_with_borrowed_resolutions_with_accounting<S: AsyncObjectStore>(
     store: &S, request: MergeGenerationBorrowedRequest<'_>,
     resolutions: &[(MergeConflict, MergeConflictResolution)], limits: DecodeLimits,
@@ -343,7 +321,7 @@ pub(crate) async fn merge_generation_with_borrowed_resolutions_with_accounting<S
 fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
     store: &'a S, request: MergeGenerationBorrowedRequest<'a>, resolutions: ResolutionView<'a>, limits: DecodeLimits,
     accounting: &'a mut KernelAccounting<'accounting>, cancellation: &'a CancellationToken,
-) -> crate::async_storage::BoxStorageFuture<'a, Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError>> {
+) -> acyclic_stream::BoxProviderFuture<'a, Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError>> {
     Box::pin(async move {
         accounting.check()?;
         if request.maximum_changes == 0 || request.maximum_conflicts == 0 { return Err(FsError::MergeChangeLimit); }
@@ -498,7 +476,6 @@ fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
     })
 }
 
-/// Walks sorted diff frontiers without cloning another identity/name set.
 fn next_changes<'a, K: Ord, V>(
     left: &'a [super::persistent_diff::ValueChange<K, V>],
     right: &'a [super::persistent_diff::ValueChange<K, V>], indices: &mut [usize; 2],
@@ -525,7 +502,7 @@ fn is_extent_regular(record: Option<FileRecord>) -> bool {
 fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
     store: &'a S, base: FileRecord, ours: FileRecord, theirs: FileRecord, maximum_changes: u32,
     limits: DecodeLimits, accounting: &'a mut KernelAccounting<'accounting>, cancellation: &'a CancellationToken,
-) -> crate::async_storage::BoxStorageFuture<'a, Result<Option<(FileRecord, u32)>, FsError>>
+) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(FileRecord, u32)>, FsError>>
 {
     Box::pin(async move {
         let Some(kind) = resolve_three(&base.kind, &ours.kind, &theirs.kind) else { return Ok(None); };
@@ -963,8 +940,6 @@ pub(crate) fn resolve_three<T: Clone + Eq>(base: &T, ours: &T, theirs: &T) -> Op
     }
 }
 
-/// Field-wise record merge without a store: every field must resolve
-/// three-way. [`merge_file_fields_async`] adds metadata reconciliation.
 #[cfg(test)]
 pub(crate) fn merge_file_fields(
     base: FileRecord,
@@ -992,8 +967,6 @@ async fn merge_file_fields_async<S: AsyncObjectStore>(
     Ok(metadata.map(|metadata| FileRecord { file_id: ours.file_id, kind, link_count: ours.link_count, metadata, payload }))
 }
 
-/// Record fields merge independently; an independently added file requires
-/// identical authored state and content, but reconciles later timestamps.
 async fn merge_records_async<S: AsyncObjectStore>(
     store: &S, [base, ours, theirs]: [Option<FileRecord>; 3],
     limits: DecodeLimits, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -1029,18 +1002,15 @@ async fn merge_metadata_async<S: AsyncObjectStore>(
 async fn write_metadata<S: AsyncObjectStore>(
     store: &S, metadata: FileMetadata, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
 ) -> Result<ObjectId, FsError> {
-    let (encoded, allocation) = super::metadata::encode_file_metadata_with_accounting(&metadata, accounting)?;
+    let (encoded, allocation) = crate::kernel::codec::encode_owned(accounting, |observe, reserve| super::metadata::encode_file_metadata(metadata, observe, reserve))?;
     let bytes = crate::foundation::usize_to_u64(encoded.capacity());
     put_encoded_with_accounting(store, ObjectKind::Metadata, Owned::new(encoded, allocation, bytes), accounting, cancellation).await
 }
 
-/// The empty tree uses the same guarded encoder and hashed-write engine as
-/// every actual merge output; it is never a synthetic admission probe.
 async fn empty_tree_async<S: AsyncObjectStore>(
     store: &S, limits: DecodeLimits, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
 ) -> Result<ObjectId, FsError> {
-    let (encoded, allocation) = super::tree::encode_tree_page_with_accounting(
-        &super::TreePage::Leaf(Vec::new()), limits.maximum_page_items, accounting, cancellation)?;
+    let (encoded, allocation) = crate::kernel::codec::encode_owned(accounting, |observe, _reserve| { cancellation.check()?; super::tree::encode_tree_page(&super::TreePage::Leaf(Vec::new()), limits.maximum_page_items, observe, crate::FsError::EncodedAllocationFailed) })?;
     let bytes = crate::foundation::usize_to_u64(encoded.capacity());
     put_encoded_with_accounting(store, ObjectKind::TreePage, Owned::new(encoded, allocation, bytes), accounting, cancellation).await
 }
@@ -1052,7 +1022,7 @@ async fn read_metadata<S: AsyncObjectStore>(
     let (read, retained) = super::file_read::read_object_with_accounting(store, object, limits.maximum_object_bytes, accounting, cancellation).await?;
     let result = (|| {
         accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-        decode_file_metadata(&read.bytes, limits).map_err(FsError::from)
+        decode_file_metadata(&read.bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map_err(FsError::from)
     })();
     drop(read);
     // Native provider bytes own their original guard internally; only the
@@ -1069,13 +1039,6 @@ async fn converge_metadata_async<S: AsyncObjectStore>(
     merge_metadata_async(store, None, ours, theirs, limits, accounting, cancellation).await
 }
 
-/// Field-wise three-way metadata merge.
-///
-/// Timestamps record when something happened to a file, not what anyone
-/// meant it to be: two sides that each touched a record moved its times for
-/// their own reasons, and the later time is the true one. Every other field
-/// (mode, ownership, flags, attributes, ACLs) is authored state and must
-/// resolve three-way, or the record conflicts.
 pub(crate) fn merge_metadata_fields(
     base: FileMetadata,
     ours: FileMetadata,
@@ -1125,8 +1088,6 @@ pub(crate) fn merge_metadata_fields(
     })
 }
 
-/// Metadata of one file two sides added independently: everything but
-/// the timestamps must agree, and each timestamp is the later one.
 pub(crate) fn merge_added_metadata_fields(
     ours: FileMetadata,
     theirs: FileMetadata,

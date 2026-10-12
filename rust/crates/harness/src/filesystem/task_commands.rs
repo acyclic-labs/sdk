@@ -24,38 +24,21 @@ use std::sync::Arc;
 mod mail;
 
 macro_rules! command_record {
-    ($($record:ty => $schema:ident),+ $(,)?) => {
+    ($($record:ty $(=> $schema:ident)?),+ $(,)?) => {
         $(impl super::PreparationRecord for $record {
-            fn maximum_slot_bytes() -> u64 {
-                super::fork_preparer::bounded_io::preparation_slot_bytes::<Self>()
-            }
-            fn diagnostic_label_bytes() -> u64 {
-                crate::contract::preparation_serde_diagnostic_label_bytes()
-            }
-            fn json_value_schema() -> crate::contract::JsonValueSchema {
+            $(fn json_value_schema() -> crate::contract::JsonValueSchema {
                 crate::contract::JsonValueSchema::$schema
-            }
+            })?
         })+
     };
 }
 
-impl super::PreparationRecord for PreparedTaskAdmitCommand {
-    fn maximum_slot_bytes() -> u64 {
-        super::fork_preparer::bounded_io::preparation_slot_bytes::<Self>()
-    }
-    fn diagnostic_label_bytes() -> u64 {
-        crate::contract::preparation_serde_diagnostic_label_bytes()
-    }
-    fn json_value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::PreparedTaskAdmitCommand
-    }
-}
-
 command_record!(
-    TimerTaskCommand => None, TaskObserveCommand => None,
-    TaskAdmitCommand => TaskAdmitCommand, ModelTaskCommand => ModelTaskCommand,
+    TimerTaskCommand, TaskObserveCommand, TaskCancelCommand,
+    TaskAdmitCommand => TaskAdmitCommand,
+    PreparedTaskAdmitCommand => PreparedTaskAdmitCommand,
+    ModelTaskCommand => ModelTaskCommand,
     ToolTaskCommand => ToolTaskCommand,
-    TaskCancelCommand => None,
 );
 
 #[derive(Serialize, Deserialize)]
@@ -253,9 +236,8 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
             let self_bytes = if self.native_custody.is_none() { std::mem::size_of::<Self>() as u64 } else { 0 };
             io.retain_owned(self_bytes)?;
             io.retain_owned(std::mem::size_of::<ModelBinding>() as u64)?;
-            let model = crate::model::model_model_clone_with_io(model, Some(io))?;
-            let context = context.clone_with_native_work(work)?;
-            io.absorb_native_custody(context.1)?;
+            let model = crate::model::clone_model(model, Some(io))?;
+            let context = context.copy(Some(io))?;
             let compaction = match compaction {
                 crate::context::CompactionPolicy::Disabled => crate::context::CompactionPolicy::Disabled,
                 crate::context::CompactionPolicy::Threshold(policy) => {
@@ -269,7 +251,7 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
             let binding_bytes = io.owned_bytes()?.checked_sub(before).and_then(|bytes| bytes.checked_sub(self_bytes))
                 .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "native model configuration custody underflows" })?;
-            self.model = Some(ModelBinding { model, provider, context: context.0, compaction,
+            self.model = Some(ModelBinding { model, provider, context, compaction,
                 native_custody: Some(io.take_native_custody(binding_bytes)?) });
             if self_bytes != 0 { self.native_custody = Some(io.take_native_custody(self_bytes)?); }
             return Ok(self);
@@ -427,7 +409,7 @@ where
                             let journal = self.runtime.execution_journal(task, fence.clone(), command.operation_id).await?;
                             let mut replay = crate::executor::ExecutionReplay::new(operation);
                             let mut dispatched = false;
-                            while let Some(page) = replay.next_page(journal.as_ref()).await? {
+                            while let Some(page) = replay.next_page(journal.as_ref(), None).await? {
                                 dispatched |= page.iter().any(|record| matches!(record.event, crate::executor::ExecutionEvent::ToolStarted { .. }));
                             }
                             if !dispatched { return mail::reconciled(io); }
@@ -554,11 +536,11 @@ where
                 Some(io), ErrorCode::Unsupported, "fork preparation source is not configured"))?;
             let retained = if reconciliation_only {
                 source.preparation_for_reconciliation_with_native_work(
-                    shared, &preparation, &io.cancellation, work,
+                    shared, &preparation, io.cancellation(), work,
                 )?.await?
             } else {
                 source.preparation_with_native_work(
-                    shared, &preparation, &io.cancellation, work,
+                    shared, &preparation, io.cancellation(), work,
                 )?.await?
             };
             io.absorb_native_custody(retained.1)?;
@@ -879,24 +861,24 @@ where
                     let work = io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
                         Some(io), crate::wire::ErrorCode::Unsupported, "native tool wait requires original observer",
                     ))?;
-                    let definition = self.runtime.tool_definition_with_native_work(&input.name, &input.revision, work)?;
+                    let definition = self.runtime.tool_definition(&input.name, &input.revision, Some(io))?;
                     let task = context.durable_task_id().ok_or(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unauthorized, reason: "tool has no original task" })?;
                     let operation = super::task_runtime::execution_operation_with_native_work(task, command.operation_id, work)?;
                     let invocation = tool_invocation(context, operation, definition, input.arguments, Some(io))?;
-                    return self.runtime.tool_approval_ready_with_native_work(
-                        context, definition, &invocation, work,
+                    return self.runtime.tool_approval_ready(
+                        context, definition, &invocation, Some(io),
                     ).await;
                 }
                 let input: ToolTaskCommand = serde_json::from_value(payload)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                let definition = self.runtime.tool_definition(&input.name, &input.revision)?;
+                let definition = self.runtime.tool_definition(&input.name, &input.revision, None)?;
                 let task = context.durable_task_id().ok_or_else(|| Error::Unauthorized("tool has no task".into()))?;
                 let operation = super::task_runtime::execution_operation(task, command.operation_id);
                 let invocation = tool_invocation(context, operation, &definition, input.arguments, None)?;
                 Box::pin(
                     self.runtime
-                        .tool_approval_ready(context, &definition, &invocation),
+                        .tool_approval_ready(context, &definition, &invocation, None),
                 )
                 .await
             }
@@ -904,18 +886,18 @@ where
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
                     let input: ModelTaskCommand = mail::decode_command(payload, Some(io))?;
-                    let work = io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
+                    io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
                         Some(io), crate::wire::ErrorCode::Unsupported, "native model wait requires original observer",
                     ))?;
-                    return self.runtime.model_approval_ready_with_native_work(
-                        context, command.operation_id, &input, work,
+                    return self.runtime.model_approval_ready(
+                        context, command.operation_id, &input, Some(io),
                     ).await;
                 }
                 let input: ModelTaskCommand = serde_json::from_value(payload)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 Box::pin(
                     self.runtime
-                        .model_approval_ready(context, command.operation_id, &input),
+                        .model_approval_ready(context, command.operation_id, &input, None),
                 )
                 .await
             }
@@ -1144,7 +1126,7 @@ where
         io: &super::PreparationIo, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskCommandProgress> {
         let input: ToolTaskCommand = mail::decode_command(payload, Some(io))?;
-        let definition = self.runtime.tool_definition_with_native_work(&input.name, &input.revision, work)?;
+        let definition = self.runtime.tool_definition(&input.name, &input.revision, Some(io))?;
         let (journal, operation) = self.runtime.execution_journal_with_native_work(task, fence, turn, work).await?;
         if reconciliation_only {
             let dispatched = std::sync::atomic::AtomicBool::new(false);
@@ -1216,7 +1198,7 @@ where
             let operation = super::task_runtime::execution_operation(task, turn);
             let mut replay = crate::executor::ExecutionReplay::new(operation);
             let mut dispatched = false;
-            while let Some(page) = replay.next_page(journal.as_ref()).await? {
+            while let Some(page) = replay.next_page(journal.as_ref(), None).await? {
                 dispatched |= page.iter().any(|record| {
                     matches!(record.event, crate::executor::ExecutionEvent::ModelStarted { .. })
                 });
@@ -1267,7 +1249,7 @@ where
             .ok_or_else(|| Error::Unsupported("model command provider is not bound".into()))?;
         let execution = self
             .runtime
-            .stock_execution_with_output(
+            .stock_execution(
                 task,
                 fence,
                 turn,
@@ -1399,7 +1381,7 @@ where
     ) -> Result<TaskCommandProgress> {
         let input: ToolTaskCommand = serde_json::from_value(payload)
             .map_err(|error| Error::Invalid(format!("invalid tool command: {error}")))?;
-        let definition = self.runtime.tool_definition(&input.name, &input.revision)?;
+        let definition = self.runtime.tool_definition(&input.name, &input.revision, None)?;
         let journal = self.runtime.execution_journal(task, fence, turn).await?;
         let context = self
             .runtime
@@ -1428,7 +1410,7 @@ where
             .run_with_context(
                 task,
                 operation,
-                definition,
+                definition.clone(),
                 input.arguments,
                 ToolContext::new(context, operation, operation.to_string())?,
             )
@@ -1446,7 +1428,7 @@ fn tool_invocation(
     io: Option<&super::PreparationIo>,
 ) -> Result<ToolInvocation> {
     let grant_hold;
-    let grant = super::fork_preparer_io::format_text(format_args!("tool:call:{}", definition.name), io)?;
+    let grant = crate::contract::preparation_format(format_args!("tool:call:{}", definition.name), io)?;
     grant_hold = io.map(|io| io.guard_owned(grant.capacity() as u64)).transpose()?;
     if !context.scope().grants().contains(&grant) {
         return Err(super::task_runtime::observed::boundary(io,
@@ -1458,11 +1440,12 @@ fn tool_invocation(
     if let Some(io) = io { io.retain_owned(std::mem::size_of::<ToolInvocation>() as u64)?; }
     let invocation = ToolInvocation {
         operation_id: operation,
-        call_id: super::fork_preparer_io::format_text(format_args!("{operation}"), io)?,
+        call_id: crate::contract::preparation_format(format_args!("{operation}"), io)?,
         name: super::fork_preparer_io::clone_text(&definition.name, io)?,
         arguments,
     };
-    ToolInvocation::validate_identity_with_io(&invocation.call_id, &invocation.name, io)?;
+    crate::executor::with_history_io(io, |work|
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
     Ok(invocation)
 }
 

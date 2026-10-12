@@ -37,7 +37,7 @@ fn value<T: Serialize>(input: T) -> Result<Value> {
 
 fn definition(variant: &str, tool: Tool) -> Result<Value> {
     let definition = tool.definition;
-    definition.validate()?;
+    definition.validate(&mut None)?;
     let digest = definition.digest()?;
     Ok(json!({"variant":variant,"definition":definition,"definition_digest":digest}))
 }

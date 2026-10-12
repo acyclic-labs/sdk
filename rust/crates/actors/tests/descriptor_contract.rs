@@ -285,8 +285,6 @@ fn current_actors_descriptor_matches_expected_contract() {
     assert!(!EXPECTED_ACTORS_DESCRIPTOR.is_empty());
     assert!(!FILE_DESCRIPTOR_SET.is_empty());
 
-    // Validate both sets as descriptors before comparing them. This catches a
-    // malformed generated artifact even when its bytes happen to normalize.
     DescriptorPool::decode(EXPECTED_ACTORS_DESCRIPTOR)
         .expect("expected Actors descriptor must be valid");
     DescriptorPool::decode(FILE_DESCRIPTOR_SET).expect("fresh Actors descriptor must be valid");
