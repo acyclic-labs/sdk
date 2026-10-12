@@ -71,7 +71,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             }
             let selected = paths.0.take();
             accounting.release_owned(&mut paths.1, input_bytes)?;
-            let (expected, _) = self.materialize_forked_generation_root_with_accounting(
+            let (expected, _) = self.materialize_forked_generation_root(
                 source, initial.workspace.id(), source.workspace.volume.config, selected,
                 &mut accounting, cancellation,
             ).await?;
@@ -217,7 +217,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 };
                 let directory_bytes = directory.retained_bytes();
                 let directory = Owned::new(directory, allocation, directory_bytes);
-                let (lookup, allocation) = checkout.lookup_no_follow_with_accounting(&directory.value, accounting, cancellation).await?;
+                let (lookup, allocation) = checkout.lookup_no_follow_with_accounting(&directory.value, accounting, cancellation, true).await?;
                 fork_selection_reconcile_checkout(&checkout, &mut checkout_bytes, accounting)?;
                 let original = lookup.record.ok_or(WorkspaceError::NotFound)?;
                 drop(allocation);
@@ -232,7 +232,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     )?;
                     let bytes = path.retained_bytes();
                     let path = Owned::new(path, allocation, bytes);
-                    let (lookup, allocation) = checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation).await?;
+                    let (lookup, allocation) = checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true).await?;
                     fork_selection_reconcile_checkout(&checkout, &mut checkout_bytes, accounting)?;
                     let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
                     drop(allocation);
