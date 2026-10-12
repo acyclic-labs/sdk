@@ -7889,7 +7889,7 @@ async fn read_record_metadata_to_file_root_with_accounting<A: AsyncAuthorityStor
             },
             error => error,
         })?;
-        crate::kernel::decode_owned(accounting, |observe| crate::kernel::decode_file_metadata(&read.bytes, DecodeLimits::for_volume(volume.config), &mut |step| observe(step))).map(|(metadata, _)| metadata).map_err(crate::kernel::ReadDecodeError::into_original_fs_error)
+        crate::kernel::decode_owned(accounting, |observe| crate::kernel::decode_file_metadata(&read.bytes, DecodeLimits::for_volume(volume.config), &mut |step| observe(step))).map(|(metadata, _)| metadata)
     }.await;
     readonly_cleanup_standalone(accounting, before, 0)?;
     result
@@ -8014,7 +8014,7 @@ async fn attach_directory_records_to_file_root_with_accounting<A: AsyncAuthority
             if record.file_id != binding.file_id || record.kind != binding.kind {
                 return Err(FsError::InvalidDirectoryRecord);
             }
-            let metadata = crate::kernel::decode_owned(accounting, |observe| crate::kernel::decode_file_metadata(&metadata.bytes, DecodeLimits::for_volume(volume.config), &mut |step| observe(step))).map(|(metadata, _)| metadata).map_err(crate::kernel::ReadDecodeError::into_original_fs_error)?;
+            let metadata = crate::kernel::decode_owned(accounting, |observe| crate::kernel::decode_file_metadata(&metadata.bytes, DecodeLimits::for_volume(volume.config), &mut |step| observe(step))).map(|(metadata, _)| metadata)?;
             let copied = WorkCounters {
                 items_examined: 1, bytes_copied: size_of::<DirectoryRecordEntry>() as u64,
                 ..WorkCounters::UNCHARGED
@@ -11365,7 +11365,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 ).await?)
             } else { None };
             let mut observer = crate::kernel::OriginalReadAccounting::new(accounting)?;
-            let cloned = name.try_clone::<crate::kernel::ReadDecodeError>(
+            let cloned = name.try_clone::<FsError>(
                 DecodeLimits::for_volume(volume.config).maximum_name_bytes,
                 &mut |step| observer.observe(step),
             );
@@ -11376,7 +11376,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 }
                 Err(error) => {
                     observer.release_failed()?;
-                    Err(error.into_original_fs_error())
+                    Err(error)
                 }
             }
         }.await;
@@ -13930,8 +13930,7 @@ fn generation_from_record_value_with_accounting(
     let initial = record.sequence == Sequence::new(1);
     observer.record_completed(item)?;
     let (record_volume, generation_root) = {
-        let mut observe = |step| observer.observe(step)
-            .map_err(crate::kernel::ReadDecodeError::into_original_fs_error);
+        let mut observe = |step| observer.observe(step);
         if initial {
             let creation = crate::kernel::decode_volume_created(&record.payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut observe)?;
             (creation.volume_id, creation.initial_generation_root)
@@ -14499,22 +14498,9 @@ fn decode_first_creation_record(
     if first.fingerprint != fingerprint || first.digest != digest {
         return Err(FsError::CreationRejected);
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    let original = accounting.native_work().is_some();
     let mut projection = crate::kernel::OriginalReadAccounting::new(accounting)?;
     let creation = crate::kernel::decode_volume_created::<FsError>(
-        &first.payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| {
-            projection.observe(step).map_err(|error| {
-                #[cfg(not(target_arch = "wasm32"))]
-                if original { return error.into_original_fs_error(); }
-                match error {
-                    crate::kernel::ReadDecodeError::Canonical(error) => error.into(),
-                    crate::kernel::ReadDecodeError::Accounting(error) => error,
-                    crate::kernel::ReadDecodeError::AllocationFailed(_) =>
-                        crate::kernel::CanonicalDecodeError::AllocationFailed.into(),
-                }
-            })
-        },
+        &first.payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| projection.observe(step),
     );
     projection.release_failed()?;
     let creation = creation?;

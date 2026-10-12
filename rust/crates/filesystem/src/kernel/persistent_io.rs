@@ -47,10 +47,10 @@ impl<F: Format> OwnedPage<F> {
                 #[cfg(not(target_arch = "wasm32"))]
                 if accounting.native_work().is_some() {
                     let cloned = super::file_read::decode_owned(accounting, |steps| {
-                        clone_page::<F, super::file_read::ReadDecodeError>(
+                        clone_page::<F, crate::FsError>(
                             &page, &mut |step| steps(step),
                         )
-                    }).map_err(super::file_read::ReadDecodeError::into_original_fs_error)?;
+                    })?;
                     let bytes = match &cloned.1 {
                         super::allocation::KernelOwnedAllocation::NativeOriginal(owned) => owned.bytes(),
                         super::allocation::KernelOwnedAllocation::Standalone => 0,
@@ -1082,7 +1082,7 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
         return super::file_read::decode_owned(accounting, |steps| {
             let page = F::decode(read, limits, &mut |step| steps(step))?;
             Ok(page)
-        }).map_err(super::file_read::ReadDecodeError::into_original_fs_error).map(|(page, allocation)| {
+        }).map(|(page, allocation)| {
             let logical_bytes = match &allocation {
                 super::allocation::KernelOwnedAllocation::NativeOriginal(owned) => owned.bytes(),
                 super::allocation::KernelOwnedAllocation::Standalone => 0,
@@ -1122,7 +1122,7 @@ pub(crate) fn clone_key_with_accounting_and_custody<F: Format>(
 ) -> Result<(F::Key, super::allocation::KernelOwnedAllocation), crate::FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     if accounting.native_work().is_some() {
-        return super::file_read::decode_owned(accounting, |steps| F::try_clone_key(key, maximum_bytes, &mut |step| steps(step))).map_err(super::file_read::ReadDecodeError::into_original_fs_error);
+        return super::file_read::decode_owned(accounting, |steps| F::try_clone_key(key, maximum_bytes, &mut |step| steps(step)));
     }
     let (allocations, work, budget, _) = accounting.standalone_parts()
         .expect("native key cloning uses the original step engine");
@@ -1140,7 +1140,7 @@ pub(crate) fn clone_value_with_accounting_and_custody<F: Format>(
 ) -> Result<(F::Value, super::allocation::KernelOwnedAllocation), crate::FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     if accounting.native_work().is_some() {
-        return super::file_read::decode_owned(accounting, |steps| F::try_clone_value(value, maximum_bytes, &mut |step| steps(step))).map_err(super::file_read::ReadDecodeError::into_original_fs_error);
+        return super::file_read::decode_owned(accounting, |steps| F::try_clone_value(value, maximum_bytes, &mut |step| steps(step)));
     }
     let (allocations, work, budget, _) = accounting.standalone_parts()
         .expect("native value cloning uses the original step engine");
