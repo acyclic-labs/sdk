@@ -166,13 +166,11 @@ impl super::native::NativeSession {
         let fence = LeaseFence::from(&lease.reservation);
         let owner = self.runtime.task_host().journal_owner_with_native_work(caller, &fence, &work)
             .await?.into_native_shared(&work)?;
-        let reader = Arc::new(FilesystemContentVerifier::new(self.files.clone(), &verifier,
-            &binding.scope, super::terminal::MAX_FRAME_BYTES as u64, None)?);
+        let reader = FilesystemContentVerifier::new(self.files.clone(), &verifier, &binding.scope, super::terminal::MAX_FRAME_BYTES as u64, None)?;
         let result_volume = self.config.tools.callers.iter().find(|entry| entry.task == caller)
             .and_then(|entry| entry.result_volume.as_ref())
             .ok_or_else(|| Error::Unsupported("native command requires separate result storage".into()))?;
-        let results = Arc::new(FilesystemContentPublisher::new(self.files.clone(), result_volume,
-            &verifier, &binding.scope, super::terminal::MAX_FRAME_BYTES as u64, None)?);
+        let results = FilesystemContentPublisher::new(self.files.clone(), result_volume, &verifier, &binding.scope, super::terminal::MAX_FRAME_BYTES as u64, None)?;
         let caller_private = &self.config.tools.callers.iter().find(|entry| entry.task == caller)
             .ok_or_else(|| Error::NotFound("native caller private volume".into()))?.private_volume;
         let approvals = Arc::new(FilesystemInteractionHost::new(self.stream.clone(), self.files.clone(),

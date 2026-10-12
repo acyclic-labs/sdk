@@ -105,19 +105,8 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     let read_cap = volume.capability(VolumeOperation::Read, &mut None)?;
     let write_cap = volume.capability(VolumeOperation::Write, &mut None)?;
     let scope = issuer.issue("owner", &Capabilities::new([read_cap.clone(), write_cap.clone()]), Some(agent), None, &mut None).expect("scope proof");
-    let writer = Arc::new(FilesystemContentPublisher::new(
-        host.clone(),
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        4096, None,
-    )?);
-    let reader = Arc::new(FilesystemContentVerifier::new(
-        host,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        4096, None,
-    )?);
+    let writer = FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4096, None)?;
+    let reader = FilesystemContentVerifier::new(host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4096, None)?;
     let source = writer
         .stage(
             OperationId::new(),
@@ -536,7 +525,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
             "test.txt",
             64,
             &IdempotencyKey::new("source")?,
-        )
+         None, None)
         .await?;
     let ordinary = OrdinaryPublisher {
         volume: volume.clone(),
@@ -570,11 +559,11 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         .edit_text(&source, &read, &write, &replacement, 64, &key)
         .await?;
     assert_eq!(
-        host.read_content(&edited, &read, 64).await?.as_ref(),
+        host.read_content(&edited, &read, 64, None).await?.as_ref(),
         b"one\r\nthree\n"
     );
     assert_eq!(
-        host.read_content(&source, &read, 64).await?.as_ref(),
+        host.read_content(&source, &read, 64, None).await?.as_ref(),
         b"one\r\ntwo\n"
     );
     let workspace = workspace_ref(provider.clone(), &volume.storage_name(&mut None)?)?;
@@ -589,7 +578,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
             "test.txt",
             64,
             &IdempotencyKey::new("user")?,
-        )
+         None, None)
         .await?;
     let host = FilesystemHost::new(filesystem, provider)?;
     assert_eq!(
@@ -598,7 +587,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         edited
     );
     assert_eq!(
-        host.read_content(&user, &read, 64).await?.as_ref(),
+        host.read_content(&user, &read, 64, None).await?.as_ref(),
         b"user edit"
     );
     assert!(matches!(
@@ -623,22 +612,12 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         Err(Error::Conflict(_))
     ));
     assert!(matches!(
-        host.put_content_at(
-            &volume,
-            &write,
-            "test.txt",
-            b"one\r\nthree\n",
-            "text/plain",
-            "test.txt",
-            64,
-            &key,
-            &head
-        )
+        host.put_content(&volume, &write, "test.txt", b"one\r\nthree\n", "text/plain", "test.txt", 64, &key, Some(&head), None)
         .await,
         Err(Error::Conflict(_))
     ));
     assert_eq!(
-        host.read_content(&user, &read, 64).await?.as_ref(),
+        host.read_content(&user, &read, 64, None).await?.as_ref(),
         b"user edit"
     );
     Ok(())
@@ -696,7 +675,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
                 "file.txt",
                 64,
                 &IdempotencyKey::new("source")?,
-            )
+             None, None)
             .await?;
         let edited = host
             .edit_text(&source, &read, &write, &replacement, 64, &key)
@@ -711,7 +690,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
                 "file.txt",
                 64,
                 &IdempotencyKey::new("user")?,
-            )
+             None, None)
             .await?;
         (source, edited, user)
     };
@@ -728,17 +707,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
             Err(Error::Invalid(_))
         ));
         assert!(matches!(
-            host.put_content_at(
-                &volume,
-                &write,
-                "file.txt",
-                b"after\n",
-                "text/plain",
-                "file.txt",
-                maximum_bytes,
-                &key,
-                &head
-            )
+            host.put_content(&volume, &write, "file.txt", b"after\n", "text/plain", "file.txt", maximum_bytes, &key, Some(&head), None)
             .await,
             Err(Error::Invalid(_))
         ));
@@ -750,11 +719,11 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
     );
     assert_eq!(host.resolve(&workspace).await?.generation, head);
     assert_eq!(
-        host.read_content(&edited, &read, 64).await?.as_ref(),
+        host.read_content(&edited, &read, 64, None).await?.as_ref(),
         b"after\n"
     );
     assert_eq!(
-        host.read_content(&user, &read, 64).await?.as_ref(),
+        host.read_content(&user, &read, 64, None).await?.as_ref(),
         b"user\n"
     );
     assert!(matches!(
@@ -798,55 +767,61 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         let fs = Fs::local(options.clone()).await.map_err(|error| Error::Storage(error.to_string()))?;
         let host = FilesystemHost::new(fs, provider.clone())?;
         host.create_volume(&volume).await?;
-        let delivered = host.put_content_measured(&volume, &write, "result.json", b"original",
-            "application/json", "original.json", 64, &key, CONTENT_WORK_BUDGET, &cancellation)
-            .await.map_err(|failure| failure.error)
+        let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
+        let delivered = host.put_content(&volume, &write, "result.json", b"original",
+            "application/json", "original.json", 64, &key, None, Some(&io))
+            .await
             .and_then(|_| Err::<(), _>(Error::Storage("lost content acknowledgement".into())));
         assert!(delivered.is_err());
-        host.put_content_measured(&volume, &write, "result.json", b"later", "text/plain",
-            "later.txt", 64, &IdempotencyKey::new("later-content")?, CONTENT_WORK_BUDGET, &cancellation)
-            .await.map_err(|failure| failure.error)?;
+        let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
+        host.put_content(&volume, &write, "result.json", b"later", "text/plain",
+            "later.txt", 64, &IdempotencyKey::new("later-content")?, None, Some(&io)).await?;
     }
     let fs = Fs::local(options).await.map_err(|error| Error::Storage(error.to_string()))?;
     let host = FilesystemHost::new(fs, provider.clone())?;
-    let recovered = host.content_for_operation_measured(&volume, &write, &key, "result.json", 64,
-        CONTENT_WORK_BUDGET, &cancellation).await.map_err(|failure| failure.error)?;
-    recovered.work.verify(CONTENT_WORK_BUDGET).map_err(|error| Error::Invalid(error.to_string()))?;
-    let original = recovered.value.ok_or_else(|| Error::Storage("committed original upload was absent".into()))?;
+    let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
+    let recovered = host.content_for_operation(&volume, &write, &key, "result.json", 64, Some(&io)).await?;
+    io.receipt().verify(CONTENT_WORK_BUDGET).map_err(|error| Error::Invalid(error.to_string()))?;
+    let original = recovered.ok_or_else(|| Error::Storage("committed original upload was absent".into()))?;
     assert_eq!(original.display_name(), "original.json");
     assert_eq!(original.descriptor().media_type(), "application/json");
-    assert_eq!(host.read_content_measured(&original, &read, 64, CONTENT_WORK_BUDGET, &cancellation)
-        .await.map_err(|failure| failure.error)?.value, b"original");
-    assert_eq!(host.put_content_measured(&volume, &write, "result.json", b"original", "application/json",
-        "original.json", 64, &key, CONTENT_WORK_BUDGET, &cancellation)
-        .await.map_err(|failure| failure.error)?.value, original);
+    let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
+    assert_eq!(host.read_content(&original, &read, 64, Some(&io)).await?.as_ref(), b"original");
+    let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
+    assert_eq!(host.put_content(&volume, &write, "result.json", b"original", "application/json",
+        "original.json", 64, &key, None, Some(&io)).await?, original);
     for (path, media, display, bytes) in [
         ("changed.json", "application/json", "original.json", b"original".as_slice()),
         ("result.json", "text/plain", "original.json", b"original".as_slice()),
         ("result.json", "application/json", "changed.json", b"original".as_slice()),
         ("result.json", "application/json", "original.json", b"changed".as_slice()),
     ] {
-        assert!(host.put_content_measured(&volume, &write, path, bytes, media, display, 64,
-            &key, CONTENT_WORK_BUDGET, &cancellation).await.is_err());
+        let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
+        assert!(host.put_content(&volume, &write, path, bytes, media, display, 64,
+            &key, None, Some(&io)).await.is_err());
     }
-    let missing = host.content_for_operation_measured(&volume, &write, &IdempotencyKey::new("never-uploaded")?,
-        "result.json", 64, CONTENT_WORK_BUDGET, &cancellation).await.map_err(|failure| failure.error)?;
-    assert_eq!(missing.value, None);
-    assert!(host.content_for_operation_measured(&volume, &write, &key, "changed.json", 64,
-        CONTENT_WORK_BUDGET, &cancellation).await.is_err());
-    assert!(host.read_content_measured(&original, &read, 1, CONTENT_WORK_BUDGET, &cancellation).await.is_err());
+    let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
+    let missing = host.content_for_operation(&volume, &write, &IdempotencyKey::new("never-uploaded")?,
+        "result.json", 64, Some(&io)).await?;
+    assert_eq!(missing, None);
+    assert!(host.content_for_operation(&volume, &write, &key, "changed.json", 64, Some(&io)).await.is_err());
+    let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
+    assert!(host.read_content(&original, &read, 1, Some(&io)).await.is_err());
     let cancelled = acyclic_fs::CancellationToken::new();
+    let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancelled)?;
     cancelled.cancel();
-    let failed = host.put_content_measured(&volume, &write, "cancelled", b"never", "text/plain", "never",
-        64, &IdempotencyKey::new("cancelled-content")?, CONTENT_WORK_BUDGET, &cancelled).await.unwrap_err();
-    assert_eq!(*failed.work, acyclic_fs::WorkCounters::default());
+    assert!(host.put_content(&volume, &write, "cancelled", b"never", "text/plain", "never",
+        64, &IdempotencyKey::new("cancelled-content")?, None, Some(&io)).await.is_err());
+    assert_eq!(io.receipt(), acyclic_fs::WorkCounters::default());
     let mut denied = CONTENT_WORK_BUDGET;
     denied.peak_allocation_bytes = 0;
-    let failed = host.put_content_measured(&volume, &write, "denied", b"never", "text/plain", "never", 64,
-        &IdempotencyKey::new("denied-content")?, denied, &cancellation).await.unwrap_err();
-    assert_eq!(failed.work.backend_write_operations, 0);
-    assert_eq!(host.content_for_operation_measured(&volume, &write, &IdempotencyKey::new("denied-content")?,
-        "denied", 64, CONTENT_WORK_BUDGET, &cancellation).await.map_err(|failure| failure.error)?.value, None);
+    let io = acyclic_harness::filesystem::PreparationIo::from_budget(denied, &cancellation)?;
+    assert!(host.put_content(&volume, &write, "denied", b"never", "text/plain", "never", 64,
+        &IdempotencyKey::new("denied-content")?, None, Some(&io)).await.is_err());
+    assert_eq!(io.receipt().backend_write_operations, 0);
+    let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
+    assert_eq!(host.content_for_operation(&volume, &write, &IdempotencyKey::new("denied-content")?,
+        "denied", 64, Some(&io)).await?, None);
     let workspace = acyclic_harness::filesystem::workspace_ref(provider, &volume.storage_name(&mut None)?)?;
     assert_eq!(host.read(&workspace, None, "/result.json", 64).await?.as_ref(), b"later");
     Ok(())

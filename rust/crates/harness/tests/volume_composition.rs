@@ -132,7 +132,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         "instructions.txt",
         1024,
         &IdempotencyKey::new("root-skill")?,
-    )
+     None, None)
     .await?;
     let builtin_writer = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
@@ -151,7 +151,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
             "help.txt",
             1024,
             &IdempotencyKey::new("builtin")?,
-        )
+         None, None)
         .await?;
     let root_workspace = workspace_ref(provider.clone(), &root.storage_name(&mut None)?)?;
     let pinned = host.resolve(&root_workspace).await?;
@@ -194,7 +194,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
     let builtin_reader =
         ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &builtins, VolumeOperation::Read, u64::MAX, &mut None)?;
     assert_eq!(
-        host.read_content(&builtin, &builtin_reader, 1024)
+        host.read_content(&builtin, &builtin_reader, 1024, None)
             .await?
             .as_ref(),
         b"builtin"
@@ -208,7 +208,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         "instructions.txt",
         1024,
         &IdempotencyKey::new("edit-skill")?,
-    )
+     None, None)
     .await?;
     assert_eq!(
         host.read(&root_workspace, None, "/instructions.txt", 1024)
@@ -241,7 +241,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         "late.txt",
         1024,
         &IdempotencyKey::new("late-skill")?,
-    )
+     None, None)
     .await?;
     assert!(matches!(
         plan.apply(&IdempotencyKey::new("approved-import")?).await?,

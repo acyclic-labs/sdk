@@ -52,7 +52,7 @@ async fn real_filesystem_birth_without_protected_root_association_is_not_source_
         &project.storage_name(&mut None)?, config, operation, &work, &cancellation,
     ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
     let selected = ProjectSourceSnapshot {
-        project: project.clone(), generation: host.generation_ref(&birth)?, native_snapshot: None,
+        project: project.clone(), generation: host.generation_ref_id(birth.id())?, native_snapshot: None,
     };
     drop(birth);
     let policy = FsRootProjectSourceProvider::new(host, &owner, root, Some(&super::super::PreparationIo::from_native_work(&work)?))?;

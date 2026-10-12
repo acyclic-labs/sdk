@@ -158,7 +158,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     let created = fixture.create_filesystem_child_with_grants(&["fork:publish", "conversation:bind"]).await?;
     let stream_provider = crate::resources::ProviderRef::new("created-controls".into(), "stream".into(), "2".into(), &mut None)?;
     let verifier = Arc::new(CompositeForkVerifier::new(&[
-        Arc::new(FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536)?),
+        FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536, None, None)?,
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
     ], &mut None)?);
     let mut original = StreamAggregate::open(
@@ -204,9 +204,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     };
     let history = crate::store::HistoryReader::new(&fixture.stream, &fork.parent, &(parent_issuer.verifier(&mut None).expect("verifier copy")), &mut None)?
         .fork_history(parent.reducer(), 0, crate::store::HistoryReadLimits { maximum_events: 2, maximum_bytes: 65_536 }, &mut None).await?;
-    let resolver = Arc::new(FilesystemContentVerifier::new(
-        fixture.filesystem.clone(), &parent_issuer.verifier(&mut None).expect("verifier copy"), &parent_scope, 65_536, None,
-    )?);
+    let resolver = FilesystemContentVerifier::new(fixture.filesystem.clone(), &parent_issuer.verifier(&mut None).expect("verifier copy"), &parent_scope, 65_536, None)?;
     let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), parent.reducer().copy(&mut None)?,
         parent_issuer.verifier(&mut None).expect("verifier copy"), parent_scope.clone(), created.project.clone(), stream_provider, resolver,
         Some(history), None, #[cfg(not(target_arch = "wasm32"))] None,

@@ -158,12 +158,7 @@ impl Fixture {
         host.create_volume(&volume).await?;
         let writer =
             ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &scope,
-            32_768, None,
-        )?);
+        let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 32_768, None)?;
         Ok(Self {
             host,
             issuer,
@@ -184,7 +179,7 @@ impl Fixture {
                 "source.md",
                 1_000_000,
                 &IdempotencyKey::new(key)?,
-            )
+             None, None)
             .await?;
         Ok(())
     }
@@ -344,12 +339,7 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
     ));
     declaration.limits.entries = 64;
     let scope = fixture.issuer.issue("denied", &Capabilities::default(), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
-    let denied = FilesystemContentVerifier::new(
-        fixture.host.clone(),
-        &fixture.issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        32_768, None,
-    )?;
+    let denied = FilesystemContentVerifier::new(fixture.host.clone(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &scope, 32_768, None)?;
     assert!(matches!(
         declaration.capture(&denied).await,
         Err(Error::Unauthorized(_))

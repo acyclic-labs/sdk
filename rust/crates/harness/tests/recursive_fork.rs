@@ -183,14 +183,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
-    .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
-        host.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &grant_scope,
-        1_024, None,
-    )?))
+    .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 1_024, None)?)
     .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-        Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+        FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
     ], &mut None)?));
     aggregate
@@ -218,7 +213,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "current.txt",
             1_024,
             &IdempotencyKey::new("root-message")?,
-        )
+         None, None)
         .await?;
     let root_attachment = host
         .put_content(
@@ -230,7 +225,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "evidence.bin",
             1_024,
             &IdempotencyKey::new("root-attachment")?,
-        )
+         None, None)
         .await?;
     let root_manifest_bytes = serde_json::to_vec(&vec![Attachment {
         file: root_attachment.clone(),
@@ -247,7 +242,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "manifest.json",
             1_024,
             &IdempotencyKey::new("root-manifest")?,
-        )
+         None, None)
         .await?;
     let mut previous_attachment = root_attachment.clone();
     aggregate
@@ -289,7 +284,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "project.txt",
             1_024,
             &IdempotencyKey::new("root-project-reference")?,
-        )
+         None, None)
         .await?;
     project_head = host.resolve(&project_head.workspace).await?;
     let shared_writer = issuer.issue("shared-writer", &Capabilities::new([shared.capability(VolumeOperation::Write, &mut None)?]), None, None, &mut None).expect("scope proof");
@@ -310,7 +305,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "shared.txt",
             1_024,
             &IdempotencyKey::new("root-shared-reference")?,
-        )
+         None, None)
         .await?;
     aggregate
         .execute(command(
@@ -437,12 +432,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         } else {
             Vec::new()
         };
-        let parent_resolver = FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &grant_scope,
-            64 * 1_024, None,
-        )?;
+        let parent_resolver = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 64 * 1_024, None)?;
         if level == 1 {
             let dirty_private = volume(
                 &provider,
@@ -613,12 +603,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
             let reader_scope =
                 child_issuer.issue("deep-attached-reader", &readable, Some(attached), None, &mut None).expect("scope proof");
-            let reader = FilesystemContentVerifier::new(
-                host.clone(),
-                &child_issuer.verifier(&mut None).expect("verifier copy"),
-                &reader_scope,
-                1_024, None,
-            )?;
+            let reader = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &reader_scope, 1_024, None)?;
             reader
                 .verify_manifest(&seed.attachment_manifests[0], 1, &Limits::default(), None)?
                 .await?;
@@ -736,12 +721,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 "a retained original grant cannot authorize extra unpublished FileRef metadata"
             );
             let child_reference_scope = child_issuer.issue("child-reference-reader", &seed.reference_capabilities(child_agent)?, None, None, &mut None).expect("scope proof");
-            let child_reference_resolver = FilesystemContentVerifier::new(
-                host.clone(),
-                &child_issuer.verifier(&mut None).expect("verifier copy"),
-                &child_reference_scope,
-                1_024, None,
-            )?;
+            let child_reference_resolver = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_reference_scope, 1_024, None)?;
             child_reference_resolver
                 .verify_manifest(&root_manifest, 1, &Limits::default(), None)?
                 .await?;
@@ -762,17 +742,12 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &previous_file,
             )?;
             assert_eq!(
-                host.read_content(&previous_file, &exact, 1_024)
+                host.read_content(&previous_file, &exact, 1_024, None)
                     .await?
                     .as_ref(),
                 b"root"
             );
-            let inherited_resolver = FilesystemContentVerifier::new(
-                host.clone(),
-                &child_issuer.verifier(&mut None).expect("verifier copy"),
-                &reader_scope,
-                1_024, None,
-            )?;
+            let inherited_resolver = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &reader_scope, 1_024, None)?;
             inherited_resolver.verify(&previous_file, 1_024, None)?.await?;
             inherited_resolver.verify(&root_attachment, 1_024, None)?.await?;
             inherited_resolver
@@ -833,10 +808,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-                Arc::new(
-                    FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?
-                        .with_total_reference_bytes(1)?,
-                ),
+                FilesystemForkVerifier::new(host.clone(), 64 * 1_024, Some(1), None)?,
                 Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
             ], &mut None)?));
             assert!(
@@ -857,9 +829,8 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 issuer.verifier(&mut None).expect("verifier copy"),
                 SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
-            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[Arc::new(
-                FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?,
-            )], &mut None)?));
+            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
+            ], &mut None)?));
             assert!(
                 incomplete
                     .execute(fork_command(
@@ -951,7 +922,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 "secret.txt",
                 1_024,
                 &IdempotencyKey::new("rogue-scratch")?,
-            )
+             None, None)
             .await?;
             let mut rogue_seed = seed.clone();
             rogue_seed.child = rogue_authority;
@@ -1038,7 +1009,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         assert_eq!(report.clone().into_seed(&mut None)?, seed);
         if level == 1 {
             let verifier = CompositeForkVerifier::new(&[
-                Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+                FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
                 Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
             ], &mut None)?;
             let fence = verifier.activate(&seed).await?;
@@ -1052,7 +1023,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     "fenced.txt",
                     1_024,
                     &IdempotencyKey::new("fenced-private-write")?,
-                )
+                 None, None)
                 .await
                 .is_err(),
                 "private writes cannot race fork publication"
@@ -1065,14 +1036,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             child_issuer.verifier(&mut None).expect("verifier copy"),
             SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
-        .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
-            host.clone(),
-            &child_issuer.verifier(&mut None).expect("verifier copy"),
-            &child_scope,
-            1_024, None,
-        )?))
+        .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, 1_024, None)?)
         .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-            Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+            FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
             Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
         ], &mut None)?));
         if level == 1 {
@@ -1231,21 +1197,11 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 checkpoint: None,
             };
             let source_scope = child_issuer.issue("inherited-source", &seed.reference_capabilities(child_agent)?, Some(child_agent), None, &mut None).expect("scope proof");
-            let source_reader = FilesystemContentVerifier::new(
-                host.clone(),
-                &child_issuer.verifier(&mut None).expect("verifier copy"),
-                &source_scope,
-                1_024, None,
-            )?;
+            let source_reader = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &source_scope, 1_024, None)?;
             let projected =
                 select_model_context(&loaded, (&loaded).logical_revision(), selection.clone(), &source_reader, acyclic_harness::conversation::Limits { context_messages: 2, attachments: 4, render_bytes: 64 * 1_024, ..Default::default() }, 4, None)
                     .await?;
-            let denied_reader = FilesystemContentVerifier::new(
-                host.clone(),
-                &child_issuer.verifier(&mut None).expect("verifier copy"),
-                &child_issuer.issue("denied-source", &Capabilities::default(), Some(child_agent), None, &mut None).expect("scope proof"),
-                1_024, None,
-            )?;
+            let denied_reader = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_issuer.issue("denied-source", &Capabilities::default(), Some(child_agent), None, &mut None).expect("scope proof"), 1_024, None)?;
             assert!(
                 select_model_context(&loaded, (&loaded).logical_revision(), selection, &denied_reader, acyclic_harness::conversation::Limits { context_messages: 2, attachments: 4, render_bytes: 64 * 1_024, ..Default::default() }, 4, None)
                     .await
@@ -1287,14 +1243,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 issuer.verifier(&mut None).expect("verifier copy"),
                 SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
-            .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
-                host.clone(),
-                &issuer.verifier(&mut None).expect("verifier copy"),
-                &grant_scope,
-                1_024, None,
-            )?))
+            .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 1_024, None)?)
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-                Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+                FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
                 Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
             ], &mut None)?));
             child_aggregate = StreamAggregate::open(
@@ -1303,14 +1254,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 child_issuer.verifier(&mut None).expect("verifier copy"),
                 SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
-            .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
-                host.clone(),
-                &child_issuer.verifier(&mut None).expect("verifier copy"),
-                &child_scope,
-                1_024, None,
-            )?))
+            .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, 1_024, None)?)
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-                Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+                FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
                 Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
             ], &mut None)?));
             assert_eq!(aggregate.reducer().fork(&child_authority), Some(&seed));
@@ -1358,7 +1304,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 "current.txt",
                 1_024,
                 &IdempotencyKey::new(format!("message-{level}"))?,
-            )
+             None, None)
             .await?;
         let attachment_bytes = format!("evidence at depth {level}");
         let child_attachment = host
@@ -1371,7 +1317,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 "evidence.bin",
                 1_024,
                 &IdempotencyKey::new(format!("attachment-{level}"))?,
-            )
+             None, None)
             .await?;
         let child_read = ContentGrant::verify(
             &child_issuer.verifier(&mut None).expect("verifier copy"),
@@ -1381,12 +1327,12 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             u64::MAX, &mut None,
         )?;
         assert_eq!(
-            host.read_content(&child_attachment, &child_read, 1_024)
+            host.read_content(&child_attachment, &child_read, 1_024, None)
                 .await?,
             attachment_bytes.as_bytes()
         );
         assert!(
-            host.read_content(&previous_file, &child_read, 1_024)
+            host.read_content(&previous_file, &child_read, 1_024, None)
                 .await
                 .is_err()
         );
@@ -1406,7 +1352,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     "manifest.json",
                     1_024,
                     &IdempotencyKey::new(format!("manifest-{level}"))?,
-                )
+                 None, None)
                 .await?;
             ReferencedAttachments::Manifest {
                 manifest,
@@ -1484,7 +1430,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "final.png",
             1_024,
             &IdempotencyKey::new("deep-final-image")?,
-        )
+         None, None)
         .await?;
     let manifest = host
         .put_attachment_manifest(
@@ -1522,12 +1468,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         .reducer()
         .conversation()
         .ok_or_else(|| acyclic_harness::Error::Invalid("conversation not bound".into()))?;
-    let resolver = FilesystemContentVerifier::new(
-        host.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &grant_scope,
-        1_024, None,
-    )?;
+    let resolver = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 1_024, None)?;
     let selected = select_model_context(
         state,
         (state).logical_revision(),
@@ -1947,7 +1888,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             "resolved-merge.txt",
             1_024,
             &IdempotencyKey::new("wide-resolved-notice")?,
-        )
+         None, None)
         .await?;
     let receipt = controller.merge_receipt(
         &inspected,

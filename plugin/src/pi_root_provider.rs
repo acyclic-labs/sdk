@@ -610,8 +610,13 @@ where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
 {
     let grant = pi_input_write_grant_with_native_work(owner, work)?;
     let maximum = owner.policy().maximum_payload_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
-    let result = filesystem.content_for_operation_with_native_work(
-        &owner.policy().journal, &grant.0, &coordinates.key.0, &coordinates.path.0, maximum, work).await;
+    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+    let result = filesystem.content_for_operation(
+        &owner.policy().journal, &grant.0, &coordinates.key.0, &coordinates.path.0, maximum, Some(&io)).await
+        .and_then(|file| file.map(|file| {
+            let custody = io.take_native_custody(file.logical_owned_bytes()?)?;
+            Ok((file, custody))
+        }).transpose());
     match result {
         Ok(Some((reference, custody))) => {
             if let Err(error) = validate_pi_input_media(owner, &reference, &coordinates.path.0,
@@ -638,8 +643,10 @@ where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
     let (bytes, bytes_custody) = guarded_pi_bytes(value, maximum, work)?;
     let encoded = (bytes, bytes_custody);
     let length = encoded.0.len() as u64;
-    let result = filesystem.put_content_with_native_work(&owner.policy().journal, &grant.0, &coordinates.path.0,
-        &encoded.0, media_type, &coordinates.display_name.0, maximum, &coordinates.key.0, work).await;
+    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+    let result = filesystem.put_content(&owner.policy().journal, &grant.0, &coordinates.path.0,
+        &encoded.0, media_type, &coordinates.display_name.0, maximum, &coordinates.key.0, None, Some(&io)).await
+        .and_then(|file| { let custody = io.take_native_custody(file.logical_owned_bytes()?)?; Ok((file, custody)) });
     drop(encoded);
     let result = match result {
         Ok((reference, custody)) => {
