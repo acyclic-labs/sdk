@@ -111,7 +111,10 @@ async fn request(socket: &mut TcpStream) -> (String, Value) {
         assert!(bytes.len() <= 65536, "oversized fixture request headers");
     };
     let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
-    assert_eq!(headers.lines().next().unwrap().split_whitespace().next(), Some("POST"));
+    assert_eq!(
+        headers.lines().next().unwrap().split_whitespace().next(),
+        Some("POST")
+    );
     assert!(headers.lines().any(|line| {
         line.split_once(':').is_some_and(|(key, value)| {
             key.eq_ignore_ascii_case("authorization") && value.trim() == "Bearer fixture-token"
@@ -152,9 +155,17 @@ async fn explicit_delivery_ack_uses_the_canonical_loopback_projection() {
         1024,
     )
     .unwrap();
-    let server = Server::new(vec![(200, serde_json::from_slice(&response).unwrap())], None, "/v1/stream/read").await;
+    let server = Server::new(
+        vec![(200, serde_json::from_slice(&response).unwrap())],
+        None,
+        "/v1/stream/read",
+    )
+    .await;
     assert_eq!(
-        server.client.acknowledge_delivery(Bytes::from_static(&[0; 32])).await,
+        server
+            .client
+            .acknowledge_delivery(Bytes::from_static(&[0; 32]))
+            .await,
         Ok(())
     );
     assert_eq!(
@@ -171,7 +182,10 @@ async fn explicit_delivery_ack_rejects_bad_tokens_without_a_request() {
     let server = Server::new(vec![], None, "/v1/stream/read").await;
     for length in [0, 1, 31, 33, 64] {
         assert_eq!(
-            server.client.acknowledge_delivery(Bytes::from(vec![0; length])).await,
+            server
+                .client
+                .acknowledge_delivery(Bytes::from(vec![0; length]))
+                .await,
             Err(StreamError::InvalidArgument)
         );
     }
@@ -188,7 +202,10 @@ async fn explicit_delivery_ack_validates_success_and_never_retries_failures() {
     ] {
         let server = Server::new(vec![reply], None, "/v1/stream/read").await;
         assert_eq!(
-            server.client.acknowledge_delivery(Bytes::from_static(&[0; 32])).await,
+            server
+                .client
+                .acknowledge_delivery(Bytes::from_static(&[0; 32]))
+                .await,
             Err(StreamError::Unavailable)
         );
         assert_eq!(server.requests().len(), 1);
@@ -197,18 +214,30 @@ async fn explicit_delivery_ack_validates_success_and_never_retries_failures() {
 
 #[tokio::test]
 async fn http_read_never_projects_or_automatically_acknowledges_metadata() {
-    let server = Server::new(vec![(200, json!("0")), (200, json!([]))], None, "/v1/stream/read").await;
-    let mut records = server.client.read(ReadRequest {
-        path: StreamPath::new("events").unwrap(),
-        from: 0,
-        limit: 1,
-    }).await.unwrap();
+    let server = Server::new(
+        vec![(200, json!("0")), (200, json!([]))],
+        None,
+        "/v1/stream/read",
+    )
+    .await;
+    let mut records = server
+        .client
+        .read(ReadRequest {
+            path: StreamPath::new("events").unwrap(),
+            from: 0,
+            limit: 1,
+        })
+        .await
+        .unwrap();
     assert!(records.next().await.is_none());
     assert_eq!(
         server.requests(),
         vec![
             ("/v1/stream/tail".to_owned(), json!({"path": "events"})),
-            ("/v1/stream/read".to_owned(), json!({"path": "events", "from": "0", "limit": 1})),
+            (
+                "/v1/stream/read".to_owned(),
+                json!({"path": "events", "from": "0", "limit": 1})
+            ),
         ]
     );
 }
@@ -279,13 +308,17 @@ async fn startup_rejects_invalid_tail_and_cursor_before_any_read() {
 
 #[tokio::test]
 async fn pages_preserve_backpressure_cursor_handoff_and_live_delivery() {
-    let server = Server::new(vec![
-        (200, json!("266")),
-        (200, page(10, 256)),
-        (200, json!([])),
-        (200, page(266, 1)),
-        (200, json!([])),
-    ], None, "/v1/stream/read")
+    let server = Server::new(
+        vec![
+            (200, json!("266")),
+            (200, page(10, 256)),
+            (200, json!([])),
+            (200, page(266, 1)),
+            (200, json!([])),
+        ],
+        None,
+        "/v1/stream/read",
+    )
     .await;
     let (delay, mut gates) = clock();
     let mut stream = server
@@ -339,12 +372,16 @@ async fn pages_preserve_backpressure_cursor_handoff_and_live_delivery() {
 
 #[tokio::test]
 async fn idle_polling_budget_and_drop_are_controlled_by_each_wait() {
-    let server = Server::new(vec![
-        (200, json!("0")),
-        (200, json!([])),
-        (200, json!([])),
-        (200, json!([])),
-    ], None, "/v1/stream/read")
+    let server = Server::new(
+        vec![
+            (200, json!("0")),
+            (200, json!([])),
+            (200, json!([])),
+            (200, json!([])),
+        ],
+        None,
+        "/v1/stream/read",
+    )
     .await;
     let (delay, mut gates) = clock();
     let mut stream = server
@@ -372,11 +409,7 @@ async fn idle_polling_budget_and_drop_are_controlled_by_each_wait() {
 #[tokio::test]
 async fn adversarial_pages_emit_one_error_then_eof_without_retry() {
     for (from, reply, expected) in [
-        (
-            0,
-            (200, json!({"records":[]})),
-            StreamError::Unavailable,
-        ),
+        (0, (200, json!({"records":[]})), StreamError::Unavailable),
         (
             0,
             (200, json!([{"sequence":"0"}])),
@@ -400,7 +433,12 @@ async fn adversarial_pages_emit_one_error_then_eof_without_retry() {
             StreamError::AccessDenied,
         ),
     ] {
-        let server = Server::new(vec![(200, json!(u64::MAX.to_string())), reply], None, "/v1/stream/read").await;
+        let server = Server::new(
+            vec![(200, json!(u64::MAX.to_string())), reply],
+            None,
+            "/v1/stream/read",
+        )
+        .await;
         let (delay, mut gates) = clock();
         let mut stream = server
             .client
@@ -416,11 +454,15 @@ async fn adversarial_pages_emit_one_error_then_eof_without_retry() {
 
 #[tokio::test]
 async fn public_follow_uses_the_same_immediate_page_and_terminal_error_contract() {
-    let server = Server::new(vec![
-        (200, json!("1")),
-        (200, page(0, 1)),
-        (403, json!({"code":"access_denied"})),
-    ], None, "/v1/stream/read")
+    let server = Server::new(
+        vec![
+            (200, json!("1")),
+            (200, page(0, 1)),
+            (403, json!({"code":"access_denied"})),
+        ],
+        None,
+        "/v1/stream/read",
+    )
     .await;
     let mut stream = server.client.follow(path(), 0).await.unwrap();
     assert_eq!(stream.next().await.unwrap().unwrap().sequence, 0);
@@ -432,12 +474,14 @@ async fn public_follow_uses_the_same_immediate_page_and_terminal_error_contract(
     assert_eq!(server.requests().len(), 3);
 }
 
-use acyclic_grpc_observability::test_support::Capture;
+use acyclic_grpc_observability::tests::Capture;
 
 fn assert_cancelled_call(captured: &Capture, route: &str) {
     let spans = captured.0.lock().unwrap();
     let call = spans
-        .spans.iter().rev()
+        .spans
+        .iter()
+        .rev()
         .find(|span| {
             span.name == "acyclic.stream.http.call"
                 && span
@@ -453,10 +497,22 @@ fn assert_cancelled_call(captured: &Capture, route: &str) {
 async fn until_status(captured: &Capture, route: &str) {
     loop {
         let notified = captured.1.notified();
-        let headers_received = captured.0.lock().unwrap().spans.iter().rev()
-            .find(|span| span.name == "acyclic.stream.http.call"
-                && span.fields.get("route").is_some_and(|value| value == route))
-            .is_some_and(|span| span.fields.get("http.status").is_some_and(|status| status == "200"));
+        let headers_received = captured
+            .0
+            .lock()
+            .unwrap()
+            .spans
+            .iter()
+            .rev()
+            .find(|span| {
+                span.name == "acyclic.stream.http.call"
+                    && span.fields.get("route").is_some_and(|value| value == route)
+            })
+            .is_some_and(|span| {
+                span.fields
+                    .get("http.status")
+                    .is_some_and(|status| status == "200")
+            });
         if headers_received {
             return;
         }
@@ -466,7 +522,8 @@ async fn until_status(captured: &Capture, route: &str) {
 fn assert_parent_sentinels(captured: &Capture) {
     let spans = captured.0.lock().unwrap();
     let parent = spans
-        .spans.iter()
+        .spans
+        .iter()
         .find(|span| span.name == "test.parent")
         .unwrap();
     assert_eq!(parent.fields["outcome"], "sentinel");
@@ -490,7 +547,6 @@ fn assert_safe_fields(captured: &Capture) {
         }
     }
 }
-
 
 #[tokio::test]
 async fn filtered_spans_never_record_child_results_on_the_parent() {
@@ -517,11 +573,15 @@ async fn filtered_spans_never_record_child_results_on_the_parent() {
                     http.status = 777_u64
                 );
                 async {
-                    let server = Server::new(vec![
-                        (200, json!("1")),
-                        (200, page(0, 1)),
-                        (403, json!({"code":"access_denied"})),
-                    ], None, "/v1/stream/read")
+                    let server = Server::new(
+                        vec![
+                            (200, json!("1")),
+                            (200, page(0, 1)),
+                            (403, json!({"code":"access_denied"})),
+                        ],
+                        None,
+                        "/v1/stream/read",
+                    )
                     .await;
                     let (delay, _) = clock();
                     let mut stream = server
@@ -535,7 +595,8 @@ async fn filtered_spans_never_record_child_results_on_the_parent() {
                     if follow_enabled {
                         let spans = captured.0.lock().unwrap();
                         let follow = spans
-                            .spans.iter()
+                            .spans
+                            .iter()
                             .find(|span| span.name == "acyclic.stream.http.follow")
                             .unwrap();
                         assert!(
@@ -556,7 +617,8 @@ async fn filtered_spans_never_record_child_results_on_the_parent() {
                     if follow_enabled {
                         let spans = captured.0.lock().unwrap();
                         let follow = spans
-                            .spans.iter()
+                            .spans
+                            .iter()
                             .find(|span| span.name == "acyclic.stream.http.follow")
                             .unwrap();
                         assert!(follow.closed);
@@ -590,7 +652,12 @@ async fn visible_follow_descendants_stay_with_the_originating_subscriber() {
     let origin = Capture::default();
     let consumer = Capture::default();
     let (server, mut stream) = async {
-        let server = Server::new(vec![(200, json!("1")), (200, page(0, 1))], None, "/v1/stream/read").await;
+        let server = Server::new(
+            vec![(200, json!("1")), (200, page(0, 1))],
+            None,
+            "/v1/stream/read",
+        )
+        .await;
         let (delay, _) = clock();
         let stream = server
             .client
@@ -611,20 +678,25 @@ async fn visible_follow_descendants_stay_with_the_originating_subscriber() {
     {
         let spans = origin.0.lock().unwrap();
         let (follow_id, follow) = spans
-            .spans.iter().enumerate()
+            .spans
+            .iter()
+            .enumerate()
             .find(|(_, span)| span.name == "acyclic.stream.http.follow")
             .unwrap();
         assert!(follow.closed);
         assert_eq!(follow.fields["terminal"], "dropped");
         assert!(!follow.fields.contains_key("outcome"));
         let (poll_id, poll) = spans
-            .spans.iter().enumerate()
+            .spans
+            .iter()
+            .enumerate()
             .find(|(_, span)| span.name == "acyclic.stream.http.follow.poll")
             .unwrap();
         assert_eq!(poll.parent, Some(follow_id));
         assert!(poll.closed);
         let read = spans
-            .spans.iter()
+            .spans
+            .iter()
             .find(|span| {
                 span.name == "acyclic.stream.http.call"
                     && span
@@ -749,7 +821,8 @@ async fn drop_while_http_body_is_pending_closes_connection_and_read_spans() {
         {
             let spans = captured.0.lock().unwrap();
             let follow = spans
-                .spans.iter()
+                .spans
+                .iter()
                 .find(|span| span.name == "acyclic.stream.http.follow")
                 .unwrap();
             assert!(!follow.closed);
@@ -766,7 +839,9 @@ async fn drop_while_http_body_is_pending_closes_connection_and_read_spans() {
         {
             let spans = captured.0.lock().unwrap();
             let (follow_id, follow) = spans
-                .spans.iter().enumerate()
+                .spans
+                .iter()
+                .enumerate()
                 .find(|(_, span)| span.name == "acyclic.stream.http.follow")
                 .unwrap();
             assert!(follow.closed);
@@ -775,14 +850,16 @@ async fn drop_while_http_body_is_pending_closes_connection_and_read_spans() {
             assert!(!follow.fields.contains_key("outcome"));
             assert!(
                 spans
-                    .spans.iter()
+                    .spans
+                    .iter()
                     .any(|span| span.name == "acyclic.stream.http.follow.poll"
                         && span.parent == Some(follow_id)
                         && span.closed)
             );
             assert!(
                 spans
-                    .spans.iter()
+                    .spans
+                    .iter()
                     .filter(|span| span.name == "acyclic.stream.http.call")
                     .all(|span| span.closed)
             );
@@ -879,10 +956,16 @@ async fn foreign_dispatch_drop_and_unwind_close_real_parents_and_pending_body() 
         assert_cancelled_call(&origin, "read");
         {
             let spans = origin.0.lock().unwrap();
-            assert!(spans.spans.iter().any(|span| span.name == "test.origin_parent"));
+            assert!(
+                spans
+                    .spans
+                    .iter()
+                    .any(|span| span.name == "test.origin_parent")
+            );
             assert!(spans.spans.iter().all(|span| span.closed));
             let follow = spans
-                .spans.iter()
+                .spans
+                .iter()
                 .find(|span| span.name == "acyclic.stream.http.follow")
                 .unwrap();
             assert_eq!(follow.fields["phase"], "read");
@@ -893,7 +976,8 @@ async fn foreign_dispatch_drop_and_unwind_close_real_parents_and_pending_body() 
             let spans = consumer.0.lock().unwrap();
             assert!(
                 spans
-                    .spans.iter()
+                    .spans
+                    .iter()
                     .any(|span| span.name == "test.consumer_parent")
             );
             assert!(spans.spans.iter().all(|span| span.closed));
@@ -926,7 +1010,9 @@ async fn traces_follow_cursor_lifetime_and_distinguish_drop_from_error() {
             let follow_id = {
                 let spans = captured.0.lock().unwrap();
                 let (id, span) = spans
-                    .spans.iter().enumerate()
+                    .spans
+                    .iter()
+                    .enumerate()
                     .find(|(_, span)| span.name == "acyclic.stream.http.follow")
                     .unwrap();
                 assert!(!span.closed, "constructor must not close the cursor span");
@@ -947,7 +1033,8 @@ async fn traces_follow_cursor_lifetime_and_distinguish_drop_from_error() {
                     assert_eq!(follow.fields["phase"], "sleep");
                     assert!(
                         spans
-                            .spans.iter()
+                            .spans
+                            .iter()
                             .any(|span| span.name == "acyclic.stream.http.follow.sleep"
                                 && span.parent == Some(follow_id)
                                 && !span.closed)
@@ -965,7 +1052,8 @@ async fn traces_follow_cursor_lifetime_and_distinguish_drop_from_error() {
                 );
                 assert!(
                     spans
-                        .spans.iter()
+                        .spans
+                        .iter()
                         .filter(|span| span.name == "acyclic.stream.http.follow.sleep")
                         .all(|span| span.closed)
                 );
@@ -980,7 +1068,8 @@ async fn traces_follow_cursor_lifetime_and_distinguish_drop_from_error() {
             assert_eq!(follow.fields["error.kind"], "access_denied");
             assert!(
                 spans
-                    .spans.iter()
+                    .spans
+                    .iter()
                     .any(|span| span.name == "acyclic.stream.http.follow.poll"
                         && span.parent == Some(follow_id)
                         && span.closed)
@@ -1016,7 +1105,8 @@ async fn traces_buffered_drop_and_startup_error_without_claiming_success() {
                 {
                     let spans = captured.0.lock().unwrap();
                     let follow = spans
-                        .spans.iter()
+                        .spans
+                        .iter()
                         .find(|span| span.name == "acyclic.stream.http.follow")
                         .unwrap();
                     assert!(!follow.closed);
@@ -1029,7 +1119,8 @@ async fn traces_buffered_drop_and_startup_error_without_claiming_success() {
             }
             let spans = captured.0.lock().unwrap();
             let follow = spans
-                .spans.iter()
+                .spans
+                .iter()
                 .find(|span| span.name == "acyclic.stream.http.follow")
                 .unwrap();
             assert!(follow.closed);

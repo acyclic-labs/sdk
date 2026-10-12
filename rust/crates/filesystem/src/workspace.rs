@@ -16,9 +16,9 @@ use crate::model::{CheckoutMode, GenerationSelector};
 use crate::path::PortablePath;
 use crate::performance::WorkBudget;
 use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, Checkout, CheckoutCommitOutcome,
-    ConflictKey, ConflictKind, ConflictSide, ConflictValue, FsError, GenerationDiff, MergeConflict,
-    MergeDriverRegistry, MergePlan, MergePlanResolutionError, MergeResolution,
+    AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, Checkout, ConflictKey, ConflictKind,
+    ConflictSide, ConflictValue, FsError, GenerationDiff, LivePublicationObservation,
+    MergeConflict, MergeDriverRegistry, MergePlan, MergePlanResolutionError, MergeResolution,
     MergeResolutionCache, UnpublishedMergeCandidate, Volume, resolve_merge_plan,
 };
 use acyclic_stream::ProviderTask;
@@ -640,7 +640,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         if let Some(original) = accounting.native_work() {
             return self
                 .volume
-                .checkout_with_native_work(selector, mode, original, cancellation)
+                .checkout(selector, mode, original, cancellation)
                 .await
                 .map_err(WorkspaceError::from);
         }
@@ -1520,10 +1520,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                         &mut KernelOwnedAllocation::Standalone,
                         name.retained_bytes(),
                     )?;
+                    let mut guard = &mut before_publication;
                     let forked = self
                         .volume
                         .fs
-                        .fork_workspace(
+                        .fork_workspace::<_, _, WorkspaceError>(
                             name,
                             &options.generation,
                             options.idempotency_key,
@@ -1531,7 +1532,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                             permit,
                             accounting.remaining()?,
                             cancellation,
-                            Some(&mut before_publication),
+                            Some(&mut guard),
                         )
                         .await;
                     let (allocations, spent, budget, _) = accounting
@@ -1589,9 +1590,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             idempotency_key,
             paths,
         } = options.value;
+        let mut guard = crate::NativeAuthorityGuard(before_publication.clone());
         self.volume
             .fs
-            .fork_workspace_guarded_with_native_work(
+            .fork_workspace(
                 name,
                 &generation,
                 idempotency_key,
@@ -1599,7 +1601,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 permit,
                 original,
                 cancellation,
-                before_publication,
+                Some(&mut guard),
             )
             .await
     }
@@ -3171,22 +3173,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         .await
     }
 
-    fn commit_value(&self, outcome: CheckoutCommitOutcome) -> Option<TransactionCommit<A, O>> {
+    fn commit_value(&self, outcome: LivePublicationObservation) -> Option<TransactionCommit<A, O>> {
         let generation = |id| Generation {
             workspace: self.workspace.clone(),
             id,
             publication_closure: self.checkout.publication_closure(id),
         };
         Some(match outcome {
-            CheckoutCommitOutcome::Committed { generation_id, .. } => {
+            LivePublicationObservation::Committed { generation_id, .. } => {
                 TransactionCommit::Committed(generation(generation_id))
             }
-            CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => {
+            LivePublicationObservation::AlreadyCommitted { generation_id, .. } => {
                 TransactionCommit::AlreadyCommitted(generation(generation_id))
             }
-            CheckoutCommitOutcome::Conflict { .. } => return None,
-            CheckoutCommitOutcome::Fenced { .. } => TransactionCommit::Fenced,
-            CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+            LivePublicationObservation::Conflict { .. } => return None,
+            LivePublicationObservation::Fenced { .. } => TransactionCommit::Fenced,
+            LivePublicationObservation::IdempotencyConflict { .. } => {
                 TransactionCommit::IdempotencyConflict
             }
         })
@@ -3259,7 +3261,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let actual = self
             .workspace
             .volume
-            .checkout_with_native_work(
+            .checkout(
                 GenerationSelector::Head,
                 CheckoutMode::read_only_pinned(),
                 original,
@@ -4605,7 +4607,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 maximum_generations: self.maximum_generations,
                 maximum_changes: self.maximum_changes,
                 maximum_conflicts: self.maximum_conflicts,
-                resolutions,
+                resolutions: crate::facade::WorkspaceJoinResolutions::Map(resolutions),
             })
             .await?;
         self.map_join_outcome(outcome)
@@ -4672,7 +4674,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                     maximum_generations: self.maximum_generations,
                     maximum_changes: self.maximum_changes,
                     maximum_conflicts: self.maximum_conflicts,
-                    resolutions,
+                    resolutions: crate::facade::WorkspaceJoinResolutions::Slice(resolutions),
                 },
                 original,
                 cancellation,
@@ -5263,18 +5265,6 @@ pub(crate) fn workspace_bounded_error(
             error: *error,
         });
     }
-    if let Some(FsError::RootReadWorkMerge {
-        prior,
-        backend,
-        error,
-    }) = error.downcast_ref::<FsError>()
-    {
-        return Some(WorkspaceError::Filesystem(FsError::RootReadWorkMerge {
-            prior: *prior,
-            backend: *backend,
-            error: *error,
-        }));
-    }
     macro_rules! bounded {
         ($kind:ty; [$($nested:ident),*]; [$($cancelled:ident),*]) => {{
             type Cause = $kind;
@@ -5358,11 +5348,14 @@ pub(crate) fn workspace_bounded_error(
     error.source().and_then(workspace_bounded_error)
 }
 
+impl From<crate::AuthorityStoreError> for WorkspaceError {
+    fn from(error: crate::AuthorityStoreError) -> Self {
+        Self::from(FsError::from(error))
+    }
+}
+
 impl From<FsError> for WorkspaceError {
     fn from(error: FsError) -> Self {
-        if matches!(&error, FsError::RootReadWorkMerge { .. }) {
-            return Self::Filesystem(error);
-        }
         if let Some(cause) = workspace_bounded_error(&error) {
             return cause;
         }

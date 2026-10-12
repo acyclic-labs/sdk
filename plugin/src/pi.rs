@@ -67,7 +67,7 @@ pub(crate) fn install_pi_at(
                 file.write_all(source.as_bytes())?;
                 sync_file(&file, Durability::Full)?;
                 drop(file);
-                durable_rename(&temporary, &extension, RenameMode::NoReplace)
+                durable_rename(&temporary, &extension, RenameMode::NoReplace, None)
             })();
             let _ = fs::remove_file(&temporary);
             if let Err(error) = publish

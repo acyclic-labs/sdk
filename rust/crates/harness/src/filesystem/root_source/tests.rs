@@ -1,4 +1,5 @@
 use super::*;
+use super::verify::source_budget;
 use crate::conversation::{VolumeOperation, VolumeOwner};
 use crate::core::AggregateKind;
 use crate::conversation::Limits;
@@ -35,7 +36,7 @@ fn context<'a>(owner: &'a Authority, admission: &'a TaskAdmissionRecord,
 #[tokio::test]
 async fn real_filesystem_birth_without_protected_root_association_is_not_source_authority() -> Result<()> {
     let provider = crate::resources::ProviderRef::new("root-birth".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
     let project = VolumeRef::new(provider, "root-project".into(), VolumeClass::Project,
         VolumeOwner::Project("root-project".into()), &mut None)?;
     let owner = Authority { kind: AggregateKind::Task, id: "root-owner".into() };
@@ -51,7 +52,7 @@ async fn real_filesystem_birth_without_protected_root_association_is_not_source_
         &project.storage_name(&mut None)?, config, operation, &work, &cancellation,
     ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
     let selected = ProjectSourceSnapshot {
-        project: project.clone(), generation: host.generation_ref(&birth)?, native_snapshot: None,
+        project: project.clone(), generation: host.generation_ref_id(birth.id())?, native_snapshot: None,
     };
     drop(birth);
     let policy = FsRootProjectSourceProvider::new(host, &owner, root, Some(&super::super::PreparationIo::from_native_work(&work)?))?;

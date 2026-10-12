@@ -16,7 +16,6 @@ pub struct LocalOptions {
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 impl LocalOptions {
-
     /// Creates local options with the SDK's bounded backend defaults.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -84,7 +83,6 @@ where
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 impl<O> Fs<LocalAuthorityBackend, O> {
-
     /// Flushes the authority frames written under
     pub fn flush_deferred_authority(&self) -> Result<(), acyclic_stream::StreamError> {
         self.inner.authority.provider().flush()
@@ -93,7 +91,6 @@ impl<O> Fs<LocalAuthorityBackend, O> {
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
-
     /// Observes release of every provider derived from this local root.
     #[doc(hidden)]
     #[must_use]
@@ -220,8 +217,12 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                     .await?
                 }
                 None => {
-                    acyclic_objects::v1::local::LocalObjects::open(root.join("objects"), objects, None)
-                        .await?
+                    acyclic_objects::v1::local::LocalObjects::open(
+                        root.join("objects"),
+                        objects,
+                        None,
+                    )
+                    .await?
                 }
             });
             let bucket = acyclic_objects::v1::wire::BucketRef {
@@ -260,7 +261,9 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             inner: Arc::new(FsInner {
                 authority: crate::distributed::StreamAuthorityStore::new(stream),
                 objects,
-                capabilities: EmbeddedCapabilities { durable: cfg!(any(unix, windows)) },
+                capabilities: EmbeddedCapabilities {
+                    durable: cfg!(any(unix, windows)),
+                },
                 workspace_namespace: [0; 16],
                 path_index: crate::path_index::MemoryGenerationPathIndex::default(),
                 _local_root_lifecycle: lifecycle,
@@ -268,4 +271,3 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         })
     }
 }
-

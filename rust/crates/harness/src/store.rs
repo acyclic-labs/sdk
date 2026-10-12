@@ -483,8 +483,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let box_slots = std::mem::size_of::<ForkSeed>() as u64;
         if let Some(observer) = custody.work().as_deref_mut() {
             observer.admit_allocation(box_slots)?;
+            observer.retain_owned(box_slots)?;
         }
-        custody.retain(box_slots)?;
+        custody.adopt(box_slots)?;
         let seed = Box::new(seed);
         let command = Command {
             operation_id: seed.operation_id,
@@ -717,7 +718,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "snapshot authority does not match requested aggregate".into(),
                 ));
             }
-            Reducer::restore_with_work(snapshot, authority_verifier, schemas, work)?
+            Reducer::restore(snapshot, authority_verifier, schemas, work)?
         } else {
             Reducer::new(authority, authority_verifier, schemas)
         };
@@ -2656,10 +2657,10 @@ mod tests {
             use crate::executor::ExecutionJournal as _;
             let filesystem_provider =
                 crate::resources::ProviderRef::new("cold-selected-context".into(), "filesystem".into(), "2".into(), &mut None)?;
-            let host = Arc::new(crate::filesystem::FilesystemHost::new(
+            let host = crate::filesystem::FilesystemHost::new(
                 acyclic_fs::Fs::memory(),
-                filesystem_provider.clone(),
-            )?);
+                &filesystem_provider, None,
+            )?;
             let private = crate::conversation::VolumeRef::new(
                 filesystem_provider,
                 "journal".into(),
@@ -3522,17 +3523,15 @@ mod tests {
         let provider = ProviderRef::new("admission-bytes".into(), "filesystem".into(), "2".into(), &mut None)?;
         let volume = VolumeRef::new(provider.clone(), "admission-bytes".into(),
             VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
-        let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider)?);
+        let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
         host.create_volume(&volume).await?;
         let issuer = issuer();
         let scope = issuer.issue("content-owner", &Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(agent), None, &mut None).expect("scope proof");
-        let publisher = FilesystemContentPublisher::new(
-            host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?);
+        let publisher = FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
+        let reader = FilesystemContentVerifier::new(host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
         let request = Interaction::question("original published prompt".into(), json!({"type": "string"}))?;
         let published = crate::contract::canonical_json_bytes(&request)?;
         let reference = publisher.stage_once(OperationId::from_bytes([95; 16]),

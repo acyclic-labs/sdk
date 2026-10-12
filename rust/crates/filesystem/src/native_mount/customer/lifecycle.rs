@@ -3,14 +3,30 @@ use super::*;
 pub(crate) fn flush_session_callbacks(
     session: &Mutex<Option<NativeMountSession>>,
 ) -> Result<(), MountLifecycleError> {
-    with_live_session(session, NativeMountSession::flush_callbacks)
+    with_live_session(session, |session| {
+        session.flush_callbacks(
+            &crate::NativeMaterializationWork::new(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .map_err(|(error, _)| NativeMountError::from(error))?,
+        )
+    })
 }
 
 /// Waits until the kernel caches nothing a change to the source superseded.
 pub(crate) fn revalidate_session(
     session: &Mutex<Option<NativeMountSession>>,
 ) -> Result<(), MountLifecycleError> {
-    with_live_session(session, NativeMountSession::revalidate)
+    with_live_session(session, |session| {
+        session.revalidate(
+            &crate::NativeMaterializationWork::new(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .map_err(|(error, _)| NativeMountError::from(error))?,
+        )
+    })
 }
 
 pub(crate) fn with_live_session(
@@ -51,9 +67,6 @@ pub enum MountLifecycleError {
     /// Original canonical materialization failure.
     #[error(transparent)]
     Materialize(#[from] crate::MaterializeError),
-    /// Original bounded demand failure.
-    #[error(transparent)]
-    Demand(#[from] crate::DemandError),
     /// Fixed native-view policy refusal.
     #[error("{0}")]
     NativePolicy(&'static str),

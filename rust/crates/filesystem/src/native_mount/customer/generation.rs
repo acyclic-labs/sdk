@@ -60,10 +60,11 @@ where
                 .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?;
             &standalone
         };
-        let native_original = mount.native_original.as_ref();
-        let callback_guard = mount.callback_guard.clone();
-        super::super::adapter::validate_native_source_io_binding(work, native_original)?;
-        if let Some(guard) = callback_guard.as_ref() {
+        super::super::adapter::validate_native_source_io_binding(
+            work,
+            mount.native_original.as_ref(),
+        )?;
+        if let Some(guard) = mount.callback_guard.as_ref() {
             guard.check(work)?.await?;
         }
         let mut frame_custody = None;
@@ -168,32 +169,7 @@ where
                     work,
                 )?;
                 let baseline = NativeViewBaseline::new(source_identity, !mount.writable);
-                let shared = SharedCheckout::with_publication_meter(
-                    checkout,
-                    MountPublication::Manual,
-                    work,
-                )?;
-                let root_custody = match root_custody {
-                    crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) => {
-                        custody
-                    }
-                    crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
-                        return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
-                    }
-                };
-                let source = CheckoutMountSource::new_at_meter(
-                    shared,
-                    config,
-                    root,
-                    root_custody,
-                    work,
-                    native_original,
-                )?;
-                let source = match callback_guard {
-                    Some(guard) => source.with_native_callback_guard(guard),
-                    None => source,
-                }
-                .into_arc_meter(work)?;
+                let source = options::checkout_source(checkout, (root, root_custody), mount, work)?;
                 if expected_root_identity.is_some() {
                     let capture = work.native_volume_work(capture_budget)?;
                     source

@@ -390,7 +390,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let request = match io {
             Some(io) => {
                 let decoded = io.decode(std::marker::PhantomData::<Interaction>, &bytes, ErrorCode::Storage)?;
-                crate::executor::with_history_io(Some(io), |work| ticket.validate_decoded_request_with_work(&decoded.0, work))?;
+                crate::executor::with_history_io(Some(io), |work| ticket.validate_decoded_request(&decoded.0, work))?;
                 crate::filesystem::retain_decoded(decoded)
             }
             None => ticket.validate_request_bytes(&bytes, &mut None)?.0,
@@ -439,7 +439,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let request = match io {
             Some(io) => {
                 let request = io.decode(std::marker::PhantomData::<Interaction>, &bytes, ErrorCode::Storage)?;
-                crate::executor::with_history_io(Some(io), |work| ticket.validate_decoded_request_with_work(&request.0, work))?;
+                crate::executor::with_history_io(Some(io), |work| ticket.validate_decoded_request(&request.0, work))?;
                 (request.0, Some(request.1))
             }
             None => (ticket.validate_request_bytes(&bytes, &mut None)?.0, None),
@@ -456,7 +456,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             match io {
                 Some(io) => {
                     let response = io.decode(std::marker::PhantomData::<InteractionResponse>, &bytes, ErrorCode::Storage)?;
-                    crate::executor::with_history_io(Some(io), |work| ticket.validate_decoded_decision_with_work(
+                    crate::executor::with_history_io(Some(io), |work| ticket.validate_decision(
                         &request.0, &resolution.outcome, detail, &response.0, work))?;
                 }
                 None => ticket.validate_decision_bytes(&request.0, &resolution.outcome, detail, &bytes, &mut None)?,
@@ -507,12 +507,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let authority = match work.as_deref_mut() { Some(work) => work.clone_authority(self.verifier.audience())?, None => self.verifier.audience().clone() };
         let verifier = self.verifier.copy(&mut work)?;
         let schemas = self.schemas.copy(&mut work)?;
-        if let Some(io) = io { io.retain_owned(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
-            io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?; }
         let content = FilesystemContentVerifier::new(Arc::clone(&self.host), &self.verifier, &self.owner_scope, self.maximum_bytes, io)?;
         let aggregate = StreamAggregate::open(&self.stream, authority, verifier, schemas, None,
             crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut work)
-            .await?.with_content_verifier(Arc::new(content));
+            .await?.with_content_verifier(content);
         let agent = aggregate.reducer().conversation().and_then(|conversation| conversation.agent)
             .ok_or_else(|| interaction_boundary(io, ErrorCode::Conflict, "interaction conversation is not bound to an agent"))?;
         if self.private_volume.owner() != &VolumeOwner::Agent(agent) {
@@ -538,16 +536,13 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let key = IdempotencyKey::new(crate::contract::preparation_format(format_args!("interaction:{id}:{kind}"), io)?)?;
         names_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), ErrorCode::Invalid, "interaction name custody underflows"))?)).transpose()?;
-        let result = match io {
-            Some(io) => self.host.put_internal_content_original_with_io(&self.private_volume,
-                &self.verifier, &self.owner_scope, &path, &bytes, "application/json", &name,
-                self.maximum_bytes, &key, InternalContentClass::Interaction, io).await,
-            None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, &self.private_volume, VolumeOperation::Write, u64::MAX, &mut None)?;
-                self.host.put_internal_content(&self.private_volume, &grant, &path, &bytes,
-                    "application/json", &name, self.maximum_bytes, &key, InternalContentClass::Interaction).await
-            }
-        };
+        let grant = crate::executor::with_history_io(io, |work| ContentGrant::verify(
+            &self.verifier, &self.owner_scope, &self.private_volume, VolumeOperation::Write,
+            io.map_or(Ok(u64::MAX), |io| io.remaining().map(|budget| budget.bytes_encoded))?, work))?;
+        let grant_hold = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
+        let result = self.host.put_internal_content(&self.private_volume, &grant, &path, &bytes,
+            "application/json", &name, self.maximum_bytes, &key, InternalContentClass::Interaction, io).await;
+        drop(grant); drop(grant_hold);
         drop(key); drop(name); drop(path); drop(names_hold); drop(bytes); drop(bytes_hold);
         result
     }

@@ -1,35 +1,8 @@
 use super::*;
 
-/// Original-native provider output with its actual newly allocated storage.
-#[cfg(not(target_arch = "wasm32"))]
-pub struct NativeStreamOutput<T> {
-    value: T,
-    allocation: acyclic_native_runtime::ReadAllocation,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl<T> NativeStreamOutput<T> {
-    /// Transfers already admitted storage; never adopts or allocates it again.
-    pub fn new(value: T, allocation: acyclic_native_runtime::ReadAllocation) -> Self {
-        Self { value, allocation }
-    }
-
-    /// Borrows the output without detaching its physical storage claim.
-    pub fn value(&self) -> &T { &self.value }
-
-    /// Borrows the producer's output while retaining its storage claim.
-    pub fn value_mut(&mut self) -> &mut T { &mut self.value }
-
-    /// Transfers both owners.
-    pub fn into_parts(self) -> (T, acyclic_native_runtime::ReadAllocation) {
-        (self.value, self.allocation)
-    }
-}
-
 /// Preserves original observer failure separately from the provider's error.
 #[cfg(not(target_arch = "wasm32"))]
-pub type NativeStreamResult<T, E = StreamError> =
-    std::io::Result<Result<NativeStreamOutput<T>, E>>;
+pub type NativeStreamResult<T, E = StreamError> = std::io::Result<Result<NativeStreamOutput<T>, E>>;
 
 /// A finite cursor preserves late original failures after its actual prefix.
 #[cfg(not(target_arch = "wasm32"))]
@@ -53,10 +26,7 @@ pub enum NativeProviderFuture<'a, T, E = StreamError> {
 #[cfg(not(target_arch = "wasm32"))]
 impl<'a, T, E> NativeProviderFuture<'a, T, E> {
     /// Admits the exact concrete frame before its sole physical allocation.
-    pub fn new<F>(
-        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-        future: F,
-    ) -> Self
+    pub fn new<F>(meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>, future: F) -> Self
     where
         F: Future<Output = NativeStreamResult<T, E>> + Send + 'a,
     {
@@ -80,7 +50,10 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
         } else {
             acyclic_native_runtime::ReadAllocation::new(meter, bytes)?
         };
-        Ok(Self::Funded { future: Box::pin(future), allocation })
+        Ok(Self::Funded {
+            future: Box::pin(future),
+            allocation,
+        })
     }
 
     /// Returns a result without allocating a provider future.
@@ -102,7 +75,9 @@ impl<T, E> Future for NativeProviderFuture<'_, T, E> {
     ) -> std::task::Poll<Self::Output> {
         match self.get_mut() {
             Self::Ready(result) => std::task::Poll::Ready(
-                result.take().expect("native provider future polled after completion"),
+                result
+                    .take()
+                    .expect("native provider future polled after completion"),
             ),
             Self::Funded { future, .. } => future.as_mut().poll(context),
         }

@@ -96,7 +96,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
             retained.preparer
         };
-        ready(Outcome::Succeeded(preparer.prepare_for_task(fork, &preparation).await?), None)
+        ready(Outcome::Succeeded(preparer.prepare_for_task(fork, &Arc::new(preparation)).await?), None)
     }
 
     pub(super) async fn admit_prepared_command(
@@ -145,7 +145,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     .checked_add(admission.logical_owned_bytes()?).ok_or_else(|| boundary(
                         Some(io), ErrorCode::Invalid, "prepared admission custody overflows"))?;
                 let admission = (admission, io.take_native_custody(bytes)?);
-                let fence = crate::filesystem::task_runtime::observed::clone_fence_with_custody(fence, io)?;
+                let fence = fence.clone_with_native_work(work)?;
                 let (result, custody) = crate::runtime::TaskSpawner::admit_owned_with_native_work(
                     self.runtime.task_host().as_ref(), admission, fence, work)?.await?;
                 io.absorb_native_custody(custody)?;

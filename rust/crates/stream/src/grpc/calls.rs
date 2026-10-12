@@ -37,7 +37,10 @@ impl Client {
                     .span
                     .scope(tokio::time::timeout_at(
                         attempt_deadline,
-                        call(Self::service(&self.channels, index), self.request(body.clone())),
+                        call(
+                            Self::service(&self.channels, index),
+                            self.request(body.clone()),
+                        ),
                     ))
                     .await;
                 let error = match result {

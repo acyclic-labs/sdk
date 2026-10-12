@@ -339,18 +339,62 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
         .await?
         .value;
     checkout
-        .create(crate::AuthoredMutation::CreateFile { path: file.clone(), bytes: (bytes::Bytes::from_static(b"retained")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
+        .create(
+            crate::AuthoredMutation::CreateFile {
+                path: file.clone(),
+                bytes: (bytes::Bytes::from_static(b"retained")).into(),
+                metadata: crate::kernel::FileMetadata::default(),
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
     checkout
-        .commit(OperationId::from_bytes([49; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
+        .commit(
+            OperationId::from_bytes([49; 16]),
+            None,
+            None,
+            None,
+            crate::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| async {
+                crate::FsResult::Ok(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                })
+            },
+        )
         .await?;
     let pending = path("pending.txt")?;
     checkout
-        .create(crate::AuthoredMutation::CreateFile { path: pending.clone(), bytes: (bytes::Bytes::from(vec![b'p'; 256 * 1_024])).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
+        .create(
+            crate::AuthoredMutation::CreateFile {
+                path: pending.clone(),
+                bytes: (bytes::Bytes::from(vec![b'p'; 256 * 1_024])).into(),
+                metadata: crate::kernel::FileMetadata::default(),
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
     fs.collect_local_garbage(None, &cancellation).await?;
     checkout
-        .commit(OperationId::from_bytes([50; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
+        .commit(
+            OperationId::from_bytes([50; 16]),
+            None,
+            None,
+            None,
+            crate::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| async {
+                crate::FsResult::Ok(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                })
+            },
+        )
         .await?;
     fs.collect_local_garbage(None, &cancellation).await?;
     drop(checkout);

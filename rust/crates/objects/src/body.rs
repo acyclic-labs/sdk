@@ -40,12 +40,19 @@ impl BodyReadBuffer {
             Self::Ordinary(output) => output.extend_from_slice(bytes),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { storage, meter } => {
-                let end = written.checked_add(bytes.len()).ok_or(Error::from(Unavailable))?;
-                let target = storage.writable().get_mut(written..end).ok_or(Error::from(Unavailable))?;
-                meter.admit_codec(0, bytes.len() as u64, 0)
+                let end = written
+                    .checked_add(bytes.len())
+                    .ok_or(Error::from(Unavailable))?;
+                let target = storage
+                    .writable()
+                    .get_mut(written..end)
+                    .ok_or(Error::from(Unavailable))?;
+                meter
+                    .admit_codec(0, bytes.len() as u64, 0)
                     .map_err(crate::v1::NativeObjectsError::from)?;
                 target.copy_from_slice(bytes);
-                meter.record_codec(0, bytes.len() as u64, 0)
+                meter
+                    .record_codec(0, bytes.len() as u64, 0)
                     .map_err(crate::v1::NativeObjectsError::from)?;
             }
         }
@@ -55,7 +62,9 @@ impl BodyReadBuffer {
         match self {
             Self::Ordinary(output) => Ok(output.into()),
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { storage, .. } => storage.freeze(written).map_err(|_| Error::from(Unavailable).into()),
+            Self::Native { storage, .. } => storage
+                .freeze(written)
+                .map_err(|_| Error::from(Unavailable).into()),
         }
     }
 }
@@ -63,20 +72,30 @@ impl BodyReadBuffer {
 fn box_body_read<'a, F>(
     future: F,
     mode: &BodyReadMode,
-) -> Result<crate::v1::Guarded<BoxFuture<'a, Result<acyclic_stream::OwnedBytes, BodyReadError>>>, BodyReadError>
+) -> Result<
+    crate::v1::Guarded<BoxFuture<'a, Result<acyclic_stream::OwnedBytes, BodyReadError>>>,
+    BodyReadError,
+>
 where
     F: Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + Send + 'a,
 {
     #[cfg(not(target_arch = "wasm32"))]
     let allocation = match mode {
         BodyReadMode::Ordinary => None,
-        BodyReadMode::Native(meter) => Some(acyclic_native_runtime::ReadAllocation::new(
-            meter, std::mem::size_of::<F>(),
-        ).map_err(crate::v1::NativeObjectsError::from)?),
+        BodyReadMode::Native(meter) => Some(
+            acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<F>())
+                .map_err(crate::v1::NativeObjectsError::from)?,
+        ),
     };
     #[cfg(target_arch = "wasm32")]
-    let allocation = { let _ = mode; () };
-    Ok(crate::v1::Guarded { value: Box::pin(future), _allocation: allocation })
+    let allocation = {
+        let _ = mode;
+        ()
+    };
+    Ok(crate::v1::Guarded {
+        value: Box::pin(future),
+        _allocation: allocation,
+    })
 }
 
 /// Equality is structural: the same bytes or the same physical references.
@@ -110,19 +129,30 @@ impl StoredBody {
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         allocation: acyclic_native_runtime::ReadAllocation,
     ) -> Result<Self, crate::v1::NativeObjectsError> {
-        let bytes = parts.capacity().checked_mul(std::mem::size_of::<StoredBody>());
+        let bytes = parts
+            .capacity()
+            .checked_mul(std::mem::size_of::<StoredBody>());
         if bytes.and_then(|bytes| u64::try_from(bytes).ok()) != Some(allocation.bytes()) {
             drop(parts);
             drop(allocation);
             return Err(std::io::Error::from(std::io::ErrorKind::InvalidData).into());
         }
-        let mut data = crate::v1::Guarded { value: parts, _allocation: Some(allocation) };
+        let mut data = crate::v1::Guarded {
+            value: parts,
+            _allocation: Some(allocation),
+        };
         let mut metadata = acyclic_native_runtime::ReadAllocation::new(
-            meter, std::mem::size_of::<crate::v1::Guarded<Vec<StoredBody>>>(),
+            meter,
+            std::mem::size_of::<crate::v1::Guarded<Vec<StoredBody>>>(),
         )?;
-        data._allocation.as_mut().expect("native parts retain their original allocation")
+        data._allocation
+            .as_mut()
+            .expect("native parts retain their original allocation")
             .absorb(&mut metadata)?;
-        Ok(Self::Composite { parts: Arc::new(data), length })
+        Ok(Self::Composite {
+            parts: Arc::new(data),
+            length,
+        })
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -194,56 +224,82 @@ impl StoredBody {
         mode: BodyReadMode,
     ) -> impl Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + Send {
         async move {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let BodyReadMode::Native(meter) = &mode {
-            meter.check().map_err(crate::v1::NativeObjectsError::from)?;
-        }
-        if start > end || end > self.len() { return Err(Error::from(Unavailable).into()); }
-        match self {
-            Self::Memory(body) => Ok(body.slice(start..end)),
-            Self::Composite { parts, .. } => {
-                let mut offset = 0usize;
-                for part in parts.value.iter() {
-                    let part_end = offset.checked_add(part.len()).ok_or(Error::from(Unavailable))?;
-                    if start >= offset && end <= part_end {
-                        return box_body_read(part.read_inner_async(start - offset, end - offset, mode.clone()), &mode)?.await;
-                    }
-                    offset = part_end;
-                }
-                let mut output = BodyReadBuffer::new(end - start, &mode)?;
-                let mut written = 0usize;
-                let mut offset = 0usize;
-                for part in parts.value.iter() {
-                    let part_end = offset.checked_add(part.len()).ok_or(Error::from(Unavailable))?;
-                    if part_end > start && offset < end {
-                        let bytes = box_body_read(part.read_inner_async(
-                            start.saturating_sub(offset).min(part.len()),
-                            end.saturating_sub(offset).min(part.len()),
-                            mode.clone(),
-                        ), &mode)?.await?;
-                        output.append(written, bytes.as_slice())?;
-                        written = written.checked_add(bytes.len()).ok_or(Error::from(Unavailable))?;
-                    }
-                    offset = part_end;
-                }
-                if written != end - start { return Err(Error::from(Unavailable).into()); }
-                output.freeze(written)
+            #[cfg(not(target_arch = "wasm32"))]
+            if let BodyReadMode::Native(meter) = &mode {
+                meter.check().map_err(crate::v1::NativeObjectsError::from)?;
             }
-            #[cfg(feature = "local")]
-            Self::Local { root, digest, length, location } => crate::physical::read_body_at(
-                root, digest, *length, location, start, end, mode,
-            ).await,
-        }
+            if start > end || end > self.len() {
+                return Err(Error::from(Unavailable).into());
+            }
+            match self {
+                Self::Memory(body) => Ok(body.slice(start..end)),
+                Self::Composite { parts, .. } => {
+                    let mut offset = 0usize;
+                    for part in parts.value.iter() {
+                        let part_end = offset
+                            .checked_add(part.len())
+                            .ok_or(Error::from(Unavailable))?;
+                        if start >= offset && end <= part_end {
+                            return box_body_read(
+                                part.read_inner_async(start - offset, end - offset, mode.clone()),
+                                &mode,
+                            )?
+                            .await;
+                        }
+                        offset = part_end;
+                    }
+                    let mut output = BodyReadBuffer::new(end - start, &mode)?;
+                    let mut written = 0usize;
+                    let mut offset = 0usize;
+                    for part in parts.value.iter() {
+                        let part_end = offset
+                            .checked_add(part.len())
+                            .ok_or(Error::from(Unavailable))?;
+                        if part_end > start && offset < end {
+                            let bytes = box_body_read(
+                                part.read_inner_async(
+                                    start.saturating_sub(offset).min(part.len()),
+                                    end.saturating_sub(offset).min(part.len()),
+                                    mode.clone(),
+                                ),
+                                &mode,
+                            )?
+                            .await?;
+                            output.append(written, bytes.as_slice())?;
+                            written = written
+                                .checked_add(bytes.len())
+                                .ok_or(Error::from(Unavailable))?;
+                        }
+                        offset = part_end;
+                    }
+                    if written != end - start {
+                        return Err(Error::from(Unavailable).into());
+                    }
+                    output.freeze(written)
+                }
+                #[cfg(feature = "local")]
+                Self::Local {
+                    root,
+                    digest,
+                    length,
+                    location,
+                } => {
+                    crate::physical::read_body_at(root, digest, *length, location, start, end, mode)
+                        .await
+                }
+            }
         }
     }
-
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn prepare_native_bytes(
     length: usize,
     meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-) -> Result<acyclic_stream::PreparedOwnedBytes<acyclic_native_runtime::ReadAllocation>, crate::v1::NativeObjectsError> {
+) -> Result<
+    acyclic_stream::PreparedOwnedBytes<acyclic_native_runtime::ReadAllocation>,
+    crate::v1::NativeObjectsError,
+> {
     use acyclic_native_runtime::ReadAllocation;
     use acyclic_stream::PreparedOwnedBytes;
     let mut allocation = ReadAllocation::new(meter, length)?;
@@ -252,9 +308,8 @@ pub(crate) fn prepare_native_bytes(
         .map_err(|error| meter.allocation_failed(error))?;
     allocation.reconcile_capacity(data.capacity())?;
     data.resize(data.capacity(), 0);
-    PreparedOwnedBytes::new(data, allocation, Arc::clone(meter)).map_err(|failure| {
-        crate::v1::native_preparation_error(failure.into_error())
-    })
+    PreparedOwnedBytes::new(data, allocation, Arc::clone(meter))
+        .map_err(|failure| crate::v1::native_preparation_error(failure.into_error()))
 }
 
 #[cfg(feature = "local")]
@@ -302,5 +357,4 @@ pub(crate) mod tests {
         assert_eq!(selected.as_slice(), b"cd");
         assert!(empty.is_empty());
     }
-
 }

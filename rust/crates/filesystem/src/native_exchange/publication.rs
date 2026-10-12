@@ -31,7 +31,15 @@ pub fn publish_native_exchange(
     }
     journal.phase = NativeExchangePhase::Exchanging;
     write_journal(journal_path, &journal)?;
-    if let Err(error) = exchange_native_entries(live, prepared, &crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(error, _)| NativeExchangeError::from(error))?) {
+    if let Err(error) = exchange_native_entries(
+        live,
+        prepared,
+        &crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| NativeExchangeError::from(error))?,
+    ) {
         return match recover_native_exchange(journal_path) {
             Ok(outcome) if outcome.published => Ok(outcome),
             Ok(_) => Err(error),
@@ -71,7 +79,11 @@ pub fn recover_native_exchange(
         NativeExchangePhase::Exchanging => recover_exchange(journal_path, &journal),
     }
 }
-pub(super) fn carry(from: &Path, into: &Path, relative: &[PathBuf]) -> Result<(), NativeExchangeError> {
+pub(super) fn carry(
+    from: &Path,
+    into: &Path,
+    relative: &[PathBuf],
+) -> Result<(), NativeExchangeError> {
     for path in relative {
         let source = from.join(path);
         if !entry_exists(&source)? {
@@ -86,7 +98,11 @@ pub(super) fn carry(from: &Path, into: &Path, relative: &[PathBuf]) -> Result<()
     }
     Ok(())
 }
-pub(super) fn move_back(from: &Path, into: &Path, relative: &[PathBuf]) -> Result<(), NativeExchangeError> {
+pub(super) fn move_back(
+    from: &Path,
+    into: &Path,
+    relative: &[PathBuf],
+) -> Result<(), NativeExchangeError> {
     for path in relative {
         let source = from.join(path);
         if !entry_exists(&source)? {
@@ -106,7 +122,8 @@ pub(super) fn move_back(from: &Path, into: &Path, relative: &[PathBuf]) -> Resul
         match durable_rename(
             &source,
             &destination,
-            acyclic_native_runtime::RenameMode::NoReplace, None,
+            acyclic_native_runtime::RenameMode::NoReplace,
+            None,
         ) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -153,89 +170,66 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(windows)]
 pub(super) fn recover_exchange(
     path: &Path,
     journal: &NativeExchangeJournal,
 ) -> Result<NativeExchangeOutcome, NativeExchangeError> {
-    let scratch = scratch(&journal.live)?;
     let live = entry_exists(&journal.live)?
         .then(|| root_identity(&journal.live))
         .transpose()?;
     let prepared = entry_exists(&journal.prepared)?
         .then(|| root_identity(&journal.prepared))
         .transpose()?;
+    #[cfg(windows)]
+    let scratch = scratch(&journal.live)?;
+    #[cfg(windows)]
     let scratch_identity = entry_exists(&scratch)?
         .then(|| root_identity(&scratch))
         .transpose()?;
-    let original = journal.roots[0];
-    let replacement = journal.roots[1];
-    let displaced = if live == Some(original)
-        && prepared == Some(replacement)
-        && scratch_identity.is_none()
-    {
-        move_back(&journal.prepared, &journal.live, &journal.carried)?;
-        None
-    } else if live.is_none() && prepared == Some(replacement) && scratch_identity == Some(original)
-    {
-        move_back(&journal.prepared, &scratch, &journal.carried)?;
-        durable_rename(
-            &scratch,
-            &journal.live,
-            acyclic_native_runtime::RenameMode::NoReplace, None,
-        )?;
-        None
-    } else if live == Some(replacement) && prepared.is_none() && scratch_identity == Some(original)
-    {
-        durable_rename(
-            &scratch,
-            &journal.prepared,
-            acyclic_native_runtime::RenameMode::NoReplace, None,
-        )?;
-        Some(journal.prepared.clone())
-    } else if live == Some(replacement) && prepared == Some(original) && scratch_identity.is_none()
-    {
-        Some(journal.prepared.clone())
-    } else if live == Some(replacement) && scratch_identity.is_none() {
-        None
-    } else {
-        return Err(NativeExchangeError::IncompatibleJournal);
-    };
-    if entry_exists(&entry_exchange_witness(&journal.live)?)? {
-        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(error, _)| NativeExchangeError::from(error))?;
-        recover_native_entry_exchange(&journal.live, &work)?;
-    }
-    remove_journal(path)?;
-    Ok(NativeExchangeOutcome {
-        published: live == Some(replacement),
-        displaced,
-        recovery: journal.recovery.clone(),
-    })
-}
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(super) fn recover_exchange(
-    path: &Path,
-    journal: &NativeExchangeJournal,
-) -> Result<NativeExchangeOutcome, NativeExchangeError> {
-    let live = entry_exists(&journal.live)?
-        .then(|| root_identity(&journal.live))
-        .transpose()?;
-    let prepared = entry_exists(&journal.prepared)?
-        .then(|| root_identity(&journal.prepared))
-        .transpose()?;
-    let (published, displaced) = match (live, prepared) {
-        (Some(live), Some(prepared)) if [live, prepared] == journal.roots => {
+    #[cfg(not(windows))]
+    let scratch_identity: Option<[u8; 16]> = None;
+    let [original, replacement] = journal.roots;
+    let (published, displaced) = match (live, prepared, scratch_identity) {
+        (Some(left), Some(right), None) if [left, right] == [original, replacement] => {
             move_back(&journal.prepared, &journal.live, &journal.carried)?;
             (false, None)
         }
-        (Some(live), Some(prepared))
-            if [live, prepared] == [journal.roots[1], journal.roots[0]] =>
-        {
+        (Some(left), Some(right), None) if [left, right] == [replacement, original] => {
             (true, Some(journal.prepared.clone()))
         }
-        (Some(live), _) if live == journal.roots[1] => (true, None),
+        (Some(left), _, None) if left == replacement => (true, None),
+        #[cfg(windows)]
+        (None, Some(right), Some(saved)) if [saved, right] == [original, replacement] => {
+            move_back(&journal.prepared, &scratch, &journal.carried)?;
+            durable_rename(
+                &scratch,
+                &journal.live,
+                acyclic_native_runtime::RenameMode::NoReplace,
+                None,
+            )?;
+            (false, None)
+        }
+        #[cfg(windows)]
+        (Some(left), None, Some(saved)) if [saved, left] == [original, replacement] => {
+            durable_rename(
+                &scratch,
+                &journal.prepared,
+                acyclic_native_runtime::RenameMode::NoReplace,
+                None,
+            )?;
+            (true, Some(journal.prepared.clone()))
+        }
         _ => return Err(NativeExchangeError::IncompatibleJournal),
     };
+    #[cfg(windows)]
+    if entry_exists(&entry_exchange_witness(&journal.live)?)? {
+        let work = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| NativeExchangeError::from(error))?;
+        recover_native_entry_exchange(&journal.live, &work)?;
+    }
     remove_journal(path)?;
     Ok(NativeExchangeOutcome {
         published,
