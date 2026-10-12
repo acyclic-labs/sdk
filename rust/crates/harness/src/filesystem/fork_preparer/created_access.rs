@@ -33,24 +33,21 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         let mut native = match work {
             Some(work) => {
-                Some((work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(Error::from)?,
-                    crate::store::history::native_work_io(work)?))
+                let custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::default())?;
+                let mut io = crate::store::history::native_work_io(work)?;
+                crate::store::history::HistoryIo::absorb_native_custody(&mut io, custody)?;
+                Some(io)
             }
             None => None,
         };
         #[cfg(not(target_arch = "wasm32"))]
-        let mut history = native.as_mut().map(|(_, io)| io as &mut dyn crate::store::history::HistoryIo);
+        let mut history = native.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]
         let mut history = None;
         let issuer = issuer.copy(&mut history)?;
         drop(history);
         #[cfg(not(target_arch = "wasm32"))]
-        let native_custody = native.map(|(mut custody, io)| {
-            let mut issuer_custody = io.into_custody();
-            custody.absorb(&mut issuer_custody)
-                .map_err(|cause| Error::NativeWork { cause, custody: Some(issuer_custody) })?;
-            Ok::<_, Error>(custody)
-        }).transpose()?;
+        let native_custody = native.map(|io| io.into_custody());
         Ok(Self { host, issuer,
             #[cfg(not(target_arch = "wasm32"))] native_custody,
             #[cfg(not(target_arch = "wasm32"))] roots: std::array::from_fn(|_| std::sync::OnceLock::new()),
@@ -1082,7 +1079,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
                 allocation: allocation.clone(), reader, writer, _custody: custody,
             });
             let mut receipt_custody = work.claim((std::mem::size_of::<RootBootstrapContentReceipt>()
-                - std::mem::size_of::<crate::resource_preparation::RootBootstrapContentRequest>()) as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+                - std::mem::size_of::<crate::resource_preparation::RootBootstrapContentRequest>()) as u64, 0, acyclic_fs::WorkCounters::default())?;
             let (request, mut request_custody) = request.copy(work)?;
             receipt_custody.absorb(&mut request_custody).map_err(|cause| Error::NativeWork {
                 cause, custody: Some(request_custody),
@@ -1420,7 +1417,7 @@ mod tests {
         let configured_issuer = AuthorityIssuer::new("created-owner", [80; 32], configured_audience.clone());
         let mut metadata = crate::store::history::native_work_io(work)
             .map_err(Error::from)?;
-        metadata.claim(std::mem::size_of::<(Authority, AuthorityIssuer, crate::core::Scope)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+        metadata.retain_owned(std::mem::size_of::<(Authority, AuthorityIssuer, crate::core::Scope)>() as u64)?;
         let mut custody;
         let audience = metadata.clone_authority(&configured_audience)?;
         custody = metadata.into_custody();

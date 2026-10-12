@@ -6,7 +6,7 @@ use super::persistent_btree::{Format, Page, children_within, leaf_within};
 use super::{DecodeLimits, persistent_io};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
-use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget};
 use crate::storage::ObjectId;
 
 pub(crate) type Failure = OperationFailure<Error>;
@@ -79,11 +79,11 @@ impl<T> Owned<Vec<T>> {
     }
 }
 
-pub(crate) fn split_allocation(allocation: &mut KernelOwnedAllocation, bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
+pub(crate) fn split_allocation(allocation: &mut KernelOwnedAllocation, _bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
     match allocation {
         KernelOwnedAllocation::Standalone => Ok(KernelOwnedAllocation::Standalone),
         #[cfg(not(target_arch = "wasm32"))]
-        KernelOwnedAllocation::NativeOriginal(guard) => Ok(KernelOwnedAllocation::NativeOriginal(guard.split_off(bytes)?)),
+        KernelOwnedAllocation::NativeOriginal(guard) => Ok(KernelOwnedAllocation::NativeOriginal(guard.split_off(_bytes)?)),
     }
 }
 

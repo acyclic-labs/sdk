@@ -2859,15 +2859,15 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             authority_records_read: record_ceiling, authority_bytes_read: ceiling,
             peak_allocation_bytes: peak, ..WorkCounters::UNCHARGED
         })?;
-        let result = 'inspect: {
+        let result = async {
             #[cfg(not(target_arch = "wasm32"))]
             if meter.is_native() {
                 let result = self.provider.native_inspect_idempotency(key, meter.native_meter()).await;
-                break 'inspect meter.result(result);
+                return meter.result(result);
             }
             self.provider.inspect_idempotency(key).await.map(|value| (value, None))
                 .map_err(map_stream_error)
-        };
+        }.await;
         let mut actual = WorkCounters { backend_read_operations: u64::from(!meter.is_native()), ..WorkCounters::UNCHARGED };
         if let Ok(output) = &result
             && let Some(observation) = &output.0
