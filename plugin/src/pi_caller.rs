@@ -6,6 +6,22 @@ use acyclic_harness::{Capabilities, TaskId, core::Scope};
 pub(crate) const CALLER_ENVIRONMENT: &str = "ACYCLIC_PI_CALLER";
 const CALLER_CAPABILITY: &str = "pi:caller";
 
+pub(crate) fn is_environment_key(key: &str) -> bool {
+    [
+        "ACYCLIC_PI_CALLER",
+        "ACYCLIC_PI_ROUTE",
+        "ACYCLIC_PI_TASK",
+        "ACYCLIC_PI_TOKEN",
+        "ACYCLIC_PI_SCOPE",
+        "ACYCLIC_PI_LEASE",
+    ]
+    .iter()
+    .any(|reserved| key.eq_ignore_ascii_case(reserved))
+        || key
+            .get(.."ACYCLIC_PI_CALLER_".len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ACYCLIC_PI_CALLER_"))
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiCallerClaims<S = String> {
@@ -39,7 +55,7 @@ pub(crate) fn issue(
             reason: "Pi caller has no original session",
         });
     }
-    let authority = owner.authority_with_native_work(work)?;
+    let authority = owner.authority(work)?;
     let identity = pi_root_provider::guarded_pi_bytes(
         &PiCallerClaims {
             version: 1,
@@ -62,23 +78,20 @@ pub(crate) fn issue(
         }
     };
     let capabilities = Capabilities::new_with_native_work([CALLER_CAPABILITY], work)?;
-    let scope = {
-        let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-        let scope = authority.0.issuer.issue(
-            identity_text,
-            &capabilities.0,
-            Some(binding.agent_id),
-            None,
-            &mut Some(&mut io),
-        )?;
-        (scope, io.into_custody())
-    };
+    let mut io = acyclic_harness::store::native_work_io(work)?;
+    let value = authority.issuer.issue(
+        identity_text,
+        &capabilities.0,
+        Some(binding.agent_id),
+        None,
+        &mut Some(&mut io),
+    )?;
+    let scope = (value, io.into_custody());
     drop(identity.0);
     drop(identity.1);
     drop(capabilities.0);
     drop(capabilities.1);
-    drop(authority.0);
-    drop(authority.1);
+    drop(authority);
     Ok(scope)
 }
 
@@ -132,13 +145,12 @@ pub(crate) fn verify<'a>(
         code: acyclic_harness::wire::ErrorCode::Invalid,
         reason,
     };
-    let authority = owner.authority_with_native_work(work)?;
-    let verified = authority.0.verifier.verify(
+    let authority = owner.authority(work)?;
+    let verified = authority.verifier.verify(
         scope,
-        &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
+        &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
     );
-    drop(authority.0);
-    drop(authority.1);
+    drop(authority);
     verified?;
     let capabilities = Capabilities::new_with_native_work([CALLER_CAPABILITY], work)?;
     let caller_only = scope.capabilities() == &capabilities.0;
@@ -170,7 +182,7 @@ pub(crate) fn verify<'a>(
     let identity = pi_root_provider::guarded_pi_bytes(
         &PiCallerClaims {
             version: 1,
-            root_session: state.root_session_id.as_str(),
+            root_session: &state.root_session_id,
             native_session,
             task: binding.task_id,
         },

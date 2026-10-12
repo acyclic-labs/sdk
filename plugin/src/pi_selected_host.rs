@@ -8,9 +8,9 @@ use crate::{
     pi_root_provider::PiRootHandle,
     pi_task::{PiTaskExecution, PiTaskInput},
 };
-use acyclic_fs::demand::DemandSource;
 use acyclic_fs::{CancellationToken, LazySnapshotRef, WorkCounters};
 use acyclic_harness::runtime::TaskStateProvider;
+use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     Error, OperationId, Result, TaskId,
     conversation::VolumeRef,
@@ -113,6 +113,7 @@ pub(crate) struct PiSelectedCommand<S = String, P = Vec<String>> {
 }
 
 pub(crate) struct PiControlHost<'a> {
+    pub(crate) directory: &'a std::path::Path,
     pub(crate) runtime: Arc<PiNativeRuntime>,
     pub(crate) filesystem: Arc<PiNativeFilesystem>,
     pub(crate) stream: std::sync::Arc<LocalStream>,
@@ -120,7 +121,9 @@ pub(crate) struct PiControlHost<'a> {
     pub(crate) protected: Arc<PiOwnerConfig>,
     pub(crate) retained: &'a AdapterState,
     pub(crate) roots: &'a BTreeMap<String, PiRootHandle>,
-    pub(crate) native: Arc<PiNativeCommandHost>,
+    pub(crate) native: Option<Arc<PiNativeCommandHost>>,
+    pub(crate) root_provider:
+        tokio::sync::Mutex<Option<Arc<crate::pi_root_provider::PiRootProvider>>>,
     pub(crate) root_source: Option<&'a crate::pi_fork_host::PiRootSource>,
     pub(crate) work: acyclic_fs::NativeMaterializationWork,
     pub(crate) pending:
@@ -139,6 +142,7 @@ impl<'a> PiControlHost<'a> {
         reason = "original providers and invocation work are independent"
     )]
     pub(crate) fn new(
+        directory: &'a std::path::Path,
         runtime: Arc<PiNativeRuntime>,
         filesystem: Arc<PiNativeFilesystem>,
         stream: std::sync::Arc<LocalStream>,
@@ -146,11 +150,12 @@ impl<'a> PiControlHost<'a> {
         protected: Arc<PiOwnerConfig>,
         retained: &'a AdapterState,
         roots: &'a BTreeMap<String, PiRootHandle>,
-        native: Arc<PiNativeCommandHost>,
+        native: Option<Arc<PiNativeCommandHost>>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         runtime.verify_owner_with_native_work(&protected, work)?;
         Ok(Self {
+            directory,
             runtime,
             filesystem,
             stream,
@@ -159,11 +164,17 @@ impl<'a> PiControlHost<'a> {
             retained,
             roots,
             native,
+            root_provider: tokio::sync::Mutex::new(None),
             root_source: None,
             work: work.clone(),
             pending: std::sync::Mutex::new(None),
             prepared: std::sync::Mutex::new(None),
         })
+    }
+    pub(crate) fn native(&self) -> Result<&Arc<PiNativeCommandHost>> {
+        self.native
+            .as_ref()
+            .ok_or_else(|| denied("Pi control has no original native host"))
     }
     fn root_binding(&self) -> Result<&PiTaskBinding> {
         match &self.retained.task_binding {
@@ -262,17 +273,14 @@ impl<'a> PiControlHost<'a> {
             .with_invocation_cancellation(work.cancellation())
             .into_native_shared(work)?;
         owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(work)?))
             .await?;
         if task == self.protected.policy().root_task
             && !matches!(&input.0.execution, PiTaskExecution::Host { .. })
         {
             return Err(denied("selected native Root became a child"));
         }
-        admission.1.absorb(&mut input.1).map_err(native_error)?;
+        admission.1.absorb(&mut input.1)?;
         Ok((owner, input.0, admission.1))
     }
     pub(crate) async fn admission_input(
@@ -346,12 +354,10 @@ impl<'a> PiControlHost<'a> {
         .await?;
         let decoded = self.admission_input(task, work).await?;
         let input = &decoded.0;
-        let mut key = work
-            .display(&format_args!(
-                "{}",
-                self.project_key(&input.binding, requested)?
-            ))
-            .map_err(native_error)?;
+        let mut key = work.display(&format_args!(
+            "{}",
+            self.project_key(&input.binding, requested)?
+        ))?;
         let project = &input.binding.project_volumes[&key.0];
         let workspace = if task == self.protected.policy().root_task {
             Arc::clone(
@@ -362,7 +368,7 @@ impl<'a> PiControlHost<'a> {
                     .workspace,
             )
         } else {
-            self.native
+            self.native()?
                 .live_workspace(task)
                 .ok_or_else(|| denied("selected child lost its actual creator workspace"))?
         };
@@ -401,7 +407,7 @@ impl<'a> PiControlHost<'a> {
                 )
             }
         } else {
-            let (snapshot, custody) = self.native.selection_snapshot(task, work).await?;
+            let (snapshot, custody) = self.native()?.selection_snapshot(task, work).await?;
             (snapshot, Some(custody))
         };
         let frozen = frozen_custody.0;
@@ -414,50 +420,13 @@ impl<'a> PiControlHost<'a> {
                 Arc::clone(&workspace),
                 frozen,
                 operation,
-                work.remaining().map_err(native_error)?.items_examined,
+                work.remaining()?.items_examined,
                 self.protected.policy().limits.file_bytes,
                 work,
             )
             .await?;
-        #[derive(Serialize)]
-        struct Generation<'a> {
-            kind: acyclic_harness::resources::ResourceKind,
-            provider: &'a acyclic_harness::resources::ProviderRef,
-            key: &'a [u8],
-            version: Option<&'a str>,
-        }
-        #[derive(Serialize)]
-        struct Selection<'a> {
-            project: &'a VolumeRef,
-            generation: Generation<'a>,
-            native_snapshot: &'a LazySnapshotRef,
-        }
         let maximum = self.protected.policy().maximum_payload_bytes;
-        let bytes = crate::pi_root_provider::canonical_pi_value(
-            &Selection {
-                project,
-                generation: Generation {
-                    kind: acyclic_harness::resources::ResourceKind::Generation,
-                    provider: project.provider(),
-                    key: frozen.authored_generation.digest().as_bytes(),
-                    version: None,
-                },
-                native_snapshot: &frozen,
-            },
-            maximum,
-            work,
-        )?;
-        let mut selection = crate::pi_root_provider::guarded_pi_decode::<
-            acyclic_harness::source_authorization::ProjectSourceSnapshot,
-        >(
-            &bytes.0,
-            maximum,
-            maximum,
-            acyclic_harness::wire::ErrorCode::Invalid,
-            acyclic_harness::JsonValueSchema::ProjectSourceAuthorization,
-            SELECTED_DIAGNOSTIC_LABEL_BYTES,
-            work,
-        )?;
+        let mut selection = crate::pi_fork::project_snapshot(project, frozen, maximum, work)?;
         let inspection = self
             .runtime
             .runtime
@@ -471,7 +440,7 @@ impl<'a> PiControlHost<'a> {
                 work,
             )
             .await?;
-        if let Some(view) = self.native.live_view(task) {
+        if let Some(view) = self.native()?.live_view(task) {
             let mut observed = view
                 .inspect_project_snapshot_with_native_work(&inspection, frozen, work)?
                 .await?;
@@ -480,18 +449,18 @@ impl<'a> PiControlHost<'a> {
                     "immutable mixed-view inspection changed its authorized frozen source",
                 ));
             }
-            selection.1.absorb(&mut observed.2).map_err(native_error)?;
+            selection.1.absorb(&mut observed.2)?;
         } else if task != self.protected.policy().root_task {
             let mut qualified = self
-                .native
+                .native()?
                 .validate_published_selection_snapshot(task, &inspection, project, frozen, work)
                 .await?;
-            selection.1.absorb(&mut qualified).map_err(native_error)?;
+            selection.1.absorb(&mut qualified)?;
         }
         let volume = selection.0.project;
         drop(selection.0.generation);
         drop(selection.0.native_snapshot);
-        selection.1.absorb(&mut key.1).map_err(native_error)?;
+        selection.1.absorb(&mut key.1)?;
         Ok((
             key.0,
             volume,
@@ -520,10 +489,11 @@ impl<'a> PiControlHost<'a> {
                 "selected native output is not its original sealed private scratch",
             ));
         }
-        if !context.scope().grants().contains(&scratch.capability(
-            acyclic_harness::conversation::VolumeOperation::Write,
-            &mut None,
-        )?) {
+        if !context
+            .scope()
+            .grants()
+            .contains(&scratch.capability(acyclic_harness::conversation::VolumeOperation::Write)?)
+        {
             return Err(denied(
                 "selected native context lacks its original private scratch WRITE grant",
             ));
@@ -531,7 +501,7 @@ impl<'a> PiControlHost<'a> {
         owner.require_volume_grant(
             scratch,
             acyclic_harness::conversation::VolumeOperation::Write,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
+            &mut Some(&mut native_work_io(work)?),
         )?;
         let cancellation = work.cancellation();
         let encoded = crate::pi_root_provider::guarded_pi_bytes(
@@ -707,15 +677,15 @@ impl<'a> PiControlHost<'a> {
                 )
             }
             "acyclic.pi.diff" => {
-                let baseline = self.native.frozen_source(input.source).ok_or_else(|| {
+                let baseline = self.native()?.frozen_source(input.source).ok_or_else(|| {
                     denied("diff requires the child's actual ORIGINAL frozen source")
                 })?;
-                let source_task =
-                    self.native
-                        .selected_source_task(input.source)
-                        .ok_or_else(|| {
-                            denied("diff lost the original authorized selected source task")
-                        })?;
+                let source_task = self
+                    .native()?
+                    .selected_source_task(input.source)
+                    .ok_or_else(|| {
+                        denied("diff lost the original authorized selected source task")
+                    })?;
                 let before_custody = self
                     .selected(
                         &context,
@@ -922,22 +892,19 @@ fn encode_cursor<T: Serialize>(
         let hex_length = (encoded.len() as u64)
             .checked_mul(2)
             .ok_or_else(|| invalid("cursor hex length overflow"))?;
-        let hex_custody = work
-            .claim(
-                hex_length,
-                u64::from((hex_length) != 0),
-                acyclic_fs::WorkCounters::UNCHARGED,
-            )
-            .map_err(native_error)?;
+        let hex_custody = work.claim(
+            hex_length,
+            u64::from((hex_length) != 0),
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
         work.charge(WorkCounters {
             bytes_copied: hex_length,
             allocation_operations: u64::from(hex_length != 0),
             ..WorkCounters::default()
-        })
-        .map_err(native_error)?;
-        cancellation
-            .check()
-            .map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+        })?;
+        cancellation.check().map_err(|_| {
+            acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled)
+        })?;
         Ok((hex::encode(&encoded), hex_custody))
     })();
     drop(encoded);
@@ -952,23 +919,20 @@ fn decode_cursor<T: serde::de::DeserializeOwned>(
     if value.len() > crate::MAXIMUM_CONTROL_MESSAGE_BYTES || value.len() % 2 != 0 {
         return Err(invalid("cursor exceeds bounded transport"));
     }
-    cancellation
-        .check()
-        .map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+    cancellation.check().map_err(|_| {
+        acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled)
+    })?;
     let length = value.len() as u64 / 2;
-    let bytes_custody = work
-        .claim(
-            length,
-            u64::from((length) != 0),
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )
-        .map_err(native_error)?;
+    let bytes_custody = work.claim(
+        length,
+        u64::from((length) != 0),
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
     work.charge(WorkCounters {
         bytes_copied: length,
         allocation_operations: u64::from(length != 0),
         ..WorkCounters::default()
-    })
-    .map_err(native_error)?;
+    })?;
     let bytes =
         hex::decode(value).map_err(|_| invalid("selected cursor is not canonical hexadecimal"))?;
     let result = crate::pi_root_provider::guarded_pi_decode(
@@ -994,12 +958,6 @@ fn denied(reason: &'static str) -> Error {
     Error::NativeBoundary {
         code: acyclic_harness::wire::ErrorCode::Unauthorized,
         reason,
-    }
-}
-fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork {
-        cause,
-        custody: None,
     }
 }
 fn native_workspace_error(
@@ -1088,13 +1046,7 @@ impl PiControlHost<'_> {
         binding: &PiTaskBinding,
         input: &PiSelectedCommand,
         key: &str,
-        selected: &PiNativeSelectedSource<
-            '_,
-            crate::LocalAuthorityBackend,
-            crate::LocalObjectBackend,
-            crate::LocalLazySource,
-            crate::LocalCoreStateStore,
-        >,
+        selected: &PiNativeSelectedSource<'_>,
         operation: OperationId,
         writeback: bool,
         reconcile: bool,
@@ -1118,7 +1070,7 @@ impl PiControlHost<'_> {
         let foreign_binding =
             if destination != input.caller && destination != self.protected.policy().root_task {
                 Some(
-                    self.native.binding(destination, work)?.ok_or_else(|| {
+                    self.native()?.binding(destination, work)?.ok_or_else(|| {
                         denied("explicit destination has no actual creator binding")
                     })?,
                 )
@@ -1140,7 +1092,7 @@ impl PiControlHost<'_> {
             .get(key)
             .ok_or_else(|| denied("destination lacks this actual project"))?;
         let write_capability = {
-            let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = native_work_io(work)?;
             let value = volume.capability(
                 acyclic_harness::conversation::VolumeOperation::Write,
                 &mut Some(&mut io),
@@ -1159,23 +1111,20 @@ impl PiControlHost<'_> {
             work,
         )?;
         let verifier = {
-            let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = native_work_io(work)?;
             let value = authorization.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
         let scope = &authorization.0.2;
-        let destination_grant = {
-            let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-            let grant = acyclic_harness::conversation::ContentGrant::verify(
-                &verifier.0,
-                scope,
-                volume,
-                acyclic_harness::conversation::VolumeOperation::Write,
-                u64::MAX,
-                &mut Some(&mut io),
-            )?;
-            (grant, io.into_custody())
-        };
+        let mut destination_io = native_work_io(work)?;
+        let _destination_grant = acyclic_harness::conversation::ContentGrant::verify(
+            &verifier.0,
+            scope,
+            volume,
+            acyclic_harness::conversation::VolumeOperation::Write,
+            context.scope().limits().file_bytes,
+            &mut Some(&mut destination_io),
+        )?;
         if destination != input.caller && destination == self.protected.policy().root_task {
             return Err(denied(
                 "delegated Root mutation requires its original mediated Root workflow command",
@@ -1183,7 +1132,7 @@ impl PiControlHost<'_> {
         }
         let destination_live = if destination != self.protected.policy().root_task {
             Some(
-                self.native
+                self.native()?
                     .live_source(destination, work)
                     .await?
                     .ok_or_else(|| denied("explicit destination has no ORIGINAL live owner"))?,
@@ -1211,7 +1160,7 @@ impl PiControlHost<'_> {
             None
         } else {
             Some(
-                self.native
+                self.native()?
                     .live_workspace(destination)
                     .ok_or_else(|| denied("destination child lost actual creator workspace"))?,
             )
@@ -1225,21 +1174,14 @@ impl PiControlHost<'_> {
                 .ok_or_else(|| denied("destination Root lost actual lazy allocation"))?
                 .workspace
         };
-        let mount = if destination == self.protected.policy().root_task {
-            None
+        let (mount, publication_work) = if destination == self.protected.policy().root_task {
+            (None, work.clone())
         } else {
-            Some(
-                self.native
-                    .project_mount(destination, volume)
-                    .ok_or_else(|| denied("destination child has no actual live project mount"))?,
-            )
-        };
-        let publication_work = if mount.is_some() {
-            self.native
-                .project_work(destination, volume)
-                .ok_or_else(|| denied("destination lost its original project-volume work"))?
-        } else {
-            work.clone()
+            let (mount, original_work) = self
+                .native()?
+                .project_mount(destination, volume)
+                .ok_or_else(|| denied("destination child has no actual live project mount"))?;
+            (Some(mount), original_work)
         };
         if !publication_work.shares_ledger(work) {
             return Err(denied(
@@ -1262,7 +1204,7 @@ impl PiControlHost<'_> {
         } else {
             None
         };
-        let publication = if let Some(view) = self.native.live_view(destination) {
+        let publication = if let Some(view) = self.native()?.live_view(destination) {
             view.project_publication(volume).ok_or_else(|| {
                 denied("destination lacks its ORIGINAL project publication permit")
             })?
@@ -1323,7 +1265,7 @@ impl PiControlHost<'_> {
                 let live = destination_live
                     .as_ref()
                     .ok_or_else(|| denied("destination original native view unavailable"))?;
-                let (snapshot, custody) = crate::pi_lazy_capture::freeze_child_source(
+                let (snapshot, custody) = crate::pi_fork_host::freeze_child_source(
                     live.context.context(),
                     &live.owner,
                     &live.view,
@@ -1332,10 +1274,7 @@ impl PiControlHost<'_> {
                 )
                 .await?;
                 owner
-                    .verify(
-                        false,
-                        &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-                    )
+                    .verify(false, &mut Some(&mut native_work_io(work)?))
                     .await?;
                 (snapshot, custody)
             };
@@ -1370,20 +1309,14 @@ impl PiControlHost<'_> {
         }
         let fs_operation = acyclic_fs::OperationId::from_bytes(import_operation.into_bytes());
         owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(work)?))
             .await?;
         destination_owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(work)?))
             .await?;
         let completed = if let Some(mount) = &mount {
             let result = mount
-                .selected_import_snapshot(fs_operation, &publication_work, cancellation)
+                .selected_import_snapshot_with_work(fs_operation, &publication_work, cancellation)
                 .await;
             if let Err(acyclic_fs::NativeMountError::Source(error)) = &result {
                 if matches!(
@@ -1415,7 +1348,7 @@ impl PiControlHost<'_> {
                     return Ok(TaskCommandProgress::Pending);
                 }
             }
-            result.map_err(crate::pi_lazy_capture::native_lazy_error)?
+            result.map_err(crate::pi_fork_host::native_lazy_error)?
         };
         let imported = if let Some(imported) = completed {
             imported
@@ -1439,7 +1372,7 @@ impl PiControlHost<'_> {
                 intent.paths,
                 import_operation,
                 publication,
-                acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE as u32,
+                acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE,
                 self.protected.policy().limits.file_bytes,
                 cancellation,
                 &publication_work,
@@ -1465,16 +1398,10 @@ impl PiControlHost<'_> {
             operation: import_operation,
         };
         owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(work)?))
             .await?;
         destination_owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(work)?))
             .await?;
         let staged = crate::pi_root_provider::stage_pi_input(
             &self.protected,
@@ -1487,10 +1414,7 @@ impl PiControlHost<'_> {
         .await?;
         drop(staged);
         owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(work)?))
             .await?;
         if !writeback {
             return ready(
@@ -1572,7 +1496,7 @@ impl PiControlHost<'_> {
         if input.caller != root_task
             || owner.task_id() != root_task
             || self.root_binding()?.project_volumes.get(key) != Some(volume)
-            || self.native.selected_source_task(input.source) != Some(root_task)
+            || self.native()?.selected_source_task(input.source) != Some(root_task)
         {
             return Err(denied(
                 "writeback is not the child's authentic ORIGINAL Root source",
@@ -1599,7 +1523,7 @@ impl PiControlHost<'_> {
             ));
         }
         let original = self
-            .native
+            .native()?
             .frozen_source(input.source)
             .ok_or_else(|| denied("writeback lost the original creator's frozen Root facts"))?;
         if original.workspace_id != actual.workspace.workspace().id() {
@@ -1613,24 +1537,23 @@ impl PiControlHost<'_> {
             fs_operation,
             work,
         )?;
-        let root_volume = {
-            let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-            let value = volume.copy(&mut Some(&mut io))?;
-            (value, io.into_custody())
-        };
-        let root_path = work.path(&retained.path, None).map_err(native_error)?;
+        let mut root_volume_io = native_work_io(work)?;
+        let root_volume = volume.copy(&mut Some(&mut root_volume_io))?;
+        let root_path = work.copy_path(&retained.path)?;
         let root = PiOriginalWritebackRoot {
             task: root_task,
-            volume: root_volume.0,
+            volume: root_volume,
             workspace: original.workspace_id,
             identity,
             path: root_path.0,
             operation_directory: operation_directory.0,
-            _custody: [root_volume.1, root_path.1, operation_directory.1],
+            _custody: [
+                root_volume_io.into_custody(),
+                root_path.1,
+                operation_directory.1,
+            ],
         };
-        let options_path = work
-            .path(&root.operation_directory, None)
-            .map_err(native_error)?;
+        let options_path = work.copy_path(&root.operation_directory)?;
         let options_custody = (
             acyclic_fs::MaterializeOptions::native(options_path.0),
             options_path.1,
@@ -1682,14 +1605,14 @@ impl PiControlHost<'_> {
             &input.paths,
             operation,
             publication,
-            acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE as u32,
+            acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE,
             cancellation,
             work,
             publication_guard,
         )
         .await?;
         if reconcile {
-            let store = self.resources.store.materialization(work.clone());
+            let store = self.resources.store.materialization_with_work(work.clone());
             let journal = acyclic_fs::MaterializationJournalStore::load(&store, fs_operation)
                 .await
                 .map_err(|cause| match cause {
@@ -1751,15 +1674,12 @@ impl PiControlHost<'_> {
                     &self.filesystem,
                     &self.stream,
                     &self.protected,
-                    approved,
+                    &approved,
                     work,
                 )
                 .await?;
                 owner
-                    .verify(
-                        false,
-                        &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-                    )
+                    .verify(false, &mut Some(&mut native_work_io(work)?))
                     .await?;
                 return ready(
                     &PiWritebackResponse {
@@ -1788,7 +1708,7 @@ impl PiControlHost<'_> {
             scope,
             &generations,
             &self.resources.store,
-            acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE as u32,
+            acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE,
             &options,
             &[".git"],
             cancellation,
@@ -1796,33 +1716,29 @@ impl PiControlHost<'_> {
         )
         .await?;
         let root_binding = self.root_binding()?;
-        let root_display = work
-            .display(&format_args!("{}", root.path.display()))
-            .map_err(native_error)?;
+        let root_display = work.display(&format_args!("{}", root.path.display()))?;
         let source_display = self
-            .native
+            .native()?
             .with_selected_project_path(input.source, source_volume, |path| {
                 work.display(&format_args!("{}", path.display()))
-                    .map_err(native_error)
+                    .map_err(acyclic_harness::Error::from)
             })
             .transpose()?;
         let descriptor = crate::pi_operator::PiPreparedApproval {
             version: 1,
-            session: root_binding.native_session_id.as_str(),
+            session: &root_binding.native_session_id,
             command: PiSelectedCommand::normalized(input, key),
             operation,
-            approval_digest: prepared.approval_digest.as_str(),
+            approval_digest: &prepared.approval_digest,
             private_volume: &root_binding.scratch.volume,
             source_snapshot: prepared.generations.original_snapshot,
             selected_snapshot: import_receipt.selected_snapshot,
             imported: prepared.generations.imported,
             import_receipt,
             journal: &prepared.journal,
-            canonical_digest_input: prepared.canonical_digest_input.as_str(),
-            root_path: root_display.0.as_str(),
-            source_path: source_display
-                .as_ref()
-                .map_or("", |(value, _)| value.as_str()),
+            canonical_digest_input: &prepared.canonical_digest_input,
+            root_path: &root_display.0,
+            source_path: source_display.as_ref().map_or("", |(value, _)| value),
         };
         crate::pi_operator_host::open_prepared_approval(
             &self.runtime,
@@ -1843,7 +1759,7 @@ impl PiControlHost<'_> {
                     root: key,
                     operation: &input.sdk_operation,
                     original_operation: operation,
-                    approval_digest: prepared.approval_digest.as_str(),
+                    approval_digest: &prepared.approval_digest,
                     paths: &input.paths,
                     source_snapshot: Some(descriptor.source_snapshot),
                     selected_snapshot: Some(descriptor.selected_snapshot),
@@ -1883,10 +1799,7 @@ impl PiControlHost<'_> {
             return Ok(TaskCommandProgress::Pending);
         }
         owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(work)?))
             .await?;
         ready(
             &PiWritebackResponse {
@@ -1940,7 +1853,7 @@ pub(crate) async fn read_imported_selected_files(
         .map_err(Error::Unauthorized)?;
     let receipt = &descriptor.import_receipt;
     let storage_name = {
-        let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
+        let mut io = native_work_io(work)?;
         let value = volume.storage_name(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
@@ -1965,7 +1878,7 @@ pub(crate) async fn read_imported_selected_files(
         ));
     }
     let capability = {
-        let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
+        let mut io = native_work_io(work)?;
         let value = volume.capability(VolumeOperation::Read, &mut Some(&mut io))?;
         (value, io.into_custody())
     };
@@ -1978,23 +1891,20 @@ pub(crate) async fn read_imported_selected_files(
         work,
     )?;
     let verifier = {
-        let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
+        let mut io = native_work_io(work)?;
         let value = authorization.0.1.verifier(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
     let scope = &authorization.0.2;
-    let _read_grant = {
-        let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-        let grant = ContentGrant::verify(
-            &verifier.0,
-            scope,
-            volume,
-            VolumeOperation::Read,
-            u64::MAX,
-            &mut Some(&mut io),
-        )?;
-        (grant, io.into_custody())
-    };
+    let mut read_io = native_work_io(work)?;
+    let _read_grant = ContentGrant::verify(
+        &verifier.0,
+        scope,
+        volume,
+        VolumeOperation::Read,
+        protected.policy().limits.file_bytes,
+        &mut Some(&mut read_io),
+    )?;
     let cancellation = work.cancellation();
     let generation = root
         .workspace
@@ -2019,20 +1929,17 @@ pub(crate) async fn read_imported_selected_files(
     let path_slots = path_capacity
         .checked_mul(std::mem::size_of::<&str>())
         .ok_or_else(|| invalid("selected evidence path allocation overflow"))?;
-    let path_custody = work
-        .claim(
-            path_slots as u64,
-            u64::from((path_slots as u64) != 0),
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )
-        .map_err(native_error)?;
+    let path_custody = work.claim(
+        path_slots as u64,
+        u64::from((path_slots as u64) != 0),
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
     work.charge(WorkCounters {
         allocation_operations: u64::from(path_capacity != 0),
         items_examined: (descriptor.command.paths.len() + descriptor.journal.plan.edits.len())
             as u64,
         ..WorkCounters::default()
-    })
-    .map_err(native_error)?;
+    })?;
     let mut paths = (Vec::<&str>::with_capacity(path_capacity), path_custody);
     paths
         .0
@@ -2079,18 +1986,15 @@ pub(crate) async fn read_imported_selected_files(
     let slots = capacity
         .checked_mul(std::mem::size_of::<(&str, Option<String>)>())
         .ok_or_else(|| invalid("selected evidence payload allocation overflow"))?;
-    let payload_custody = work
-        .claim(
-            slots as u64,
-            u64::from((slots as u64) != 0),
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )
-        .map_err(native_error)?;
+    let payload_custody = work.claim(
+        slots as u64,
+        u64::from((slots as u64) != 0),
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
     work.charge(WorkCounters {
         allocation_operations: u64::from(capacity != 0),
         ..WorkCounters::default()
-    })
-    .map_err(native_error)?;
+    })?;
     let mut payload = (
         Vec::<(&str, Option<String>)>::with_capacity(capacity),
         None,
@@ -2103,10 +2007,7 @@ pub(crate) async fn read_imported_selected_files(
         if start.is_some_and(|start| path < start) {
             continue;
         }
-        acyclic_harness::conversation::validate_content_path(
-            path,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-        )?;
+        acyclic_harness::conversation::validate_content_path(path)?;
         let selected = descriptor.command.paths.iter().any(|prefix| {
             path == prefix
                 || path
@@ -2118,24 +2019,19 @@ pub(crate) async fn read_imported_selected_files(
                 "candidate evidence edit escaped the explicitly selected paths",
             ));
         }
-        cancellation
-            .check()
-            .map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-        let _current_read_grant = {
-            let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-            let grant = ContentGrant::verify(
-                &verifier.0,
-                scope,
-                volume,
-                VolumeOperation::Read,
-                u64::MAX,
-                &mut Some(&mut io),
-            )?;
-            (grant, io.into_custody())
-        };
-        let absolute = work
-            .display(&format_args!("/{path}"))
-            .map_err(native_error)?;
+        cancellation.check().map_err(|_| {
+            acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled)
+        })?;
+        let mut current_read_io = native_work_io(work)?;
+        let _current_read_grant = ContentGrant::verify(
+            &verifier.0,
+            scope,
+            volume,
+            VolumeOperation::Read,
+            protected.policy().limits.file_bytes,
+            &mut Some(&mut current_read_io),
+        )?;
+        let absolute = work.display(&format_args!("/{path}"))?;
         let stat = match generation
             .stat(&absolute.0, work, cancellation)
             .await
@@ -2188,13 +2084,12 @@ pub(crate) async fn read_imported_selected_files(
             .and_then(|size| size.checked_div(3))
             .and_then(|size| size.checked_mul(4))
             .ok_or_else(|| invalid("file evidence encoded size overflow"))?;
-        custody.grow(encoded_length).map_err(native_error)?;
+        custody.grow(encoded_length)?;
         work.charge(WorkCounters {
             bytes_encoded: encoded_length,
             allocation_operations: u64::from(encoded_length != 0),
             ..WorkCounters::default()
-        })
-        .map_err(native_error)?;
+        })?;
         files.push((
             path,
             Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),

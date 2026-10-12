@@ -127,11 +127,7 @@ impl BrowserCheckout {
         &mut self,
         #[wasm_bindgen(unchecked_param_type = "TransactionOperation[]")] operations: JsValue,
     ) -> Result<Ts<BrowserTransactionResult>, JsValue> {
-        let authored = decode_authored_transactions(
-            operations,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let authored = decode_authored_transactions(operations, self.engine.volume_config())?;
         let receipt = browser_call!(self, apply_authored_transaction(authored,))?;
         ts(BrowserTransactionResult {
             created_file_ids: receipt
@@ -147,13 +143,12 @@ impl BrowserCheckout {
 
 pub(in crate::bindings) fn decode_authored_transactions(
     operations: JsValue,
-    profile: FilesystemProfile,
-    limits: VolumeLimits,
+    config: VolumeConfig,
 ) -> Result<Vec<AuthoredMutation>, JsValue> {
     if !js_sys::Array::is_array(&operations) {
         return Err(js_error("transaction operations must be an array"));
     }
-    let maximum = limits.maximum_mutations_per_batch;
+    let maximum = config.limits.maximum_mutations_per_batch;
     if js_sys::Array::from(&operations).length() > maximum {
         return Err(js_error(
             "transaction exceeds the configured mutation bound",
@@ -168,7 +163,7 @@ pub(in crate::bindings) fn decode_authored_transactions(
     }
     decoded
         .into_iter()
-        .map(|operation| authored_transaction(operation, profile, limits))
+        .map(|operation| authored_transaction(operation, config))
         .collect()
 }
 
@@ -178,30 +173,29 @@ pub(in crate::bindings) fn decode_authored_transactions(
 )]
 pub(in crate::bindings) fn authored_transaction(
     operation: TransactionOperation,
-    profile: FilesystemProfile,
-    limits: VolumeLimits,
+    config: VolumeConfig,
 ) -> Result<AuthoredMutation, JsValue> {
     let metadata = FileMetadata::default();
     Ok(match operation {
         TransactionOperation::CreateFile { path, bytes } => AuthoredMutation::CreateFile {
-            path: browser_path(&path, profile, limits)?,
+            path: browser_path(&path, config)?,
             bytes: acyclic_stream::OwnedBytes::from(bytes.into_vec()),
             metadata,
         },
         TransactionOperation::CreateDirectory { path } => AuthoredMutation::CreateDirectory {
-            path: browser_path(&path, profile, limits)?,
+            path: browser_path(&path, config)?,
             metadata,
         },
         TransactionOperation::CreateSymbolicLink { path, target } => {
             AuthoredMutation::CreateSymbolicLink {
-                path: browser_path(&path, profile, limits)?,
+                path: browser_path(&path, config)?,
                 target: acyclic_stream::OwnedBytes::from(target.into_vec()),
                 metadata,
             }
         }
         TransactionOperation::CreateSpecial { path, file_kind } => {
             AuthoredMutation::CreateEmptySpecial {
-                path: browser_path(&path, profile, limits)?,
+                path: browser_path(&path, config)?,
                 kind: empty_special_kind(&file_kind)?,
                 metadata,
             }
@@ -212,7 +206,7 @@ pub(in crate::bindings) fn authored_transaction(
             major,
             minor,
         } => AuthoredMutation::CreateDevice {
-            path: browser_path(&path, profile, limits)?,
+            path: browser_path(&path, config)?,
             kind: device_kind(&file_kind)?,
             major,
             minor,
@@ -220,7 +214,7 @@ pub(in crate::bindings) fn authored_transaction(
         },
         TransactionOperation::CreateReparsePoint { path, payload } => {
             AuthoredMutation::CreateReparsePoint {
-                path: browser_path(&path, profile, limits)?,
+                path: browser_path(&path, config)?,
                 payload: acyclic_stream::OwnedBytes::from(payload.into_vec()),
                 metadata,
             }
@@ -229,7 +223,7 @@ pub(in crate::bindings) fn authored_transaction(
             path,
             expected_file_id,
         } => AuthoredMutation::Remove {
-            path: browser_path(&path, profile, limits)?,
+            path: browser_path(&path, config)?,
             expected_file_id: expected_file_id
                 .as_ref()
                 .map(serde_bytes::ByteBuf::as_ref)
@@ -242,23 +236,23 @@ pub(in crate::bindings) fn authored_transaction(
             destination,
             replace,
         } => AuthoredMutation::Rename {
-            source: browser_path(&source, profile, limits)?,
-            destination: browser_path(&destination, profile, limits)?,
+            source: browser_path(&source, config)?,
+            destination: browser_path(&destination, config)?,
             replace,
         },
         TransactionOperation::HardLink {
             source,
             destination,
         } => AuthoredMutation::HardLink {
-            source: browser_path(&source, profile, limits)?,
-            destination: browser_path(&destination, profile, limits)?,
+            source: browser_path(&source, config)?,
+            destination: browser_path(&destination, config)?,
         },
         TransactionOperation::Write {
             path,
             offset,
             bytes,
         } => AuthoredMutation::Write {
-            path: browser_path(&path, profile, limits)?,
+            path: browser_path(&path, config)?,
             offset,
             bytes: acyclic_stream::OwnedBytes::from(bytes.into_vec()),
         },
@@ -266,10 +260,10 @@ pub(in crate::bindings) fn authored_transaction(
             path,
             canonical_bytes,
         } => AuthoredMutation::SetMetadata {
-            path: browser_path(&path, profile, limits)?,
+            path: browser_path(&path, config)?,
             metadata: decode_file_metadata(
                 canonical_bytes.as_ref(),
-                browser_decode_limits(limits),
+                browser_decode_limits(config.limits),
                 &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
             )
             .map_err(js_error)?,
@@ -278,7 +272,7 @@ pub(in crate::bindings) fn authored_transaction(
             path,
             logical_bytes,
         } => AuthoredMutation::Resize {
-            path: browser_path(&path, profile, limits)?,
+            path: browser_path(&path, config)?,
             logical_bytes,
         },
         TransactionOperation::ZeroRange {
@@ -288,7 +282,7 @@ pub(in crate::bindings) fn authored_transaction(
             allocated,
             extend,
         } => AuthoredMutation::ZeroRange {
-            path: browser_path(&path, profile, limits)?,
+            path: browser_path(&path, config)?,
             range: ByteRange { offset, length },
             allocated,
             extend,
@@ -299,7 +293,7 @@ pub(in crate::bindings) fn authored_transaction(
             length,
             keep_size,
         } => AuthoredMutation::Preallocate {
-            path: browser_path(&path, profile, limits)?,
+            path: browser_path(&path, config)?,
             range: ByteRange { offset, length },
             keep_size,
         },
@@ -310,9 +304,9 @@ pub(in crate::bindings) fn authored_transaction(
             destination_offset,
             length,
         } => AuthoredMutation::CloneRange(FileCloneRequest {
-            source: browser_path(&source, profile, limits)?,
+            source: browser_path(&source, config)?,
             source_offset,
-            destination: browser_path(&destination, profile, limits)?,
+            destination: browser_path(&destination, config)?,
             destination_offset,
             length,
         }),

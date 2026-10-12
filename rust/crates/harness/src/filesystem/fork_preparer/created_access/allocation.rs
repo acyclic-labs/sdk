@@ -456,7 +456,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         })?;
         self.source_generation(None, Some(io))?
             .ok_or_else(|| io.invalid("eager Root does not select a lazy publication candidate"))?;
-        io.verify_publication_lease(lease.as_ref()).await?;
+        io.finish_future(lease.verify(Some(io))?).await?;
         self.reauthenticate_with_io(io).await?;
         let source = self
             .native_source

@@ -43,7 +43,9 @@ fn validate_task_plan<P: StreamProvider>(
         owner.require_effect_grants(
             &plan.provider,
             planning,
-            &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native)?)),
+            &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(native)?,
+            )),
         )?;
         owner.validate_input_file(
             &plan.request,
@@ -70,7 +72,9 @@ async fn verify_owner<P: StreamProvider>(
         return owner
             .verify(
                 settlement,
-                &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native)?)),
+                &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(native)?,
+                )),
             )
             .await;
     }
@@ -327,8 +331,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                     cause,
                     custody: None,
                 })?;
-            let mut io =
-                crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             host.validate_binding(&mut Some(&mut io))?;
             return Ok(host);
         }
@@ -418,8 +423,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         use crate::store::history::HistoryIo as _;
-        let mut io =
-            crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let authority = io.clone_authority(&self.authority)?;
         let issuer = self.issuer.copy(&mut Some(&mut io))?;
         let scope = self.scope.copy(&mut Some(&mut io))?;
@@ -433,7 +439,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             schemas,
             Arc::clone(&self.content),
             providers,
-            Some(io.into_custody()),
+            Some(io.into_custody()?),
             Some(work),
         )?;
         host.effect_history_limits = self.effect_history_limits;
@@ -449,12 +455,13 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<Arc<Self>> {
         use crate::store::history::HistoryIo as _;
         self.require_native_metadata(work)?;
-        let mut io =
-            crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let bytes = std::mem::size_of::<Self>() as u64;
         io.admit_allocation(bytes)?;
         io.retain_owned(bytes)?;
-        let mut custody = io.into_custody();
+        let mut custody = io.into_custody()?;
         self.native_metadata
             .as_mut()
             .expect("validated native host")
@@ -473,7 +480,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<(StreamAggregate<P>, crate::NativeCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
-            let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(original)?);
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(original)?,
+            );
             use crate::store::history::HistoryIo as _;
             let authority = io.clone_authority(&self.authority)?;
             let verifier = self.issuer.verifier(&mut Some(&mut io))?;
@@ -491,7 +500,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             .await?
             .with_content_verifier(Arc::clone(&self.content))
             .with_effect_history_read_limits(self.effect_history_limits)?;
-            return Ok((aggregate, Some(io.into_custody())));
+            return Ok((aggregate, Some(io.into_custody()?)));
         }
         let authority = match work.as_deref_mut() {
             Some(io) => io.clone_authority(&self.authority)?,

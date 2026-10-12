@@ -38,12 +38,6 @@ impl PreparationIo {
         drop(held);
         result
     }
-    pub(crate) async fn verify_publication_lease(
-        &self,
-        lease: &dyn crate::resource_preparation::CreatedTaskLease,
-    ) -> Result<()> {
-        self.finish_future(lease.verify_with_io(self)?).await
-    }
 }
 
 impl HistoryIo for &PreparationIo {

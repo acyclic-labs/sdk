@@ -5,6 +5,7 @@ use acyclic_fs::{
     MeasuredResult, NativeAllocation, NativeMaterializationWork, NativeRootIdentity,
     OperationFailure, OperationReceipt, WorkCounters,
 };
+use acyclic_harness::store::native_work_io;
 use acyclic_harness::wire::ErrorCode;
 use acyclic_harness::{Error as RootError, Result as RootResult};
 
@@ -160,13 +161,14 @@ async fn acquire_engine<I: RootInstrumentation>(
             slot
         }
     };
-    let mut registration = registration.lock().await;
+    let mut registration = registration.state.lock().await;
     authenticate(instrumentation, root, admission, original).await?;
     // Reject another registered source before opening even the current path.
     if let Some(reference) = &registration.reference
         && original.is_some()
     {
         let retained = *reference
+            .value
             .lock()
             .map_err(|_| instrumentation.rejection(POISONED_REFERENCE, &canonical.0))?;
         if admission
@@ -193,6 +195,7 @@ async fn acquire_engine<I: RootInstrumentation>(
                 .reference
                 .as_ref()
                 .ok_or_else(|| instrumentation.rejection(MISSING_REFERENCE, &canonical.0))?
+                .value
                 .lock()
                 .map_err(|_| instrumentation.rejection(POISONED_REFERENCE, &canonical.0))?;
             if admission
@@ -219,6 +222,7 @@ async fn acquire_engine<I: RootInstrumentation>(
     }
     let retained = registration.reference.as_ref().map(|reference| {
         *reference
+            .value
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     });
@@ -294,6 +298,7 @@ async fn acquire_engine<I: RootInstrumentation>(
         })
     };
     *reference
+        .value
         .lock()
         .map_err(|_| instrumentation.rejection(POISONED_REFERENCE, &canonical.0))? =
         source.reference();
@@ -376,7 +381,7 @@ impl RootInstrumentation for OrdinaryRootWork<'_> {
             self.budget,
         )?;
         let path = root.to_path_buf();
-        tokio::task::spawn_blocking(move || acyclic_fs::capture_root_identity(&path))
+        tokio::task::spawn_blocking(move || HostRoot::open(&path).map(|root| root.identity()))
             .await
             .map_err(|error| {
                 rejected(
@@ -704,7 +709,7 @@ where
     }
     fn copy_path(&mut self, root: &Path) -> RootResult<(PathBuf, Option<NativeAllocation>)> {
         self.work
-            .path(root, None)
+            .copy_path(root)
             .map(|(path, custody)| (path, Some(custody)))
             .map_err(native_work_error)
     }
@@ -955,7 +960,7 @@ where
             reason: "pending root cleanup changed its original owner allocation",
         });
     }
-    let mut registration = registration.lock().await;
+    let mut registration = registration.state.lock().await;
     if guard().await? != expected {
         return Err(RootError::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Conflict,
@@ -1119,10 +1124,7 @@ mod tests {
             .await?;
         fixture
             .journal
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(work)?))
             .await?;
         // Fixture::new obtained this protected result by observing the real
         // original Root effect and its actual Filesystem creator resources.
@@ -1266,10 +1268,9 @@ mod tests {
             .unwrap();
         let foreign = VolumeRef::new(
             project.provider().clone(),
-            "not-original-source".into(),
+            "not-original-source",
             VolumeClass::Project,
             VolumeOwner::Project("not-original-root".into()),
-            &mut None,
         )
         .unwrap();
         let registry = SharedRootRegistry::default();
@@ -1284,7 +1285,7 @@ mod tests {
                     fixture.journal.require_volume_grant(
                         &foreign,
                         VolumeOperation::Read,
-                        &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?)),
+                        &mut Some(&mut native_work_io(&work)?),
                     )?;
                     Ok(expected)
                 },
@@ -1414,7 +1415,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(observation.consumed_changes);
+        assert!(observation_consumes_changes(&observation.batch));
         assert_eq!(observation.prior_source, prior);
         assert_eq!(observation.source.identity, original.identity);
         assert!(observation.source.epoch > prior.epoch);
@@ -1499,7 +1500,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(observed.0.consumed_changes);
+        assert!(observation_consumes_changes(&observed.0.batch));
         assert_eq!(observed.0.prior_source, prior);
         assert!(observed.0.source.epoch > prior.epoch);
         drop(observed);

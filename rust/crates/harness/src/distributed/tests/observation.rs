@@ -167,11 +167,7 @@ async fn original_owner_proof_survives_reopen_and_rejects_replaced_key() -> Resu
         .await,
         Err(Error::Unauthorized(_))
     ));
-    let worker = Worker {
-        id: "owner-proof-worker".into(),
-        available: ResourceRequest::default(),
-        labels: BTreeMap::new(),
-    };
+    let worker = worker("owner-proof-worker");
     let revision = reopened.revision();
     assert!(matches!(
         reopened

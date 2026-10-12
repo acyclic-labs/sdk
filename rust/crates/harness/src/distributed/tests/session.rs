@@ -223,11 +223,7 @@ async fn root_declaration_and_shared_limits_are_atomic() -> Result<()> {
         limits
     );
     let lease = recovered
-        .pull(&Worker {
-            id: "atomic-worker".into(),
-            available: ResourceRequest::default(),
-            labels: BTreeMap::new(),
-        })
+        .pull(&worker("atomic-worker"))
         .await?
         .ok_or_else(|| Error::NotFound("atomic root lease".into()))?;
     assert_eq!(lease.operation.operation_id, root);

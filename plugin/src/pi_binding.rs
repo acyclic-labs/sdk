@@ -102,7 +102,8 @@ impl PiScratchCreation {
         match work {
             Some(work) => {
                 self.generation
-                    .validate(&mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)))?
+                    .validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?
             }
             None => self.generation.validate(&mut None)?,
         }
@@ -336,7 +337,8 @@ fn validate_pi_provider(
     work: Option<&acyclic_fs::NativeMaterializationWork>,
 ) -> acyclic_harness::Result<()> {
     match work {
-        Some(work) => provider.validate(&mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)))?,
+        Some(work) => provider.validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?,
         None => provider.validate(&mut None)?,
     }
     if [provider.namespace(), provider.family(), provider.version()]

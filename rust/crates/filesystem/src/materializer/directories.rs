@@ -64,7 +64,7 @@ pub(super) fn next_name(
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStringExt as _;
-        let Some((entry, mut allocation)) = reader.next_wide(&mut &*work)? else {
+        let Some((entry, mut allocation)) = reader.next(&mut &*work)? else {
             return Ok(None);
         };
         let mut owned = work.claim(

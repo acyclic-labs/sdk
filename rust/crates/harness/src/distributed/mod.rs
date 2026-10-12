@@ -67,5 +67,6 @@ use serializer::{
 
 const COORDINATOR_PATH: &str = "harness/v3/coordinator/events";
 const COORDINATOR_WIRE_VERSION: &str = "3";
-const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v3";
+const COORDINATOR_WIRE_DIGEST: &str =
+    "667265d00a51e8a59c84844f5e9e9ab38f9fd2118921d50b044b023cc3f7fed6";
 const READ_PAGE_SIZE: u32 = 1_024;

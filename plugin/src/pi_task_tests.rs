@@ -87,7 +87,7 @@ async fn open(
     path: &Path,
     binding: &PiTaskBinding,
 ) -> acyclic_harness::Result<(
-    PiTaskRuntime<LocalStream>,
+    PiTaskRuntime,
     acyclic_fs::NativeMaterializationWork,
 )> {
     let work = work();
@@ -111,7 +111,7 @@ async fn fixture(
     binding: &PiTaskBinding,
 ) -> (
     tempfile::TempDir,
-    PiTaskRuntime<LocalStream>,
+    PiTaskRuntime,
     acyclic_fs::NativeMaterializationWork,
 ) {
     let directory = tempfile::tempdir().unwrap();

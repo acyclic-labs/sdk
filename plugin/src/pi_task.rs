@@ -195,18 +195,9 @@ impl PiTaskMachine {
             items_examined: source_bytes,
             bytes_hashed: source_bytes,
             ..acyclic_fs::WorkCounters::default()
-        })
-        .map_err(native_work_error)?;
-        let mut identity = {
-            let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-            let identity = MachineIdentity {
-                name: acyclic_harness::store::HistoryIo::clone_text(&mut io, "acyclic.pi")?,
-                version: acyclic_harness::store::HistoryIo::clone_text(&mut io, "1")?,
-                digest: machine_digest(),
-            };
-            identity.validate(&mut Some(&mut io))?;
-            (identity, io.into_custody())
-        };
+        })?;
+        let mut identity =
+            MachineIdentity::new_with_native_work("acyclic.pi", "1", machine_digest(), work)?;
         let mut schema = super::pi_root_provider::guarded_pi_decode(
             STATE_SCHEMA.as_bytes(),
             NATIVE_METADATA_MAXIMUM,
@@ -216,25 +207,16 @@ impl PiTaskMachine {
             0,
             work,
         )?;
-        identity
-            .1
-            .absorb(&mut schema.1)
-            .map_err(native_work_error)?;
+        identity.1.absorb(&mut schema.1)?;
         let alignment = std::mem::align_of::<Self>();
         let header = 2 * std::mem::size_of::<usize>();
         let bytes = (header.div_ceil(alignment) * alignment + std::mem::size_of::<Self>()) as u64;
-        let mut publication = work
-            .claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(native_work_error)?;
-        identity
-            .1
-            .absorb(&mut publication)
-            .map_err(native_work_error)?;
+        let mut publication = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+        identity.1.absorb(&mut publication)?;
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1,
             ..acyclic_fs::WorkCounters::default()
-        })
-        .map_err(native_work_error)?;
+        })?;
         Ok(Arc::new(Self {
             identity: identity.0,
             schema: schema.0,
@@ -309,7 +291,7 @@ impl PiTaskMachine {
       ]
     }}
   }}
-}}"#, super::MAXIMUM_ADAPTER_ROOTS, super::pi_root::MAXIMUM_ROOT_PATH_BYTES)).map_err(native_work_error)?;
+}}"#, super::MAXIMUM_ADAPTER_ROOTS, super::pi_root::MAXIMUM_ROOT_PATH_BYTES))?;
         let mut input = super::pi_root_provider::guarded_pi_decode(
             input_json.0.as_bytes(),
             NATIVE_METADATA_MAXIMUM,
@@ -330,7 +312,7 @@ impl PiTaskMachine {
             0,
             work,
         )?;
-        input.1.absorb(&mut output.1).map_err(native_work_error)?;
+        input.1.absorb(&mut output.1)?;
         TaskDefinition::resumable_with_native_work(self.clone(), input.0, output.0, input.1, work)
     }
 }
@@ -427,7 +409,7 @@ fn validate_native_command(command: &WorkflowCommand) -> acyclic_harness::Result
 }
 
 fn validate_control_command(command: &WorkflowCommand) -> acyclic_harness::Result<()> {
-    command.validate(&mut None)?;
+    command.validate()?;
     if !matches!(
         command.kind.as_str(),
         "acyclic.task.admit.v1"
@@ -519,10 +501,7 @@ impl ResumableMachine for PiTaskMachine {
         let state = initial_state(decoded.0, work)?;
         let mut encoded =
             super::pi_root_provider::guarded_pi_value(&state, NATIVE_METADATA_MAXIMUM, work)?;
-        decoded
-            .1
-            .absorb(&mut encoded.1)
-            .map_err(native_work_error)?;
+        decoded.1.absorb(&mut encoded.1)?;
         Ok((encoded.0, decoded.1))
     }
 
@@ -567,10 +546,7 @@ impl ResumableMachine for PiTaskMachine {
                     CONTROL_INPUT_LABEL_BYTES,
                     work,
                 )?;
-                state_metadata
-                    .1
-                    .absorb(&mut decoded.1)
-                    .map_err(native_work_error)?;
+                state_metadata.1.absorb(&mut decoded.1)?;
                 TransitionInput::Control(decoded.0)
             }
             PiTaskState::Controlling { .. } => {
@@ -581,10 +557,7 @@ impl ResumableMachine for PiTaskMachine {
                     CONTROL_RESULTS_LABEL_BYTES,
                     work,
                 )?;
-                state_metadata
-                    .1
-                    .absorb(&mut decoded.1)
-                    .map_err(native_work_error)?;
+                state_metadata.1.absorb(&mut decoded.1)?;
                 moved_reply = Some(take_result_body(&mut input)?);
                 TransitionInput::Controls(decoded.0)
             }
@@ -596,10 +569,7 @@ impl ResumableMachine for PiTaskMachine {
                     COMMAND_RESULTS_LABEL_BYTES,
                     work,
                 )?;
-                state_metadata
-                    .1
-                    .absorb(&mut decoded.1)
-                    .map_err(native_work_error)?;
+                state_metadata.1.absorb(&mut decoded.1)?;
                 TransitionInput::Results(decoded.0)
             }
             _ if input.is_null() => TransitionInput::Null,
@@ -609,10 +579,7 @@ impl ResumableMachine for PiTaskMachine {
         let status = match &next {
             PiTaskState::Completed { result } => {
                 let mut encoded = guarded_pi_value(result, NATIVE_METADATA_MAXIMUM, work)?;
-                state_metadata
-                    .1
-                    .absorb(&mut encoded.1)
-                    .map_err(native_work_error)?;
+                state_metadata.1.absorb(&mut encoded.1)?;
                 MachineStatus::Completed { value: encoded.0 }
             }
             PiTaskState::Failed { message } => MachineStatus::Failed {
@@ -651,16 +618,13 @@ impl ResumableMachine for PiTaskMachine {
                     allocation,
                     reply,
                 },
-                work.remaining().map_err(native_work_error)?.bytes_encoded,
+                work.remaining()?.bytes_encoded,
                 work,
             )?
         } else {
             guarded_pi_value(&next, NATIVE_METADATA_MAXIMUM, work)?
         };
-        state_metadata
-            .1
-            .absorb(&mut encoded_state.1)
-            .map_err(native_work_error)?;
+        state_metadata.1.absorb(&mut encoded_state.1)?;
         if let Some(body) = moved_reply {
             *encoded_state
                 .0
@@ -825,7 +789,7 @@ fn advance(
             }
             match result.value {
                 Outcome::Succeeded(result) => {
-                    result.validate(&mut None).map_err(|error| {
+                    result.validate().map_err(|error| {
                         native_validation(error, "Pi result reference is invalid")
                     })?;
                     if allocating {
@@ -913,17 +877,10 @@ impl Serialize for MetadataValue<'_> {
 const NATIVE_METADATA_MAXIMUM: u64 = crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8;
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_work_error(cause: acyclic_fs::NativeTreeMaterializationError) -> acyclic_harness::Error {
-    acyclic_harness::Error::NativeWork {
-        cause,
-        custody: None,
-    }
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn native_metadata_quota<T>(bytes: u64, lexical_items: u64) -> acyclic_harness::Result<u64> {
     let overflow = || {
-        native_work_error(acyclic_fs::NativeTreeMaterializationError::Work(
+        acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::Work(
             acyclic_fs::WorkError::Overflow,
         ))
     };
@@ -955,7 +912,7 @@ fn native_metadata<T: serde::de::DeserializeOwned>(
         .items_examined
         .checked_sub(before_items)
         .ok_or_else(|| {
-            native_work_error(acyclic_fs::NativeTreeMaterializationError::Work(
+            acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::Work(
                 acyclic_fs::WorkError::Overflow,
             ))
         })

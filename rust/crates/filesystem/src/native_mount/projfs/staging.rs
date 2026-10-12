@@ -21,7 +21,7 @@ pub(super) fn write_listed_content(
         let mut remaining = packet.bytes().as_ref();
         while !remaining.is_empty() {
             let count =
-                match crate::native_host::write_builtin_file(file, remaining, projection.work) {
+                match crate::native_host::builtin_io(acyclic_native_runtime::NativeOperationKind::Write, (remaining).len(), projection.work, || std::io::Write::write(&mut &*(file), remaining)) {
                     Ok(0) => {
                         return Err(MountSourceError::NativeWork(
                             std::io::Error::from(std::io::ErrorKind::WriteZero).into(),

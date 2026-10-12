@@ -59,7 +59,9 @@ impl ToolProjection for ReadFileProjection {
         if let Some(work) = work {
             input.0.file.descriptor().verify(
                 text.0.as_bytes(),
-                &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
+                &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                )),
             )?;
             return native::summary_reference(
                 &input.0.file,

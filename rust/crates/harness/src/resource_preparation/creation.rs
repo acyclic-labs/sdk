@@ -134,11 +134,9 @@ impl<P: StreamProvider> ResourcePreparationLease for crate::durable_host::TaskJo
 }
 
 pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
-    fn verify(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>>;
     fn fence(&self) -> Result<crate::scheduler::LeaseFence>;
-    #[cfg(feature = "filesystem")]
-    fn verify_with_io<'a>(
+    fn verify<'a>(
         &'a self,
-        io: &'a crate::filesystem::PreparationIo,
+        io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>>;
 }

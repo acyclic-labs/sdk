@@ -2,6 +2,7 @@
 
 use acyclic_fs::demand::DemandSource as _;
 use acyclic_harness::runtime::TaskStateProvider;
+use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     Error, Result, TaskId,
     conversation::{MAX_PRIVATE_DIRECTORY_PAGE, VolumeRef, validate_content_path},
@@ -9,29 +10,25 @@ use acyclic_harness::{
     filesystem::{FilesystemTaskRuntime, TaskSourceInspection},
     runtime::TaskContext,
 };
-use acyclic_stream::{LocalStream, StreamProvider};
+use acyclic_stream::LocalStream;
 use serde::{Deserialize, Serialize};
 
 /// Independently authenticates both selections under the ORIGINAL root's retained admission tree.
-pub(crate) async fn authorize_selected_source<P, A, O>(
-    runtime: &FilesystemTaskRuntime<P, A, O>,
+pub(crate) async fn authorize_selected_source(
+    runtime: &FilesystemTaskRuntime<
+        LocalStream,
+        crate::LocalAuthorityBackend,
+        crate::LocalObjectBackend,
+    >,
     original_root: TaskId,
     caller: &TaskContext,
-    owner: &TaskJournalOwner<P>,
+    owner: &TaskJournalOwner<LocalStream>,
     source: TaskId,
     maximum_depth: u32,
     native_work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<()>
-where
-    P: StreamProvider + 'static,
-    A: acyclic_fs::AsyncAuthorityStore + 'static,
-    O: acyclic_fs::AsyncObjectStore + 'static,
-{
+) -> Result<()> {
     owner
-        .verify(
-            false,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
-        )
+        .verify(false, &mut Some(&mut native_work_io(native_work)?))
         .await?;
     if caller.durable_task_id() != Some(owner.task_id()) {
         return Err(selected_unauthorized(
@@ -75,10 +72,7 @@ where
         }
     }
     owner
-        .verify(
-            false,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
-        )
+        .verify(false, &mut Some(&mut native_work_io(native_work)?))
         .await
 }
 
@@ -96,16 +90,9 @@ fn selected_invalid(reason: &'static str) -> Error {
     }
 }
 
-fn selected_conflict(reason: &'static str) -> Error {
-    Error::NativeBoundary {
-        code: acyclic_harness::wire::ErrorCode::Conflict,
-        reason,
-    }
-}
-
 fn validate_page(directory: &str, maximum_entries: u32) -> Result<()> {
     if !directory.is_empty() {
-        validate_content_path(directory, &mut None)?;
+        validate_content_path(directory)?;
     }
     if maximum_entries == 0 || maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE {
         return Err(selected_invalid(
@@ -130,13 +117,6 @@ pub(crate) struct PiDifference {
     pub(crate) kind: PiDifferenceKind,
 }
 
-fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork {
-        cause,
-        custody: None,
-    }
-}
-
 /// Identity retained by the original ROOT creator, not captured anew from a selected child or a tool-supplied path.
 pub(crate) struct PiOriginalWritebackRoot {
     pub(crate) task: TaskId,
@@ -159,41 +139,22 @@ pub(crate) struct PiWritebackGenerations<'a> {
     paths: &'a [String],
 }
 
-/// Immutable original creator evidence retained by a detached SDK exactifier.
+/// Retains the existing root provider while the SDK exactifier is detached.
 pub(crate) struct PiWritebackPublicationGuard {
-    protected: std::sync::Arc<crate::pi_owner::PiOwnerConfig>,
-    resources: crate::ServiceResources,
-    filesystem: std::sync::Arc<
-        acyclic_harness::filesystem::FilesystemHost<
-            acyclic_fs::LocalAuthorityBackend,
-            acyclic_fs::LocalObjectBackend,
-        >,
-    >,
-    stream: std::sync::Arc<LocalStream>,
-    context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+    provider: std::sync::Arc<crate::pi_root_provider::PiRootProvider>,
     owner: std::sync::Arc<TaskJournalOwner<LocalStream>>,
-    request: crate::pi_root_inputs::PiRootRequest,
     allocation: crate::pi_root_allocation::PiRootAllocation,
     key: String,
     write_capability: String,
     identity: acyclic_fs::NativeRootIdentity,
-    _custody: [acyclic_fs::NativeAllocation; 6],
+    _custody: [acyclic_fs::NativeAllocation; 4],
 }
 
 impl PiWritebackPublicationGuard {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "original creator evidence and its native custody remain explicit"
-    )]
     pub(crate) async fn new(
         protected: std::sync::Arc<crate::pi_owner::PiOwnerConfig>,
         resources: &crate::ServiceResources,
-        filesystem: std::sync::Arc<
-            acyclic_harness::filesystem::FilesystemHost<
-                acyclic_fs::LocalAuthorityBackend,
-                acyclic_fs::LocalObjectBackend,
-            >,
-        >,
+        filesystem: std::sync::Arc<crate::pi_native_host::PiNativeFilesystem>,
         stream: std::sync::Arc<LocalStream>,
         context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
         owner: std::sync::Arc<TaskJournalOwner<LocalStream>>,
@@ -208,107 +169,88 @@ impl PiWritebackPublicationGuard {
         if request.0.binding.task_id != protected.policy().root_task
             || owner.task_id() != request.0.binding.task_id
             || context.context().durable_task_id() != Some(owner.task_id())
-            || !request.0.binding.project_volumes.contains_key(key)
         {
             return Err(selected_unauthorized(
                 "writeback retained another original Root creator",
             ));
         }
         owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(work)?))
             .await?;
-        let write_capability =
-            {
-                let volume =
-                    request.0.binding.project_volumes.get(key).ok_or_else(|| {
-                        selected_unauthorized("writeback lost its original project")
-                    })?;
-                let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-                let capability = volume.capability(
-                    acyclic_harness::conversation::VolumeOperation::Write,
-                    &mut Some(&mut io),
-                )?;
-                (capability, io.into_custody())
-            };
+        let volume = request
+            .0
+            .binding
+            .project_volumes
+            .get(key)
+            .ok_or_else(|| selected_unauthorized("writeback lost its original project"))?;
+        let mut io = native_work_io(work)?;
+        let write_capability = volume.capability(
+            acyclic_harness::conversation::VolumeOperation::Write,
+            &mut Some(&mut io),
+        )?;
         let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
             &protected,
             &filesystem,
             &request.0.binding,
             &request.0.root,
-            std::sync::Arc::clone(&context),
+            context,
             work,
         )
         .await?;
-        let original = crate::pi_root_provider::observe_root_allocation(
-            std::sync::Arc::clone(&protected),
-            resources,
-            std::sync::Arc::clone(&filesystem),
-            stream.clone(),
-            preparation,
-            work,
-        )
-        .await?
-        .ok_or_else(|| {
-            selected_unauthorized("writeback has no original created Root allocation")
-        })?;
-        let key = work.display(&format_args!("{key}")).map_err(native_error)?;
-        let resources =
-            crate::pi_root_provider::service_resources_with_native_work(resources, work)?;
-        let slot = work
-            .claim(
-                std::mem::size_of::<Self>() as u64,
-                u64::from((std::mem::size_of::<Self>() as u64) != 0),
-                acyclic_fs::WorkCounters::UNCHARGED,
-            )
-            .map_err(native_error)?;
-        work.charge(acyclic_fs::WorkCounters {
-            allocation_operations: 1,
-            ..acyclic_fs::WorkCounters::default()
-        })
-        .map_err(native_error)?;
-        let ((reference, allocation), allocation_custody) = original;
-        drop(reference);
-        Ok(std::sync::Arc::new(Self {
+        let provider = crate::pi_root_provider::root_provider(
             protected,
-            resources: resources.0,
+            resources,
             filesystem,
             stream,
-            context,
+            preparation,
+            None,
+            work.clone(),
+        )?;
+        drop(request);
+        let attempt = acyclic_harness::EffectAttemptId::from_bytes(
+            provider.effect_id_with_native_work(work)?.into_bytes(),
+        );
+        let ((reference, allocation), allocation_custody) = provider
+            .observe_allocation_with_native_work(attempt, work)
+            .await?
+            .ok_or_else(|| {
+                selected_unauthorized("writeback has no original created Root allocation")
+            })?;
+        drop(reference);
+        let key = work.display(key)?;
+        let slot = work.claim(
+            std::mem::size_of::<Self>() as u64,
+            1,
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
+        work.charge(acyclic_fs::WorkCounters {
+            allocation_operations: 1,
+            ..acyclic_fs::WorkCounters::UNCHARGED
+        })?;
+        Ok(std::sync::Arc::new(Self {
+            provider,
             owner,
-            request: request.0,
             allocation,
             key: key.0,
-            write_capability: write_capability.0,
+            write_capability,
             identity,
-            _custody: [
-                request.1,
-                allocation_custody,
-                key.1,
-                resources.1,
-                slot,
-                write_capability.1,
-            ],
+            _custody: [allocation_custody, key.1, io.into_custody(), slot],
         }))
     }
 
     pub(crate) async fn verify(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         self.owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(work)?))
             .await?;
-        let volume = self
+        let preparation = &self.provider.preparation;
+        let volume = preparation
             .request
             .binding
             .project_volumes
             .get(&self.key)
             .ok_or_else(|| selected_unauthorized("writeback lost its retained original project"))?;
-        if self.context.context().durable_task_id() != Some(self.owner.task_id())
-            || !self
+        if preparation.context.context().durable_task_id() != Some(self.owner.task_id())
+            || !preparation
                 .context
                 .context()
                 .scope()
@@ -322,29 +264,12 @@ impl PiWritebackPublicationGuard {
         self.owner.require_volume_grant(
             volume,
             acyclic_harness::conversation::VolumeOperation::Write,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
+            &mut Some(&mut native_work_io(work)?),
         )?;
-        let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
-            &self.protected,
-            &self.filesystem,
-            &self.request.binding,
-            &self.request.root,
-            std::sync::Arc::clone(&self.context),
-            work,
-        )
-        .await?;
-        let identity = crate::pi_root_provider::guard_created_root_source_with_native_work(
-            std::sync::Arc::clone(&self.protected),
-            &self.resources,
-            std::sync::Arc::clone(&self.filesystem),
-            self.stream.clone(),
-            preparation,
-            &self.owner,
-            &self.key,
-            &self.allocation,
-            work,
-        )
-        .await?;
+        let identity = self
+            .provider
+            .verify_created_source(&self.owner, &self.key, &self.allocation, work)
+            .await?;
         if identity != self.identity {
             return Err(selected_unauthorized(
                 "writeback changed its held original native Root identity",
@@ -353,13 +278,10 @@ impl PiWritebackPublicationGuard {
         self.owner.require_volume_grant(
             volume,
             acyclic_harness::conversation::VolumeOperation::Write,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
+            &mut Some(&mut native_work_io(work)?),
         )?;
         self.owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(work)?))
             .await
     }
 }
@@ -392,20 +314,17 @@ pub(crate) async fn build_writeback_generations<'a>(
     let context = native_context.context();
 
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
-    let _read_grant = {
-        let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?);
-        let grant = acyclic_harness::conversation::ContentGrant::verify(
-            verifier,
-            scope,
-            &root.volume,
-            acyclic_harness::conversation::VolumeOperation::Read,
-            u64::MAX,
-            &mut Some(&mut io),
-        )?;
-        (grant, io.into_custody())
-    };
+    let mut grant_io = native_work_io(native_work)?;
+    let _read_grant = acyclic_harness::conversation::ContentGrant::verify(
+        verifier,
+        scope,
+        &root.volume,
+        acyclic_harness::conversation::VolumeOperation::Read,
+        context.scope().limits().file_bytes,
+        &mut Some(&mut grant_io),
+    )?;
     let storage_name = {
-        let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?);
+        let mut io = native_work_io(native_work)?;
         let value = root.volume.storage_name(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
@@ -426,19 +345,15 @@ pub(crate) async fn build_writeback_generations<'a>(
     let retained = (paths.len() as u64)
         .checked_mul((std::mem::size_of::<String>() + std::mem::size_of::<&str>()) as u64)
         .ok_or_else(|| selected_invalid("selected writeback container size overflow"))?;
-    let custody = native_work
-        .claim(
-            retained,
-            u64::from((retained) != 0),
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )
-        .map_err(native_error)?;
-    native_work
-        .charge(acyclic_fs::WorkCounters {
-            allocation_operations: 2,
-            ..acyclic_fs::WorkCounters::default()
-        })
-        .map_err(native_error)?;
+    let custody = native_work.claim(
+        retained,
+        u64::from((retained) != 0),
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
+    native_work.charge(acyclic_fs::WorkCounters {
+        allocation_operations: 2,
+        ..acyclic_fs::WorkCounters::default()
+    })?;
     let mut absolute_paths = (
         Vec::with_capacity(paths.len()),
         paths.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -449,17 +364,9 @@ pub(crate) async fn build_writeback_generations<'a>(
         return Err(selected_invalid("writeback repeats a selected path"));
     }
     for path in paths {
-        validate_content_path(
-            path,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
-        )?;
-        let mut absolute = native_work
-            .display(&format_args!("/{path}"))
-            .map_err(native_error)?;
-        absolute_paths
-            .2
-            .absorb(&mut absolute.1)
-            .map_err(native_error)?;
+        validate_content_path(path)?;
+        let mut absolute = native_work.display(&format_args!("/{path}"))?;
+        absolute_paths.2.absorb(&mut absolute.1)?;
         absolute_paths.0.push(absolute.0);
     }
     let contract = (
@@ -484,9 +391,7 @@ pub(crate) async fn build_writeback_generations<'a>(
     )
     .await?;
     drop(staged);
-    let destination = native_work
-        .display(&format_args!("pi-writeback-{operation}-baseline"))
-        .map_err(native_error)?;
+    let destination = native_work.display(&format_args!("pi-writeback-{operation}-baseline"))?;
     let (from, candidate) = actual_root
         .workspace
         .exactify_snapshot_selected_at_generation_with_native_work_guarded(
@@ -536,61 +441,51 @@ fn phase_operation(
 }
 
 /// Owns the actual issued caller/destination contexts, not copied scopes.
-struct PiSelectedPublicationGuard<P> {
+struct PiSelectedPublicationGuard {
     caller: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
-    caller_owner: std::sync::Arc<TaskJournalOwner<P>>,
+    caller_owner: std::sync::Arc<TaskJournalOwner<LocalStream>>,
     destination: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
-    destination_owner: std::sync::Arc<TaskJournalOwner<P>>,
+    destination_owner: std::sync::Arc<TaskJournalOwner<LocalStream>>,
     volume: VolumeRef,
     write_capability: String,
     mount_guard: Option<std::sync::Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>>,
-    _custody: [acyclic_fs::NativeAllocation; 3],
+    _custody: [acyclic_fs::NativeAllocation; 2],
 }
 
-impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
+impl PiSelectedPublicationGuard {
     fn new(
         caller: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
-        caller_owner: std::sync::Arc<TaskJournalOwner<P>>,
+        caller_owner: std::sync::Arc<TaskJournalOwner<LocalStream>>,
         destination: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
-        destination_owner: std::sync::Arc<TaskJournalOwner<P>>,
+        destination_owner: std::sync::Arc<TaskJournalOwner<LocalStream>>,
         mount_guard: Option<std::sync::Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>>,
         volume: &VolumeRef,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>> {
-        let volume = {
-            let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-            let value = volume.copy(&mut Some(&mut io))?;
-            (value, io.into_custody())
-        };
-        let capability = {
-            let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-            let value = volume.0.capability(
-                acyclic_harness::conversation::VolumeOperation::Write,
-                &mut Some(&mut io),
-            )?;
-            (value, io.into_custody())
-        };
-        let slot = work
-            .claim(
-                std::mem::size_of::<Self>() as u64,
-                u64::from((std::mem::size_of::<Self>() as u64) != 0),
-                acyclic_fs::WorkCounters::UNCHARGED,
-            )
-            .map_err(native_error)?;
+        let mut io = native_work_io(work)?;
+        let volume = volume.copy(&mut Some(&mut io))?;
+        let capability = volume.capability(
+            acyclic_harness::conversation::VolumeOperation::Write,
+            &mut Some(&mut io),
+        )?;
+        let slot = work.claim(
+            std::mem::size_of::<Self>() as u64,
+            u64::from((std::mem::size_of::<Self>() as u64) != 0),
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1,
             ..acyclic_fs::WorkCounters::default()
-        })
-        .map_err(native_error)?;
+        })?;
         Ok(std::sync::Arc::new(Self {
             caller,
             caller_owner,
             destination,
             destination_owner,
-            volume: volume.0,
-            write_capability: capability.0,
+            volume,
+            write_capability: capability,
             mount_guard,
-            _custody: [volume.1, capability.1, slot],
+            _custody: [io.into_custody(), slot],
         }))
     }
 
@@ -621,10 +516,7 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
                 continue;
             }
             owner
-                .verify(
-                    false,
-                    &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-                )
+                .verify(false, &mut Some(&mut native_work_io(work)?))
                 .await?;
             if context.context().durable_task_id() != Some(owner.task_id())
                 || !context
@@ -640,13 +532,10 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
             owner.require_volume_grant(
                 &self.volume,
                 acyclic_harness::conversation::VolumeOperation::Write,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
+                &mut Some(&mut native_work_io(work)?),
             )?;
             owner
-                .verify(
-                    false,
-                    &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-                )
+                .verify(false, &mut Some(&mut native_work_io(work)?))
                 .await?;
         }
         Ok(())
@@ -737,9 +626,10 @@ pub(crate) async fn prepare_writeback<'a>(
     if journal.root_identity != Some(root.identity.to_bytes())
         || journal.phase != acyclic_fs::MaterializationPhase::Prepared
     {
-        return Err(selected_conflict(
-            "writeback preparation has another original root or is not ready for approval",
-        ));
+        return Err(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Conflict,
+            reason: "writeback preparation has another original root or is not ready for approval",
+        });
     }
     require_selected_edits(&journal.plan.edits, paths)?;
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
@@ -763,7 +653,6 @@ pub(crate) async fn prepare_writeback<'a>(
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
         native_work,
     )?;
-    drop(digest_value);
     digest.1.absorb(&mut encoded.1)?;
     let canonical_digest_input = String::from_utf8(encoded.0).map_err(|error| {
         drop(error);
@@ -949,15 +838,11 @@ async fn authenticate_root(
     scope: &acyclic_harness::core::Scope,
     native_work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    let native_owner = &owner;
-    native_owner
-        .verify(
-            false,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
-        )
+    owner
+        .verify(false, &mut Some(&mut native_work_io(native_work)?))
         .await?;
     let capability = {
-        let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?);
+        let mut io = native_work_io(native_work)?;
         let value = root.volume.capability(
             acyclic_harness::conversation::VolumeOperation::Write,
             &mut Some(&mut io),
@@ -974,22 +859,19 @@ async fn authenticate_root(
             "writeback does not own the ORIGINAL root task and destination",
         ));
     }
-    let _grant = {
-        let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?);
-        let grant = acyclic_harness::conversation::ContentGrant::verify(
-            verifier,
-            scope,
-            &root.volume,
-            acyclic_harness::conversation::VolumeOperation::Write,
-            u64::MAX,
-            &mut Some(&mut io),
-        )?;
-        (grant, io.into_custody())
-    };
-    native_owner.require_volume_grant(
+    let mut grant_io = native_work_io(native_work)?;
+    let _grant = acyclic_harness::conversation::ContentGrant::verify(
+        verifier,
+        scope,
         &root.volume,
         acyclic_harness::conversation::VolumeOperation::Write,
-        &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
+        context.scope().limits().file_bytes,
+        &mut Some(&mut grant_io),
+    )?;
+    owner.require_volume_grant(
+        &root.volume,
+        acyclic_harness::conversation::VolumeOperation::Write,
+        &mut Some(&mut native_work_io(native_work)?),
     )?;
     Ok(())
 }
@@ -1082,38 +964,40 @@ pub(crate) struct PiNativeInspectionPage<'a> {
 }
 
 /// Original source capability plus frozen logical identity.
-pub(crate) struct PiNativeSelectedSource<'a, A, O, D, S> {
-    workspace: &'a acyclic_fs::LazyWorkspace<A, O, D, S>,
+pub(crate) struct PiNativeSelectedSource<'a> {
+    workspace: &'a crate::LocalLazyWorkspace,
     source: TaskId,
     reader: TaskId,
     volume: &'a VolumeRef,
     snapshot: acyclic_fs::LazySnapshotRef,
-    inspection: &'a TaskSourceInspection<acyclic_stream::LocalStream, A, O>,
+    inspection: &'a TaskSourceInspection<
+        LocalStream,
+        crate::LocalAuthorityBackend,
+        crate::LocalObjectBackend,
+    >,
 }
 
-impl<'a, A, O, D, S> PiNativeSelectedSource<'a, A, O, D, S>
-where
-    A: acyclic_fs::AsyncAuthorityStore + 'static,
-    O: acyclic_fs::AsyncObjectStore + 'static,
-    D: acyclic_fs::demand::DemandSource + 'static,
-    S: acyclic_fs::LazyWorkspaceStore + 'static,
-{
+impl<'a> PiNativeSelectedSource<'a> {
     pub(crate) fn snapshot(&self) -> acyclic_fs::LazySnapshotRef {
         self.snapshot
     }
 
     /// The inspection is constructed by the shared runtime from the opaque ORIGINAL-caller ProjectSourceReadHandle.
     pub(crate) fn select(
-        inspection: &'a TaskSourceInspection<acyclic_stream::LocalStream, A, O>,
+        inspection: &'a TaskSourceInspection<
+            LocalStream,
+            crate::LocalAuthorityBackend,
+            crate::LocalObjectBackend,
+        >,
         source: TaskId,
         reader: TaskId,
         volume: &'a VolumeRef,
-        workspace: &'a acyclic_fs::LazyWorkspace<A, O, D, S>,
+        workspace: &'a crate::LocalLazyWorkspace,
         snapshot: acyclic_fs::LazySnapshotRef,
         native_work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         let storage_name = {
-            let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?);
+            let mut io = native_work_io(native_work)?;
             let value = volume.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -1144,15 +1028,15 @@ where
             ));
         }
         if !path.is_empty() {
-            validate_content_path(path, &mut None)?;
+            validate_content_path(path)?;
         }
         Ok(())
     }
 
-    pub(crate) async fn inspect<'b, P: StreamProvider>(
+    pub(crate) async fn inspect<'b>(
         &'b self,
         context: &TaskContext,
-        owner: &TaskJournalOwner<P>,
+        owner: &TaskJournalOwner<LocalStream>,
         directory: &str,
         cursor: Option<&PiNativeInspectionCursor>,
         maximum_entries: u32,
@@ -1160,10 +1044,7 @@ where
         native_work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<PiNativeInspectionPage<'b>> {
         owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(native_work)?))
             .await?;
         if context.durable_task_id() != Some(owner.task_id()) {
             return Err(selected_unauthorized(
@@ -1200,9 +1081,7 @@ where
         } else {
             None
         };
-        let absolute = native_work
-            .display(&format_args!("/{directory}"))
-            .map_err(native_error)?;
+        let absolute = native_work.display(&format_args!("/{directory}"))?;
         let page = self
             .inspection
             .list_native_directory_with_native_work(
@@ -1218,21 +1097,17 @@ where
             .checked_mul(std::mem::size_of::<PiNativeInspectionEntry>() as u64)
             .and_then(|bytes| bytes.checked_add(directory.len() as u64))
             .ok_or_else(|| selected_invalid("native inspection payload size overflow"))?;
-        let custody = native_work
-            .claim(
-                retained,
-                u64::from((retained) != 0),
-                acyclic_fs::WorkCounters::UNCHARGED,
-            )
-            .map_err(native_error)?;
-        native_work
-            .charge(acyclic_fs::WorkCounters {
-                bytes_copied: directory.len() as u64,
-                allocation_operations: u64::from(!page.0.entries.is_empty())
-                    + u64::from(!directory.is_empty()),
-                ..acyclic_fs::WorkCounters::default()
-            })
-            .map_err(native_error)?;
+        let custody = native_work.claim(
+            retained,
+            u64::from((retained) != 0),
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
+        native_work.charge(acyclic_fs::WorkCounters {
+            bytes_copied: directory.len() as u64,
+            allocation_operations: u64::from(!page.0.entries.is_empty())
+                + u64::from(!directory.is_empty()),
+            ..acyclic_fs::WorkCounters::default()
+        })?;
         let mut output = (
             Vec::with_capacity(page.0.entries.len()),
             directory.to_owned(),
@@ -1242,7 +1117,7 @@ where
             let mut name = entry
                 .name
                 .unicode_text_with_native_work(native_work, cancellation)?;
-            output.2.absorb(&mut name.1).map_err(native_error)?;
+            output.2.absorb(&mut name.1)?;
             output.0.push(PiNativeInspectionEntry {
                 name: name.0,
                 kind: entry.kind,
@@ -1252,11 +1127,9 @@ where
             let mut continuation = continuation
                 .encode_with_native_work(native_work, cancellation)
                 .map_err(|(source, custody)| Error::NativeSource { source, custody })?;
-            let mut directory = native_work
-                .display(&format_args!("{directory}"))
-                .map_err(native_error)?;
-            output.2.absorb(&mut continuation.1).map_err(native_error)?;
-            output.2.absorb(&mut directory.1).map_err(native_error)?;
+            let mut directory = native_work.display(&format_args!("{directory}"))?;
+            output.2.absorb(&mut continuation.1)?;
+            output.2.absorb(&mut directory.1)?;
             Some(PiNativeInspectionCursor {
                 source: self.source,
                 volume: self.volume,
@@ -1269,10 +1142,7 @@ where
         };
         drop(page);
         owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(native_work)?))
             .await?;
         Ok(PiNativeInspectionPage {
             source: self.source,
@@ -1286,10 +1156,10 @@ where
     }
 
     /// The canonical sealed reader retains its original SDK byte capacity through the caller's encoding/publication; this is not post-hoc adoption.
-    pub(crate) async fn read_with_native_work<P: StreamProvider>(
+    pub(crate) async fn read_with_native_work(
         &self,
         context: &TaskContext,
-        owner: &TaskJournalOwner<P>,
+        owner: &TaskJournalOwner<LocalStream>,
         path: &str,
         maximum_bytes: u64,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -1300,9 +1170,7 @@ where
                 "native selected read changed its ORIGINAL caller owner",
             ));
         }
-        let absolute = work
-            .display(&format_args!("/{path}"))
-            .map_err(native_error)?;
+        let absolute = work.display(&format_args!("/{path}"))?;
         self.inspection
             .read_native_path_with_native_work(
                 self.workspace,
@@ -1313,10 +1181,10 @@ where
             )
             .await
     }
-    pub(crate) async fn lookup_with_native_work<P: StreamProvider>(
+    pub(crate) async fn lookup_with_native_work(
         &self,
         context: &TaskContext,
-        owner: &TaskJournalOwner<P>,
+        owner: &TaskJournalOwner<LocalStream>,
         path: &str,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(acyclic_fs::LazyLookup, acyclic_fs::NativeAllocation)> {
@@ -1326,17 +1194,15 @@ where
                 "native selected lookup changed its ORIGINAL caller owner",
             ));
         }
-        let absolute = work
-            .display(&format_args!("/{path}"))
-            .map_err(native_error)?;
+        let absolute = work.display(&format_args!("/{path}"))?;
         self.inspection
             .lookup_native_path_with_native_work(self.workspace, self.snapshot, &absolute.0, work)
             .await
     }
-    pub(crate) async fn read_link_with_native_work<P: StreamProvider>(
+    pub(crate) async fn read_link_with_native_work(
         &self,
         context: &TaskContext,
-        owner: &TaskJournalOwner<P>,
+        owner: &TaskJournalOwner<LocalStream>,
         path: &str,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_stream::OwnedBytes> {
@@ -1346,9 +1212,7 @@ where
                 "native selected link read changed its ORIGINAL caller owner",
             ));
         }
-        let absolute = work
-            .display(&format_args!("/{path}"))
-            .map_err(native_error)?;
+        let absolute = work.display(&format_args!("/{path}"))?;
         self.inspection
             .read_native_link_with_native_work(self.workspace, self.snapshot, &absolute.0, work)
             .await
@@ -1356,14 +1220,14 @@ where
 }
 
 /// The source's sealed canonical selected plan preserves actual recorded metadata, directories and negative proofs.
-pub(crate) async fn import_native_project<P, A, O, D, S>(
-    source: &PiNativeSelectedSource<'_, A, O, D, S>,
+pub(crate) async fn import_native_project(
+    source: &PiNativeSelectedSource<'_>,
     caller_native: &std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
-    caller_owner: &std::sync::Arc<TaskJournalOwner<P>>,
+    caller_owner: &std::sync::Arc<TaskJournalOwner<LocalStream>>,
     destination_native: &std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
-    destination_owner: &std::sync::Arc<TaskJournalOwner<P>>,
-    destination_workspace: &acyclic_fs::LazyWorkspace<A, O, D, S>,
-    mount: Option<&acyclic_fs::LazyMount<A, O, D, S>>,
+    destination_owner: &std::sync::Arc<TaskJournalOwner<LocalStream>>,
+    destination_workspace: &crate::LocalLazyWorkspace,
+    mount: Option<&crate::LocalSingleMount>,
     mount_guard: Option<std::sync::Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>>,
     destination_volume: &VolumeRef,
     checkpoint: acyclic_fs::LazySnapshotRef,
@@ -1376,14 +1240,7 @@ pub(crate) async fn import_native_project<P, A, O, D, S>(
     maximum_bytes: u64,
     cancellation: &acyclic_fs::CancellationToken,
     native_work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<acyclic_fs::LazySnapshotRef>
-where
-    P: StreamProvider + 'static,
-    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
-    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
-    D: acyclic_fs::demand::DemandSource + 'static,
-    S: acyclic_fs::LazyWorkspaceStore + 'static,
-{
+) -> Result<acyclic_fs::LazySnapshotRef> {
     let caller = caller_native.context();
     let destination = destination_native.context();
 
@@ -1393,16 +1250,10 @@ where
         ));
     }
     caller_owner
-        .verify(
-            false,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
-        )
+        .verify(false, &mut Some(&mut native_work_io(native_work)?))
         .await?;
     destination_owner
-        .verify(
-            false,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
-        )
+        .verify(false, &mut Some(&mut native_work_io(native_work)?))
         .await?;
     if caller.durable_task_id() != Some(caller_owner.task_id())
         || destination.durable_task_id() != Some(destination_owner.task_id())
@@ -1412,7 +1263,7 @@ where
         ));
     }
     let capability = {
-        let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?);
+        let mut io = native_work_io(native_work)?;
         let value = destination_volume.capability(
             acyclic_harness::conversation::VolumeOperation::Write,
             &mut Some(&mut io),
@@ -1420,7 +1271,7 @@ where
         (value, io.into_custody())
     };
     let storage_name = {
-        let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?);
+        let mut io = native_work_io(native_work)?;
         let value = destination_volume.storage_name(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
@@ -1437,37 +1288,30 @@ where
             "native import lacks its original destination WRITE grant or selected checkpoint",
         ));
     }
-    let _grant = {
-        let mut io = acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?);
-        let grant = acyclic_harness::conversation::ContentGrant::verify(
-            verifier,
-            scope,
-            destination_volume,
-            acyclic_harness::conversation::VolumeOperation::Write,
-            u64::MAX,
-            &mut Some(&mut io),
-        )?;
-        (grant, io.into_custody())
-    };
+    let mut grant_io = native_work_io(native_work)?;
+    let _grant = acyclic_harness::conversation::ContentGrant::verify(
+        verifier,
+        scope,
+        destination_volume,
+        acyclic_harness::conversation::VolumeOperation::Write,
+        destination.scope().limits().file_bytes,
+        &mut Some(&mut grant_io),
+    )?;
     let retained = (paths.len() as u64)
         .checked_mul(
             (std::mem::size_of::<acyclic_fs::kernel::NamespacePath>() + std::mem::size_of::<&str>())
                 as u64,
         )
         .ok_or_else(|| selected_invalid("selected namespace container size overflow"))?;
-    let custody = native_work
-        .claim(
-            retained,
-            u64::from((retained) != 0),
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )
-        .map_err(native_error)?;
-    native_work
-        .charge(acyclic_fs::WorkCounters {
-            allocation_operations: 2,
-            ..acyclic_fs::WorkCounters::default()
-        })
-        .map_err(native_error)?;
+    let custody = native_work.claim(
+        retained,
+        u64::from((retained) != 0),
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
+    native_work.charge(acyclic_fs::WorkCounters {
+        allocation_operations: 2,
+        ..acyclic_fs::WorkCounters::default()
+    })?;
     let mut requested = (
         Vec::with_capacity(paths.len()),
         paths.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -1480,24 +1324,19 @@ where
     for path in paths {
         validate_content_path(
             path,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
+            &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
         )?;
         source.require_reader(caller, path)?;
         caller_owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(native_work)?))
             .await?;
-        let absolute = native_work
-            .display(&format_args!("/{path}"))
-            .map_err(native_error)?;
+        let absolute = native_work.display(&format_args!("/{path}"))?;
         let mut parsed = source
             .workspace
             .workspace()
             .namespace_path_with_native_work(&absolute.0, native_work, cancellation)
             .map_err(Error::from)?;
-        requested.2.absorb(&mut parsed.1).map_err(native_error)?;
+        requested.2.absorb(&mut parsed.1)?;
         requested.0.push(parsed.0);
     }
     let plan = source
@@ -1510,10 +1349,7 @@ where
         )
         .await?;
     caller_owner
-        .verify(
-            false,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
-        )
+        .verify(false, &mut Some(&mut native_work_io(native_work)?))
         .await?;
     if plan.0.logical_bytes() > maximum_bytes
         || plan.0.maximum_regular_file_bytes() > caller.scope().limits().file_bytes
@@ -1534,7 +1370,7 @@ where
     let operation = acyclic_fs::OperationId::from_bytes(operation.into_bytes());
     let value = if let Some(mount) = mount {
         mount
-            .import_selected(
+            .import_selected_work_guarded(
                 checkpoint,
                 plan.0,
                 plan.1,
@@ -1613,29 +1449,19 @@ pub(crate) struct PiNativeDiffPage<'a> {
 }
 
 /// Two bounded native-order passes, so a source's host enumeration order is never assumed to be lexical.
-pub(crate) async fn diff_native<'a, P, A, O, D, S>(
-    before: &'a PiNativeSelectedSource<'_, A, O, D, S>,
-    after: &'a PiNativeSelectedSource<'_, A, O, D, S>,
+pub(crate) async fn diff_native<'a>(
+    before: &'a PiNativeSelectedSource<'_>,
+    after: &'a PiNativeSelectedSource<'_>,
     context: &TaskContext,
-    owner: &TaskJournalOwner<P>,
+    owner: &TaskJournalOwner<LocalStream>,
     directory: &str,
     cursor: Option<&PiNativeDiffCursor>,
     maximum_entries: u32,
     cancellation: &acyclic_fs::CancellationToken,
     native_work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<PiNativeDiffPage<'a>>
-where
-    P: StreamProvider,
-    A: acyclic_fs::AsyncAuthorityStore + 'static,
-    O: acyclic_fs::AsyncObjectStore + 'static,
-    D: acyclic_fs::demand::DemandSource + 'static,
-    S: acyclic_fs::LazyWorkspaceStore + 'static,
-{
+) -> Result<PiNativeDiffPage<'a>> {
     owner
-        .verify(
-            false,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
-        )
+        .verify(false, &mut Some(&mut native_work_io(native_work)?))
         .await?;
     if context.durable_task_id() != Some(owner.task_id()) {
         return Err(selected_unauthorized(
@@ -1690,9 +1516,7 @@ where
     } else {
         None
     };
-    let absolute = native_work
-        .display(&format_args!("/{directory}"))
-        .map_err(native_error)?;
+    let absolute = native_work.display(&format_args!("/{directory}"))?;
     let page = match current
         .inspection
         .list_native_directory_with_native_work(
@@ -1723,20 +1547,16 @@ where
         .checked_mul(std::mem::size_of::<PiDifference>() as u64)
         .and_then(|bytes| bytes.checked_add(directory.len() as u64))
         .ok_or_else(|| selected_invalid("native diff payload size overflow"))?;
-    let custody = native_work
-        .claim(
-            retained,
-            u64::from((retained) != 0),
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )
-        .map_err(native_error)?;
-    native_work
-        .charge(acyclic_fs::WorkCounters {
-            bytes_copied: directory.len() as u64,
-            allocation_operations: u64::from(count != 0) + u64::from(!directory.is_empty()),
-            ..acyclic_fs::WorkCounters::default()
-        })
-        .map_err(native_error)?;
+    let custody = native_work.claim(
+        retained,
+        u64::from((retained) != 0),
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
+    native_work.charge(acyclic_fs::WorkCounters {
+        bytes_copied: directory.len() as u64,
+        allocation_operations: u64::from(count != 0) + u64::from(!directory.is_empty()),
+        ..acyclic_fs::WorkCounters::default()
+    })?;
     let mut output = (Vec::with_capacity(count), directory.to_owned(), custody);
     for entry in page
         .as_ref()
@@ -1747,13 +1567,9 @@ where
             .name
             .unicode_text_with_native_work(native_work, cancellation)?;
         let path = if directory.is_empty() {
-            native_work
-                .display(&format_args!("{}", name.0))
-                .map_err(native_error)?
+            native_work.display(&format_args!("{}", name.0))?
         } else {
-            native_work
-                .display(&format_args!("{directory}/{}", name.0))
-                .map_err(native_error)?
+            native_work.display(&format_args!("{directory}/{}", name.0))?
         };
         let counterpart = match other
             .lookup_with_native_work(context, owner, &path.0, native_work)
@@ -1775,7 +1591,7 @@ where
         };
         if before_pass {
             if counterpart.is_none() {
-                output.2.absorb(&mut name.1).map_err(native_error)?;
+                output.2.absorb(&mut name.1)?;
                 output.0.push(PiDifference {
                     name: name.0,
                     kind: PiDifferenceKind::Removed,
@@ -1784,7 +1600,7 @@ where
             continue;
         }
         let Some(counterpart) = counterpart else {
-            output.2.absorb(&mut name.1).map_err(native_error)?;
+            output.2.absorb(&mut name.1)?;
             output.0.push(PiDifference {
                 name: name.0,
                 kind: PiDifferenceKind::Added,
@@ -1839,25 +1655,20 @@ where
             }
         };
         if let Some(kind) = kind {
-            output.2.absorb(&mut name.1).map_err(native_error)?;
+            output.2.absorb(&mut name.1)?;
             output.0.push(PiDifference { name: name.0, kind });
         }
         owner
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
-            )
+            .verify(false, &mut Some(&mut native_work_io(native_work)?))
             .await?;
     }
     let next = if let Some(next) = page.as_ref().and_then(|(page, _)| page.next.as_ref()) {
         let mut continuation = next
             .encode_with_native_work(native_work, cancellation)
             .map_err(|(source, custody)| Error::NativeSource { source, custody })?;
-        let mut directory = native_work
-            .display(&format_args!("{directory}"))
-            .map_err(native_error)?;
-        output.2.absorb(&mut continuation.1).map_err(native_error)?;
-        output.2.absorb(&mut directory.1).map_err(native_error)?;
+        let mut directory = native_work.display(&format_args!("{directory}"))?;
+        output.2.absorb(&mut continuation.1)?;
+        output.2.absorb(&mut directory.1)?;
         Some(PiNativeDiffCursor {
             before: before_key,
             after: after_key,
@@ -1866,10 +1677,8 @@ where
             continuation: Some(continuation.0),
         })
     } else if !before_pass {
-        let mut directory = native_work
-            .display(&format_args!("{directory}"))
-            .map_err(native_error)?;
-        output.2.absorb(&mut directory.1).map_err(native_error)?;
+        let mut directory = native_work.display(&format_args!("{directory}"))?;
+        output.2.absorb(&mut directory.1)?;
         Some(PiNativeDiffCursor {
             before: before_key,
             after: after_key,
@@ -1882,10 +1691,7 @@ where
     };
     drop(page);
     owner
-        .verify(
-            false,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(native_work)?)),
-        )
+        .verify(false, &mut Some(&mut native_work_io(native_work)?))
         .await?;
     Ok(PiNativeDiffPage {
         entries: output.0,

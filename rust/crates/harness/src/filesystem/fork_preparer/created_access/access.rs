@@ -183,8 +183,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let lease = None;
         if let Some(lease) = lease {
             match io {
-                Some(io) => io.verify_publication_lease(lease.as_ref()).await?,
-                None => lease.verify().await?,
+                Some(io) => io.finish_future(lease.verify(Some(io))?).await?,
+                None => lease.verify(None)?.await?,
             }
         }
         let volume = source.map_or(self.volume(), FileRef::volume);

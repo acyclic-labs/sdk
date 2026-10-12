@@ -250,40 +250,8 @@ pub(super) async fn prepare_case(
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
     );
-    let stock = Arc::new(StockTurnMachine::new());
-    let preparation = Arc::new(ForkPreparationMachine::new());
-    let mut tasks = TaskRegistry::default();
-    tasks.register(stock.definition()?)?;
-    tasks.register(preparation.definition()?)?;
-    let mut machines = MachineRegistry::default();
-    machines.register(stock, &mut None)?;
-    machines.register(preparation, &mut None)?;
-    let creator = Arc::new(FilesystemResourceCreationProvider::new(
-        files.clone(),
-        &issuer,
-        #[cfg(not(target_arch = "wasm32"))]
-        None,
-    )?);
-    let runtime = Runtime::open_with_creation_providers(
-        stream.clone(),
-        files.clone(),
-        private.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        owner.scope.clone(),
-        RuntimeScope::new(owner.scope.capabilities().clone(), limits)?
-            .with_run_limits(run_limits, &mut None)?,
-        tasks,
-        machines,
-        Default::default(),
-        config.session_limits,
-        config.concurrency,
-        PAYLOAD_BYTES,
-        Arc::new(SystemUnixMillisClock),
-        None,
-        vec![creator],
-        Default::default(),
-    )
-    .await?;
+    let runtime =
+        crate::native::runtime(&config, stream.clone(), files.clone(), owner.verifier()?).await?;
     let definition: Arc<TaskDefinition<WorkflowCommand, TurnOutput>> =
         runtime.harness().task("acyclic.stock_turn@1")?;
     let operation = OperationId::new();

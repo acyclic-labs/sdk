@@ -54,19 +54,18 @@ impl NativeCheckout {
 
         let path = native_path(&path, self.config)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .plan_file_extents(
+        let receipt = checkout_call!(
+            self,
+            checkout,
+            plan_file_extents(
                 &path,
                 ByteRange {
                     offset: bigint_u64(&offset, "offset")?,
                     length: bigint_u64(&length, "length")?,
                 },
                 maximum_spans,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
+        )?;
         native_extent_plan(receipt)
     }
 
@@ -83,19 +82,18 @@ impl NativeCheckout {
 
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .plan_file_extents_by_id(
+        let receipt = checkout_call!(
+            self,
+            checkout,
+            plan_file_extents_by_id(
                 file_id,
                 ByteRange {
                     offset: bigint_u64(&offset, "offset")?,
                     length: bigint_u64(&length, "length")?,
                 },
                 maximum_spans,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
+        )?;
         native_extent_plan(receipt)
     }
 
@@ -110,16 +108,11 @@ impl NativeCheckout {
         let path = native_path(&path, self.config)?;
         let target = extent_seek_target(&target)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .seek_file_extent(
-                &path,
-                bigint_u64(&offset, "offset")?,
-                target,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(
+            self,
+            checkout,
+            seek_file_extent(&path, bigint_u64(&offset, "offset")?, target,)
+        )?;
         Ok(NativeExtentSeek {
             offset: receipt.value.map(bigint),
             work_json: work_json(&receipt.work)?,
@@ -137,16 +130,11 @@ impl NativeCheckout {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let target = extent_seek_target(&target)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .seek_file_extent_by_id(
-                file_id,
-                bigint_u64(&offset, "offset")?,
-                target,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(
+            self,
+            checkout,
+            seek_file_extent_by_id(file_id, bigint_u64(&offset, "offset")?, target,)
+        )?;
         Ok(NativeExtentSeek {
             offset: receipt.value.map(bigint),
             work_json: work_json(&receipt.work)?,
@@ -183,20 +171,20 @@ pub(in crate::bindings) fn native_extent_plan(
     receipt: acyclic_fs::OperationReceipt<Option<acyclic_fs::kernel::ExtentPlan>>,
 ) -> Result<NativeExtentPlan> {
     let work_json = work_json(&receipt.work)?;
-    match receipt.value {
-        None => Ok(NativeExtentPlan {
-            kind: "inline".to_owned(),
-            spans: Vec::new(),
-            retained_allocation_bytes: None,
-            work_json,
-        }),
-        Some(plan) => Ok(NativeExtentPlan {
-            kind: "sparse".to_owned(),
-            spans: plan.spans.iter().map(native_extent_span).collect(),
-            retained_allocation_bytes: Some(bigint(plan.retained_allocation_bytes)),
-            work_json,
-        }),
-    }
+    let (kind, spans, retained_allocation_bytes) = match receipt.value {
+        None => ("inline", Vec::new(), None),
+        Some(plan) => (
+            "sparse",
+            plan.spans.iter().map(native_extent_span).collect(),
+            Some(bigint(plan.retained_allocation_bytes)),
+        ),
+    };
+    Ok(NativeExtentPlan {
+        kind: kind.to_owned(),
+        spans,
+        retained_allocation_bytes,
+        work_json,
+    })
 }
 
 pub(in crate::bindings) fn extent_seek_target(target: &str) -> Result<ExtentSeekTarget> {

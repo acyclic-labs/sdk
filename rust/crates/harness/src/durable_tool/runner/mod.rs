@@ -51,7 +51,9 @@ impl DurableToolRunner {
     pub fn with_limits(mut self, limits: Limits) -> Result<Self> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(custody) = &self.native_custody {
-            limits.validate(&mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(custody.work())?)))?;
+            limits.validate(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(custody.work())?,
+            )))?;
             self.limits = limits;
             return Ok(self);
         }
@@ -383,7 +385,14 @@ impl DurableToolRunner {
                         "durable tool history exceeds admitted limits".into(),
                     ));
                 }
-                crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(&definition.output_schema, &result.0.value, "tool output", work))?;
+                crate::executor::with_history_io(io, |work| {
+                    crate::contract::validate_json_schema_value(
+                        &definition.output_schema,
+                        &result.0.value,
+                        "tool output",
+                        work,
+                    )
+                })?;
                 tool_validate_projection(definition, &projection.0, projection_limits, io)?;
                 return tool_success(result, io);
             }
@@ -480,7 +489,14 @@ impl DurableToolRunner {
                     Err(error) => return Err(error),
                 }
             };
-            if let Err(error) = crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(&definition.output_schema, &result.0.value, "tool output", work)) {
+            if let Err(error) = crate::executor::with_history_io(io, |work| {
+                crate::contract::validate_json_schema_value(
+                    &definition.output_schema,
+                    &result.0.value,
+                    "tool output",
+                    work,
+                )
+            }) {
                 if tool_propagate(&error, io) {
                     return Err(error);
                 }

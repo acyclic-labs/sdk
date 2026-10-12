@@ -1,5 +1,6 @@
 //! Selected resource metadata from the existing authenticated allocation receipts.
 use super::*;
+use crate::wire::ErrorCode;
 use crate::{
     conversation::{VolumeClass, VolumeRef},
     resources::GenerationRef,
@@ -86,7 +87,9 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             .as_deref()
             .and_then(|io| io.original_native_work())
             .cloned();
-        let current_private = scope.current_created_content(quota.work())?.map(|binding| &binding.volume);
+        let current_private = scope
+            .current_created_content(quota.work())?
+            .map(|binding| &binding.volume);
         let Some(current_private) = current_private else {
             return Ok((Vec::new(), 0));
         };

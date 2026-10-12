@@ -1,7 +1,8 @@
 use super::*;
-use crate::runtime::TaskSpawner as _;
 use crate::resource_preparation::ResourcePreparationRequest;
 use crate::resources::{ResourceKind, ResourceRef};
+use crate::runtime::TaskSpawner as _;
+use crate::wire::ErrorCode;
 
 #[tokio::test]
 async fn preparation_binds_admitted_parent_input_budget_and_current_lease() -> Result<()> {
@@ -36,7 +37,9 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             .volume
             .capability(crate::conversation::VolumeOperation::Read, &mut None)?,
     ]);
-    let signed = issuer.issue("owner", &grants, None, None, &mut None).expect("scope proof");
+    let signed = issuer
+        .issue("owner", &grants, None, None, &mut None)
+        .expect("scope proof");
     let scope = RuntimeScope::new(grants, Limits::default())?;
     let schema = serde_json::json!({"type":"object"});
     let implementation = Arc::new(BatchMachine {
@@ -47,17 +50,32 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         },
         schema: schema.clone(),
     });
-    let (identity, machine, tasks, machines) = test_registries::<Value>(
-        implementation, schema.clone(), schema.clone(),
+    let (identity, machine, tasks, machines) =
+        test_registries::<Value>(implementation, schema.clone(), schema.clone())?;
+    let mut host = CoordinatorTaskHost::new(
+        DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?,
+        stream.clone(),
+        payloads.clone(),
+        payloads,
+        &(authority),
+        signed,
+        issuer.verifier(&mut None).expect("verifier copy"),
+        scope.clone(),
+        tasks.clone(),
+        machines,
+        Arc::new(SystemUnixMillisClock),
+        None,
     )?;
-    let mut host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?, stream.clone(), payloads.clone(), payloads, &(authority), signed, issuer.verifier(&mut None).expect("verifier copy"), scope.clone(), tasks.clone(), machines, Arc::new(SystemUnixMillisClock), None)?;
     if configured {
-        host = host.with_session_limits(crate::scheduler::SessionLimits {
-            active_tasks: 2,
-            total_tasks: 2,
-            depth: 1,
-            model_steps: 1,
-        }, None)?;
+        host = host.with_session_limits(
+            crate::scheduler::SessionLimits {
+                active_tasks: 2,
+                total_tasks: 2,
+                depth: 1,
+                model_steps: 1,
+            },
+            None,
+        )?;
     }
     let host = Arc::new(host);
     #[cfg(not(target_arch = "wasm32"))]
@@ -112,7 +130,8 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         ResourceKind::Sandbox,
         provider.clone(),
         b"one".to_vec().into(),
-        None, &mut None
+        None,
+        &mut None,
     )?;
     child = child.with_resource_proofs(vec![
         crate::resource_preparation::ResourceCreationProofRef {
@@ -127,23 +146,25 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
                 ResourceKind::Stream,
                 provider.clone(),
                 b"allocation".to_vec().into(),
-                None, &mut None
+                None,
+                &mut None,
             )?,
         },
     ])?;
     let request = ResourcePreparationRequest {
-provider: provider.clone(),
-child: child.clone(),
-creation_grant: "resource:create:custom".into(),
-maximum_resources: 3,
-maximum_work: 7,
-maximum_bytes: 65_536,
-payload: serde_json::json!({"allocation":"one"}),
-command: None,
-source_checkpoint: None,
-input_files: Vec::new(),
-read_authorization: None,
-};
+        provider: provider.clone(),
+        child: child.clone(),
+        resources: vec![resource],
+        creation_grant: "resource:create:custom".into(),
+        maximum_resources: 3,
+        maximum_work: 7,
+        maximum_bytes: 65_536,
+        payload: serde_json::json!({"allocation":"one"}),
+        command: None,
+        source_checkpoint: None,
+        input_files: Vec::new(),
+        read_authorization: None,
+    };
     let input = serde_json::to_value(&request).map_err(|e| Error::Invalid(e.to_string()))?;
     assert!(
         matches!(host.admit_owned(admission(prep_op,Some(root),input),root_fence.clone()).await?,
@@ -169,8 +190,10 @@ read_authorization: None,
         ));
         return Ok(());
     }
-    let token = owner.resource_preparation(request.clone(), &mut None).await?;
-    token.verify(false, None)?.await?;
+    let token = owner
+        .resource_preparation(request.clone(), &mut None)
+        .await?;
+    token.verify_creation().await?;
     #[cfg(not(target_arch = "wasm32"))]
     check_native_preparation_authority(&host, &harness, prep, &fence, &token).await?;
     assert_eq!(token.origin().preparation_task, prep);
@@ -196,12 +219,13 @@ read_authorization: None,
     let unbound = crate::resource_preparation::ResourceCreationProofRef {
         provider: request.provider.clone(),
         preparation: prep,
-        resource: request.resources().next().expect("created resource").clone(),
+        resource: request.resources().next().expect("resource").clone(),
         evidence: ResourceRef::new(
             ResourceKind::Stream,
             request.provider.clone(),
             b"allocation".to_vec().into(),
-            None, &mut None
+            None,
+            &mut None,
         )?,
     };
     let proved_child = child.clone().with_resource_proofs(vec![unbound])?;
@@ -227,22 +251,28 @@ read_authorization: None,
                     ResourceKind::Sandbox,
                     request.provider.clone(),
                     b"other".to_vec().into(),
-                    None, &mut None
+                    None,
+                    &mut None,
                 )?
             }
         }
-        if wrong_proof == 2 {
-            assert!(matches!(owner.resource_preparation(changed, &mut None).await, Err(Error::Unauthorized(_))));
-        } else {
-            assert!(matches!(changed.validate(&mut None), Err(Error::Invalid(_))));
-        }
+        assert!(matches!(
+            changed.validate(&mut None),
+            Err(Error::Invalid(_))
+        ));
     }
     let mut duplicate = request.clone();
-    duplicate.child.resource_proofs.push(duplicate.child.resource_proofs[0].clone());
-    assert!(matches!(duplicate.validate(&mut None), Err(Error::Invalid(_))));
+    duplicate.resources.push(duplicate.resources[0].clone());
+    assert!(matches!(
+        duplicate.validate(&mut None),
+        Err(Error::Invalid(_))
+    ));
     let mut over_bytes = request.clone();
     over_bytes.maximum_bytes = 1;
-    assert!(matches!(over_bytes.validate(&mut None), Err(Error::Invalid(_))));
+    assert!(matches!(
+        over_bytes.validate(&mut None),
+        Err(Error::Invalid(_))
+    ));
     for unlimited in [false, true] {
         let mut changed = request.clone();
         if unlimited {
@@ -250,7 +280,10 @@ read_authorization: None,
         } else {
             changed.maximum_bytes = u64::MAX;
         }
-        assert!(matches!(changed.validate(&mut None), Err(Error::Invalid(_))));
+        assert!(matches!(
+            changed.validate(&mut None),
+            Err(Error::Invalid(_))
+        ));
         assert!(matches!(
             owner.resource_preparation(changed, &mut None).await,
             Err(Error::Invalid(_))
@@ -265,12 +298,19 @@ read_authorization: None,
             &issuer.verifier(&mut None).expect("verifier copy"),
             prep_op,
             IdempotencyKey::new("cancel-resource-preparation")?,
-            false, None, &mut None,
+            false,
+            None,
+            &mut None,
         )
         .await?;
-    assert!(token.verify(false, None)?.await.is_err());
-    assert!(owner.resource_preparation(request, &mut None).await.is_err());
-    token.verify(true, None)?.await?;
+    assert!(token.verify_creation().await.is_err());
+    assert!(
+        owner
+            .resource_preparation(request, &mut None)
+            .await
+            .is_err()
+    );
+    token.verify_reconciliation().await?;
     Ok(())
 }
 
@@ -283,43 +323,77 @@ async fn check_native_preparation_authority(
     ordinary: &crate::resource_preparation::TaskResourcePreparation,
 ) -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = test_work(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
+    let work = test_work(
+        acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024),
+        &cancellation,
+    )?;
     let before = work.receipt();
-    assert!(matches!(ordinary.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?)),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        ordinary.verify_creation_with_native_work(&work),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(work.receipt(), before);
 
-    let owner = host.journal_owner_with_native_work(task, fence, &work).await?
+    let owner = host
+        .journal_owner_with_native_work(task, fence, &work)
+        .await?
         .into_native_shared(&work)?;
-    let (context, custody) = harness.durable_context_with_native_work(
-        task, OperationId::from_bytes(task.into_bytes()), &work,
-    ).await?;
+    let (context, custody) = harness
+        .durable_context_with_native_work(task, OperationId::from_bytes(task.into_bytes()), &work)
+        .await?;
     let query = context.into_native_shared(custody, &work)?;
-    let witness = host.task_preparation_readonly_witness_with_native_work(&query, &work)?.await?;
-    let request = witness.original_preparation_request_with_native_work(&query, &work)?.await?;
+    let witness = host
+        .task_preparation_readonly_witness_with_native_work(&query, &work)?
+        .await?;
+    let request = witness
+        .original_preparation_request_with_native_work(&query, &work)?
+        .await?;
     witness.verify_preparation_origin_with_native_work(
-        &query, &request.0, ordinary.origin(), &work,
+        &query,
+        &request.0,
+        ordinary.origin(),
+        &work,
     )?;
     let parent = ordinary.origin().parent_task;
-    let (other_context, other_custody) = harness.durable_context_with_native_work(
-        parent, OperationId::from_bytes(parent.into_bytes()), &work,
-    ).await?;
+    let (other_context, other_custody) = harness
+        .durable_context_with_native_work(
+            parent,
+            OperationId::from_bytes(parent.into_bytes()),
+            &work,
+        )
+        .await?;
     let other_query = other_context.into_native_shared(other_custody, &work)?;
     let before = work.receipt();
-    assert!(matches!(witness.original_preparation_request_with_native_work(&other_query, &work),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        witness.original_preparation_request_with_native_work(&other_query, &work),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(work.receipt(), before);
-    let token = owner.resource_preparation_with_native_work(request, &work)?.await?;
+    let token = owner
+        .resource_preparation_with_native_work(request, &work)?
+        .await?;
     assert_eq!(token.origin(), ordinary.origin());
-    token.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?.await?;
+    token.verify_creation_with_native_work(&work)?.await?;
 
     let foreign_cancellation = acyclic_fs::CancellationToken::new();
     let foreign = test_work(
-        acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &foreign_cancellation,
+        acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024),
+        &foreign_cancellation,
     )?;
     let before = foreign.receipt();
-    assert!(matches!(token.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&foreign)?)),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        token.verify_creation_with_native_work(&foreign),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(foreign.receipt(), before);
     Ok(())
 }

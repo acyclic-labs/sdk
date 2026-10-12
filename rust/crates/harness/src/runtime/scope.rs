@@ -659,7 +659,7 @@ impl RuntimeScope {
             .publication_lease
             .as_ref()
             .ok_or_else(|| Error::Unauthorized("created child parent lease is not bound".into()))?;
-        lease.verify().await?;
+        lease.verify(None)?.await?;
         lease.fence()
     }
 
@@ -737,9 +737,9 @@ impl RuntimeScope {
                 })?;
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
-                return io.verify_publication_lease(lease.as_ref()).await;
+                return io.finish_future(lease.verify(Some(io))?).await;
             }
-            lease.verify().await?;
+            lease.verify(None)?.await?;
         }
         let _ = io;
         Ok(())

@@ -257,7 +257,10 @@ where
                 let mut before_mutation = move |work: &acyclic_fs::NativeMaterializationWork| {
                     let original = acyclic_fs::NativeMaterializationWork::clone(work);
                     let lease = Arc::clone(&lease);
-                    async move { lease.verify_with_native_work(&original)?.await }
+                    async move {
+                        let io = crate::filesystem::PreparationIo::from_native_work(&original)?;
+                        io.finish_future(lease.verify(Some(&io))?).await
+                    }
                 };
                 let (commit, snapshot) = (async {
                     let cancellation = io.cancellation();
@@ -290,7 +293,10 @@ where
                 let callback =
                     crate::filesystem::PreparationIo::from_budget(budget, io.cancellation())
                         .map_err(acyclic_fs::OperationFailure::before_work)?;
-                let verified = callback.verify_publication_lease(lease.as_ref()).await;
+                let verified = match lease.verify(Some(&callback)) {
+                    Ok(future) => callback.finish_future(future).await,
+                    Err(error) => Err(error),
+                };
                 match verified {
                     Ok(()) => Ok(acyclic_fs::OperationReceipt {
                         value: (),

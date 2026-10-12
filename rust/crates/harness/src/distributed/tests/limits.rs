@@ -113,11 +113,7 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
     let mut coordinator = open(&client).await?;
     declare(&mut coordinator, spec(operation, 0)?, "measured-seed-0").await?;
     let lease = coordinator
-        .pull(&Worker {
-            id: "measured-release-worker".into(),
-            available: ResourceRequest::default(),
-            labels: BTreeMap::new(),
-        })
+        .pull(&worker("measured-release-worker"))
         .await?
         .ok_or_else(|| Error::NotFound("original admitted lease".into()))?;
     let cancellation = CancellationToken::new();
@@ -302,7 +298,7 @@ async fn original_reservation_proof_keeps_the_selected_old_origin_without_curren
     let cancellation = CancellationToken::new();
     let native = acyclic_fs::NativeMaterializationWork::new(BUDGET, &cancellation)
         .expect("original native ledger control");
-    let mut observer = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
+    let mut observer = crate::store::history::native_work_io(&native)?;
     let proof = original_reservation_proof(
         &client,
         &owner,

@@ -8,6 +8,7 @@ use acyclic_fs::{
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters,
 };
 use acyclic_harness::runtime::TaskStateProvider;
+use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     Error, OperationId, Outcome, Result, TaskId,
     durable_host::TaskJournalOwner,
@@ -62,13 +63,6 @@ pub(crate) struct PiWaitObservation {
     pub(crate) mail: Option<PiMailboxReceive>,
 }
 
-fn native_error(cause: NativeTreeMaterializationError) -> Error {
-    Error::NativeWork {
-        cause,
-        custody: None,
-    }
-}
-
 async fn authenticate<P: StreamProvider>(
     context: &TaskContext,
     owner: &TaskJournalOwner<P>,
@@ -81,10 +75,7 @@ async fn authenticate<P: StreamProvider>(
         });
     }
     owner
-        .verify(
-            false,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-        )
+        .verify(false, &mut Some(&mut native_work_io(work)?))
         .await?;
     Ok(owner.task_id())
 }
@@ -122,10 +113,7 @@ pub(crate) async fn prepare_send<P: StreamProvider, F: FnOnce(TaskId, TaskId) ->
     )
     .await?;
     owner
-        .verify(
-            false,
-            &mut Some(&mut acyclic_harness::crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
-        )
+        .verify(false, &mut Some(&mut native_work_io(work)?))
         .await?;
     Ok((command.0, command.1))
 }
@@ -178,11 +166,8 @@ pub(crate) async fn stage_send(
         bytes_copied: kind_length,
         allocation_operations: 1,
         ..Default::default()
-    })
-    .map_err(native_error)?;
-    let mut kind_custody = work
-        .claim(kind_length, 0, acyclic_fs::WorkCounters::UNCHARGED)
-        .map_err(native_error)?;
+    })?;
+    let mut kind_custody = work.claim(kind_length, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let kind = MAIL_SEND_TASK_COMMAND_KIND.to_owned();
     if let Err(cause) = command.1.absorb(&mut kind_custody) {
         drop(kind);
@@ -319,20 +304,11 @@ where
             reason: "Pi mailbox payload exceeds bounded decode",
         });
     }
-    let context = runtime
-        .harness()
-        .durable_context_with_native_work(
-            caller.task_id,
-            acyclic_harness::OperationId::from_bytes(caller.task_id.into_bytes()),
-            work,
-        )
+    let bytes = runtime
+        .task_host()
+        .read_recipient_file_with_native_work(caller.task_id, &item.payload, work)
         .await?;
-    let bytes = context
-        .0
-        .read_file_with_native_work(&item.payload, work)
-        .await?;
-    drop(context);
-    let mut payload = decode::<PiMailPayload>(&bytes, work)?;
+    let mut payload = decode::<PiMailPayload>(&bytes.0, work)?;
     drop(bytes);
     if let Err(cause) = items.1.absorb(&mut payload.1) {
         drop(payload);

@@ -16,24 +16,20 @@ use acyclic_harness::{
     executor::TurnOutput,
     filesystem::{
         FORK_PREPARE_TASK_COMMAND_KIND, FilesystemContentVerifier, FilesystemForkVerifier,
-        FilesystemHost, FilesystemProjectMergeVerifier, FilesystemResourceCreationProvider,
-        ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, MODEL_TASK_COMMAND_KIND,
-        ModelTaskCommand, RecursiveForkConfig, RecursiveSourceSnapshot, StockTurnMachine,
+        FilesystemHost, FilesystemProjectMergeVerifier, ForkPreparationLimits, ForkToolArguments,
+        MODEL_TASK_COMMAND_KIND, ModelTaskCommand, RecursiveForkConfig, RecursiveSourceSnapshot,
         StreamHistoryForkVerifier, fork_preparation_request, recursive_fork_source, workspace_ref,
     },
     fork::{CompositeForkVerifier, ForkReport},
     model::ModelContent,
     resource_preparation::ResourcePreparationRequest,
     resources::ProviderRef,
-    runtime::{
-        RuntimeScope, RuntimeTask, TaskAdmissionRecord, TaskDefinition, TaskRegistry,
-        TaskRunLimits, TaskStateProvider,
-    },
+    runtime::{RuntimeTask, TaskAdmissionRecord, TaskDefinition, TaskRunLimits, TaskStateProvider},
     scheduler::{LeaseFence, SessionLimits},
     store::{HistoryReadLimits, StreamAggregate},
-    workflow::{MachineRegistry, WorkflowCommand},
+    workflow::WorkflowCommand,
 };
-use acyclic_stream::{LocalStream, SystemUnixMillisClock};
+use acyclic_stream::LocalStream;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
@@ -84,7 +80,7 @@ struct Producer {
     root: PathBuf,
     files: Arc<Files>,
     stream: Arc<LocalStream>,
-    runtime: Runtime,
+    runtime: Arc<Runtime>,
     config: Config,
     template: TaskAdmissionRecord,
     worker: Worker,
