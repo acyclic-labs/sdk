@@ -22,7 +22,7 @@ use crate::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::Arc;
 
 mod native_stock;
@@ -1519,14 +1519,15 @@ impl StockExecution<'_> {
                     phase = crate::obs::Empty,
                     items = crate::obs::Empty,
                 );
-                tracing::Instrument::instrument(
-                    async move {
-                        crate::obs::outcome(
-                            self.dispatch_model_step(journal, input, step, prior_messages, purpose).await,
-                        )
-                    },
-                    span,
-                )
+                let operation = span.clone();
+                span.scope(async move {
+                    let result = self.dispatch_model_step(journal, input, step, prior_messages, purpose).await;
+                    operation.record("outcome", if result.is_ok() { "ok" } else { "err" });
+                    if let Err(error) = &result {
+                        operation.record("error.kind", error.kind());
+                    }
+                    result
+                })
             }).map(futures::future::Either::Right);
         }
         let span = obs_span!(
@@ -3951,6 +3952,7 @@ impl ModelEventAdmission {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     fn uncompacted_executor(
         model: Model,
         provider: Arc<dyn ModelProvider>,

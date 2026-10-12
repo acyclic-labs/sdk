@@ -4,7 +4,7 @@ use crate::contract::next_revision;
 use crate::{
     Result,
     conversation::{ContentPublisher, ContentResidencyVerifier, FileRef, Limits},
-    model::{ModelContent, ModelContentPart, ModelMessage, ModelRole},
+    model::{ModelContent, ModelMessage, ModelRole},
     projection::SelectedModelContext,
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
@@ -1867,7 +1867,7 @@ mod tests {
     use crate::{
         AgentId,
         conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
-        model::{FileProjectionPolicy, ModelRole},
+        model::{FileProjectionPolicy, ModelContentPart, ModelRole},
         resources::ProviderRef,
     };
 
