@@ -15,6 +15,15 @@ use crate::{
     },
 };
 use serde_json::Value;
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl crate::filesystem::UploadRecord for Value {
+    fn diagnostic_label_bytes() -> u64 { 0 }
+    fn json_value_schema() -> crate::contract::JsonValueSchema { crate::contract::JsonValueSchema::Root }
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        Ok(crate::tool::value_owned_bytes(self)? - std::mem::size_of::<Self>() as u64)
+    }
+}
 use std::{collections::BTreeMap, sync::Arc};
 
 /// A version-pinned tool implemented as a deterministic serialized state machine.
@@ -52,21 +61,6 @@ impl ResumableToolRegistry {
     #[must_use]
     pub fn get(&self, name: &str, revision: &str) -> Option<&ResumableTool> {
         self.0.get(&(name.to_owned(), revision.to_owned()))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn get_with_native_work(
-        &self, name: &str, revision: &str,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&ResumableTool>> {
-        let (name, name_hold) = work.display(name)?;
-        let (revision, revision_hold) = work.display(revision)?;
-        let key = (name, revision);
-        let found = self.0.get(&key);
-        drop(key);
-        drop(revision_hold);
-        drop(name_hold);
-        Ok(found)
     }
 
     /// Iterates registered definitions in deterministic identity order.
@@ -224,13 +218,13 @@ impl ResumableTool {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input")?;
+        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input", None)?;
         let initial = MachineCheckpoint {
             machine: self.machine.identity().clone(),
             revision: 0,
             state: self.machine.initialize(&invocation.arguments)?,
         };
-        validate_value(self.machine.state_schema(), &initial.state, "tool state")?;
+        validate_value(self.machine.state_schema(), &initial.state, "tool state", None)?;
         let admission = WorkflowAdmission {
             operation_id: invocation.operation_id,
             request_digest: crate::contract::canonical_json_digest(&(
@@ -442,7 +436,7 @@ impl ResumableToolSession {
         self.host
             .step_checked(operation_id, idempotency_key, input, |transition| {
                 if let MachineStatus::Completed { value } = &transition.status {
-                    validate_value(output_schema, value, "tool output")?;
+                    validate_value(output_schema, value, "tool output", None)?;
                 }
                 Ok(())
             })
@@ -954,7 +948,7 @@ impl DurableToolRunner {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        validate_value(&definition.input_schema, &invocation.arguments, "tool input")?;
+        validate_value(&definition.input_schema, &invocation.arguments, "tool input", None)?;
         tool.executor.authorize_with_context(context, invocation)?;
         context.task().authorize_tool(definition, invocation).await
     }
@@ -1113,7 +1107,7 @@ fn validate_tool_identity(invocation: &ToolInvocation, io: Option<&crate::execut
 fn tool_validate_value(
     schema: &Value, value: &Value, label: &str, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    crate::contract::validate_json_schema_value_with_io(schema, value, label, io)
+    crate::contract::validate_json_schema_value(schema, value, label, io)
 }
 
 fn tool_json_bound<T: serde::Serialize>(
@@ -1123,7 +1117,7 @@ fn tool_json_bound<T: serde::Serialize>(
     if let Some(io) = io {
         let encoded_hold;
         let encoded = io.encode_json(value, maximum, true)?;
-        encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+        encoded_hold = io.guard_bytes(&encoded)?;
         drop(encoded);
         drop(encoded_hold);
         return Ok(());

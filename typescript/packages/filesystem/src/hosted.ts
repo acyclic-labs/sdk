@@ -90,6 +90,7 @@ import type {
   WorkspaceStat,
 } from "./contracts.js";
 import { secureServiceEndpoint } from "./endpoint.js";
+import { copyOptionalBytes } from "./binding-values.js";
 import { observeInterceptors, resolveObserver } from "./observe.js";
 
 export type * from "./public-types.js";
@@ -1075,9 +1076,6 @@ function requireBytes(value: Uint8Array, length: number, name: string): void {
 function exactBytes(value: Uint8Array, length: number, name: string): Uint8Array {
   requireBytes(value, length, name);
   return Uint8Array.from(value);
-}
-function copyOptionalBytes(value: Uint8Array | undefined): Uint8Array | undefined {
-  return value === undefined ? undefined : Uint8Array.from(value);
 }
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;

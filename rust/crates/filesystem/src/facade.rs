@@ -4894,7 +4894,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 } else { crate::GenerationFork::Independent },
             }));
         }
-        let head = source.workspace.head_measured(accounting.remaining()?, cancellation).await;
+        let head = source.workspace.head(accounting.remaining()?, cancellation).await;
         let work = match &head { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         merge_fork_backend_work(accounting, work)?;
         let head = head.map_err(|failure| failure.error)?;
@@ -10577,83 +10577,86 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
     }
 
-    async fn capture_mutation_dependencies_with_accounting(
-        &self,
-        operations: &[Mutation],
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    fn capture_mutation_dependencies_with_accounting<'a, 'accounting>(
+        &'a self,
+        operations: &'a [Mutation],
+        accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
         cancellation: &CancellationToken,
-    ) -> Result<crate::kernel::Owned<Vec<Dependency>>, FsError> {
-        use crate::kernel::Owned;
-        let mut dependencies = Owned::<Vec<Dependency>>::allocate(0, accounting)?;
-        let mut exact_regions = Owned::<Vec<(Option<FileRecord>, DependencyRegion)>>::allocate(
-            0, accounting,
-        )?;
-        for operation in operations {
-            accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            let (first_record, second_record) = if let Some([first_path, second_path]) = operation.paths() {
-                let first = crate::kernel::observe_path_async_with_accounting(
-                    &self.volume.fs.inner.objects, &self.base_root, first_path,
-                    self.volume.config, accounting, cancellation, None, false,
-                ).await?;
-                let first = first.into_parts();
-                let first_record = first.0.lookup.record;
-                let bytes = Self::mutation_dependency_bytes(&first.0.dependencies, accounting)?;
-                Self::append_mutation_dependencies(
-                    &mut dependencies, Owned::new(first.0.dependencies, first.1, bytes),
-                    accounting,
-                )?;
-                let second_record = if second_path == first_path {
-                    first_record
-                } else {
-                    let second = crate::kernel::observe_path_async_with_accounting(
-                        &self.volume.fs.inner.objects, &self.base_root, second_path,
-                        self.volume.config, accounting, cancellation, None, false,
+    ) -> impl std::future::Future<Output = Result<crate::kernel::Owned<Vec<Dependency>>, FsError>> + StorageFuture + 'a {
+        let cancellation = cancellation.clone();
+        async move {
+            use crate::kernel::Owned;
+            let mut dependencies = Owned::<Vec<Dependency>>::allocate(0, accounting)?;
+            let mut exact_regions = Owned::<Vec<(Option<FileRecord>, DependencyRegion)>>::allocate(
+                0, accounting,
+            )?;
+            for operation in operations {
+                accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                let (first_record, second_record) = if let Some([first_path, second_path]) = operation.paths() {
+                    let first = crate::kernel::observe_path_async_with_accounting(
+                        &self.volume.fs.inner.objects, &self.base_root, first_path,
+                        self.volume.config, accounting, &cancellation, None, false,
                     ).await?;
-                    let second = second.into_parts();
-                    let second_record = second.0.lookup.record;
-                    let bytes = Self::mutation_dependency_bytes(&second.0.dependencies, accounting)?;
+                    let first = first.into_parts();
+                    let first_record = first.0.lookup.record;
+                    let bytes = Self::mutation_dependency_bytes(&first.0.dependencies, accounting)?;
                     Self::append_mutation_dependencies(
-                        &mut dependencies, Owned::new(second.0.dependencies, second.1, bytes),
+                        &mut dependencies, Owned::new(first.0.dependencies, first.1, bytes),
                         accounting,
                     )?;
-                    second_record
+                    let second_record = if second_path == first_path {
+                        first_record
+                    } else {
+                        let second = crate::kernel::observe_path_async_with_accounting(
+                            &self.volume.fs.inner.objects, &self.base_root, second_path,
+                            self.volume.config, accounting, &cancellation, None, false,
+                        ).await?;
+                        let second = second.into_parts();
+                        let second_record = second.0.lookup.record;
+                        let bytes = Self::mutation_dependency_bytes(&second.0.dependencies, accounting)?;
+                        Self::append_mutation_dependencies(
+                            &mut dependencies, Owned::new(second.0.dependencies, second.1, bytes),
+                            accounting,
+                        )?;
+                        second_record
+                    };
+                    (first_record, second_record)
+                } else {
+                    self.identity_base_records_with_accounting(operation, accounting, &cancellation).await?
                 };
-                (first_record, second_record)
-            } else {
-                self.identity_base_records_with_accounting(operation, accounting, cancellation).await?
-            };
-            for region in exact_mutation_regions(operation, first_record, second_record)
-                .into_iter().flatten()
-            {
-                exact_regions.ensure_for_push(usize::MAX, accounting)?;
-                accounting.charge(WorkCounters {
-                    bytes_copied: size_of::<(Option<FileRecord>, DependencyRegion)>() as u64,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                exact_regions.value.push(region);
+                for region in exact_mutation_regions(operation, first_record, second_record)
+                    .into_iter().flatten()
+                {
+                    exact_regions.ensure_for_push(usize::MAX, accounting)?;
+                    accounting.charge(WorkCounters {
+                        bytes_copied: size_of::<(Option<FileRecord>, DependencyRegion)>() as u64,
+                        ..WorkCounters::UNCHARGED
+                    })?;
+                    exact_regions.value.push(region);
+                }
             }
+            Self::subsume_mutation_record_dependencies(&mut exact_regions.value, accounting)?;
+            let (probe, probe_allocation) = AuthenticatedGenerationProbe::new_with_accounting(
+                &self.volume.fs.inner.objects, probe_limits(self.volume.config), accounting,
+            )?;
+            let probe = (probe, probe_allocation);
+            let region_bytes = exact_regions.bytes;
+            let captured = probe.0.capture_records_many_with_accounting(
+                exact_regions.value, self.volume.config.limits.maximum_checkout_dependencies,
+                accounting, &cancellation, None,
+            ).await;
+            crate::kernel::retire_allocation(
+                exact_regions.allocation, region_bytes, accounting,
+            )?;
+            probe.0.retire_with_accounting(accounting)?;
+            drop(probe.1);
+            let captured = captured?;
+            let bytes = Self::mutation_dependency_bytes(&captured.0, accounting)?;
+            Self::append_mutation_dependencies(
+                &mut dependencies, Owned::new(captured.0, captured.1, bytes), accounting,
+            )?;
+            Ok(dependencies)
         }
-        Self::subsume_mutation_record_dependencies(&mut exact_regions.value, accounting)?;
-        let (probe, probe_allocation) = AuthenticatedGenerationProbe::new_with_accounting(
-            &self.volume.fs.inner.objects, probe_limits(self.volume.config), accounting,
-        )?;
-        let probe = (probe, probe_allocation);
-        let region_bytes = exact_regions.bytes;
-        let captured = probe.0.capture_records_many_with_accounting(
-            exact_regions.value, self.volume.config.limits.maximum_checkout_dependencies,
-            accounting, cancellation, None,
-        ).await;
-        crate::kernel::retire_allocation(
-            exact_regions.allocation, region_bytes, accounting,
-        )?;
-        probe.0.retire_with_accounting(accounting)?;
-        drop(probe.1);
-        let captured = captured?;
-        let bytes = Self::mutation_dependency_bytes(&captured.0, accounting)?;
-        Self::append_mutation_dependencies(
-            &mut dependencies, Owned::new(captured.0, captured.1, bytes), accounting,
-        )?;
-        Ok(dependencies)
     }
 
     fn mutation_region_name_bytes(region: &DependencyRegion) -> u64 {

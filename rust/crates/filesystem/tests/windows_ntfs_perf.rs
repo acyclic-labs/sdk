@@ -100,7 +100,7 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
     )
     .await?;
     let exact = tokio::spawn(async move {
-        lazy.exactify_subtree("/hot", WorkBudget::UNBOUNDED, &CancellationToken::new())
+        lazy.exactify("/hot", WorkBudget::UNBOUNDED, &CancellationToken::new(), acyclic_fs::PublicationPermit::Unrestricted)
             .await
     })
     .await??;
@@ -155,7 +155,7 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
     };
     let fs = Fs::memory();
     let workspace = fs.create_workspace("ntfs-metadata-view").await?;
-    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_directory("/tree").await?;
     transaction
         .write("/tree/file", OwnedBytes::from_static(b"payload"))
@@ -182,7 +182,7 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
             },
         )
         .await?;
-    let TransactionCommit::Committed(generation) = transaction.commit().await? else {
+    let TransactionCommit::Committed(generation) = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
         return Err("metadata fixture did not commit".into());
     };
     let destination = tempfile::tempdir()?;
@@ -248,12 +248,7 @@ async fn captured_ntfs_link_retains_restorable_metadata() -> Result<(), Box<dyn 
             VolumeConfig::native(Lifecycle::Durable),
         )
         .await?;
-    let mut checkout = workspace
-        .checkout(
-            GenerationSelector::Head,
-            CheckoutMode::tracking_transaction(),
-        )
-        .await?;
+    let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let path = host_path_to_namespace(
         std::path::Path::new("link"),
         FilesystemProfile::Windows,
@@ -436,7 +431,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     let started = Instant::now();
     let phase_exact = tokio::spawn(async move {
         phase_lazy
-            .exactify_subtree("/hot", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .exactify("/hot", WorkBudget::UNBOUNDED, &CancellationToken::new(), acyclic_fs::PublicationPermit::Unrestricted)
             .await
     })
     .await??;

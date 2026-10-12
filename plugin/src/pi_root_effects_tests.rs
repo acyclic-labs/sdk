@@ -1,5 +1,4 @@
-//! Stock effect-host composition only. This fixture does not allocate native
-//! roots and its successful file is not production allocation evidence.
+//! Stock effect-host composition only.
 
 use super::*;
 use acyclic_harness::{

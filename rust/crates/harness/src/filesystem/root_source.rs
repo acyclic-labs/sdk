@@ -95,7 +95,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     {
         Box::pin(async move {
             self.lazy.validate_snapshot_measured(snapshot, budget, cancellation).await
-                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, root_source_error))
+                .map_err(|failure| failure.map_error(root_source_error))
         })
     }
     fn read<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str, maximum: u64,
@@ -104,7 +104,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     {
         Box::pin(async move {
             self.lazy.read_at_snapshot_measured(snapshot, path, maximum, budget, cancellation).await
-                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, root_source_error))
+                .map_err(|failure| failure.map_error(root_source_error))
         })
     }
     fn list<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str,
@@ -114,7 +114,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     {
         Box::pin(async move {
             self.lazy.list_directory_at_snapshot_measured(snapshot, path, cursor, maximum, budget, cancellation).await
-                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, root_source_error))
+                .map_err(|failure| failure.map_error(root_source_error))
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -198,9 +198,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootNati
     pub fn from_lazy_with_native_work<D: DemandSource + 'static, S: LazyWorkspaceStore>(
         lazy: Arc<LazyWorkspace<A, O, D, S>>, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        let custody = work.claim_allocation(std::mem::size_of::<RetainedRootLazy<A, O, D, S>>() as u64, 0)
+        let custody = work.retain_owned(std::mem::size_of::<RetainedRootLazy<A, O, D, S>>() as u64)
             .map_err(Error::from)?;
-        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED })
+        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
             .map_err(Error::from)?;
         Ok(Self { backing: Arc::new(RetainedRootLazy { lazy, _custody: Some(custody) }) })
     }
@@ -268,7 +268,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
     pub fn new(host: Arc<FilesystemHost<A, O>>, owner: Authority, graph_root: TaskId) -> Result<Self> {
         host.provider.validate()?;
         Ok(Self {
-            host, owner, graph_root, native: None,
+            host, owner, graph_root, native: None, bootstrap: None,
             #[cfg(not(target_arch = "wasm32"))]
             _native_custody: None,
         })
@@ -292,7 +292,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             cause, custody: Some(owner_custody),
         })?;
         Ok(Self {
-            host, owner, graph_root, native: None, _native_custody: Some(custody),
+            host, owner, graph_root, native: None, bootstrap: None, _native_custody: Some(custody),
         })
     }
 
@@ -303,7 +303,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "Root source policy belongs to another native ledger" });
         }
-        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED })
+        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
             .map_err(Error::from)?;
         Ok(Arc::new(self))
     }
@@ -369,7 +369,7 @@ where
             let admission = super::PreparationIo::from_budget(
                 source_budget(context.maximum_work, context.maximum_bytes)?, context.cancellation)?;
             let bounds = JsonBounds { maximum_bytes: context.maximum_bytes, maximum_items: context.maximum_work, maximum_depth: 32 };
-            let encoded = canonical_json_bytes_bounded(&snapshot.project, bounds, &mut |charge| admission.codec_charge(charge, true))?;
+            let encoded = canonical_json_bytes_bounded(&snapshot.project, bounds, None, &mut |charge| admission.codec_charge(charge, true))?;
             let encoded_owned = encoded.len() as u64;
             admission.charge(WorkCounters { bytes_hashed: encoded_owned, ..WorkCounters::default() })?;
             let digest = blake3::hash(&encoded).to_hex();
@@ -393,7 +393,7 @@ where
             let generation_bytes: [u8; 32] = snapshot.generation.as_resource().key().try_into()
                 .map_err(|_| Error::Invalid("project generation key must be 32 bytes".into()))?;
             let generation_id = GenerationId::new(Digest::from_bytes(generation_bytes));
-            let selected = opened.value.generation_measured(generation_id, admission.remaining()?, context.cancellation).await
+            let selected = opened.value.generation(generation_id, admission.remaining()?, context.cancellation).await
                 .map_err(|failure| map_error(failure.error))?;
             admission.charge(selected.work)?;
             drop(selected.value);
@@ -404,7 +404,7 @@ where
                 if lazy.workspace_id() != opened.value.id() {
                     return Err(Error::Unauthorized("native source names another original workspace".into()));
                 }
-                let encoded = canonical_json_bytes_bounded(value, bounds, &mut |charge| admission.codec_charge(charge, true))?;
+                let encoded = canonical_json_bytes_bounded(value, bounds, None, &mut |charge| admission.codec_charge(charge, true))?;
                 let owned = encoded.len() as u64;
                 let frozen = LazySnapshotRef::deserialize(value)
                     .map_err(|_| Error::Invalid("native source is not a lazy snapshot reference".into()))?;
@@ -561,8 +561,8 @@ fn native_source_json<T: serde::Serialize>(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<acyclic_stream::OwnedBytes> {
     let diagnostic = work.retain_owned(crate::contract::sdk_json_diagnostic_bytes())?;
-    let bytes = crate::contract::canonical_json_bytes_bounded_native_trusted(
-        value, bounds, crate::wire::ErrorCode::Invalid,
+    let bytes = crate::contract::canonical_json_bytes_bounded(
+        value, bounds, Some(crate::wire::ErrorCode::Invalid),
         &mut |charge| io.codec_charge(charge, true),
     ).map_err(|error| match error {
         Error::NativeEncode { code, source, custody: None } =>

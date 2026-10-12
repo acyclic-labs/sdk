@@ -1030,9 +1030,7 @@ where
             return Err(s3s::s3_error!(InvalidArgument));
         }
         let operation = request_operation(&request)?;
-        let transaction = workspace
-            .begin_transaction(operation)
-            .await
+        let transaction = workspace.begin_transaction(operation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let mut source =
             StreamingBodySource::new(request.input.body.take(), expected_crc32.is_some());
@@ -1188,9 +1186,7 @@ where
             }
             MultipartCompletionIntent::Admitted(snapshot) => snapshot,
         };
-        let mut transaction = workspace
-            .begin_transaction(operation)
-            .await
+        let mut transaction = workspace.begin_transaction(operation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let staged = requested
             .iter()
@@ -1208,9 +1204,7 @@ where
             .await
             .map_err(|error| s3_error(&error))?;
         let generation = committed_generation(
-            transaction
-                .commit()
-                .await
+            transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| s3_error(&S3Error::Workspace(error)))?,
         )?;
         let terminalized = self
@@ -1338,9 +1332,7 @@ where
         let page = match principal.generation {
             Some(id) => {
                 let generation = principal
-                    .workspace
-                    .generation(id)
-                    .await
+                    .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
                 view.list_objects_at(&generation, options).await
             }
@@ -1457,9 +1449,7 @@ where
         let page = match principal.generation {
             Some(id) => {
                 let generation = principal
-                    .workspace
-                    .generation(id)
-                    .await
+                    .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
                 view.list_objects_at(&generation, options).await
             }
@@ -1568,9 +1558,7 @@ where
         let page = match principal.generation {
             Some(id) => {
                 let generation = principal
-                    .workspace
-                    .generation(id)
-                    .await
+                    .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
                 view.list_objects_at(&generation, options).await
             }
@@ -1642,9 +1630,7 @@ where
         let head = match principal.generation {
             Some(id) => {
                 let generation = principal
-                    .workspace
-                    .generation(id)
-                    .await
+                    .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
                 view.head_object_at(&generation, &request.input.key).await
             }
@@ -1686,14 +1672,10 @@ where
         let view = principal.workspace.s3();
         let generation = match principal.generation {
             Some(id) => principal
-                .workspace
-                .generation(id)
-                .await
+                .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| s3_error(&S3Error::Workspace(error)))?,
             None => principal
-                .workspace
-                .head()
-                .await
+                .workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| s3_error(&S3Error::Workspace(error)))?,
         };
         let head = view
@@ -1769,9 +1751,7 @@ where
         reject_put_extensions(&request.input)?;
         let expected_crc32 = parse_crc32(request.input.checksum_crc32.as_deref())?;
         let operation = request_operation(&request)?;
-        let mut transaction = workspace
-            .begin_transaction(operation)
-            .await
+        let mut transaction = workspace.begin_transaction(operation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let mut source =
             StreamingBodySource::new(request.input.body.take(), expected_crc32.is_some());
@@ -1792,9 +1772,7 @@ where
             .write_staged(&mut transaction, &request.input.key, &[staged])
             .await
             .map_err(|error| s3_error(&error))?;
-        let commit = transaction
-            .commit()
-            .await
+        let commit = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let generation = committed_generation(commit)?;
         Ok(S3Response::new(PutObjectOutput {
@@ -3191,9 +3169,7 @@ mod tests {
             .headers
             .insert(IDEMPOTENCY_HEADER, HeaderValue::from_static("old"));
         S3::put_object(&writable, initial).await?;
-        let generation = workspace
-            .head()
-            .await
+        let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|_| s3s::s3_error!(InternalError))?;
 
         let mut replacement = request(PutObjectInput {

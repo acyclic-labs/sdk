@@ -140,7 +140,9 @@ pub(super) fn chunks_controlled(
                     }
                 }
             }
-            let chunk = pending.split_to(pending.len().min(65_536));
+            let size = pending.len().min(65_536);
+            let chunk = pending.slice(..size);
+            pending = pending.slice(size..);
             Ok(Some((chunk, (body, pending, length, state, controls))))
         },
     );

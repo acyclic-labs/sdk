@@ -311,7 +311,7 @@ impl McpCatalog {
         {
             return Err(Error::Invalid("MCP catalog allowance exceeded".into()));
         }
-        crate::contract::compile_json_schema(&self.projection_schema, "MCP projection")?;
+        crate::contract::compile_json_schema(&self.projection_schema, "MCP projection", None)?;
         let mut names = BTreeSet::new();
         for tool in &self.tools {
             if !names.insert(&tool.name) {
@@ -327,7 +327,7 @@ impl McpCatalog {
                         "MCP output schema must describe an object".into(),
                     ));
                 }
-                crate::contract::compile_json_schema(schema, "MCP output")?;
+                crate::contract::compile_json_schema(schema, "MCP output", None)?;
             }
         }
         if let McpSchemaExposure::Selected { names: selected } = &self.schema_exposure {
@@ -529,18 +529,6 @@ struct RemoteTool {
     transport: Arc<dyn McpToolTransport>,
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct NativeRemoteResult {
-    result: McpToolResult,
-    _custody: acyclic_fs::NativeAllocation,
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct NativeRemoteToolResult {
-    result: ToolResult,
-    custody: acyclic_fs::NativeAllocation,
-}
-
 impl RemoteTool {
     fn authorize_context(&self, context: &ToolContext, invocation: &ToolInvocation) -> Result<()> {
         if context.operation_id() != invocation.operation_id
@@ -571,7 +559,7 @@ impl RemoteTool {
                 }
                 return Err(Error::Invalid("MCP structured result missing".into()));
             };
-            crate::contract::validate_json_schema_value_with_io(schema, value, "MCP output", io)?;
+            crate::contract::validate_json_schema_value(schema, value, "MCP output", io)?;
         }
         Ok(())
     }
@@ -584,72 +572,6 @@ impl RemoteTool {
         Ok(ToolResult { value })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn result_with_native_work(
-        &self,
-        remote: NativeRemoteResult,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeRemoteToolResult> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        self.validate_result(&remote.result, Some(&io))?;
-        let (value, custody) = crate::tool::value_with_native_work(&remote.result, work)?;
-        let output = NativeRemoteToolResult { result: ToolResult { value }, custody };
-        rpc::check_dto(rpc::Dto::CallToolResult, &output.result.value, Some(work))?;
-        Ok(output)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn authorize_native_selection(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        self.supports_native_execution(work)?;
-        if context.operation_id() != invocation.operation_id || context.call_id() != invocation.call_id {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "MCP tool context identity mismatch",
-            });
-        }
-        let examined = (invocation.name.len() as u64)
-            .checked_add(self.server.len() as u64)
-            .and_then(|bytes| bytes.checked_add(self.remote.name.len() as u64))
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "MCP selected name comparison overflow",
-            })?;
-        work.charge(acyclic_fs::WorkCounters {
-            items_examined: examined, ..Default::default()
-        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let selected_name = invocation.name.strip_prefix("mcp.")
-            .and_then(|name| name.strip_prefix(self.server.as_str()))
-            .and_then(|name| name.strip_prefix('.'));
-        if selected_name != Some(self.remote.name.as_str()) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "MCP invocation names another selected remote tool",
-            });
-        }
-        // Compare borrowed canonical grant spelling without building a string.
-        for grant in context.effective_scope().grants().iter() {
-            let bytes = (grant.len() as u64).checked_add(self.server.len() as u64)
-                .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "MCP grant comparison overflow",
-                })?;
-            work.charge(acyclic_fs::WorkCounters {
-                items_examined: bytes, ..Default::default()
-            }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            if grant.strip_prefix("mcp:call:") == Some(self.server.as_str()) {
-                return Ok(());
-            }
-        }
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "MCP server capability absent",
-        })
-    }
 }
 
 impl ToolExecutor for RemoteTool {
@@ -728,77 +650,6 @@ impl ToolExecutor for RemoteTool {
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_execution(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        self.transport.supports_native_call(work)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn authorize_with_native_context(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        self.authorize_native_selection(context, invocation, work)?;
-        context.validate_native_mcp_context(work)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn execute_with_native_context<'a>(
-        &'a self,
-        context: &'a ToolContext,
-        invocation: &'a ToolInvocation,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
-        self.authorize_with_native_context(context, invocation, work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let (result, custody) = self.transport.call_with_native_context(
-                context, &self.remote.name, &invocation.arguments, work,
-            )?.await?;
-            let remote = NativeRemoteResult { result, _custody: custody };
-            let output = self.result_with_native_work(remote, work)?;
-            Ok((output.result, output.custody))
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn reconcile_with_native_context<'a>(
-        &'a self,
-        context: &'a ToolContext,
-        invocation: &'a ToolInvocation,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>> {
-        self.authorize_native_selection(context, invocation, work)?;
-        context.validate_native_mcp_reconciliation_context(work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            // Observe the exact operation only.
-            let (result, custody) = self.transport
-                .reconcile_with_native_context(context, work)?.await?;
-            match result {
-                Some(result) => {
-                    let remote = NativeRemoteResult { result, _custody: custody };
-                    let mut output = self.result_with_native_work(remote, work)?;
-                    let retained = output.custody.bytes().checked_add(
-                        (std::mem::size_of::<Option<ToolResult>>()
-                            - std::mem::size_of::<ToolResult>()) as u64,
-                    ).ok_or(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Indeterminate,
-                        reason: "MCP observation ownership overflow",
-                    })?;
-                    output.custody.resize_retained(retained)
-                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    Ok((Some(output.result), output.custody))
-                }
-                None => {
-                    drop(custody);
-                    let custody = work.retain_owned(std::mem::size_of::<Option<ToolResult>>() as u64)
-                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    Ok((None, custody))
-                }
-            }
-        })
-    }
 }
 
 #[cfg(test)]

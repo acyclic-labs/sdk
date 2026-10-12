@@ -155,25 +155,6 @@ impl<P: StreamProvider> HistoryReader<P> {
         work.finish(result)
     }
 
-    /// The same pinned, authenticated sequence-index range with one SDK ledger.
-    pub async fn conversation_range_measured(
-        &self,
-        cursor: &HistoryCursor,
-        after_sequence: u64,
-        through_sequence: u64,
-        limits: HistoryReadLimits,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<Vec<crate::conversation::ConversationMessage>>, Error> {
-        let mut work = HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.conversation_range_with_work(cursor, after_sequence, through_sequence,
-                limits, &mut Some(&mut work)).await
-        }.await;
-        work.finish(result)
-    }
-
     /// Reads one effect's authenticated transition prefix at the exact pinned cut, including issuer-authenticated absence.
     pub async fn effect_events_measured(
         &self, cursor: &HistoryCursor, effect: crate::EffectId,

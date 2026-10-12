@@ -296,18 +296,6 @@ impl NativeSession {
         Ok(format!("cancellation requested task={task} admission-operation={}; completion requires authoritative observation\n", admission.operation_id))
     }
 
-    #[cfg(test)]
-    pub async fn run(&self, task: TaskId, worker: &Worker, output: &mut impl std::io::Write) -> Result<String> {
-        let lease = match self.claim(task, worker).await? {
-            WorkPull::Idle => return Ok(format!("worker idle task={task}\n")),
-            WorkPull::Claimed(lease) => lease,
-            WorkPull::Unresolved { lease, error } => return render_attempt(TaskWorkerAttempt::Unresolved { lease, error }),
-        };
-        writeln!(output, "worker-claim task={task} lease-json-hex={}", lease_hex(&lease)?)
-            .and_then(|()| output.flush()).map_err(|error| Error::Storage(error.to_string()))?;
-        self.resume(lease).await
-    }
-
     pub async fn resume(&self, lease: WorkLease) -> Result<String> {
         let commands = self.runtime.commands().with_model(
             self.model.clone(), self.model_provider.clone(),

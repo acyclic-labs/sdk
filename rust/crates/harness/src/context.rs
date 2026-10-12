@@ -802,7 +802,7 @@ impl DurableContextProvider {
             .map_err(native_context_decode_storage)?.into_retained();
         let canonical_guard;
         let canonical = io.encode_json(&stored, MAX_RECORD_BYTES as u64, true)?;
-        canonical_guard = io.guard_owned(canonical.capacity() as u64)?;
+        canonical_guard = io.guard_bytes(&canonical)?;
         if canonical.as_slice() != record.value.as_ref() || stored.format_version != 5 || stored.revision != revision
             || stored.source != self.source || stored.source_revision != self.source_revision
         {
@@ -829,7 +829,7 @@ impl DurableContextProvider {
             .map_err(native_context_decode_storage)?.into_retained();
         let context_canonical_guard;
         let context_canonical = io.encode_json(&context, limits.render_bytes, true)?;
-        context_canonical_guard = io.guard_owned(context_canonical.capacity() as u64)?;
+        context_canonical_guard = io.guard_bytes(&context_canonical)?;
         if context_canonical.as_slice() != payload.as_ref() {
             return Err(native_context_boundary(crate::wire::ErrorCode::Storage,
                 "context payload is not canonical"));
@@ -1209,8 +1209,8 @@ pub(super) fn context_contract_native<T: Serialize>(
     let encoded = (|| {
         crate::contract::validate_json_byte_bound_native_trusted(value, bounds,
             crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge))?;
-        crate::contract::json_value_bounded_native_trusted(value, bounds,
-            crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge))
+        crate::contract::json_value_bounded(value, bounds,
+            Some(crate::wire::ErrorCode::Invalid), &mut |charge| io.codec_charge(charge))
     })();
     match encoded {
         Ok(value) => Ok((value, io.into_custody())),
@@ -2002,7 +2002,7 @@ fn validate_context_user_input_with_io(content: &ModelContent, io: Option<&Conte
 
 fn validate_context_selection_with_io(input: &ContextInput, io: Option<&ContextPreparationIo>) -> Result<()> {
     if let Some(selected) = &input.selected_context {
-        selected.validate_for_input_with_io(&input.input, io)?;
+        selected.validate_for_input(&input.input, io)?;
     }
     Ok(())
 }

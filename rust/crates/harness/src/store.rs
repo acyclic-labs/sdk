@@ -545,8 +545,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Err(guarded::guarded_boundary(work, guarded::GuardedBoundary::Unauthorized,
                 "fork report belongs to another parent"));
         }
-        owner.authenticate_fork_parent_with_work(self.reducer.authority(), work)?;
-        if scope.agent() != Some(owner.authenticated_fork_agent_with_work(work)?) {
+        owner.authenticate_fork_parent(self.reducer.authority(), work)?;
+        if scope.agent() != Some(owner.authenticated_fork_agent(work)?) {
             return Err(guarded::guarded_boundary(work, guarded::GuardedBoundary::Unauthorized,
                 "fork publication scope differs from its admitted caller"));
         }
@@ -736,8 +736,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
     ) -> Result<()> {
         let mut custody = crate::fork::ForkValidationWork::new(work)?;
         seed.validate_with_work(custody.work())?;
-        let parent_agent = owner.authenticated_fork_agent_with_work(custody.work())?;
-        owner.authenticate_fork_parent_with_work(&seed.parent, custody.work())?;
+        let parent_agent = owner.authenticated_fork_agent(custody.work())?;
+        owner.authenticate_fork_parent(&seed.parent, custody.work())?;
         if parent.reducer.authority() != &seed.parent
             || parent.reducer.fork(&seed.child) != Some(seed)
             || self.reducer.authority() != &seed.child {
@@ -772,7 +772,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             if event.revision == 1 && event.operation_id == bind_operation
                 && event.causal_parent.as_ref() == Some(&causal_parent)
                 && matches!(event.payload, crate::core::EventPayload::ConversationBound { agent } if agent == seed.child_agent) {
-                owner.verify_dispatch_with_work(custody.work()).await?;
+                owner.verify(false, custody.work()).await?;
                 drop(event);
                 custody.release(event_owned)?;
                 drop(fork_event);
@@ -1319,7 +1319,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Err(Error::Invalid("effect read bounds must be positive".into()));
         }
         if let Some(state) = self.reducer.effect(effect) {
-            crate::contract::validate_effect_json_byte_bound_with_work(state, limits.maximum_bytes, work)?;
+            crate::contract::validate_trusted_json_byte_bound(state, limits.maximum_bytes, work)?;
             return crate::core::native_effect_clone_with_custody(state, work).map(Some);
         }
         let reader = if work.is_some() {
@@ -3153,7 +3153,7 @@ mod tests {
                     private.capability(crate::conversation::VolumeOperation::Write)?,
                 ]),
             );
-            let journal = crate::filesystem::FilesystemExecutionJournal::new_with_schemas(
+            let journal = crate::filesystem::FilesystemExecutionJournal::new(
                 client.clone(),
                 host,
                 private,
