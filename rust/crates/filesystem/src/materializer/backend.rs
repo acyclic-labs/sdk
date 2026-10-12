@@ -43,10 +43,16 @@ impl NativeTreeMaterializationBackend {
         validate_layout(&held_root, &held_operation, Path::new(""), &work)?;
         let target = held_operation.open_dir_held(Path::new("target"), &mut &work)?;
         let identity = crate::native_host::directory_identity(&target, &mut &work)?;
-        let held_target = HostRoot::from_held_dir_with_identity(target, identity);
+        let held_target = HostRoot {
+            directory: target,
+            identity,
+        };
         let backup = held_operation.open_dir_held(Path::new("backup"), &mut &work)?;
         let identity = crate::native_host::directory_identity(&backup, &mut &work)?;
-        let held_backup = HostRoot::from_held_dir_with_identity(backup, identity);
+        let held_backup = HostRoot {
+            directory: backup,
+            identity,
+        };
         Ok(Arc::new(Self {
             root,
             operation,
@@ -193,6 +199,7 @@ impl NativeTreeMaterializationBackend {
             name,
             &destination,
             target,
+            None,
             &mut &self.work(),
         )?;
         self.work().spent(crate::WorkCounters {
@@ -283,7 +290,7 @@ impl MaterializationBackend for std::sync::Arc<NativeTreeMaterializationBackend>
                 }
                 Ok(())
             },
-            Some(self.work().runtime_meter()),
+            Some((self.work().runtime_meter(), false)),
         )
         .map_err(NativeTreeMaterializationError::from_runtime_error)?
         .await?
@@ -328,7 +335,7 @@ impl MaterializationBackend for std::sync::Arc<NativeTreeMaterializationBackend>
                 None
             };
             encode_native_witness(before, after, metadata, &backend.work())
-        }, Some(self.work().runtime_meter())).map_err(NativeTreeMaterializationError::from_runtime_error)?
+        }, Some((self.work().runtime_meter(), false))).map_err(NativeTreeMaterializationError::from_runtime_error)?
         .await?
     }
 
@@ -400,7 +407,7 @@ impl MaterializationBackend for std::sync::Arc<NativeTreeMaterializationBackend>
                 }
                 Ok(MaterializationObservation::Diverged)
             },
-            Some(self.work().runtime_meter()),
+            Some((self.work().runtime_meter(), false)),
         )
         .map_err(NativeTreeMaterializationError::from_runtime_error)?
         .await?
@@ -489,7 +496,7 @@ impl MaterializationBackend for std::sync::Arc<NativeTreeMaterializationBackend>
                 }
                 Ok(())
             },
-            Some(self.work().runtime_meter()),
+            Some((self.work().runtime_meter(), false)),
         )
         .map_err(NativeTreeMaterializationError::from_runtime_error)?
         .await?
@@ -558,7 +565,7 @@ impl MaterializationBackend for std::sync::Arc<NativeTreeMaterializationBackend>
                     Some(_) => Err(NativeTreeMaterializationError::MissingEntry),
                 }
             },
-            Some(self.work().runtime_meter()),
+            Some((self.work().runtime_meter(), false)),
         )
         .map_err(NativeTreeMaterializationError::from_runtime_error)?
         .await?

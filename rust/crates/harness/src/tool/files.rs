@@ -60,28 +60,28 @@ fn assemble(adapter: FileTool) -> Result<Tool> {
             "Read exact bounded UTF-8 from an authorized immutable file",
             super::schema::input::<ReadFileInput>()?,
             super::schema::output::<String>()?,
-            super::schema::json_projection::<String>()?,
+            super::schema::ProjectionMode::Full.schema::<String>()?,
         ),
         FileTool::Write => (
             "acyclic.write_file",
             "Write bounded UTF-8 through the original owner-bound content publisher",
             super::schema::input::<WriteFileInput>()?,
             super::schema::output::<FileResult>()?,
-            super::schema::json_projection::<FileResult>()?,
+            super::schema::ProjectionMode::Full.schema::<FileResult>()?,
         ),
         FileTool::Edit => (
             "acyclic.edit_file",
             "Replace one exact UTF-8 match at an authorized pinned source generation",
             super::schema::input::<EditFileInput>()?,
             super::schema::output::<FileResult>()?,
-            super::schema::json_projection::<FileResult>()?,
+            super::schema::ProjectionMode::Full.schema::<FileResult>()?,
         ),
         FileTool::Patch { .. } => (
             "acyclic.patch_file",
             "Apply exact V4A update-file diff hunks to one authorized immutable file; @@ headers, exact context and optional EOF; ambiguous context fails",
             super::schema::input::<PatchFileInput>()?,
             super::schema::output::<FileResult>()?,
-            super::schema::json_projection::<FileResult>()?,
+            super::schema::ProjectionMode::Full.schema::<FileResult>()?,
         ),
     };
     if let FileTool::Patch {
@@ -199,28 +199,27 @@ impl FileTool {
         ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
         let task = context.task();
         self.authorize_with_context(&context, &invocation)?;
-        let value = match self {
+        let file = match self {
             Self::Read => {
                 let input: ReadFileInput = decode(&invocation.arguments)?;
                 let bytes = task.read_file(&input.file).await?;
                 let text = std::str::from_utf8(&bytes)
                     .map_err(|_| Error::Invalid("file read requires UTF-8 content".into()))?
                     .to_owned();
-                Value::String(text)
+                return Ok(ToolResult {
+                    value: Value::String(text),
+                });
             }
             Self::Write => {
                 let input: WriteFileInput = decode(&invocation.arguments)?;
-                let file = task
-                    .stage_file_once(
-                        invocation.operation_id,
-                        &input.path,
-                        input.text.as_bytes(),
-                        &input.media_type,
-                        &input.display_name,
-                    )
-                    .await?;
-                serde_json::to_value(FileResult { file })
-                    .map_err(|error| Error::Invalid(error.to_string()))?
+                task.stage_file_once(
+                    invocation.operation_id,
+                    &input.path,
+                    input.text.as_bytes(),
+                    &input.media_type,
+                    &input.display_name,
+                )
+                .await?
             }
             Self::Patch {
                 maximum_work,
@@ -249,11 +248,8 @@ impl FileTool {
                     limits,
                     &mut super::edit::AlgorithmWork::ordinary(),
                 )?;
-                let file = task
-                    .stage_file_at(invocation.operation_id, &input.file, edited.as_bytes())
-                    .await?;
-                serde_json::to_value(FileResult { file })
-                    .map_err(|error| Error::Invalid(error.to_string()))?
+                task.stage_file_at(invocation.operation_id, &input.file, edited.as_bytes())
+                    .await?
             }
             Self::Edit => {
                 let input: EditFileInput = decode(&invocation.arguments)?;
@@ -269,14 +265,14 @@ impl FileTool {
                     maximum,
                     &mut super::edit::AlgorithmWork::ordinary(),
                 )?;
-                let file = task
-                    .stage_file_at(invocation.operation_id, &input.file, edited.as_bytes())
-                    .await?;
-                serde_json::to_value(FileResult { file })
-                    .map_err(|error| Error::Invalid(error.to_string()))?
+                task.stage_file_at(invocation.operation_id, &input.file, edited.as_bytes())
+                    .await?
             }
         };
-        Ok(ToolResult { value })
+        Ok(ToolResult {
+            value: serde_json::to_value(FileResult { file })
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        })
     }
 }
 
@@ -629,7 +625,7 @@ impl FileTool {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
         self.authorize_with_native_context(context, invocation, work)?;
-        match self {
+        let file = match self {
             Self::Read => {
                 let input =
                     super::decode_with_native_work::<ReadFileInput>(&invocation.arguments, work)?;
@@ -642,17 +638,17 @@ impl FileTool {
                 custody
                     .resize_retained(custody.bytes() + std::mem::size_of::<ToolResult>() as u64)
                     .map_err(super::edit::native_error)?;
-                Ok((
+                return Ok((
                     ToolResult {
                         value: Value::String(text),
                     },
                     custody,
-                ))
+                ));
             }
             Self::Write => {
                 let input =
                     super::decode_with_native_work::<WriteFileInput>(&invocation.arguments, work)?;
-                let file = context
+                context
                     .stage_file_once_with_native_work(
                         invocation.operation_id,
                         &input.0.path,
@@ -661,13 +657,7 @@ impl FileTool {
                         &input.0.display_name,
                         work,
                     )
-                    .await?;
-                let encoded = super::value(
-                    &native::BorrowedFileResult { file: &file.0 },
-                    work.remaining()?.bytes_encoded,
-                    work,
-                )?;
-                Ok((ToolResult { value: encoded.0 }, encoded.1))
+                    .await?
             }
             Self::Edit => {
                 let input =
@@ -686,20 +676,14 @@ impl FileTool {
                     context.effective_scope().limits().file_bytes,
                     &mut allocation,
                 )?;
-                let file = context
+                context
                     .stage_file_at_with_native_work(
                         invocation.operation_id,
                         &input.0.file,
                         edited.as_bytes(),
                         work,
                     )
-                    .await?;
-                let encoded = super::value(
-                    &native::BorrowedFileResult { file: &file.0 },
-                    work.remaining()?.bytes_encoded,
-                    work,
-                )?;
-                Ok((ToolResult { value: encoded.0 }, encoded.1))
+                    .await?
             }
             Self::Patch {
                 maximum_work,
@@ -728,22 +712,22 @@ impl FileTool {
                     super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
                 let edited =
                     super::patch::apply_update(source, &input.0.diff, limits, &mut allocation)?;
-                let file = context
+                context
                     .stage_file_at_with_native_work(
                         invocation.operation_id,
                         &input.0.file,
                         edited.as_bytes(),
                         work,
                     )
-                    .await?;
-                let encoded = super::value(
-                    &native::BorrowedFileResult { file: &file.0 },
-                    work.remaining()?.bytes_encoded,
-                    work,
-                )?;
-                Ok((ToolResult { value: encoded.0 }, encoded.1))
+                    .await?
             }
-        }
+        };
+        let encoded = super::value(
+            &native::BorrowedFileResult { file: &file.0 },
+            work.remaining()?.bytes_encoded,
+            work,
+        )?;
+        Ok((ToolResult { value: encoded.0 }, encoded.1))
     }
 }
 

@@ -33,11 +33,6 @@ enum JsonProjection<T> {
     Json { value: T },
 }
 
-/// Generates the full existing JSON projection envelope for one native result.
-pub fn json_projection<T: JsonSchema>() -> Result<Value> {
-    output::<JsonProjection<T>>()
-}
-
 pub(crate) fn project_json<T: Serialize>(
     value: &T,
     work: crate::NativeWork<'_>,
@@ -74,8 +69,8 @@ impl ProjectionMode {
     /// Generates the complete model envelope for one canonical result type.
     pub fn schema<T: JsonSchema>(self) -> Result<Value> {
         match self {
-            Self::Full => json_projection::<T>(),
-            Self::Reference => reference_projection(),
+            Self::Full => output::<JsonProjection<T>>(),
+            Self::Reference => output::<ReferenceProjection<'_>>(),
         }
     }
 }
@@ -102,11 +97,6 @@ enum ReferencePart<'a> {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ReferenceProjection<'a> {
     Parts { parts: [ReferencePart<'a>; 2] },
-}
-
-/// Complete schema of the actual reference-only parts serializer.
-pub fn reference_projection() -> Result<Value> {
-    output::<ReferenceProjection<'_>>()
 }
 
 pub(crate) fn project_reference(
@@ -249,7 +239,7 @@ mod tests {
             serde_json::to_value(&result).map_err(|error| Error::Invalid(error.to_string()))?;
         let input_schema = input::<ReadFileInput>()?;
         let output_schema = output::<FileResult>()?;
-        let projection_schema = json_projection::<FileResult>()?;
+        let projection_schema = ProjectionMode::Full.schema::<FileResult>()?;
         for schema in [&input_schema, &output_schema, &projection_schema] {
             crate::contract::compile_json_schema(schema, "generated native tool", None)?;
         }

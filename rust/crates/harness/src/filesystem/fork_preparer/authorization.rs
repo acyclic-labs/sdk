@@ -10,7 +10,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if !self
             .native
             .as_ref()
-            .is_some_and(|(_, custody)| custody.matches_work(work))
+            .is_some_and(|(_, custody)| custody.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
