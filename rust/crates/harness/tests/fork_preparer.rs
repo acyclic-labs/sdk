@@ -21,7 +21,7 @@ use acyclic_harness::{
     resources::{ArtifactRef, ProviderRef, StreamRef},
     store::StreamAggregate,
 };
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use futures::future::BoxFuture;
 use std::sync::{
     Arc,
@@ -126,26 +126,26 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             parent_private.capability(VolumeOperation::Write)?,
         ]),
     );
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let resolver = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         64 * 1_024,
     )?);
     let mut aggregate = StreamAggregate::open(
         &stream,
         parent.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
     )
     .await?
     .with_resident_event_limit(1)?
     .with_content_verifier(resolver.clone())
-    .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
+    .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
-        Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
-    ])?));
+        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+    ], &mut None)?));
     aggregate
         .execute(Command {
             operation_id: OperationId::from_bytes([3; 16]),
@@ -159,7 +159,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let parent_write = ContentGrant::verify(
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         &parent_private,
         VolumeOperation::Write,
@@ -239,8 +239,8 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         OperationId::from_bytes([3; 16])
     );
     let restored_parent = Reducer::restore(
-        aggregate.reducer().snapshot()?,
-        issuer.verifier(),
+        aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
     )?;
     assert!(matches!(
@@ -251,7 +251,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let preparer = FilesystemForkPreparer::new(
         host.clone(),
         restored_parent.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),
         stream_provider.clone(),
@@ -294,7 +294,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
                 required: true,
                 revision: ResourceRevision::History(StreamRef::new(
                     stream_provider.clone(),
-                    parent.stream_path()?.into_bytes(),
+                    parent.stream_path(&mut None)?.into_bytes(),
                     Some("2".into()),
                 )?),
             },
@@ -308,19 +308,19 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         ],
         boundary: None,
     };
-    let request = request.with_history_policy(&restored_parent, ForkHistoryPolicy::default())?;
+    let request = request.with_history_policy(&restored_parent, ForkHistoryPolicy::default(), &mut None)?;
     assert_eq!(request.preparation.inherited_through_sequence, 1);
     let mut stale = request.clone();
     stale.parent_revision = 0;
     assert!(matches!(
-        stale.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default()),
+        stale.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default(), &mut None),
         Err(Error::Conflict(_))
     ));
     let mut too_small = request.clone();
     too_small.preparation.maximum_inherited_messages = 0;
     assert!(
         too_small
-            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default())
+            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default(), &mut None)
             .is_err()
     );
     let mut fresh_request = request.clone();
@@ -339,7 +339,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         VolumeOwner::Agent(child_agent),
     )?;
     let fresh_request =
-        fresh_request.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::Fresh)?;
+        fresh_request.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::Fresh, &mut None)?;
     let fresh_report = aggregate
         .prepare_fork(&preparer, fresh_request.clone())
         .await?;
@@ -358,7 +358,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             .iter()
             .any(|grant| grant.file == text && grant.reader == child_agent)
     );
-    let mut unclaimed = report.clone().into_seed()?;
+    let mut unclaimed = report.clone().into_seed(&mut None)?;
     unclaimed.operation_id = OperationId::from_bytes([10; 16]);
     assert!(
         FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?
@@ -366,7 +366,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             .await
             .is_err()
     );
-    let mut changed_seed = report.clone().into_seed()?;
+    let mut changed_seed = report.clone().into_seed(&mut None)?;
     changed_seed
         .attached_agents
         .push(AgentId::from_bytes([11; 16]));
@@ -427,7 +427,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let composed = FilesystemForkPreparer::new(
         host.clone(),
         aggregate.reducer().clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),
         stream_provider.clone(),
@@ -483,7 +483,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         Some(Capture::Captured(_))
     ));
     assert_eq!(recovered.attachment_manifests, vec![manifest.clone()]);
-    let recovered_seed = recovered.clone().into_seed()?;
+    let recovered_seed = recovered.clone().into_seed(&mut None)?;
     let readable = recovered_seed.reference_capabilities(attached_reader)?;
     assert!(readable.contains(&text.read_capability()?));
     assert!(readable.contains(&attachment.read_capability()?));
@@ -492,7 +492,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let child_issuer = AuthorityIssuer::new("fork-e2e", [7; 32], uncertain.child.clone());
     let reader_scope = child_issuer.root_for_agent(attached_reader, "attached-reader", readable);
     let attached_resolver =
-        FilesystemContentVerifier::new(host.clone(), child_issuer.verifier(), reader_scope, 1_024)?;
+        FilesystemContentVerifier::new(host.clone(), child_issuer.verifier(&mut None).expect("verifier copy"), reader_scope, 1_024)?;
     attached_resolver
         .verify_manifest(&manifest, 1, &Limits::default())
         .await?;
@@ -507,7 +507,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let resumed_uncertain = FilesystemForkPreparer::new(
         host.clone(),
         aggregate.reducer().clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),
         stream_provider.clone(),
@@ -557,7 +557,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert!(matches!(
         request
             .clone()
-            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default()),
+            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default(), &mut None),
         Err(Error::Conflict(_))
     ));
     let mut bounded_later = request.clone();
@@ -566,7 +566,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         if matches!(selection.revision, ResourceRevision::History(_)) {
             selection.revision = ResourceRevision::History(StreamRef::new(
                 stream_provider.clone(),
-                parent.stream_path()?.into_bytes(),
+                parent.stream_path(&mut None)?.into_bytes(),
                 Some(aggregate.reducer().revision().to_string()),
             )?);
         }
@@ -574,13 +574,13 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     bounded_later.preparation.maximum_inherited_messages = 1;
     assert!(
         bounded_later
-            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default())
+            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default(), &mut None)
             .is_err()
     );
     let restarted = FilesystemForkPreparer::new(
         host,
         aggregate.reducer().clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope,
         project,
         stream_provider,

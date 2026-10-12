@@ -36,7 +36,7 @@ use acyclic_harness::{
         MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
     },
 };
-use acyclic_stream::{MemoryStream, StreamClient, StreamProvider};
+use acyclic_stream::{MemoryStream, StreamProvider};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -69,7 +69,7 @@ type Runtime<P, A = acyclic_fs::MemoryAuthorityBackend, O = acyclic_fs::MemoryOb
     FilesystemTaskRuntime<P, A, O>;
 
 async fn runtime<P, A, O>(
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     files: Arc<Files<A, O>>,
     volume: VolumeRef,
     issuer: &AuthorityIssuer,
@@ -104,7 +104,7 @@ where
         stream,
         files,
         volume,
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         runtime_scope.clone(),
         tasks,
@@ -145,7 +145,7 @@ where
 async fn run(mcp: Option<McpStdioMethod>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     run_on(
         mcp,
-        StreamClient::new(Arc::new(MemoryStream::default())),
+        Arc::new(MemoryStream::default()),
         None,
         false,
     )
@@ -194,7 +194,7 @@ fn issuer() -> AuthorityIssuer {
 
 async fn run_on<P: StreamProvider>(
     mcp: Option<McpStdioMethod>,
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     receipt_fault: Option<(&str, bool)>,
     lost_response: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -230,7 +230,7 @@ async fn run_on<P: StreamProvider>(
 )]
 async fn prepare_on<P, A, O>(
     mcp: Option<McpStdioMethod>,
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     filesystem: Fs<A, O>,
     receipt_fault: Option<(&str, bool)>,
     lost_response: bool,
@@ -293,7 +293,7 @@ where
         Capabilities::new([source.capability(VolumeOperation::Write)?]),
     );
     let setup = ContentGrant::verify(
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &setup_scope,
         &source,
         VolumeOperation::Write,
@@ -338,8 +338,8 @@ where
     );
     let mut conversation = StreamAggregate::open(
         &stream.clone(),
-        issuer.verifier().audience().clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
     )
     .await?;
@@ -388,7 +388,7 @@ where
             .generation;
         selections.push((volume, generation, path, writable));
     }
-    let verifier = issuer.verifier();
+    let verifier = issuer.verifier(&mut None).expect("verifier copy");
     let bindings = selections.iter().map(|(volume, generation, path, writable)| BorrowedNativeVolumeBinding {
         host: &files, volume, generation, path, writable: *writable,
         namespace: &NativeVolumeNamespace::MaterializedDirectory,
@@ -416,14 +416,14 @@ where
     }
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         1_000_000,
     )?);
     let results = Arc::new(FilesystemContentPublisher::new(
         files.clone(),
         results_volume.clone(),
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         1_000_000,
     )?);
@@ -479,7 +479,7 @@ where
             &scope,
         )
         .await?;
-    let authority = || NativeProcessAuthority { verifier: issuer.verifier(), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: content.clone(),
+    let authority = || NativeProcessAuthority { verifier: issuer.verifier(&mut None).expect("verifier copy"), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: content.clone(),
     result_content: content.clone(),
     results: results.clone(),
     approvals: approvals.clone(), authority_custody: None, };
@@ -498,7 +498,7 @@ where
     registry.register(process.clone())?;
     let effects = Arc::new(ConversationEffectHost::new(
         stream.clone(),
-        issuer.verifier().audience().clone(),
+        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer.clone(),
         scope.clone(),
         SchemaRegistry::new(),
@@ -578,7 +578,7 @@ where
 }
 
 async fn recover_on<P, A, O>(
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     filesystem: Fs<A, O>,
     seed: &Restart,
     receipt_fault: Option<(&str, bool)>,
@@ -680,7 +680,7 @@ where
 }
 
 async fn recovered_effects<P, A, O>(
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     files: Arc<Files<A, O>>,
     runtime: &Runtime<P, A, O>,
     seed: &Restart,
@@ -719,7 +719,7 @@ where
     registry.register(recovered)?;
     let effects = Arc::new(ConversationEffectHost::new(
         stream,
-        issuer.verifier().audience().clone(),
+        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer.clone(),
         seed.scope.clone(),
         SchemaRegistry::new(),
@@ -734,7 +734,7 @@ where
 }
 
 fn execution_journal<P, A, O>(
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     files: Arc<Files<A, O>>,
     volume: &VolumeRef,
     issuer: &AuthorityIssuer,
@@ -749,14 +749,14 @@ where
         stream,
         files,
         volume.clone(),
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
+        issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
         scope.clone(),
         1_000_000,
     )?))
 }
 
 fn recovered_authority<P, A, O>(
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     files: Arc<Files<A, O>>,
     volume: &VolumeRef,
     issuer: &AuthorityIssuer,
@@ -768,14 +768,14 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let content: Arc<dyn ContentResidencyVerifier> = Arc::new(FilesystemContentVerifier::new(
-        files.clone(), issuer.verifier(), scope.clone(), 1_000_000,
+        files.clone(), issuer.verifier(&mut None).expect("verifier copy"), scope.clone(), 1_000_000,
     )?);
-    Ok(NativeProcessAuthority { verifier: issuer.verifier(), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 },
+    Ok(NativeProcessAuthority { verifier: issuer.verifier(&mut None).expect("verifier copy"), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 },
     content: content.clone(), result_content: content,
     results: Arc::new(FilesystemContentPublisher::new(
         files.clone(),
         volume.clone(),
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         scope,
         1_000_000,
     )?),

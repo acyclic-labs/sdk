@@ -4748,7 +4748,7 @@ pub async fn apply_git_patch_with_permit<A: AsyncAuthorityStore, O: AsyncObjectS
             continue;
         }
         if let Some((parent, _)) = path.rsplit_once('/') {
-            transaction.create_dir_all(&format!("/{parent}")).await?;
+            transaction.create_dir_all(&format!("/{parent}"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         }
         transaction
             .write_text(&format!("/{path}"), &replacement)
@@ -4991,10 +4991,10 @@ where
     O: AsyncObjectStore,
 {
     let diff = from
-        .diff_to_bounded(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
+        .diff_to(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
         .await.map_err(|failure| failure.error)?;
     let paths = diff
-        .changed_paths_bounded(maximum_changes, WorkBudget::UNBOUNDED, cancellation)
+        .changed_paths(maximum_changes, WorkBudget::UNBOUNDED, cancellation)
         .await.map_err(|failure| failure.error)?
         .value;
     let mut before_policies = BTreeMap::new();
@@ -5253,8 +5253,8 @@ where
         .fork(
             capture_name,
             crate::ForkOptions::from_generation(live.clone(), IdempotencyKey::from_bytes(bytes)),
-        )
-        .await?;
+        crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let capture_head = capture.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut commit_bytes = bytes;
     commit_bytes[0] ^= 0xa5;
@@ -5319,8 +5319,8 @@ where
     O: AsyncObjectStore,
 {
     let live = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let changes = previous_live.diff_to(&live, u32::MAX).await?;
-    let changed = changes.changed_paths(u32::MAX).await?;
+    let changes = previous_live.diff_to(&live, u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map_err(|failure| failure.error)?;
+    let changed = changes.changed_paths(u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut portable = Vec::with_capacity(changed.len());
     for change in changed {
         let path = portable_changed_path(&change.path)?;
@@ -5396,8 +5396,8 @@ where
                 previous_capture.clone(),
                 IdempotencyKey::from_bytes(bytes),
             ),
-        )
-        .await?;
+        crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut apply_bytes = bytes;
     apply_bytes[0] ^= 0xa5;
     let capture_head = capture.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -7124,8 +7124,8 @@ mod tests {
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
         transaction
-            .create_dir_all("/target/nested")
-            .await
+            .create_dir_all("/target/nested", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("directories");
         transaction
             .write_text("/target/drop.bin", "drop")
@@ -7225,17 +7225,16 @@ mod tests {
                 FileMetadata {
                     posix_mode: MetadataField::Value(0o100_640),
                     ..FileMetadata::default()
-                },
-            )
-            .await
+                }, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("metadata");
         transaction
-            .hard_link("/source.txt", "/linked.txt")
-            .await
+            .hard_link("/source.txt", "/linked.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("hard link");
         transaction
-            .create_dir_all("/ignored")
-            .await
+            .create_dir_all("/ignored", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("ignored directory");
         transaction
             .write_text("/ignored/drop.txt", "drop")
@@ -7272,7 +7271,7 @@ mod tests {
             .expect("workspace");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x49; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
-        transaction.create_dir_all("/src").await.expect("directory");
+        transaction.create_dir_all("/src", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("directory");
         transaction
             .write_text("/src/.gitignore", "*.tmp\n!keep.tmp\n")
             .await
@@ -7314,7 +7313,7 @@ mod tests {
         let before = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("baseline");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x4b; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
-        transaction.create_dir_all("/src").await.expect("directory");
+        transaction.create_dir_all("/src", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("directory");
         transaction
             .write_text("/src/.gitignore", "*.tmp\n!keep.tmp\n")
             .await
@@ -7413,8 +7412,8 @@ mod tests {
             .await
             .expect("root ignore");
         transaction
-            .create_dir_all("/build")
-            .await
+            .create_dir_all("/build", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("directory");
         transaction
             .write_text("/build/.gitignore", "!keep.txt\n")
@@ -7458,7 +7457,7 @@ mod tests {
             .expect("workspace");
         let mut initial = workspace.begin_transaction(IdempotencyKey::from_bytes([0x65; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
-        initial.create_dir_all("/src").await.expect("directory");
+        initial.create_dir_all("/src", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("directory");
         initial
             .write_text("/src/.gitignore", "*.tmp\n")
             .await
@@ -7522,7 +7521,7 @@ mod tests {
             .expect("workspace");
         let mut initial = workspace.begin_transaction(IdempotencyKey::from_bytes([0x70; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("initial transaction");
-        initial.create_dir_all("/sub").await.expect("subdirectory");
+        initial.create_dir_all("/sub", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("subdirectory");
         initial
             .write_text("/sub/.gitignore", "*.tmp\n")
             .await
@@ -7540,8 +7539,8 @@ mod tests {
         let mut build = workspace.begin_transaction(IdempotencyKey::from_bytes([0x71; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("build transaction");
         build
-            .create_dir_all("/build")
-            .await
+            .create_dir_all("/build", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("build directory");
         build
             .write_text("/build/output.bin", "generated")
@@ -7550,11 +7549,11 @@ mod tests {
         build.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("build commit");
         let after = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("after");
         let changes = before
-            .diff_to(&after, 16)
-            .await
+            .diff_to(&after, 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map_err(|failure| failure.error)
             .expect("diff")
-            .changed_paths(16)
-            .await
+            .changed_paths(16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("changed paths");
         let policy = GitIgnorePolicy::parse("*.tmp\nbuild/\n");
         assert_eq!(
@@ -7874,7 +7873,7 @@ mod tests {
             .expect("workspace");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x61; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
-        transaction.create_dir_all("/src").await.expect("directory");
+        transaction.create_dir_all("/src", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("directory");
         transaction
             .write_text("/src/ignored.txt", "present before ignore")
             .await
@@ -7924,7 +7923,7 @@ mod tests {
             .expect("workspace");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x32; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
-        transaction.create_dir_all("/src").await.expect("directory");
+        transaction.create_dir_all("/src", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("directory");
         transaction
             .write_text("/src/a.txt", "one\nneedle\n")
             .await

@@ -21,7 +21,7 @@ use acyclic_harness::{
     resources::ProviderRef,
     store::{HistoryCursor, HistoryReadLimits, HistoryReader, StreamAggregate},
 };
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use futures::{TryStreamExt as _, future::BoxFuture};
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -96,7 +96,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             &volume.capability(VolumeOperation::Write)?,
         ]),
     );
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
     let mut files = Vec::new();
     for (path, bytes, mime, name, key) in [
         ("effects/request.json", br#"{"secret":"request-body"}"#.as_slice(), "application/json", "request.json", "request-upload"),
@@ -109,16 +109,16 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     let [request, result, schema, invalid_schema]: [FileRef; 4] = files.try_into().unwrap();
     let verifier = Arc::new(FilesystemContentVerifier::new(
         host,
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         4_096,
     )?);
     let provider = Arc::new(test_stream::LostSessionAck::<MemoryStream>::default());
-    let stream = StreamClient::new(provider.clone());
+    let stream = provider.clone();
     let mut aggregate = StreamAggregate::open(
         &stream,
         authority.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
     )
     .await?
@@ -212,8 +212,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             .map(|state| &state.status),
         Some(EffectStatus::Succeeded { .. })
     ));
-    let raw = stream
-        .stream(authority.stream_path()?)
+    let raw = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), authority.stream_path(&mut None)?)
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
         .read(0, 4)
         .await
@@ -228,7 +227,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         }
     }
     use std::sync::atomic::Ordering;
-    let probe_reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
+    let probe_reader = HistoryReader::new(&stream, &authority, issuer.verifier(&mut None).expect("verifier copy"))?;
     provider.observation_bytes.store(0, Ordering::SeqCst);
     probe_reader
         .effect(
@@ -312,7 +311,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             provider.observation_reads.store(0, Ordering::SeqCst);
             provider.observation_maximum.store(0, Ordering::SeqCst);
             provider.observation_tails.store(0, Ordering::SeqCst);
-            let cold = HistoryReader::new(&stream, &authority, issuer.verifier())?;
+            let cold = HistoryReader::new(&stream, &authority, issuer.verifier(&mut None).expect("verifier copy"))?;
             let cursor = cold.pin(0).await?;
             assert_eq!(
                 cold.effect(&cursor, effect_id, limits).await?,
@@ -321,7 +320,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
 
         }
     }
-    let reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
+    let reader = HistoryReader::new(&stream, &authority, issuer.verifier(&mut None).expect("verifier copy"))?;
     let cursor = reader.pin(0).await?;
     for (cut, expected) in [(1, planned), (2, dispatched), (3, completed.clone())] {
         let pinned = HistoryCursor {
@@ -383,7 +382,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     let wrong = HistoryReader::new(
         &stream,
         &authority,
-        AuthorityIssuer::new("effect-e2e", [99; 32], authority.clone()).verifier(),
+        AuthorityIssuer::new("effect-e2e", [99; 32], authority.clone()).verifier(&mut None).expect("verifier copy"),
     )?;
     assert!(wrong.effect(&cursor, effect_id, limits).await.is_err());
     assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
@@ -441,7 +440,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         if matches!(retained, 1 | 100 | 1_000) {
             provider.forbid_writes.store(true, Ordering::SeqCst);
             let cold = StreamAggregate::open_with_projection_limits(
-                &stream, authority.clone(), issuer.verifier(), SchemaRegistry::new(),
+                &stream, authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(),
                 acyclic_harness::store::default_projection_read_limits(), 2,
             ).await?.with_content_verifier(verifier.clone());
             assert_eq!(cold.reducer().revision(), aggregate.reducer().revision());
@@ -467,7 +466,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         if bit == 0 { worst_completed = Some(state); }
         assert_eq!(aggregate.reducer().resident_effect_count(), 5);
     }
-    let worst_reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
+    let worst_reader = HistoryReader::new(&stream, &authority, issuer.verifier(&mut None).expect("verifier copy"))?;
     let worst_cut = worst_reader.pin(0).await?;
     provider.forbid_writes.store(true, Ordering::SeqCst);
     assert_eq!(worst_reader.effect(&worst_cut, worst_id, retirement_limits).await?, worst_completed);

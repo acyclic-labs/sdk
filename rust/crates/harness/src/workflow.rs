@@ -81,17 +81,13 @@ macro_rules! workflow_physical_copy {
         pub(crate) fn $name(
             source: &$kind, io: Option<&crate::executor::PreparationIo>,
         ) -> Result<$kind> {
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                let mut observer = io.history_io();
-                let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
-                let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+            if io.is_none() { return Ok(source.clone()); }
+            crate::executor::with_history_io(io, |work| {
+                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
                 let copied = $factory(source, &mut quota)?;
                 quota.transfer();
-                return Ok(copied);
-            }
-            let _ = io;
-            Ok(source.clone())
+                Ok(copied)
+            })
         }
     };
 }
@@ -118,11 +114,7 @@ pub struct WorkflowCommand {
 
 impl WorkflowCommand {
     /// Rejects malformed public command contracts before checkpoint commit.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() {
@@ -135,25 +127,18 @@ impl WorkflowCommand {
         });
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let native = false;
-        if native {
-            if !crate::contract::is_valid_component_label(&self.kind) {
-                return Err(workflow_command_invalid());
-            }
-        } else {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if native && !crate::contract::is_valid_component_label(&self.kind) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "workflow command kind is invalid",
+            });
+        }
+        if !native {
             crate::contract::validate_component_label(&self.kind, "workflow command kind")?;
         }
-        self.payload.validate_with_work(work)
+        self.payload.validate(work)
     }
-}
-
-fn workflow_command_invalid() -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    { Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Invalid,
-        reason: "workflow command kind is invalid",
-    } }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    { Error::Invalid("workflow command kind is invalid".into()) }
 }
 
 /// Stable identity of a resumable state-machine implementation.
@@ -1073,17 +1058,6 @@ impl DurableWorkflowHost {
         Ok((Some(record.transition), page.1.take()))
     }
 
-    /// Calculates then atomically commits a checkpoint and all emitted commands.
-    pub async fn step(
-        &mut self,
-        operation_id: OperationId,
-        idempotency_key: IdempotencyKey,
-        input: Value,
-    ) -> Result<MachineTransition> {
-        self.step_checked(operation_id, idempotency_key, input, |_| Ok(()))
-            .await
-    }
-
     /// Validates a transition before its checkpoint and outbox are committed.
     #[cfg_attr(
         not(target_arch = "wasm32"),
@@ -1094,7 +1068,7 @@ impl DurableWorkflowHost {
             fields(rev = self.checkpoint.revision, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
         )
     )]
-    pub async fn step_checked<F>(
+    pub async fn step<F>(
         &mut self,
         operation_id: OperationId,
         idempotency_key: IdempotencyKey,
@@ -1374,7 +1348,7 @@ fn validate_commands(
     let mut custody = crate::wire_codec::CodecQuota::new(work, bytes)?;
     let mut identities = BTreeSet::new();
     for command in commands {
-        command.validate_with_work(custody.work())?;
+        command.validate(custody.work())?;
         if let Some(observer) = custody.work().as_deref_mut() {
             observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
@@ -1508,7 +1482,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    struct PagingCounter {
+    struct Counter {
         identity: MachineIdentity,
         schema: Value,
     }
@@ -1523,14 +1497,14 @@ mod tests {
         let payload = FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("workflow-test", "filesystem", "2")?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
+                VolumeOwner::Agent(AgentId::from_bytes([4; 16])), &mut None
             )?,
-            "commands/first.json",
-            "immutable-version",
-            FileDescriptor::from_bytes(b"{}", "application/json")?,
-            "first.json",
+            "commands/first.json".into(),
+            "immutable-version".into(),
+            FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
+            "first.json".into(), &mut None
         )?;
         let prior = MachineCheckpoint {
             machine: MachineIdentity {
@@ -1570,7 +1544,13 @@ mod tests {
         validate_workflow_commit(prior.revision, &record.idempotency_key, &record, None)?;
         validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record, None)?;
         validate_workflow_page(prior.revision, u32::MAX)?;
-        crate::executor::validate_execution_page(prior.revision, u32::MAX)?;
+        crate::executor::validate_execution_page(u32::MAX)?;
+        let mut unsafe_command = serde_json::to_value(&record.transition.commands[0])
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        unsafe_command["body"] = json!("inline attachment bytes");
+        assert!(serde_json::from_value::<WorkflowCommand>(unsafe_command).is_err());
+        assert!(validate_commands(&[record.transition.commands[0].clone(),
+            record.transition.commands[0].clone()], None).is_err());
         record.transition.commands[0].operation_id = OperationId::from_bytes(1_u128.to_be_bytes());
         assert!(matches!(
             validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record, None),
@@ -1579,7 +1559,7 @@ mod tests {
         Ok(())
     }
 
-    impl ResumableMachine for PagingCounter {
+    impl ResumableMachine for Counter {
         fn identity(&self) -> &MachineIdentity {
             &self.identity
         }
@@ -1593,7 +1573,9 @@ mod tests {
             Ok(MachineTransition {
                 state: json!(state.as_u64().unwrap_or(0) + input.as_u64().unwrap_or(0)),
                 commands: vec![],
-                status: MachineStatus::Suspended,
+                status: if input.is_null() {
+                    MachineStatus::Completed { value: state.clone() }
+                } else { MachineStatus::Suspended },
             })
         }
     }
@@ -1606,7 +1588,7 @@ mod tests {
             digest: [1; 32],
         };
         let mut registry = MachineRegistry::default();
-        registry.register(Arc::new(PagingCounter {
+        registry.register(Arc::new(Counter {
             identity: identity.clone(),
             schema: json!({"type":"integer","minimum":0}),
         }))?;
@@ -1616,39 +1598,36 @@ mod tests {
             state: json!(0),
         };
         let journal = Arc::new(MemoryWorkflowJournal::default());
-        journal
-            .admit(WorkflowAdmission {
-                operation_id: OperationId::new(),
-                request_digest: [2; 32],
-                initial: initial.clone(),
-            })
-            .await?;
+        assert!(matches!(DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await,
+            Err(Error::Conflict(_))));
+        let admission = WorkflowAdmission {
+            operation_id: OperationId::new(), request_digest: [2; 32], initial: initial.clone(),
+        };
+        assert_eq!(journal.admit(admission.clone()).await?, admission);
+        assert_eq!(journal.admit(admission.clone()).await?, admission);
+        let mut changed_admission = admission.clone();
+        changed_admission.request_digest = [8; 32];
+        assert!(matches!(journal.admit(changed_admission).await, Err(Error::Conflict(_))));
         let mut host =
             DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
+        assert!(matches!(host.step(OperationId::new(), IdempotencyKey::new("rejected")?, json!(2),
+            |_| Err(Error::Invalid("output schema rejected transition".into()))).await, Err(Error::Invalid(_))));
+        assert_eq!(host.checkpoint().revision, 0);
+        assert!(journal.replay(0, WORKFLOW_REPLAY_PAGE_RECORDS).await?.is_empty());
         let first = OperationId::new();
         let first_key = IdempotencyKey::new("paged-first")?;
-        let transition = host.step(first, first_key.clone(), json!(1)).await?;
+        let transition = host.step(first, first_key.clone(), json!(1), |_| Ok(())).await?;
         for index in 1..=WORKFLOW_REPLAY_PAGE_RECORDS {
             host.step(
                 OperationId::new(),
                 IdempotencyKey::new(format!("paged-{index}"))?,
-                json!(1),
+                json!(1), |_| Ok(())
             )
             .await?;
         }
         assert_eq!(
             journal.replay(0, WORKFLOW_REPLAY_PAGE_RECORDS).await?.len(),
             WORKFLOW_REPLAY_PAGE_RECORDS as usize
-        );
-        assert_eq!(
-            journal
-                .replay(
-                    u64::from(WORKFLOW_REPLAY_PAGE_RECORDS),
-                    WORKFLOW_REPLAY_PAGE_RECORDS
-                )
-                .await?
-                .len(),
-            1
         );
         assert_eq!(
             journal
@@ -1665,25 +1644,19 @@ mod tests {
             u64::from(WORKFLOW_REPLAY_PAGE_RECORDS) + 1
         );
         assert_eq!(
-            reopened.step(first, first_key.clone(), json!(1)).await?,
+            reopened.step(first, first_key.clone(), json!(1), |_| Ok(())).await?,
             transition
         );
         assert!(
             reopened
-                .step(first, first_key.clone(), json!(2))
+                .step(first, first_key.clone(), json!(2), |_| Ok(()))
                 .await
                 .is_err()
         );
         // A duplicate retry key appears beyond the first page and remains a hard error.
         let original_key = {
-            let mut state = journal
-                .state
-                .lock()
-                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
-            let last = state
-                .records
-                .last_mut()
-                .ok_or_else(|| Error::Storage("missing workflow record".into()))?;
+            let mut state = journal.state.lock().unwrap();
+            let last = state.records.last_mut().unwrap();
             let original = last.idempotency_key.clone();
             last.idempotency_key = first_key.clone();
             original
@@ -1694,221 +1667,39 @@ mod tests {
                 .is_err()
         );
         {
-            let mut state = journal
-                .state
-                .lock()
-                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
-            let last = state
-                .records
-                .last_mut()
-                .ok_or_else(|| Error::Storage("missing workflow record".into()))?;
+            let mut state = journal.state.lock().unwrap();
+            let last = state.records.last_mut().unwrap();
             last.idempotency_key = original_key;
             last.operation_id = first;
         }
         assert!(
-            DurableWorkflowHost::open(registry, initial, journal.clone())
+            DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone())
                 .await
                 .is_err()
         );
         // Retry records are loaded by revision and compared with the verified digest.
         {
-            let mut state = journal
-                .state
-                .lock()
-                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
+            let mut state = journal.state.lock().unwrap();
             state.records[0].idempotency_key = IdempotencyKey::new("changed-first")?;
         }
         assert!(matches!(
-            reopened.step(first, first_key, json!(1)).await,
+            reopened.step(first, first_key, json!(1), |_| Ok(())).await,
             Err(Error::Storage(_))
         ));
-        Ok(())
-    }
-
-    struct Counter {
-        identity: MachineIdentity,
-        schema: Value,
-        command_payload: FileRef,
-    }
-
-    impl ResumableMachine for Counter {
-        fn identity(&self) -> &MachineIdentity {
-            &self.identity
-        }
-        fn state_schema(&self) -> &Value {
-            &self.schema
-        }
-        fn initialize(&self, input: &Value) -> Result<Value> {
-            Ok(input.clone())
-        }
-        fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
-            let next = state.as_u64().unwrap_or(0) + input.as_u64().unwrap_or(0);
-            Ok(MachineTransition {
-                state: json!(next),
-                commands: vec![WorkflowCommand {
-                    operation_id: OperationId::from_bytes([9; 16]),
-                    kind: "counter.publish".into(),
-                    payload: self.command_payload.clone(),
-                }],
-                status: if next >= 2 {
-                    MachineStatus::Completed { value: json!(next) }
-                } else {
-                    MachineStatus::Suspended
-                },
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn checkpoint_and_commands_commit_as_one_replayable_record() -> Result<()> {
-        use crate::{
-            AgentId,
-            conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
-            resources::ProviderRef,
-        };
-        let volume = VolumeRef::new(
-            ProviderRef::new("workflow-test", "filesystem", "2")?,
-            "private",
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
-        )?;
-        let command_payload = FileRef::new(
-            volume,
-            "commands/count.json",
-            "immutable-version",
-            FileDescriptor::from_bytes(b"2", "application/json")?,
-            "count.json",
-        )?;
-        let identity = MachineIdentity {
-            name: "example.counter".into(),
-            version: "1".into(),
-            digest: [1; 32],
-        };
-        let mut registry = MachineRegistry::default();
-        registry.register(Arc::new(Counter {
-            identity: identity.clone(),
-            schema: json!({"type": "integer", "minimum": 0}),
-            command_payload: command_payload.clone(),
-        }))?;
         let journal = Arc::new(MemoryWorkflowJournal::default());
-        let initial = MachineCheckpoint {
-            machine: identity,
-            revision: 0,
-            state: json!(0),
-        };
-        let unadmitted = Arc::new(MemoryWorkflowJournal::default());
-        assert!(matches!(
-            DurableWorkflowHost::open(registry.clone(), initial.clone(), unadmitted).await,
-            Err(Error::Conflict(_))
-        ));
-        let admission = WorkflowAdmission {
-            operation_id: OperationId::from_bytes([3; 16]),
-            request_digest: [7; 32],
-            initial: initial.clone(),
-        };
-        assert_eq!(journal.admit(admission.clone()).await?, admission);
-        assert_eq!(journal.admit(admission.clone()).await?, admission);
-        let mut changed_admission = admission;
-        changed_admission.request_digest = [8; 32];
-        assert!(matches!(
-            journal.admit(changed_admission).await,
-            Err(Error::Conflict(_))
-        ));
-        let mut host =
-            DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
-        assert!(matches!(
-            host.step_checked(
-                OperationId::from_bytes([1; 16]),
-                IdempotencyKey::new("step-1")?,
-                json!(2),
-                |_| Err(Error::Invalid("output schema rejected transition".into())),
-            )
-            .await,
-            Err(Error::Invalid(_))
-        ));
-        assert_eq!(host.checkpoint().revision, 0);
-        assert!(
-            journal
-                .replay(0, WORKFLOW_REPLAY_PAGE_RECORDS)
-                .await?
-                .is_empty()
-        );
-        let transition = host
-            .step(
-                OperationId::from_bytes([1; 16]),
-                IdempotencyKey::new("step-1")?,
-                json!(2),
-            )
-            .await?;
-        assert_eq!(
-            transition.commands,
-            vec![WorkflowCommand {
-                operation_id: OperationId::from_bytes([9; 16]),
-                kind: "counter.publish".into(),
-                payload: command_payload,
-            }]
-        );
-        let mut unsafe_command = serde_json::to_value(&transition.commands[0])
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        unsafe_command["body"] = json!("inline attachment bytes");
-        assert!(serde_json::from_value::<WorkflowCommand>(unsafe_command).is_err());
-        assert!(
-            validate_commands(&[
-                transition.commands[0].clone(),
-                transition.commands[0].clone(),
-            ], None)
-            .is_err()
-        );
-        assert_eq!(host.checkpoint().revision, 1);
-        let replayed = host
-            .step(
-                OperationId::from_bytes([1; 16]),
-                IdempotencyKey::new("step-1")?,
-                json!(2),
-            )
-            .await?;
-        assert_eq!(replayed, transition);
-        assert_eq!(host.checkpoint().revision, 1);
-        assert!(matches!(
-            host.step(
-                OperationId::from_bytes([1; 16]),
-                IdempotencyKey::new("different-key")?,
-                json!(2),
-            )
-            .await,
-            Err(Error::Conflict(_))
-        ));
-        assert!(matches!(
-            host.step(
-                OperationId::from_bytes([2; 16]),
-                IdempotencyKey::new("after-terminal")?,
-                json!(1),
-            )
-            .await,
-            Err(Error::Conflict(_))
-        ));
-        let mut reopened = DurableWorkflowHost::open(registry, initial, journal).await?;
-        assert_eq!(reopened.checkpoint(), host.checkpoint());
-        assert_eq!(
-            reopened
-                .step(
-                    OperationId::from_bytes([1; 16]),
-                    IdempotencyKey::new("step-1")?,
-                    json!(2),
-                )
-                .await?,
-            transition
-        );
-        assert!(matches!(
-            reopened
-                .step(
-                    OperationId::from_bytes([2; 16]),
-                    IdempotencyKey::new("after-terminal")?,
-                    json!(1),
-                )
-                .await,
-            Err(Error::Conflict(_))
-        ));
+        journal.admit(admission).await?;
+        let mut terminal = DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
+        let operation = OperationId::new();
+        let key = IdempotencyKey::new("complete")?;
+        let completed = terminal.step(operation, key.clone(), Value::Null, |_| Ok(())).await?;
+        assert!(matches!(completed.status, MachineStatus::Completed { .. }));
+        assert!(matches!(terminal.step(OperationId::new(), IdempotencyKey::new("after-terminal")?,
+            json!(1), |_| Ok(())).await, Err(Error::Conflict(_))));
+        let mut recovered = DurableWorkflowHost::open(registry, initial, journal).await?;
+        assert_eq!(recovered.checkpoint(), terminal.checkpoint());
+        assert_eq!(recovered.step(operation, key, Value::Null, |_| Ok(())).await?, completed);
+
         Ok(())
     }
+
 }

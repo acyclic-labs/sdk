@@ -31,7 +31,6 @@ pub struct ObjectMetadata {
     pub expires_unix_seconds: ::core::option::Option<i64>,
 }
 /// Evaluated atomically with single-object publication against the current value.
-/// An eventual HEAD/GET may be stale and cause a safe precondition failure.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Preconditions {
     #[prost(oneof = "preconditions::Condition", tags = "1, 2")]
@@ -102,7 +101,6 @@ pub struct PutObjectHeader {
     pub mutation: ::core::option::Option<MutationIdentity>,
 }
 /// Header first, bounded body frames, then complete=true and EOF. Missing completion
-/// never publishes bytes, even if transport cancellation appears as a clean EOF.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PutObjectRequest {
     #[prost(oneof = "put_object_request::Frame", tags = "1, 2, 3")]
@@ -172,12 +170,6 @@ pub struct GetObjectHeader {
     pub content_range: ::core::option::Option<ContentRange>,
 }
 /// One body frame. data decodes under codec to exactly decoded_length bytes, which
-/// follow the previous frame's bytes in the selected representation. Before it
-/// allocates or decompresses, a client rejects decoded_length above the bytes
-/// still selected, above OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES for CODEC_NONE, and
-/// above OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES for CODEC_ZSTD. It rejects any
-/// other decoded length and an unknown codec. A server chooses the codec
-/// independently for every frame.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Body {
     #[prost(enumeration = "Codec", tag = "1")]
@@ -188,7 +180,6 @@ pub struct Body {
     pub decoded_length: u64,
 }
 /// Exactly one metadata header first. The body belongs to that complete representation.
-/// A terminal semantic error can follow the header when an HTTP stream is already open.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetObjectResponse {
     #[prost(oneof = "get_object_response::Frame", tags = "1, 2, 3")]
@@ -239,7 +230,6 @@ pub struct DeleteObjectResponse {
     pub existed: bool,
 }
 /// Lexicographic S3 ListObjectsV2 traversal of an eventual listing, never a captured view.
-/// Concurrent insertions before the cursor can be missed. Tokens are opaque and query-bound.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListObjectsRequest {
     #[prost(message, optional, tag = "1")]
@@ -351,7 +341,6 @@ pub struct ListPartsResponse {
     pub is_truncated: bool,
 }
 /// Ordered part numbers and exact part ETags select the staged bytes.
-/// Non-final parts are at least 5 MiB. Publication and preconditions are atomic for this key.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CompleteMultipartRequest {
     #[prost(message, optional, tag = "1")]
@@ -406,9 +395,6 @@ pub enum ObjectsLimit {
 }
 impl ObjectsLimit {
     /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "OBJECTS_LIMIT_UNSPECIFIED",
@@ -449,9 +435,6 @@ pub enum Codec {
 }
 impl Codec {
     /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "CODEC_UNSPECIFIED",
@@ -487,9 +470,6 @@ pub enum ErrorCode {
 }
 impl ErrorCode {
     /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ERROR_CODE_UNSPECIFIED",

@@ -236,7 +236,6 @@ pub struct SelectDeploymentRequest {
     #[wire(tag = 3, uint64)]
     #[ts(optional)]
     /// Omitted means create only if absent. A present positive value selects only
-    /// when it matches the current revision; every successful selection advances it.
     expected_revision: Option<u64>,
     #[wire(tag = 4)]
     /// Caller-provided key for idempotent admission.
@@ -273,7 +272,6 @@ impl SelectDeploymentRequest {
         &self.version_sha256
     }
     /// Omitted means create only if absent. A present positive value selects only
-    /// when it matches the current revision; every successful selection advances it.
     #[must_use]
     pub fn expected_revision(&self) -> &Option<u64> {
         &self.expected_revision
@@ -301,7 +299,6 @@ pub struct SelectDeploymentResponse {
 }
 
 /// Logical S3 object selected and privately retained at durable job acceptance.
-/// Retries read the same retained bytes even if this public key is replaced.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -327,7 +324,6 @@ pub struct Payload {
 }
 
 /// Exact accepted job output, bounded by `JobLimits.output_bytes`. Storage and
-/// retention are service-owned; no replaceable public Object pointer is exposed.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -386,7 +382,6 @@ pub struct JobTarget {
 }
 
 /// Accepted input is delivered to `default.run`, never to `default.fetch`.
-/// The same job ID and input recur on retry; attempt numbering starts at one.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile, post = SubmitJobRequest::validate_from_proto)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]

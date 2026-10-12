@@ -15,7 +15,7 @@ use acyclic_harness::{
     tool::ToolRegistry,
     workflow::MachineRegistry,
 };
-use acyclic_stream::{StreamClient, StreamProvider};
+use acyclic_stream::{StreamProvider};
 use std::sync::Arc;
 
 /// Trusted service configuration, supplied independently of route bytes.
@@ -131,7 +131,7 @@ where
     pub(crate) async fn reopen(
         owner: &super::pi_owner::PiOwnerConfig,
         state: &super::AdapterState,
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
         filesystem: Arc<FilesystemHost<A, O>>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Self, Vec<super::pi_recovery::PiTaskObservation>, acyclic_fs::NativeAllocation)> {
@@ -153,7 +153,7 @@ where
 
     /// Clean native startup over the same protected owner, registered machines and SDK runtime engine.
     pub(crate) async fn open_with_native_work(
-        stream: StreamClient<P>, filesystem: Arc<FilesystemHost<A, O>>,
+        stream: std::sync::Arc<P>, filesystem: Arc<FilesystemHost<A, O>>,
         journal: &VolumeRef,
         authority: (PiRuntimeAuthority, acyclic_fs::NativeAllocation),
         work: &acyclic_fs::NativeMaterializationWork,
@@ -221,18 +221,6 @@ where
         })
     }
 
-    /// A service reader must use the same original key and complete policy as this runtime, rather than another valid owner with matching route IDs.
-    pub(crate) fn verify_owner(
-        &self,
-        owner: &super::pi_owner::PiOwnerConfig,
-    ) -> acyclic_harness::Result<()> {
-        if owner.policy() != &self.policy || owner.authority()?.signed != self.storage_scope {
-            return Err(acyclic_harness::Error::Unauthorized(
-                "Pi owner differs from the original runtime credentials or policy".to_owned(),
-            ));
-        }
-        Ok(())
-    }
 
     pub(crate) fn verify_owner_with_native_work(
         &self, owner: &super::pi_owner::PiOwnerConfig,
@@ -258,26 +246,11 @@ where
     }
 
     /// The same original admission operation and sealed task input, with SDK ownership retained on the caller's original native invocation.
-    pub(crate) async fn admit_root_with_native_work(
-        &self, binding: PiTaskBinding, root: PiRootIntent,
-        preparation: acyclic_harness::workflow::WorkflowCommand,
+    pub(crate) async fn admit_root(
+        &self, binding: &PiTaskBinding, root: &PiRootIntent,
+        preparation: &acyclic_harness::workflow::WorkflowCommand,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Admission<TaskId>, acyclic_fs::NativeAllocation)> {
-        self.validate_root_admission_with_native_work(&binding, &root, work)?;
-        let operation = OperationId::from_bytes(binding.task_id.into_bytes());
-        let input = PiTaskInput { binding, execution: PiTaskExecution::Host { root, preparation } };
-        let value = super::pi_root_provider::guarded_pi_value(
-            &input, self.policy.maximum_payload_bytes, work,
-        )?;
-        drop(input);
-        let record = self.runtime.harness().registered_root_admission_with_native_work(
-            operation, &self.definition, value, work,
-        )?;
-        self.runtime.task_host().admit_with_native_work(record, work)?.await
-    }
-
-    fn validate_root_intent(&self, binding: &PiTaskBinding, root: &PiRootIntent,
-        work: &acyclic_fs::NativeMaterializationWork) -> acyclic_harness::Result<()> {
         binding.validate_with_native_work(None, binding.project_volumes.keys().map(String::as_str), true, work)?;
         root.validate_with_native_work(binding, work)?;
         if binding.task_id != self.policy.root_task
@@ -288,14 +261,6 @@ where
                 reason: "Pi root differs from its authenticated owner or allocation intent",
             });
         }
-        Ok(())
-    }
-
-    fn validate_root_admission_with_native_work(
-        &self, binding: &PiTaskBinding, root: &PiRootIntent,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<()> {
-        self.validate_root_intent(binding, root, work)?;
         for volume in binding.project_volumes.values().chain(std::iter::once(&binding.scratch.volume)) {
             let grant = volume.capability_with_native_work(VolumeOperation::Read, work)?;
             if !self.policy.grants.contains(&grant.0) {
@@ -312,8 +277,19 @@ where
                 reason: "Pi root scratch lacks its admitted write grant",
             });
         }
-        Ok(())
+
+        let operation = OperationId::from_bytes(binding.task_id.into_bytes());
+        let input = PiTaskInput { binding, execution: PiTaskExecution::Host { root, preparation } };
+        let value = super::pi_root_provider::guarded_pi_value(
+            &input, self.policy.maximum_payload_bytes, work,
+        )?;
+        let record = self.runtime.harness().registered_root_admission_with_native_work(
+            operation, &self.definition, value, work,
+        )?;
+        self.runtime.task_host().admit_with_native_work(record, work)?.await
     }
+
+
 }
 
 fn invalid(message: &str) -> acyclic_harness::Error {

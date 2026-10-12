@@ -42,7 +42,7 @@ fn selected_scope(id: &str) -> Result<RuntimeScope> {
         id: id.into(),
     };
     let issuer = AuthorityIssuer::new("extension-resume", [93; 32], authority.clone());
-    let mut agent = Reducer::new(authority, issuer.verifier(), SchemaRegistry::new());
+    let mut agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     agent.apply(Command {
         operation_id: OperationId::new(),
         idempotency_key: IdempotencyKey::new(format!("selection:{id}"))?,

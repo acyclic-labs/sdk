@@ -9,5 +9,6 @@
     "skipLibCheck": false,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts"]
+  "include": ["src/**/*.ts", "src/**/*.d.ts"],
+  "references": [{ "path": "../actors" }]
 }

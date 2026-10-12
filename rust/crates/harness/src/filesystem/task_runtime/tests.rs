@@ -171,7 +171,7 @@ impl ResumableMachine for Machine {
 
 type Runtime = FilesystemTaskRuntime<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
 struct Fixture {
-    stream: StreamClient<MemoryStream>,
+    stream: Arc<MemoryStream>,
     filesystem: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
     volume: VolumeRef,
     issuer: AuthorityIssuer,
@@ -235,12 +235,12 @@ impl Fixture {
             },
             executor: tool.clone(), projection: tool.clone(),
         })?;
-        Ok(Self { stream: StreamClient::new(Arc::new(MemoryStream::default())), filesystem,
+        Ok(Self { stream: Arc::new(MemoryStream::default()), filesystem,
             volume, issuer, signed, scope, tasks, machines, tools, clock, tool, machine })
     }
     async fn runtime(&self) -> Result<Runtime> {
         FilesystemTaskRuntime::open(
-            self.stream.clone(), self.filesystem.clone(), &self.volume, &self.issuer.verifier(),
+            self.stream.clone(), self.filesystem.clone(), &self.volume, &self.issuer.verifier(&mut None).expect("verifier copy"),
             &self.signed, &self.scope, &self.tasks, &self.machines,
             &self.tools, SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 },
             1, 65_536, self.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
@@ -265,7 +265,7 @@ impl Fixture {
 
     async fn admit_only(&self, runtime: &Runtime, kind: &str, command: Value) -> Result<OperationId> {
         let operation = OperationId::from_bytes([104; 16]);
-        let payloads = FilesystemSchedulerPayloadStore::new(self.filesystem.clone(), &(self.volume), &self.issuer.verifier(), &self.signed, 65_536, None)?;
+        let payloads = FilesystemSchedulerPayloadStore::new(self.filesystem.clone(), &(self.volume), &self.issuer.verifier(&mut None).expect("verifier copy"), &self.signed, 65_536, None)?;
         let payload = payloads.stage(operation, "command", &crate::contract::canonical_json_bytes(&command)?).await?;
         let definition = self.tasks.get_version::<Value, Value>("test.deadline", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         let input = json!({"command":WorkflowCommand {
@@ -508,7 +508,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
             reconciled: AtomicUsize::new(0),
         });
         let execution = runtime.stock_execution(
-            task, fence.clone(), turn, model.clone(), provider.clone(), ContextPipeline::default(),
+            task, fence.clone(), turn, model.clone(), provider.clone(), ContextPipeline::default(), None,
         ).await?.with_compaction_policy(crate::context::CompactionPolicy::Disabled);
         let input = TurnInput {
             operation_id: execution.operation_id(),
@@ -531,7 +531,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
         drop(runtime);
         let reopened = fixture.runtime().await?;
         let execution = reopened.stock_execution(
-            task, fence.clone(), turn, model, provider.clone(), ContextPipeline::default(),
+            task, fence.clone(), turn, model, provider.clone(), ContextPipeline::default(), None,
         ).await?.with_compaction_policy(crate::context::CompactionPolicy::Disabled);
         if expired_before_dispatch {
             assert!(matches!(execution.reconcile(input, 1_000).await, Err(Error::Indeterminate(_))));
@@ -552,7 +552,7 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
     let fixture = Fixture::new().await?;
     let runtime = fixture.runtime().await?;
     let task = TaskId::from_bytes([104; 16]);
-    let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), &(fixture.volume), &fixture.issuer.verifier(), &fixture.signed, 65_536, None)?;
+    let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), &(fixture.volume), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, 65_536, None)?;
     let file = payloads.stage(OperationId::from_bytes([106; 16]), "mail-body", b"7").await?;
     let lease = fixture.admit_command(
         &runtime, super::super::MAIL_SEND_TASK_COMMAND_KIND,

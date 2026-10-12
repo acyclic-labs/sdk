@@ -20,7 +20,7 @@ use acyclic_harness::{AgentId, Capabilities, Error, OperationId, Outcome, Result
     source_authorization::{ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider},
     store::{HistoryIo, HistoryReadLimits, StreamAggregate},
     workflow::WorkflowCommand};
-use acyclic_stream::{LocalStream, StreamClient};
+use acyclic_stream::{LocalStream};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -160,7 +160,7 @@ impl PreparedPiFork {
 pub(crate) struct PiForkCoordinator {
     runtime: Arc<Runtime>,
     filesystem: Arc<Filesystem>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     resources: ServiceResources,
     owner: Arc<PiOwnerConfig>,
     work: NativeMaterializationWork,
@@ -169,7 +169,7 @@ pub(crate) struct PiForkCoordinator {
 impl PiForkCoordinator {
 
     pub(crate) fn new(runtime: Arc<Runtime>, filesystem: Arc<Filesystem>,
-        stream: StreamClient<LocalStream>, resources: &ServiceResources, owner: Arc<PiOwnerConfig>,
+        stream: std::sync::Arc<LocalStream>, resources: &ServiceResources, owner: Arc<PiOwnerConfig>,
         work: &NativeMaterializationWork) -> Result<Self> {
         runtime.verify_owner_with_native_work(&owner, work)?;
         let resources = crate::pi_root_provider::service_resources_with_native_work(resources, work)?;
@@ -464,13 +464,8 @@ impl PiForkCoordinator {
         let mut launch_reference = crate::pi_root_provider::stage_pi_input(&self.owner, &self.filesystem, derived(original, "native-input", &self.work)?, "native-input", &commit.launch, &self.work).await?;
         #[derive(Serialize)]
         struct Command<'a> { operation_id: OperationId, kind: &'a str, payload: &'a FileRef }
-        #[derive(Serialize)]
-        #[serde(tag = "kind", rename_all = "snake_case")]
-        enum Execution<'a> { Child { launch: Command<'a> } }
-        #[derive(Serialize)]
-        struct Input<'a> { binding: &'a PiTaskBinding, execution: Execution<'a> }
-        let input = crate::pi_root_provider::guarded_pi_value(&Input { binding: &commit.child,
-            execution: Execution::Child { launch: Command { operation_id: operations.native,
+        let input = crate::pi_root_provider::guarded_pi_value(&PiTaskInput::<_, crate::pi_root::PiRootIntent, _> { binding: &commit.child,
+            execution: PiTaskExecution::Child { launch: Command { operation_id: operations.native,
                 kind: NATIVE_LAUNCH_TASK_COMMAND_KIND, payload: &launch_reference.0 } } },
             self.owner.policy().maximum_payload_bytes, work)?;
         let mut child = self.runtime.runtime.harness().registered_child_admission_with_native_work(operations.child,
@@ -912,8 +907,8 @@ impl PiForkCoordinator {
             let mut seed_io = acyclic_harness::store::native_work_io(work)
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
             seed_io.retain_owned(std::mem::size_of::<ForkReport>() as u64)?;
-            let (seed, _) = report.clone_with_work_and_custody(&mut Some(&mut seed_io))?;
-            let seed_value = seed.into_seed()?;
+            let (seed, _) = report.copy(&mut Some(&mut seed_io))?;
+            let seed_value = seed.into_seed(&mut Some(&mut seed_io))?;
             let _seed_custody = seed_io.into_custody();
             let capture = self.capture(source, plan.frozen, budget).await?;
             let filesystem: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
@@ -932,7 +927,7 @@ impl PiForkCoordinator {
                 let mut io = acyclic_harness::store::native_work_io(work)
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 io.retain_owned(std::mem::size_of::<acyclic_harness::core::ApplyResult>() as u64)?;
-                let (report, report_bytes) = report.clone_with_work_and_custody(&mut Some(&mut io))?;
+                let (report, report_bytes) = report.copy(&mut Some(&mut io))?;
                 let (scope, scope_custody) = authority.0.2.clone_with_native_work(work)?;
                 let scope_bytes = scope_custody.bytes();
                 io.absorb_native_custody(scope_custody)?;
@@ -969,7 +964,7 @@ impl PiForkCoordinator {
         let original = original_operation(self.owner.policy().root_task, caller, &plan.commit.sdk_operation, &self.work)?;
         let operations = PiForkOperations::new(original, &self.work)?;
         { let work = &self.work;
-                plan.request.validate_with_native_work(work)?;
+                plan.request.validate(&mut Some(&mut acyclic_harness::store::native_work_io(work)?))?;
                 plan.preparation.validate_with_native_work(work)?;
              }
         let child_input: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(&plan.request.child.input,

@@ -121,13 +121,23 @@ pub(crate) fn valid_endpoint(endpoint: &str) -> bool {
     })
 }
 
-pub(crate) fn authorization(token: &str) -> Result<MetadataValue<Ascii>, ()> {
-    if !crate::valid_token(token) {
-        return Err(());
+/// Sensitive bearer metadata applied to each generated RPC.
+#[derive(Clone)]
+pub struct BearerAuth(MetadataValue<Ascii>);
+impl BearerAuth {
+    /// Validates a bounded bearer credential and marks its metadata sensitive.
+    pub fn new(token: &str) -> Result<Self, ()> {
+        if !crate::valid_token(token) { return Err(()); }
+        let mut value: MetadataValue<Ascii> = format!("Bearer {token}").parse().map_err(|_| ())?;
+        value.set_sensitive(true);
+        Ok(Self(value))
     }
-    let mut value: MetadataValue<Ascii> = format!("Bearer {token}").parse().map_err(|_| ())?;
-    value.set_sensitive(true);
-    Ok(value)
+}
+impl tonic::service::Interceptor for BearerAuth {
+    fn call(&mut self, mut request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        request.metadata_mut().insert("authorization", self.0.clone());
+        Ok(request)
+    }
 }
 
 pub(crate) struct Validated {
@@ -135,7 +145,7 @@ pub(crate) struct Validated {
     #[cfg(not(target_arch = "wasm32"))]
     pub token: String,
     #[cfg(target_arch = "wasm32")]
-    pub authorization: MetadataValue<Ascii>,
+    pub authorization: BearerAuth,
     pub metadata: MetadataMap,
     pub maximum: usize,
     pub deadline: Option<u32>,
@@ -160,7 +170,7 @@ impl WorkersClientOptions {
             ));
         }
         let authorization =
-            authorization(&self.token).map_err(|()| invalid("invalid bearer credential"))?;
+            BearerAuth::new(&self.token).map_err(|()| invalid("invalid bearer credential"))?;
         #[cfg(not(target_arch = "wasm32"))]
         drop(authorization);
         let maximum = self.maximum_message_bytes.unwrap_or(MAX_MESSAGE_BYTES);
