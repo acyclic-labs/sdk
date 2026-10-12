@@ -465,9 +465,9 @@ async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -
     failure.work.verify(limited)?;
 
     let file = source.open_file(source.reference(), &path, node.version, budget, &token).await?.value;
-    let baseline = file.read_range(0, 6, budget, &token)?;
+    let baseline = acyclic_fs::demand::read_file(&*file, 0, 6, budget, &token)?;
     limited.backend_read_operations = baseline.work.backend_read_operations.checked_sub(1).ok_or("no held native IO")?;
-    let failure = file.read_range(0, 6, limited, &token).err().ok_or("held file ignored native IO limit")?;
+    let failure = acyclic_fs::demand::read_file(&*file, 0, 6, limited, &token).err().ok_or("held file ignored native IO limit")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
     assert_eq!(failure.work.source_bytes_read, 6);
     assert_eq!(failure.work.output_bytes, 0);
