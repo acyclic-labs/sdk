@@ -10,12 +10,6 @@ pub(super) struct NativeMetadataSource {
     pub(super) purpose: IssuedContextPurpose,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) struct NativeToolAcceptance {
-    task: crate::TaskId,
-    operation: crate::OperationId,
-}
-
 fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     Error::NativeBoundary { code, reason }
 }
@@ -368,7 +362,7 @@ impl ToolContext {
             crate::wire::ErrorCode::Unauthorized,
             "original admission observation requires protected ToolStarted acceptance",
         ))?;
-        if context.durable_task != Some(accepted.task) || self.operation_id != accepted.operation {
+        if context.durable_task != Some(accepted.0) || self.operation_id != accepted.1 {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "working view invocation differs from protected ToolStarted"));
         }
