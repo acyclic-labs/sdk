@@ -147,9 +147,7 @@ impl ModelProvider for ModelFixture {
             Ok(crate::model::ModelEvent::Completed { metadata: json!({}) }),
         ]))
     }
-    fn reconcile<'a>(&'a self, _: crate::model::ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 #[tokio::test]
@@ -174,7 +172,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let provider = Arc::new(ModelFixture(AtomicUsize::new(0)));
     let execution = runtime.stock_execution(task, LeaseFence::from(&lease.reservation), OperationId::from_bytes([130; 16]),
-        Model::new("fixture", "headless", "1", json!({}))?, provider.clone(), ContextPipeline::default()).await?
+        Model::new("fixture", "headless", "1", json!({}))?, provider.clone(), ContextPipeline::default(), None).await?
         .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
     let input = TurnInput { operation_id: execution.operation_id(), input: crate::model::ModelContent::Text("headless".into()),
         selected_context: None, max_steps: 1 };
@@ -190,7 +188,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let mut stale = LeaseFence::from(&lease.reservation);
     stale.reservation_id = "wrong-fence".into();
     assert!(runtime.stock_execution(task, stale, OperationId::new(), Model::new("fixture", "headless", "1", json!({}))?,
-        provider.clone(), ContextPipeline::default()).await.is_err());
+        provider.clone(), ContextPipeline::default(), None).await.is_err());
     assert_eq!(provider.0.load(Ordering::SeqCst), 1);
     use acyclic_fs::{TransactionCommit, WorkspaceRestore};
     use crate::core::{Action, Command};
@@ -290,7 +288,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     assert_eq!(fixture.filesystem.read(&crate::filesystem::workspace_ref(project.provider().clone(), &child_project.storage_name()?)?, None, "/src/a.txt", 128).await?.as_ref(), b"old");
     let reopened = self::runtime(&fixture).await?;
     let replay = reopened.stock_execution(task, LeaseFence::from(&lease.reservation), input.operation_id,
-        Model::new("fixture", "headless", "1", json!({}))?, provider.clone(), ContextPipeline::default()).await?
+        Model::new("fixture", "headless", "1", json!({}))?, provider.clone(), ContextPipeline::default(), None).await?
         .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
     assert_eq!(replay.model_step(&input, 0, &[]).await?, events);
     assert_eq!(provider.0.load(Ordering::SeqCst), 1);

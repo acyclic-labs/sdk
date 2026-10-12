@@ -1,7 +1,4 @@
 //! Sparse persistent extent mutation without file-body materialization.
-//!
-//! Compilation, frontier buffers, canonical decoding, and hashed writes use the
-//! selected ledger directly; no backend operation runs under its allocation lock.
 
 use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 #[cfg(test)]
@@ -86,7 +83,6 @@ enum EnteredNode {
     Internal(InternalFrame),
 }
 
-
 /// New extent root, logical size, and exact path-copy evidence.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExtentMutationReceipt {
@@ -123,17 +119,6 @@ struct Context<'a, 'b, S> {
 }
 
 /// Applies ordered extent mutations by rewriting only intersecting frontiers.
-///
-/// Shrink operations discard whole later subtrees from parent bounds without
-/// reading them. Growth follows only the final frontier and appends holes.
-/// Content blobs are referenced, never read or materialized. Equivalent
-/// adjacent spans are coalesced after ordered patch replay.
-///
-/// # Errors
-///
-/// Rejects malformed/excessive ranges and unsupported extension before backend
-/// access, then fails closed on routing corruption, cycles, storage failure, or
-/// work outside the admitted budget.
 pub fn apply_extent_mutations<S: crate::ImmediateObjectStore>(
     store: &S,
     root: ObjectId,
@@ -159,15 +144,6 @@ pub fn apply_extent_mutations<S: crate::ImmediateObjectStore>(
 }
 
 /// Asynchronously applies ordered extent mutations without blocking an executor.
-///
-/// The sync and async APIs execute this same iterative path-copy state machine.
-/// Cancellation is checked by every backend operation and cannot publish a
-/// mutable object because all writes are immutable and content addressed.
-///
-/// # Errors
-///
-/// Returns the same bounded, receipt-bearing failures as
-/// [`apply_extent_mutations`], plus backend cancellation.
 pub async fn apply_extent_mutations_async<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -183,7 +159,6 @@ pub async fn apply_extent_mutations_async<S: crate::AsyncObjectStore>(
     ).await.map_err(|error| OperationFailure::new(project_extent_error(error), accounting.spent()))
 }
 
-/// Executes the canonical path-copy machine on the invocation's original ledger.
 pub(crate) async fn apply_extent_mutations_with_accounting<S: crate::AsyncObjectStore>(
     store: &S, root: ObjectId, old_logical_bytes: u64, mutations: &[ExtentMutation],
     maximum_mutations: u32, limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
@@ -824,7 +799,6 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
     }
 }
 
-/// Observes the canonical writer outside AL loans and retains its exact buffer claim.
 pub(super) struct PageEncodeAccounting<'a, 'b> {
     accounting: &'a mut KernelAccounting<'b>,
     allocation: KernelOwnedAllocation,
@@ -917,7 +891,7 @@ pub(crate) async fn put_extent_page_with_accounting<S: crate::AsyncObjectStore>(
     accounting.check()?;
     let mut encoder = PageEncodeAccounting::new(accounting, limits.maximum_page_object_bytes(), true);
     let native = encoder.is_native();
-    let encoded = super::extent::encode_extent_page_with_steps(
+    let encoded = super::extent::encode_extent_page(
         page, limits.maximum_page_items, |step| encoder.observe(step),
         |error| PageEncodeAccounting::reserve_error(error, native),
     );
@@ -925,7 +899,6 @@ pub(crate) async fn put_extent_page_with_accounting<S: crate::AsyncObjectStore>(
     put_encoded_with_accounting(store, ObjectKind::ExtentPage, encoded, accounting, cancellation).await
 }
 
-/// Transfers only physically admitted buffers to the native hashed-write API.
 pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
     store: &S, kind: ObjectKind, mut encoded: Owned<Vec<u8>>,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,

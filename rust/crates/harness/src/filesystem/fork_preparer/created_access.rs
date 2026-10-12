@@ -3,7 +3,6 @@
 use super::*;
 use crate::{
     Capabilities, TaskId,
-    conversation::ContentFuture,
     conversation::{Attachment, ContentPublisher, FileRef, Limits, PrivateDirectoryPage, VolumeClass, VolumeOwner},
     core::AuthorityIssuer,
     resource_preparation::{CreatedContentBinding, CreatedReferenceBinding, CreatedResourceOperation,
@@ -141,10 +140,9 @@ pub struct FilesystemRootBootstrapAllocation<A, O> {
     pub(crate) native_source: Option<super::super::root_source::FsRootNativeSource<A, O>>,
     #[cfg(not(target_arch = "wasm32"))]
     publication_lease: Option<Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
-    pub(crate) writable: bool,
     record_digest: [u8; 32],
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) witness: crate::durable_host::RootBootstrapBindingWitness,
+    pub(crate) witness: Arc<crate::durable_host::RootBootstrapBindingWitness>,
     #[cfg(not(target_arch = "wasm32"))]
     _custody: acyclic_fs::NativeAllocation,
 }
@@ -197,7 +195,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         {
             return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap differs from its configured original creator or namespace"));
         }
-        if native_import.is_some_and(|(source, _)| !source.matches_native_work(work)) {
+        if native_import.is_some_and(|(source, _)| !source.backing.matches_native_work(work)) {
             return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy source belongs to another original native ledger"));
         }
         crate::NativeFutureBundle::new(work, || async move {
@@ -242,23 +240,23 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let name = bounded_io::volume_storage_name(volume, Some(&io))?;
             name_hold = io.guard_owned(name.capacity() as u64)?;
             let birth = self.host.filesystem.workspace_for_creation_operation_with_native_work(
-                &name, config, operation, work, &io.cancellation,
+                &name, config, operation, work, io.cancellation(),
             ).await.map_err(native_workspace_error)?
                 .ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap has no original protected Filesystem birth"))?;
             if birth.id() != initial_generation {
                 return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap initial generation differs from its actual birth"));
             }
             let selected = birth.workspace().generation_with_native_work(
-                selected_generation, work, &io.cancellation,
+                selected_generation, work, io.cancellation(),
             ).await.map_err(native_workspace_error)?;
             let native_snapshot = if let Some((lazy, frozen)) = native_import {
-                if lazy.workspace_id() != birth.workspace_id() {
+                if lazy.backing.workspace_id() != birth.workspace_id() {
                     return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap import names another original workspace"));
                 }
                 if frozen.authored_generation != selected.id() || frozen.workspace_id != birth.workspace_id() {
                     return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap selected generation differs from its original import"));
                 }
-                lazy.validate_snapshot_with_native_work(frozen, work)?.await?;
+                lazy.backing.validate(frozen, &io)?.await?;
                 Some(frozen)
             } else { None };
             drop(selected);
@@ -359,7 +357,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             drop(original_custody);
             Ok(FilesystemRootBootstrapAllocation {
                 host: self.host.clone(), creator, admission_digest, role, request,
-                operation, config, initial_generation, selected_generation, native_snapshot, native_source, writable,
+                operation, config, initial_generation, selected_generation, native_snapshot, native_source,
                 publication_lease,
                 record_digest, witness, _custody: custody,
             })
@@ -387,17 +385,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocat
     #[cfg(not(target_arch = "wasm32"))]
     async fn reauthenticate_with_io(&self, io: &PreparationIo) -> Result<()> {
         self.authenticate_record(io).await?;
-        self.authenticate_birth_with_io(io).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn authenticate_birth_with_io(&self, io: &PreparationIo) -> Result<()> {
         let name_hold;
         let name = bounded_io::volume_storage_name(&self.request.volume, Some(io))?;
         name_hold = io.guard_owned(name.capacity() as u64)?;
         let birth = bounded_io::filesystem_call!(io, work,
-            self.host.filesystem.workspace_for_creation_operation_with_native_work(&name, self.config, self.operation, work, &io.cancellation),
-            self.host.filesystem.workspace_for_creation_operation(&name, self.config, self.operation, io.remaining()?, &io.cancellation))?;
+            self.host.filesystem.workspace_for_creation_operation_with_native_work(&name, self.config, self.operation, work, io.cancellation()),
+            self.host.filesystem.workspace_for_creation_operation(&name, self.config, self.operation, io.remaining()?, io.cancellation()))?;
         if !birth.as_ref().is_some_and(|birth| birth.id() == self.initial_generation) {
             return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root content original protected Filesystem birth changed"));
         }
@@ -413,12 +406,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocat
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FilesystemRootBootstrapAllocation<A, O>
 {
-    pub(in crate::filesystem) fn source_generation_with_io<'a>(
-        &'a self, io: Option<&PreparationIo>,
-    ) -> Result<Option<&'a GenerationRef>> {
+    pub(in crate::filesystem) fn source_generation(
+        &self, file: Option<&FileRef>, io: Option<&PreparationIo>,
+    ) -> Result<Option<&GenerationRef>> {
         let Some(source) = self.native_source.as_ref() else { return Ok(None); };
         let snapshot = self.native_snapshot.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy content has no authenticated original frozen snapshot"))?;
-        if snapshot.workspace_id != source.workspace_id()
+        if snapshot.workspace_id != source.backing.workspace_id()
             || snapshot.authored_generation != self.selected_generation
             || self.request.generation.as_resource().key() != snapshot.authored_generation.digest().into_bytes().as_slice()
         {
@@ -427,27 +420,23 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         if let Some(io) = io {
             io.check_cancellation()?;
             if io.original_native_work().is_some_and(|work|
-                !self.matches_native_work(work) || !source.matches_native_work(work))
+                !self.matches_native_work(work) || !source.backing.matches_native_work(work))
             {
                 return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy publication basis belongs to another original ledger"));
             }
         }
+        if let Some(file) = file {
+            if file.volume() != &self.request.volume {
+                return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy source reference names another original volume"));
+            }
+            if let Some(io) = io {
+                io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64, ..WorkCounters::default() })?;
+            }
+            if file.version() != blake3::Hash::from_bytes(snapshot.id.into_bytes()).to_hex().as_str() {
+                return Ok(None);
+            }
+        }
         Ok(Some(&self.request.generation))
-    }
-    pub(in crate::filesystem) fn source_generation_for_file_with_io<'a>(
-        &'a self, file: &FileRef, io: Option<&PreparationIo>,
-    ) -> Result<Option<&'a GenerationRef>> {
-        let Some(generation) = self.source_generation_with_io(io)? else { return Ok(None); };
-        if file.volume() != &self.request.volume {
-            return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy source reference names another original volume"));
-        }
-        let snapshot = self.native_snapshot.expect("authenticated original lazy snapshot");
-        if let Some(io) = io {
-            io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64,
-                ..WorkCounters::default() })?;
-        }
-        let revision = blake3::Hash::from_bytes(snapshot.id.into_bytes()).to_hex();
-        Ok((file.version() == revision.as_str()).then_some(generation))
     }
 
     pub(in crate::filesystem) async fn publish_lazy_candidate_with_io(
@@ -464,15 +453,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 &ordinary
             }
         };
-        let lease = self.publication_lease.as_ref().filter(|_| self.writable)
+        let lease = self.publication_lease.as_ref()
             .ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy content has no original declared publication authority"))?;
-        self.source_generation_with_io(Some(io))?.ok_or(native_error(crate::wire::ErrorCode::Invalid, "Root eager content does not select a lazy publication candidate"))?;
+        self.source_generation(None, Some(io))?.ok_or(native_error(crate::wire::ErrorCode::Invalid, "Root eager content does not select a lazy publication candidate"))?;
         io.verify_publication_lease(lease.as_ref()).await?;
         self.reauthenticate_with_io(io).await?;
         let source = self.native_source.as_ref().expect("authenticated original lazy source");
         let snapshot = self.native_snapshot.expect("authenticated original lazy snapshot");
         let operation = bounded_io::operation_key(key, Some(io))?;
-        let future = source.publish_with_io(snapshot, mutations, operation, permit, io, lease)?;
+        let future = source.backing.publish(snapshot, mutations, operation, permit, io, lease)?;
         let frame = match &future {
             crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => *frame_bytes,
             crate::store::history::HistoryContentFuture::Native(_) => 0,
@@ -567,12 +556,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         maximum: u64, io: &PreparationIo) -> Result<acyclic_stream::OwnedBytes> {
         let source = self.allocation.native_source.as_ref()
             .ok_or_else(|| bounded_io::failure(Some(io), crate::wire::ErrorCode::Unauthorized, "Root source lacks its retained lazy backing"))?;
-        if let Some(work) = io.original_native_work() {
-            source.read_with_native_work(snapshot, path, maximum, work)?.await
-        } else {
-            io.receive_content(source.read_measured(snapshot, path, maximum,
-                io.remaining()?, &io.cancellation).await)
-        }
+        let absolute = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
+        let hold = io.guard_owned(absolute.capacity() as u64)?;
+        let absolute = (absolute, hold);
+        let result = source.backing.read(snapshot, &absolute.0, maximum, io)?.await;
+        drop(absolute);
+        result
     }
 
     async fn read_snapshot_file(&self, file: &FileRef, maximum: u64,
@@ -584,13 +573,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         }
         self.authorize_path(file.volume(), "", file.path(), io)?;
         self.authenticate(file.volume(), Some(io)).await?;
-        let absolute = crate::contract::preparation_format(format_args!("/{}", file.path()), Some(io))?;
-        let bytes = self.read_snapshot_bytes(snapshot, &absolute,
+        let bytes = self.read_snapshot_bytes(snapshot, file.path(),
             maximum.min(self.reader.maximum_bytes), io).await?;
-        file.descriptor().verify_with_io(bytes.as_ref(), Some(io))?;
-        let absolute_capacity = absolute.capacity() as u64;
-        drop(absolute);
-        io.release(absolute_capacity)?;
+        crate::executor::with_history_io(Some(io), |work| file.descriptor().verify(bytes.as_ref(), work))?;
         Ok(Some(bytes))
     }
 
@@ -605,21 +590,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         bounded_io::validate_content_path(path, Some(io))?;
         self.authorize_path(volume, prefix, path, io)?;
         self.authenticate(volume, Some(io)).await?;
-        let absolute = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
-        let bytes = self.read_snapshot_bytes(snapshot, &absolute, maximum, io).await?;
-        let absolute_capacity = absolute.capacity() as u64;
-        drop(absolute);
-        io.release(absolute_capacity)?;
+        let bytes = self.read_snapshot_bytes(snapshot, path, maximum, io).await?;
         let header = if io.uses_native_work() { std::mem::size_of::<crate::conversation::FileDescriptor>() as u64 } else { 0 };
         io.claim(header)?;
-        let descriptor = crate::conversation::FileDescriptor::from_bytes_with_io(
+        let descriptor = crate::conversation::FileDescriptor::from_bytes(
             &bytes, "application/octet-stream", Some(io),
         )?;
         io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64, ..WorkCounters::default() })?;
         let version = blake3::Hash::from_bytes(snapshot.id.into_bytes()).to_hex();
         if io.uses_native_work() { io.claim(std::mem::size_of::<FileRef>() as u64)?; }
-        let file = FileRef::new_with_io(volume, path, version.as_str(), &descriptor,
-            path.rsplit('/').next().unwrap_or(path), Some(io))?;
+        let file = FileRef::new(volume, (path).into(), (version.as_str()).into(), &descriptor,
+            (path.rsplit('/').next().unwrap_or(path)).into(), Some(io))?;
         let descriptor_capacity = header + descriptor.logical_owned_bytes();
         drop(descriptor);
         io.release(descriptor_capacity)?;
@@ -641,8 +622,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         let mut entries: Vec<crate::conversation::PrivateDirectoryEntry> = Vec::new();
         let mut cursor = None;
         loop {
-            let page = io.receive_content(source.list_measured(snapshot, &absolute, cursor, 128,
-                io.remaining()?, &io.cancellation).await)?;
+            let page = io.receive_content(source.backing.list(snapshot, &absolute, cursor, 128,
+                io.remaining()?, io.cancellation()).await)?;
             for entry in page.entries {
                 let kind = match entry.kind {
                     acyclic_fs::demand::SourceNodeKind::RegularFile => crate::conversation::PrivateDirectoryEntryKind::File,
@@ -711,7 +692,7 @@ macro_rules! created_reads {
     }
     fn read_measured<'a>(&'a $this, $file: &'a FileRef, $maximum_bytes: u64,
         $budget: WorkBudget, $cancellation: &'a CancellationToken)
-        -> ContentFuture<'a, MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
+        -> BoxFuture<'a, MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
         Box::pin(async move {
             let $io = $budget_io.map_err(OperationFailure::before_work)?;
             let result = async {
@@ -724,7 +705,7 @@ macro_rules! created_reads {
     }
     fn verify_measured<'a>(&'a $this, $file: &'a FileRef, $maximum_bytes: u64,
         $budget: WorkBudget, $cancellation: &'a CancellationToken)
-        -> ContentFuture<'a, MeasuredResult<OperationReceipt<()>, Error>> {
+        -> BoxFuture<'a, MeasuredResult<OperationReceipt<()>, Error>> {
         Box::pin(async move {
             $this.read_measured($file, $maximum_bytes, $budget, $cancellation).await
                 .map(|receipt| OperationReceipt { value: (), work: receipt.work })
@@ -822,7 +803,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         Box::pin(async move {
             let bytes = self.read(file).await?;
             let io = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?;
-            let items = crate::conversation::decode_manifest_bounded(file, &bytes, count as usize, &io)?;
+            let items = crate::conversation::decode_attachment_manifest(file, &bytes, Some(count), Some(&io))?;
             if items.len() != count as usize {
                 return Err(io.invalid("Root attachment manifest count is incomplete"));
             }
@@ -839,7 +820,7 @@ macro_rules! created_publisher {
         }
         fn stage_once_measured<'a>(&'a $this, operation: OperationId, path: &'a str, bytes: &'a [u8],
             media_type: &'a str, display_name: &'a str, $budget: WorkBudget, $cancellation: &'a CancellationToken)
-            -> ContentFuture<'a, MeasuredResult<OperationReceipt<FileRef>, Error>> {
+            -> BoxFuture<'a, MeasuredResult<OperationReceipt<FileRef>, Error>> {
             Box::pin(async move {
                 let io = $io.map_err(OperationFailure::before_work)?;
                 let result = $this.publish(operation, path, bytes, media_type, display_name, None, Some(&io)).await;
@@ -862,7 +843,7 @@ macro_rules! created_publisher {
         }
         fn observe_staged_once_measured<'a>(&'a $this, operation: OperationId, maximum_bytes: u64,
             $budget: WorkBudget, $cancellation: &'a CancellationToken)
-            -> ContentFuture<'a, MeasuredResult<OperationReceipt<Option<FileRef>>, Error>> {
+            -> BoxFuture<'a, MeasuredResult<OperationReceipt<Option<FileRef>>, Error>> {
             Box::pin(async move {
                 let io = $io.map_err(OperationFailure::before_work)?;
                 let result = $this.observe(operation, maximum_bytes, Some(&io)).await;
@@ -893,19 +874,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
                 Some(io) => io,
                 None => { ordinary = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?; &ordinary }
             };
-            if self.allocation.source_generation_for_file_with_io(source, Some(source_io))?.is_some() {
+            if self.allocation.source_generation(Some(source), Some(source_io))?.is_some() {
                 let original = self.read_snapshot_file(source, self.reader.maximum_bytes, source_io).await?
                     .ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root replacement does not authenticate its original lazy source"))?;
                 drop(original);
             }
-            self.writer()?.stage_at_with_io(operation, source, bytes, io, Some(lease), Some(&self.allocation)).await
+            self.writer()?.replace(operation, source, bytes, io, Some(lease), Some(&self.allocation)).await
         } else {
-            self.writer()?.stage_once_with_io(operation, path, bytes, media_type, display_name, io, Some(lease), Some(&self.allocation)).await
+            self.writer()?.publish_once(operation, path, bytes, media_type, display_name, io, Some(lease), Some(&self.allocation)).await
         }
     }
     async fn observe(&self, operation: OperationId, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<Option<FileRef>> {
         self.authenticate(&self.allocation.request.volume, io).await?;
-        self.writer()?.observe_once_with_io(operation, maximum_bytes, io).await
+        self.writer()?.observe_publication(operation, maximum_bytes, io).await
     }
 }
 
@@ -969,8 +950,8 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Some(io) => io,
         None => { owned = PreparationIo::new(request, &CancellationToken::new())?; &owned }
     };
-    request.validate()?;
-    proof.validate()?;
+    request.validate(&mut None)?;
+    proof.validate(&mut None)?;
     if request.provider != host.provider || proof.provider != host.provider
         || request.creation_grant != capability::FORK_PUBLISH
         || !request.child.resource_proofs.contains(proof)
@@ -982,35 +963,36 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let payload_hold;
     let payload = io.encode(&request.payload, record_limit, false)?;
     payload_hold = io.guard_bytes(&payload)?;
-    let fork = io.decode_preparation::<ForkRequest>(&payload)?.into_retained();
+    let fork = io.decode_preparation::<ForkRequest>(&payload, crate::wire::ErrorCode::Storage)?.into_retained();
     drop(payload);
     drop(payload_hold);
     fork.validate()?;
     let encoded_hold;
     let encoded = io.encode(&fork, record_limit, false)?;
     encoded_hold = io.guard_bytes(&encoded)?;
-    let decoded = io.decode_preparation::<serde_json::Value>(&encoded)?;
+    let decoded = io.decode_preparation::<serde_json::Value>(&encoded, crate::wire::ErrorCode::Storage)?;
     if decoded.value != request.payload {
         return Err(Error::Unauthorized("fork payload is not the exact admitted request".into()));
     }
     drop(decoded);
     drop(encoded);
     drop(encoded_hold);
-    let count = creation_volumes(&fork).count();
-    let slots = count * std::mem::size_of::<crate::resources::ResourceRef>();
-    io.claim(slots as u64)?;
-    io.allocation_attempt(slots as u64)?;
-    let mut resources = Vec::with_capacity(count);
-    for (volume, _) in creation_volumes(&fork) {
+    if request.resources.len() != creation_volumes(&fork).count() {
+        return Err(Error::Unauthorized("created identities differ from the exact fork allocation".into()));
+    }
+    for ((volume, _), resource) in creation_volumes(&fork).zip(&request.resources) {
         if volume.provider() != &host.provider {
             return Err(Error::Unauthorized("created volume belongs to another provider".into()));
         }
-        resources.push(bounded_io::content_workspace(&host.provider, volume, Some(io))?.into_resource());
+        let workspace = bounded_io::content_workspace(&host.provider, volume, Some(io))?;
+        let hold = io.guard_owned(workspace.logical_owned_bytes()?)?;
+        if workspace.as_resource() != resource {
+            return Err(Error::Unauthorized("created identities differ from the exact fork allocation".into()));
+        }
+        drop(workspace);
+        drop(hold);
     }
-    if resources != request.resources {
-        return Err(Error::Unauthorized("created identities differ from the exact fork allocation".into()));
-    }
-    let index = resources.iter().position(|resource| resource == &proof.resource)
+    let index = request.resources.iter().position(|resource| resource == &proof.resource)
         .ok_or_else(|| Error::Unauthorized("proof does not name a created fork volume".into()))?;
     let (selected_volume, _) = creation_volumes(&fork).nth(index)
         .ok_or_else(|| Error::Unauthorized("created allocation index is absent".into()))?;
@@ -1087,8 +1069,8 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let creation_key = original_creation_key(fork.operation_id, digest, &role, io)?;
         let key = bounded_io::operation_key(&creation_key, Some(io))?;
         let initial = bounded_io::filesystem_call!(io, original,
-            original_workspace.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(key.into_bytes()), original, &io.cancellation),
-            original_workspace.operation_generation(key, io.remaining()?, &io.cancellation))?;
+            original_workspace.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(key.into_bytes()), original, io.cancellation()),
+            original_workspace.operation_generation(key, io.remaining()?, io.cancellation()))?;
         let initial = initial.ok_or_else(|| Error::Unauthorized("original fork allocation operation is missing".into()))?;
         let generation = bounded_io::generation_ref(host, &initial, Some(io))?;
         let captured_generation = match role {
@@ -1168,7 +1150,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 /// Caller work and original creation limits constrain the same actual ledger.
 fn content_io(request: &ResourcePreparationRequest, budget: WorkBudget,
     cancellation: &CancellationToken) -> Result<PreparationIo> {
-    PreparationIo::from_budget(budget.intersect_budget(bounded_io::budget(request.maximum_work, request.maximum_bytes)), cancellation)
+    PreparationIo::from_budget(budget.intersect_budget(acyclic_fs::performance::work_budget(request.maximum_work, request.maximum_bytes)), cancellation)
 }
 
 fn content_result<T>(io: &PreparationIo, result: Result<T>) -> MeasuredResult<OperationReceipt<T>, Error> {
@@ -1194,7 +1176,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             &crate::durable_host::RootBootstrapBindingWitness)>
         {
             slot.get().filter(|allocation| allocation.request.root_operation == operation)
-                .map(|allocation| (&allocation.request, &allocation.witness))
+                .map(|allocation| (&allocation.request, allocation.witness.as_ref()))
         }
         [selected(&self.root_project, operation), selected(&self.root_scratch, operation)]
     }
@@ -1270,7 +1252,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             if !context.original_root().grants.contains(&read) {
                 return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root content original admission does not declare Project or Scratch READ"));
             }
-            let writable = allocation.writable && context.original_root().grants.contains(&write);
+            let writable = allocation.publication_lease.is_some() && context.original_root().grants.contains(&write);
             allocation.reauthenticate_with_io(&io).await?;
             let id = bounded_io::join_text("root-created:", &name, &io)?;
             drop(name);
@@ -1300,13 +1282,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             io.claim(std::mem::size_of::<RootCreatedFilesystemAccess<A, O>>() as u64)?;
             let custody;
             let writer = if writable {
-                let (volume, custody) = allocation.request.volume.clone_with_native_work(work)?;
-                io.absorb_native_custody(custody)?;
-                Some(FilesystemContentPublisher::new_with_io(self.host.clone(), volume,
+                Some(FilesystemContentPublisher::new(self.host.clone(), &allocation.request.volume,
                     &verifier, &scope, context.original_root().limits.file_bytes, Some(&io))?)
             } else { None };
-            let reader = FilesystemContentVerifier::new_with_io(self.host.clone(), verifier, scope,
+            let temporary = verifier.logical_owned_bytes()?.checked_add(scope.logical_owned_bytes()?)
+                .ok_or_else(|| io.invalid("created reader metadata overflows"))?;
+            let reader = FilesystemContentVerifier::new(self.host.clone(), &verifier, &scope,
                 context.original_root().limits.file_bytes, Some(&io))?;
+            drop((verifier, scope));
+            io.release(temporary)?;
             let capture = io.owned_bytes()?;
             custody = io.into_native_custody(capture)?;
             work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
@@ -1352,9 +1336,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let generation_bytes = allocation.generation.logical_owned_bytes()?;
             let resource_bytes = proof.resource.logical_owned_bytes()?;
             let evidence_bytes = proof.evidence.logical_owned_bytes()?;
-            let bytes = allocation.volume.logical_owned_bytes()?.checked_mul(4)
+            let bytes = allocation.volume.logical_owned_bytes()?.checked_mul(2)
                 .and_then(|bytes| bytes.checked_add(generation_bytes))
-                .and_then(|bytes| bytes.checked_add(self.issuer.audience().id.len() as u64))
                 .and_then(|bytes| bytes.checked_add(resource_bytes))
                 .and_then(|bytes| bytes.checked_add(evidence_bytes))
                 .and_then(|bytes| bytes.checked_add(std::mem::size_of::<CreatedFilesystemAccess<A, O>>() as u64))
@@ -1378,22 +1361,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let mut observer = io.history_io();
             self.issuer.verifier_with_work(&mut Some(&mut observer))?
         } else { self.issuer.verifier() };
-        let writer = FilesystemContentPublisher::new_with_io(self.host.clone(), allocation.volume.clone(),
+        let writer = FilesystemContentPublisher::new(self.host.clone(), &allocation.volume,
             &verifier, &scope, request.maximum_bytes, io)?;
-        let reader = FilesystemContentVerifier::new_with_io(self.host.clone(), verifier, scope,
+        let temporary = verifier.logical_owned_bytes()?.checked_add(scope.logical_owned_bytes()?)
+            .ok_or_else(|| bounded_io::failure(io, crate::wire::ErrorCode::Invalid, "created reader metadata overflows"))?;
+        let reader = FilesystemContentVerifier::new(self.host.clone(), &verifier, &scope,
             request.maximum_bytes, io)?;
-        if let Some(io) = io {
-            let owned = reader.logical_owned_bytes()?.checked_add(writer.logical_owned_bytes()?)
-                .ok_or_else(|| Error::Invalid("creator content ownership overflow".into()))?;
-            if owned > io.owned_bytes()? {
-                return Err(Error::Invalid("creator content exceeds its admitted capture quota".into()));
-            }
-        }
+        drop((verifier, scope));
+        if let Some(io) = io { io.release(temporary)?; }
         let access = Arc::new(CreatedFilesystemAccess {
-            host: self.host.clone(), owner: self.issuer.audience().clone(),
+            host: self.host.clone(),
             request: request.clone(), proof: proof.clone(), origin: allocation.origin.clone(),
             generation: allocation.generation.clone(), prepared_generation: allocation.prepared_generation,
-            volume: allocation.volume.clone(), agent: allocation.agent,
             creation_operation: allocation.creation_operation, reader, writer,
         });
         let count = allocation.reference_files.len();
@@ -1436,14 +1415,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 let mut observer = io.history_io();
                 self.issuer.verifier_with_work(&mut Some(&mut observer))?
             } else { self.issuer.verifier() };
-            let verifier = FilesystemContentVerifier::new_with_io(self.host.clone(), verifier, scope, request.maximum_bytes, io)?;
-            if let Some(io) = io {
-                if verifier.logical_owned_bytes()? > io.owned_bytes()? {
-                    return Err(Error::Invalid("creator reference exceeds its admitted capture quota".into()));
-                }
-            }
+            let temporary = verifier.logical_owned_bytes()?.checked_add(scope.logical_owned_bytes()?)
+                .ok_or_else(|| bounded_io::failure(io, crate::wire::ErrorCode::Invalid, "created reader metadata overflows"))?;
+            let reader = FilesystemContentVerifier::new(self.host.clone(), &verifier, &scope, request.maximum_bytes, io)?;
+            drop((verifier, scope));
+            if let Some(io) = io { io.release(temporary)?; }
             let reader = Arc::new(CreatedFilesystemReference {
-                allocation: access.clone(), file: file.clone(), reader: verifier,
+                allocation: access.clone(), file: file.clone(), reader,
             });
             operations.push(CreatedResourceOperation::ReadFile(file.clone()));
             references.push(CreatedReferenceBinding { file, reader });
@@ -1491,14 +1469,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
 
 struct CreatedFilesystemAccess<A, O> {
     host: Arc<FilesystemHost<A, O>>,
-    owner: Authority,
     request: ResourcePreparationRequest,
     proof: ResourceCreationProofRef,
     origin: ResourceCreationOrigin,
     generation: GenerationRef,
     prepared_generation: GenerationRef,
-    volume: VolumeRef,
-    agent: crate::AgentId,
     creation_operation: acyclic_fs::OperationId,
     reader: FilesystemContentVerifier<A, O>,
     writer: FilesystemContentPublisher<A, O>,
@@ -1508,17 +1483,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     crate::resource_preparation::ScratchCreationIdentity for CreatedFilesystemAccess<A,O>
 {
     fn original_task(&self) -> crate::TaskId { crate::TaskId::from_bytes(self.origin.intended_child.into_bytes()) }
-    fn agent(&self) -> crate::AgentId { self.agent }
-    fn volume(&self) -> &VolumeRef { &self.volume }
+    fn agent(&self) -> crate::AgentId { self.reader.scope.agent().expect("created reader binds its original agent") }
+    fn volume(&self) -> &VolumeRef { self.writer.volume() }
     fn creation_operation(&self) -> acyclic_fs::OperationId { self.creation_operation }
     fn initial_generation(&self) -> &GenerationRef { &self.generation }
     fn origin(&self) -> &ResourceCreationOrigin { &self.origin }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CreatedFilesystemAccess<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CreatedFilesystemAccess<A, O> {
     fn validate_authenticated(&self, current: &AuthenticatedAllocation) -> Result<()> {
         if current.origin != self.origin || current.generation != self.generation
-            || current.prepared_generation != self.prepared_generation || current.volume != self.volume
+            || current.prepared_generation != self.prepared_generation || &current.volume != self.writer.volume()
         {
             return Err(Error::Unauthorized("original created allocation evidence changed".into()));
         }
@@ -1528,10 +1503,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CreatedFilesystemAccess<A, O> 
         self.reauthenticate(file.volume(), io).await
     }
     async fn reauthenticate(&self, volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<()> {
-        if volume != &self.volume {
+        if volume != self.writer.volume() {
             return Err(Error::Unauthorized("created content handle names another volume".into()));
         }
-        let current = authenticate(&self.host, &self.owner, &self.request, &self.proof, io).await?;
+        let current = authenticate(&self.host, self.reader.verifier.audience(), &self.request, &self.proof, io).await?;
         self.validate_authenticated(&current)
     }
 }
@@ -1543,13 +1518,13 @@ struct CreatedFilesystemReference<A, O> {
     reader: FilesystemContentVerifier<A, O>,
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CreatedFilesystemReference<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CreatedFilesystemReference<A, O> {
     async fn authenticate_file(&self, file: &FileRef, io: Option<&PreparationIo>) -> Result<()> {
         if file != &self.file {
             return Err(Error::Unauthorized("created reference handle names another immutable file".into()));
         }
         let allocation = &self.allocation;
-        let current = authenticate(&allocation.host, &allocation.owner,
+        let current = authenticate(&allocation.host, allocation.reader.verifier.audience(),
             &allocation.request, &allocation.proof, io).await?;
         allocation.validate_authenticated(&current)?;
         if !current.reference_files.contains(file) {
@@ -1587,7 +1562,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentResidencyVerifier for CreatedFilesystemAccess<A, O> {
-    created_reader!(self, file, &self.request, &self.volume);
+    created_reader!(self, file, &self.request, self.writer.volume());
     fn read_private_prefix<'a>(&'a self, volume: &'a VolumeRef, prefix: &'a str, path: &'a str, generation: &'a GenerationRef, maximum_bytes: u64) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move { self.reauthenticate(volume, None).await?; self.reader.read_private_prefix(volume, prefix, path, generation, maximum_bytes).await })
     }
@@ -1602,7 +1577,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CreatedFilesystemAccess<A, O> {
     async fn publish(&self, operation: OperationId, path: &str, bytes: &[u8], media_type: &str,
         display_name: &str, source: Option<&FileRef>, io: Option<&PreparationIo>) -> Result<FileRef> {
-        let volume = source.map_or(&self.volume, FileRef::volume);
+        let volume = source.map_or(self.writer.volume(), FileRef::volume);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             let authentication = PreparationIo::from_native_work(work)?;
@@ -1611,26 +1586,25 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CreatedFil
         #[cfg(target_arch = "wasm32")]
         self.reauthenticate(volume, io).await?;
         match source {
-            Some(source) => self.writer.stage_at_with_io(operation, source, bytes, io, None, None).await,
-            None => self.writer.stage_once_with_io(operation, path, bytes, media_type, display_name, io, None, None).await,
+            Some(source) => self.writer.replace(operation, source, bytes, io, None, None).await,
+            None => self.writer.publish_once(operation, path, bytes, media_type, display_name, io, None, None).await,
         }
     }
     async fn observe(&self, operation: OperationId, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<Option<FileRef>> {
-        self.reauthenticate(&self.volume, io).await?;
-        self.writer.observe_once_with_io(operation, maximum_bytes.min(self.request.maximum_bytes), io).await
+        self.reauthenticate(self.writer.volume(), io).await?;
+        self.writer.observe_publication(operation, maximum_bytes.min(self.request.maximum_bytes), io).await
     }
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPublisher for CreatedFilesystemAccess<A, O> {
-    fn volume(&self) -> &VolumeRef { &self.volume }
+    fn volume(&self) -> &VolumeRef { self.writer.volume() }
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_stage(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        if self.writer.volume() != &self.volume { return Err(Error::Unauthorized("created writer is not its exact bound namespace".into())); }
         self.writer.supports_native_stage(work)
     }
     fn stage<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8], media_type: &'a str,
         display_name: &'a str) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move { self.reauthenticate(&self.volume, None).await?; self.writer.stage(operation, path, bytes, media_type, display_name).await })
+        Box::pin(async move { self.reauthenticate(self.writer.volume(), None).await?; self.writer.stage(operation, path, bytes, media_type, display_name).await })
     }
     created_publisher!(self, budget, cancellation, content_io(&self.request, budget, cancellation));
 }
@@ -1644,7 +1618,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn observation_work() -> Result<acyclic_fs::NativeMaterializationWork> {
         acyclic_fs::NativeMaterializationWork::new(
-            bounded_io::budget(1_048_576, 128 * 1_048_576), &CancellationToken::new())
+            acyclic_fs::performance::work_budget(1_048_576, 128 * 1_048_576), &CancellationToken::new())
             .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })
     }
 
@@ -1711,8 +1685,6 @@ mod tests {
         let [project, scratch] = creator.bound_root_bootstrap_allocations(&work)?;
         assert_ne!(project.initial_generation, project.selected_generation);
         assert_ne!(scratch.initial_generation, scratch.selected_generation);
-        assert!(!project.writable);
-        assert!(scratch.writable);
         let admission_custody;
         let (admission, custody) = owner.original_root_admission_with_native_work(&work).await?;
         admission_custody = custody;

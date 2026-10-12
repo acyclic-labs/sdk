@@ -30,20 +30,15 @@ impl Format for AttributeFormat {
         &value.name
     }
 
-    fn decode(bytes: &[u8], limits: DecodeLimits) -> Result<Page<Self>, CanonicalDecodeError> {
-        Self::decode_with_steps(bytes, limits, &mut |_| Ok(()))
-    }
-
-    fn decode_with_steps<E: From<CanonicalDecodeError>>(
+    fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
         observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E> {
-        super::attribute::decode_attribute_page_mapped_with_steps(
-            bytes, limits, observe, Page::Leaf, Page::Internal,
-            |first, page| Child { first, page },
-            |child| &child.first,
-        )
+        Ok(match super::attribute::decode_attribute_page(bytes, limits, observe)? {
+            super::AttributePage::Leaf(values) => Page::Leaf(values),
+            super::AttributePage::Internal(children) => Page::Internal(children),
+        })
     }
 
     fn decode_shape(
@@ -53,19 +48,13 @@ impl Format for AttributeFormat {
         attribute_page_decode_shape(bytes, limits)
     }
 
-
     fn encode_with_accounting(
         page: &PageRef<'_, Self>, maximum_items: u32,
         accounting: &mut super::allocation::KernelAccounting<'_>,
     ) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
         match page {
-            PageRef::Leaf(entries) => super::attribute::encode_attribute_leaf_entries_with_accounting(
-                entries, maximum_items, accounting,
-            ),
-            PageRef::Internal(children) => super::attribute::encode_attribute_internal_children_with_accounting(
-                children.iter().map(|child| (&child.first, child.page)),
-                maximum_items, accounting,
-            ),
+            PageRef::Leaf(entries) => crate::kernel::codec::encode_owned(accounting, |observe, reserve| super::attribute::encode_attribute_leaf_entries(entries, maximum_items, observe, reserve)),
+            PageRef::Internal(children) => crate::kernel::codec::encode_owned(accounting, |observe, reserve| super::attribute::encode_attribute_internal_children(children.iter().map(|child| (&child.first, child.page)), maximum_items, observe, reserve)),
         }
     }
 
@@ -106,35 +95,21 @@ impl Format for AttributeFormat {
         Self::key_owned_bytes(&value.name)
     }
 
-    fn try_clone_key(
-        key: &Self::Key,
-        maximum_bytes: u32,
-    ) -> Result<Self::Key, CanonicalDecodeError> {
-        Self::try_clone_key_with_steps(key, maximum_bytes, &mut |_| Ok(()))
-    }
-
-    fn try_clone_key_with_steps<E: From<CanonicalDecodeError>>(
+    fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
         maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E> {
-        key.try_clone_with_steps(maximum_bytes, steps)
+        key.try_clone(maximum_bytes, steps)
     }
 
-    fn try_clone_value(
-        value: &Self::Value,
-        maximum_bytes: u32,
-    ) -> Result<Self::Value, CanonicalDecodeError> {
-        Self::try_clone_value_with_steps(value, maximum_bytes, &mut |_| Ok(()))
-    }
-
-    fn try_clone_value_with_steps<E: From<CanonicalDecodeError>>(
+    fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
         maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E> {
         Ok(AttributeEntry {
-            name: Self::try_clone_key_with_steps(&value.name, maximum_bytes, steps)?,
+            name: Self::try_clone_key(&value.name, maximum_bytes, steps)?,
             value_bytes: value.value_bytes,
             value: value.value,
         })
@@ -248,11 +223,6 @@ pub struct AttributeMutationReceipt {
 pub type AttributeMutationFailure = OperationFailure<AttributeMutationError>;
 
 /// Applies one bounded ordered attribute mutation batch.
-///
-/// # Errors
-///
-/// Rejects malformed entries and preconditions before backend access, then
-/// fails closed on semantic, routing, storage, allocation, or work failures.
 pub fn apply_attribute_mutations<S: crate::ImmediateObjectStore>(
     store: &S,
     root: ObjectId,
@@ -268,11 +238,6 @@ pub fn apply_attribute_mutations<S: crate::ImmediateObjectStore>(
 }
 
 /// Asynchronously applies the same iterative attribute path-copy machine.
-///
-/// # Errors
-///
-/// Returns the same failures as [`apply_attribute_mutations`], including
-/// cooperative cancellation at object-store boundaries.
 pub async fn apply_attribute_mutations_async<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -287,7 +252,6 @@ pub async fn apply_attribute_mutations_async<S: crate::AsyncObjectStore>(
         .await.map_err(|error| OperationFailure::new(standalone_error(error), accounting.spent()))
 }
 
-/// Uses the same path-copy engine with original native ownership when selected.
 pub(crate) async fn apply_attribute_mutations_with_accounting<S: crate::AsyncObjectStore>(
     store: &S, root: ObjectId, mutations: &[AttributeMutation], maximum_mutations: u32,
     limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,

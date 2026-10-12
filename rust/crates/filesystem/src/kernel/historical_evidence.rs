@@ -19,7 +19,6 @@ const DOMAIN: &[u8] = b"acyclic-fs-original-generation-record-v1\0";
 const PUBLICATION_DOMAIN: &[u8] = b"acyclic-fs-generation-publication-evidence-v1\0";
 
 /// Bytes and SHA256 supplied by a provider's protected original custody.
-/// This is not a journal, retained-root claim, accepted outcome, or GC permission.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoricalGenerationEvidence {
     /// The exact original pre-CAS canonical preparation bytes.
@@ -48,10 +47,6 @@ pub struct HistoricalGenerationProjection {
 }
 
 /// Encodes original initial-volume or retention preparation before authority admission.
-/// The provider must atomically preserve these bytes in its existing custody while
-/// the original closure hold is live. Ordinary generation publications use
-/// `encode_generation_publication_evidence`, preserving their full original request.
-/// A successful encode does not establish custody or final authority acceptance.
 pub fn encode_original_generation_evidence(
     proof: &GenerationProof,
     append: &GuardedAppend,
@@ -87,9 +82,7 @@ pub fn encode_original_generation_evidence(
     encode_projection(&projection, maximum_bytes)
 }
 
-/// Decodes protected original metadata and binds it to this exact authoritative
-/// record. A later current head cannot substitute for the original settlement.
-/// Missing protected custody is a provider capability gap, not a fresh-proof grant.
+/// Decodes protected original metadata and binds it to this exact authoritative record.
 pub fn decode_historical_generation_evidence(
     evidence: &HistoricalGenerationEvidence,
     authority_id: AuthorityId,
@@ -114,27 +107,24 @@ pub fn decode_historical_generation_evidence(
         if <[u8; 32]>::from(Sha256::digest(&evidence.bytes)) != evidence.sha256 {
             return Err(PublicationEvidenceError::Mismatch);
         }
-        let mut decoder = Decoder::new(&evidence.bytes, DOMAIN, 1, maximum_bytes)?;
-        let authority_id = AuthorityId::from_bytes(decoder.fixed()?);
-        let epoch = Epoch::new(decoder.u64()?).map_err(|_| PublicationEvidenceError::Mismatch)?;
+        let mut decoder = Decoder::new(&evidence.bytes, DOMAIN, 1, maximum_bytes, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+        let authority_id = AuthorityId::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
+        let epoch = Epoch::new(decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?).map_err(|_| PublicationEvidenceError::Mismatch)?;
         let expected = Head {
-            epoch: Epoch::new(decoder.u64()?).map_err(|_| PublicationEvidenceError::Mismatch)?,
-            sequence: Sequence::new(decoder.u64()?),
-            digest: Digest::from_bytes(decoder.fixed()?),
+            epoch: Epoch::new(decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?).map_err(|_| PublicationEvidenceError::Mismatch)?,
+            sequence: Sequence::new(decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
+            digest: Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
         };
-        let operation_id = OperationId::from_bytes(decoder.fixed()?);
-        let fingerprint = Digest::from_bytes(decoder.fixed()?);
-        let logical_file_bytes = u128::from_le_bytes(decoder.fixed()?);
+        let operation_id = OperationId::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
+        let fingerprint = Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
+        let logical_file_bytes = u128::from_le_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
         let field_bound = u32::try_from(maximum_bytes).unwrap_or(u32::MAX);
         let manifest = decode_generation_export_manifest(
-            decoder.bounded_slice(field_bound)?, maximum_bytes, maximum_objects,
+            decoder.bounded_slice(field_bound, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, maximum_bytes, maximum_objects,
         )?;
-        let root = decode_generation_root(
-            decoder.bounded_slice(field_bound)?,
-            DecodeLimits { maximum_object_bytes: maximum_bytes, ..DecodeLimits::default() },
-        )?;
-        let payload = Bytes::copy_from_slice(decoder.bounded_slice(field_bound)?);
-        let permit = decode_publication_permit(decoder.bounded_slice(field_bound)?, maximum_bytes)?;
+        let root = decode_generation_root(decoder.bounded_slice(field_bound, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, DecodeLimits { maximum_object_bytes: maximum_bytes, ..DecodeLimits::default() }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+        let payload = Bytes::copy_from_slice(decoder.bounded_slice(field_bound, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
+        let permit = decode_publication_permit(decoder.bounded_slice(field_bound, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, maximum_bytes)?;
         decoder.finish()?;
         let projection = HistoricalGenerationProjection {
             append: GuardedAppend {
@@ -180,7 +170,7 @@ fn validate_projection(
         return Err(PublicationEvidenceError::Mismatch);
     }
     let append = &value.append;
-    let valid = if let Ok(created) = decode_volume_created(&append.commit.payload, maximum_bytes) {
+    let valid = if let Ok(created) = decode_volume_created(&append.commit.payload, maximum_bytes, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(())) {
         append.authority_id == volume_authority_id(created.volume_id)
             && append.expected.sequence == Sequence::GENESIS
             && append.expected.digest == Digest::ZERO
@@ -204,7 +194,7 @@ fn encode_projection(
     maximum_bytes: u64,
 ) -> Result<HistoricalGenerationEvidence, PublicationEvidenceError> {
     let manifest = encode_generation_export_manifest(&value.manifest)?;
-    let root = encode_generation_root(&value.root)?;
+    let root = encode_generation_root(&value.root, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let permit = encode_publication_permit(value.append.permit);
     let capacity = [DOMAIN.len(), 2, 16, 8, 8, 8, 32, 16, 32, 16,
         4, manifest.len(), 4, root.len(), 4, value.append.commit.payload.len(), 4, permit.len()]
@@ -213,7 +203,7 @@ fn encode_projection(
     if maximum_bytes == 0 || u64::try_from(capacity).unwrap_or(u64::MAX) > maximum_bytes {
         return Err(PublicationEvidenceError::TooLarge);
     }
-    let mut encoder = Encoder::with_exact_capacity(DOMAIN, 1, capacity)?;
+    let mut encoder = Encoder::with_exact_capacity(DOMAIN, 1, capacity, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let append = &value.append;
     encoder.fixed(&append.authority_id.into_bytes());
     encoder.u64(append.epoch.get());

@@ -7,7 +7,7 @@ use crate::{
     conversation::{VolumeClass, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityIssuer},
     filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
-    model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
     runtime::ContentBindings,
 };
@@ -40,7 +40,7 @@ impl ModelProvider for CountedModel {
             Ok(ModelEvent::Completed { metadata: serde_json::Value::Null }),
         ]))
     }
-    fn reconcile<'a>(&'a self, _: ModelAttempt)
+    fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent])
         -> acyclic_stream::BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>>
     {
         Box::pin(async { Err(Error::Unsupported("all fixture attempts settle".into())) })
@@ -73,9 +73,9 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
         capability::CONVERSATION_SELECT_CONTEXT.to_owned(), "model:generate".to_owned(),
         read.clone(), write.clone(),
     ]));
-    let stream = StreamClient::new(Arc::new(acyclic_stream::LocalStream::open(
+    let stream = Arc::new(acyclic_stream::LocalStream::open(
         root.join("stream"), Default::default()).await
-        .map_err(|error| Error::Storage(error.to_string()))?));
+        .map_err(|error| Error::Storage(error.to_string()))?);
     if initialize {
         let mut aggregate = StreamAggregate::open(&stream, authority, issuer.verifier(), SchemaRegistry::new()).await?;
         aggregate.execute(Command {

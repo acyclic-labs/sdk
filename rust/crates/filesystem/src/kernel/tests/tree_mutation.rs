@@ -1,11 +1,12 @@
 use crate::kernel::decode_tree_page;
 use super::*;
-use crate::kernel::{FileKind, NameEncoding, TreeChild, TreePage, encode_tree_page, tree_page_id};
+use crate::kernel::{FileKind, NameEncoding, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectStore;
 use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
 
+use crate::kernel::Child;
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_mutation_refuses_index_copy_before_allocating_or_reading()
@@ -54,7 +55,7 @@ fn original_mutation_write_denial_preserves_paid_orphan_prefix()
     assert_eq!(work.receipt().page_writes, 1);
     assert_eq!(work.receipt().backend_write_operations, 1);
     assert!(store.read(first_page, u64::MAX, WorkBudget::UNBOUNDED).is_ok());
-    let first_page_bytes = encode_tree_page(&TreePage::Leaf(vec![entry("a", 1, FileKind::Fifo)?]), 8)?;
+    let first_page_bytes = encode_tree_page(&TreePage::Leaf(vec![entry("a", 1, FileKind::Fifo)?]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(work.receipt().bytes_encoded, first_page_bytes.len() as u64);
     drop(accounting);
     drop(store);
@@ -85,7 +86,7 @@ fn put(
     let id = tree_page_id(page, maximum_items)?;
     store.put(
         id,
-        OwnedBytes::from(encode_tree_page(page, maximum_items)?),
+        OwnedBytes::from(encode_tree_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -117,16 +118,16 @@ fn three_leaf_tree(
     let root = put(
         store,
         &TreePage::Internal(vec![
-            TreeChild {
-                first_name: name("a")?,
+            Child {
+                first: name("a")?,
                 page: leaves[0],
             },
-            TreeChild {
-                first_name: name("m")?,
+            Child {
+                first: name("m")?,
                 page: leaves[1],
             },
-            TreeChild {
-                first_name: name("x")?,
+            Child {
+                first: name("x")?,
                 page: leaves[2],
             },
         ]),
@@ -161,7 +162,7 @@ fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn std::
     let root_bytes = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
-    let TreePage::Internal(children) = decode_tree_page(&root_bytes, DecodeLimits::default())?
+    let TreePage::Internal(children) = decode_tree_page(&root_bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("candidate root is not internal".into());
     };
@@ -222,7 +223,7 @@ fn overflowing_leaf_splits_and_builds_one_new_root() -> Result<(), Box<dyn std::
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     assert!(matches!(
-        decode_tree_page(&bytes, limits)?,
+        decode_tree_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         TreePage::Internal(children) if children.len() == 2
     ));
     Ok(())
@@ -550,8 +551,8 @@ fn build_tree(
         for chunk in level.chunks(width) {
             let children = chunk
                 .iter()
-                .map(|(first_name, page)| TreeChild {
-                    first_name: first_name.clone(),
+                .map(|(first, page)| Child {
+                    first: first.clone(),
                     page: *page,
                 })
                 .collect();
@@ -570,7 +571,7 @@ fn flatten_tree(
     root: ObjectId,
 ) -> Result<Vec<TreeEntry>, Box<dyn std::error::Error>> {
     let bytes = store.read(root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
-    Ok(match decode_tree_page(&bytes, DecodeLimits::default())? {
+    Ok(match decode_tree_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
         TreePage::Leaf(entries) => entries,
         TreePage::Internal(children) => {
             let mut entries = Vec::new();

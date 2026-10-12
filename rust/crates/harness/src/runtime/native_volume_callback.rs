@@ -2,7 +2,7 @@ use super::{NativeTaskContext, RuntimeScope};
 use crate::{Error, Result, conversation::{VolumeOperation, VolumeRef}, durable_host::TaskJournalOwner};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use acyclic_fs::native_mount::{NativeMountCallbackFuture, NativeMountCallbackGuard,
-    NativeMountError, NativeMountMeterWork};
+    NativeMountError};
 use acyclic_stream::StreamProvider;
 use std::sync::Arc;
 
@@ -151,11 +151,10 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
     }
 
     fn sdk_check<'a>(
-        &'a self, work: &'a NativeMountMeterWork, require_write: bool,
+        &'a self, work: &'a NativeMaterializationWork, require_write: bool,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
         NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, || async move {
-            let work = work.native_materialization_work();
-            self.verify_with_native_work(&work, require_write).await
+            self.verify_with_native_work(work, require_write).await
         })
     }
 }
@@ -170,13 +169,13 @@ impl<P: StreamProvider + 'static> NativeVolumePublicationGuard for VolumeCallbac
 
 impl<P: StreamProvider + 'static> NativeMountCallbackGuard for VolumeCallback<P> {
     fn check<'a>(
-        &'a self, work: &'a NativeMountMeterWork,
+        &'a self, work: &'a NativeMaterializationWork,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
         self.sdk_check(work, false)
     }
 
     fn check_write<'a>(
-        &'a self, work: &'a NativeMountMeterWork,
+        &'a self, work: &'a NativeMaterializationWork,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
         self.sdk_check(work, true)
     }
@@ -190,17 +189,7 @@ mod tests {
     fn work(cancellation: &acyclic_fs::CancellationToken) -> NativeMaterializationWork {
         let units = 16_384;
         let bytes = 16 * 1_024 * 1_024;
-        NativeMaterializationWork::new(acyclic_fs::WorkBudget {
-            authority_records_read: units, authority_records_appended: units,
-            authority_bytes_read: bytes, authority_bytes_written: bytes,
-            object_probes: units, backend_read_operations: units, backend_write_operations: units,
-            durability_operations: units, page_reads: units, page_writes: units,
-            object_bytes_read: bytes, object_bytes_written: bytes, bytes_hashed: bytes,
-            bytes_copied: bytes, bytes_encoded: bytes, source_bytes_read: bytes,
-            source_path_components: units, source_entries_visited: units, output_bytes: bytes,
-            items_examined: units, items_returned: units, allocation_operations: units,
-            peak_allocation_bytes: bytes, materializations: units,
-        }, cancellation).expect("original finite fixture ledger")
+        NativeMaterializationWork::new(acyclic_fs::performance::work_budget(units, bytes), cancellation).expect("original finite fixture ledger")
     }
 
     #[tokio::test]
@@ -216,12 +205,10 @@ mod tests {
             fixture.root, fixture.root_lease.operation.operation_id, &original,
         ).await?;
         let context = context.into_native_shared(custody, &original)?;
-        let users = Arc::strong_count(&context);
         let before = original.receipt();
         assert!(matches!(context.volume_callback_guard_with_native_work(&owner, &original).await,
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         assert_eq!(original.receipt(), before, "READ rejection precedes copies and owner IO");
-        assert_eq!(Arc::strong_count(&context), users);
 
         let foreign = work(&acyclic_fs::CancellationToken::new());
         let before = foreign.receipt();

@@ -160,11 +160,7 @@ test("parent publication reconciles one exact child after a lost acknowledgement
   const seed = contracts.forkSeed(prepared);
   let publications = 0;
   let committed: ForkSeed | null = null;
-  const preparer = {
-    parentSnapshot: () => ({ parent: prepared.request.parent, revision: prepared.request.parent_revision }),
-    prepare: async () => prepared,
-    reconcile: async () => prepared,
-  };
+  const snapshot = { parent: prepared.request.parent, revision: prepared.request.parent_revision };
   const publisher = {
     parent: () => prepared.request.parent,
     async spawnFromReport(_report: ForkReport): Promise<ForkSeed> {
@@ -177,13 +173,11 @@ test("parent publication reconciles one exact child after a lost acknowledgement
       return committed;
     },
   };
-  const runtime = await Harness.builder(contracts).forkPreparer(preparer).forkPublisher(publisher)
+  const runtime = await Harness.builder(contracts).parentSnapshot(snapshot).forkPublisher(publisher)
     .grant("fork:publish").build();
   await expect(runtime.spawnFromReport(prepared)).rejects.toThrow("acknowledgement lost");
   expect(await runtime.reconcileSpawn(prepared)).toEqual(seed);
-  const advanced = await Harness.builder(contracts).forkPreparer({ ...preparer,
-    parentSnapshot: () => ({ parent: prepared.request.parent, revision: prepared.request.parent_revision + 1n }),
-  }).forkPublisher(publisher).grant("fork:publish").build();
+  const advanced = await Harness.builder(contracts).parentSnapshot({ ...snapshot, parent: prepared.request.parent, revision: prepared.request.parent_revision + 1n }).forkPublisher(publisher).grant("fork:publish").build();
   expect(await advanced.reconcileSpawn(prepared)).toEqual(seed);
   expect(publications).toBe(1);
   const narrowed = await runtime.scoped(ExecutionScope.create().onlyGrants("fork:publish"));
@@ -191,10 +185,10 @@ test("parent publication reconciles one exact child after a lost acknowledgement
   await expect(narrowed.reconcileSpawn(prepared)).rejects.toThrow("not bound");
   await expect(runtime.spawnFromReport({ ...prepared, request: { ...prepared.request,
     parent: { kind: "conversation", id: "wrong-parent" } } })).rejects.toThrow();
-  await expect(Harness.builder(contracts).forkPreparer(preparer).forkPublisher({ ...publisher,
+  await expect(Harness.builder(contracts).parentSnapshot(snapshot).forkPublisher({ ...publisher,
     parent: () => ({ kind: "conversation" as const, id: "wrong-parent" }) }).grant("fork:publish").build())
     .rejects.toThrow("another parent");
-  const mismatched = await Harness.builder(contracts).forkPreparer(preparer).forkPublisher({ ...publisher,
+  const mismatched = await Harness.builder(contracts).parentSnapshot(snapshot).forkPublisher({ ...publisher,
     spawnFromReport: async () => ({ ...seed, child: { kind: "conversation" as const, id: "different-child" } }),
   }).grant("fork:publish").build();
   await expect(mismatched.spawnFromReport(prepared)).rejects.toThrow("another child seed");

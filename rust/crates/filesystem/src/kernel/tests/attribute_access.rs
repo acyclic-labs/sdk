@@ -6,6 +6,7 @@ use crate::storage::{ObjectStore, object_digest};
 use crate::test_support::OwnedReadObjectStore;
 use acyclic_stream::OwnedBytes;
 
+use crate::kernel::Child;
 fn name(byte: u8) -> Result<AttributeName, Box<dyn std::error::Error>> {
     Ok(AttributeName::new(
         AttributeClass::PosixXattr,
@@ -33,7 +34,7 @@ fn put(
     ObjectStore::put(
         store,
         id,
-        OwnedBytes::from(encode_attribute_page(page, 8)?),
+        OwnedBytes::from(encode_attribute_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -45,12 +46,12 @@ fn two_level_tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::er
     put(
         store,
         &AttributePage::Internal(vec![
-            AttributeChild {
-                first_name: name(1)?,
+            Child {
+                first: name(1)?,
                 page: first,
             },
-            AttributeChild {
-                first_name: name(3)?,
+            Child {
+                first: name(3)?,
                 page: second,
             },
         ]),
@@ -261,8 +262,8 @@ fn cancellation_and_forged_bounds_fail_before_unsafe_progress()
     let leaf = put(&store, &AttributePage::Leaf(vec![entry(1)?]))?;
     let forged = put(
         &store,
-        &AttributePage::Internal(vec![AttributeChild {
-            first_name: name(2)?,
+        &AttributePage::Internal(vec![Child {
+            first: name(2)?,
             page: leaf,
         }]),
     )?;
@@ -406,16 +407,16 @@ fn inherited_attribute_upper_bounds_reject_forged_leaf_contents()
     let root = put(
         &store,
         &AttributePage::Internal(vec![
-            AttributeChild {
-                first_name: name(1)?,
+            Child {
+                first: name(1)?,
                 page: first,
             },
-            AttributeChild {
-                first_name: name(3)?,
+            Child {
+                first: name(3)?,
                 page: forged_middle,
             },
-            AttributeChild {
-                first_name: name(5)?,
+            Child {
+                first: name(5)?,
                 page: last,
             },
         ]),

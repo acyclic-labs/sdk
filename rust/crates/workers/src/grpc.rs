@@ -4,25 +4,12 @@ use crate::wire;
 use prost::Message;
 use std::sync::Arc;
 use tonic::{
-    Request, Status,
-    metadata::{Ascii, MetadataValue},
-    service::Interceptor,
+    Status,
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
 };
 use tracing::field::Empty;
 
-/// Bearer metadata applied to every generated RPC.
-#[derive(Clone)]
-pub struct BearerAuth(MetadataValue<Ascii>);
-
-impl Interceptor for BearerAuth {
-    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
-        request
-            .metadata_mut()
-            .insert("authorization", self.0.clone());
-        Ok(request)
-    }
-}
+pub use crate::BearerAuth;
 
 /// Generated client with account authentication on every request.
 pub type Client = wire::workers_service_client::WorkersServiceClient<
@@ -30,60 +17,50 @@ pub type Client = wire::workers_service_client::WorkersServiceClient<
 >;
 
 /// Shared transport-status channel retaining the originating trace context.
-pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel, CallSpan>;
+pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel>;
 
 /// Statically named workers RPC span factory.
-#[derive(Clone, Debug)]
-pub struct CallSpan;
-
-impl acyclic_grpc_observability::CallSpan for CallSpan {
-    fn span(rpc: Option<&str>) -> tracing::Span {
-        tracing::trace_span!(
-            "acyclic.workers.grpc.transport",
-            rpc,
-            rpc.code = Empty,
-            outcome = Empty,
-            outcome.scope = "grpc_transport",
-            error.kind = Empty
-        )
-    }
+pub(crate) fn transport_span(rpc: Option<&str>) -> tracing::Span {
+    tracing::trace_span!(
+        "acyclic.workers.grpc.transport",
+        rpc,
+        rpc.code = Empty,
+        outcome = Empty,
+        outcome.scope = "grpc_transport",
+        error.kind = Empty
+    )
 }
+
 /// Client configuration error.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
     /// Endpoint must use authenticated TLS.
-    #[error("Workers endpoints must use https")]
+    #[error("endpoint must use https")]
     InsecureEndpoint,
     /// Credential must be valid nonempty HTTP metadata.
-    #[error("invalid Workers bearer credential")]
+    #[error("invalid bearer credential")]
     InvalidCredential,
     /// Private CA must contain between one byte and 64 KiB.
-    #[error("invalid Workers private CA")]
+    #[error("invalid private CA")]
     InvalidCaCertificate,
     /// The platform certificate verifier could not be initialized.
-    #[error("Workers platform certificate verifier: {0}")]
+    #[error("platform certificate verifier: {0}")]
     PlatformVerifier(#[source] rustls::Error),
     /// URI or TLS connection failed.
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
 }
 
-/// Connect trusting the operating system's roots with account-bound bearer metadata.
-pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError> {
-    connect_with_ca_certificate(endpoint, token, None).await
-}
-
-/// Connect trusting exactly `ca` when supplied, otherwise the platform's roots.
-pub async fn connect_with_ca_certificate(
-    endpoint: &str,
-    token: &str,
-    ca: Option<&[u8]>,
-) -> Result<Client, ConnectError> {
+/// Connects a bounded TLS channel with sensitive bearer metadata.
+#[doc(hidden)]
+pub async fn connect_channel(
+    endpoint: &str, token: &str, ca: Option<&[u8]>,
+) -> Result<(Channel, BearerAuth), ConnectError> {
     if !crate::client_config::valid_endpoint(endpoint) {
         return Err(ConnectError::InsecureEndpoint);
     }
     let authorization =
-        crate::client_config::authorization(token).map_err(|()| ConnectError::InvalidCredential)?;
+        BearerAuth::new(token).map_err(|()| ConnectError::InvalidCredential)?;
     let configured = Endpoint::from_shared(endpoint.to_owned())?
         .http2_max_header_list_size(tonic_web_wasm_client::limits::HEADER_LIST_BYTES);
     let configured = match ca {
@@ -101,12 +78,26 @@ pub async fn connect_with_ca_certificate(
             configured.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
         }
     };
-    let channel = configured.connect().await?;
+    Ok((configured.connect().await?, authorization))
+}
+
+/// Connect trusting the operating system's roots with account-bound bearer metadata.
+pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError> {
+    connect_with_ca_certificate(endpoint, token, None).await
+}
+
+/// Connect trusting exactly `ca` when supplied, otherwise the platform's roots.
+pub async fn connect_with_ca_certificate(
+    endpoint: &str,
+    token: &str,
+    ca: Option<&[u8]>,
+) -> Result<Client, ConnectError> {
+    let (channel, authorization) = connect_channel(endpoint, token, ca).await?;
     Ok(
         wire::workers_service_client::WorkersServiceClient::with_origin(
             tonic::service::interceptor::InterceptedService::new(
-                TracedChannel::new(channel),
-                BearerAuth(authorization),
+                TracedChannel::new(channel, transport_span),
+                authorization,
             ),
             endpoint
                 .trim_end_matches('/')

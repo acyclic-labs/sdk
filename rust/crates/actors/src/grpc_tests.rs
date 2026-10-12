@@ -97,8 +97,6 @@ async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
         let _guard = tracing::subscriber::set_default(
             tracing_subscriber::registry().with(Capture(log.clone())),
         );
-        // Valid gRPC frame envelope, invalid protobuf payload; the other
-        // case has no unary response message despite transport status OK.
         let body = if case == 0 {
             Body::empty()
         } else {
@@ -123,7 +121,7 @@ async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
             Body::new(Data(frames))
         };
         let transport =
-            acyclic_grpc_observability::TracedChannel::<_, CallSpan>::new(Transport(Some(body)));
+            acyclic_grpc_observability::TracedChannel::new(Transport(Some(body)), transport_span);
         let mut client = wire::actors_service_client::ActorsServiceClient::new(transport);
         let result = client
             .inspect_actor(wire::InspectActorRequest::default())

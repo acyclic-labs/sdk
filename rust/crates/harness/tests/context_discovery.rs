@@ -85,13 +85,7 @@ impl acyclic_harness::model::ModelProvider for CapturingModel {
         )]))
     }
 
-    fn reconcile<'a>(
-        &'a self,
-        _: acyclic_harness::model::ModelAttempt,
-    ) -> futures::future::BoxFuture<'a, Result<Option<Vec<acyclic_harness::model::ModelEvent>>>>
-    {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 struct Fixture {
@@ -125,7 +119,7 @@ impl Fixture {
 
     fn journal(
         &self,
-        stream: acyclic_stream::StreamClient<acyclic_stream::MemoryStream>,
+        stream: std::sync::Arc<acyclic_stream::MemoryStream>,
         private: VolumeRef,
         scope: acyclic_harness::core::Scope,
     ) -> Result<TestJournal> {
@@ -295,7 +289,7 @@ async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result
         Arc::new(live.stage(ContextPlacement::Prepend)?)
             as Arc<dyn acyclic_harness::context::ContextStage>,
     ]))?;
-    assert_ne!(old.contracts(), new.contracts());
+    assert_ne!(old.contracts(None)?, new.contracts(None)?);
     let input = ContextInput {
         input: ModelContent::Text("inspect".into()),
         selected_context: None,
@@ -541,7 +535,7 @@ async fn named_sources_with_wrong_file_kind_fail_explicitly() -> Result<()> {
 #[tokio::test]
 async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
     use acyclic_harness::{OperationId, executor::TurnInput};
-    use acyclic_stream::{MemoryStream, StreamClient};
+    use acyclic_stream::{MemoryStream};
     let fixture = Fixture::new().await?;
     fixture
         .put("AGENTS.md", b"original instructions", "root")
@@ -559,7 +553,7 @@ async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
     let declaration = fixture.declaration();
     let snapshot = declaration.capture(fixture.reader.as_ref()).await?;
     let (private, scope) = fixture.journal_volume().await?;
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let journal = fixture.journal(stream.clone(), private.clone(), scope.clone())?;
     let provider = Arc::new(CapturingModel::default());
     let original_executor = executor(snapshot.clone(), provider.clone())?;

@@ -26,20 +26,15 @@ impl Format for TreeFormat {
         &value.name
     }
 
-    fn decode(bytes: &[u8], limits: DecodeLimits) -> Result<Page<Self>, CanonicalDecodeError> {
-        Self::decode_with_steps(bytes, limits, &mut |_| Ok(()))
-    }
-
-    fn decode_with_steps<E: From<CanonicalDecodeError>>(
+    fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
         observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E> {
-        super::tree::decode_tree_page_mapped_with_steps(
-            bytes, limits, observe, Page::Leaf, Page::Internal,
-            |first, page| Child { first, page },
-            |child| &child.first,
-        )
+        Ok(match super::tree::decode_tree_page(bytes, limits, observe)? {
+            super::TreePage::Leaf(values) => Page::Leaf(values),
+            super::TreePage::Internal(children) => Page::Internal(children),
+        })
     }
 
     fn decode_shape(
@@ -49,19 +44,13 @@ impl Format for TreeFormat {
         tree_page_decode_shape(bytes, limits)
     }
 
-
     fn encode_with_accounting(
         page: &PageRef<'_, Self>, maximum_items: u32,
         accounting: &mut super::allocation::KernelAccounting<'_>,
     ) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
         match page {
-            PageRef::Leaf(entries) => super::tree::encode_tree_leaf_entries_with_accounting(
-                entries, maximum_items, accounting, None, None,
-            ),
-            PageRef::Internal(children) => super::tree::encode_tree_internal_children_with_accounting(
-                children.iter().map(|child| (&child.first, child.page)),
-                maximum_items, accounting,
-            ),
+            PageRef::Leaf(entries) => crate::kernel::codec::encode_owned(accounting, |observe, _reserve| super::tree::encode_tree_leaf_entries(entries, maximum_items, None, None, observe, crate::FsError::EncodedAllocationFailed)),
+            PageRef::Internal(children) => crate::kernel::codec::encode_owned(accounting, |observe, _reserve| super::tree::encode_tree_internal_children(children.iter().map(|child| (&child.first, child.page)), maximum_items, observe, crate::FsError::EncodedAllocationFailed)),
         }
     }
 
@@ -128,35 +117,21 @@ impl Format for TreeFormat {
         Self::key_owned_bytes(&value.name)
     }
 
-    fn try_clone_key(
-        key: &Self::Key,
-        maximum_bytes: u32,
-    ) -> Result<Self::Key, CanonicalDecodeError> {
-        Self::try_clone_key_with_steps(key, maximum_bytes, &mut |_| Ok(()))
-    }
-
-    fn try_clone_key_with_steps<E: From<CanonicalDecodeError>>(
+    fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
         maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E> {
-        key.try_clone_with_steps(maximum_bytes, steps)
+        key.try_clone(maximum_bytes, steps)
     }
 
-    fn try_clone_value(
-        value: &Self::Value,
-        maximum_bytes: u32,
-    ) -> Result<Self::Value, CanonicalDecodeError> {
-        Self::try_clone_value_with_steps(value, maximum_bytes, &mut |_| Ok(()))
-    }
-
-    fn try_clone_value_with_steps<E: From<CanonicalDecodeError>>(
+    fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
         maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E> {
         Ok(TreeEntry {
-            name: Self::try_clone_key_with_steps(&value.name, maximum_bytes, steps)?,
+            name: Self::try_clone_key(&value.name, maximum_bytes, steps)?,
             file_id: value.file_id,
             kind: value.kind,
         })
@@ -234,16 +209,6 @@ pub struct TreeMutationReceipt {
 pub type TreeMutationFailure = OperationFailure<TreeMutationError>;
 
 /// Applies one ordered mutation batch by path-copying only intersecting pages.
-///
-/// Mutations are stably grouped by name, preserving order for repeated names.
-/// One touched page and each shared ancestor are rewritten at most once.
-/// Untouched child identities are copied verbatim. A failure returns no root;
-/// already-written immutable objects are harmless orphans.
-///
-/// # Errors
-///
-/// Rejects empty/excessive batches, invalid page bounds, failed preconditions,
-/// malformed/cyclic trees, storage errors, or unadmitted work.
 pub fn apply_tree_mutations<S: crate::ImmediateObjectStore>(
     store: &S,
     root: ObjectId,
@@ -259,14 +224,6 @@ pub fn apply_tree_mutations<S: crate::ImmediateObjectStore>(
 }
 
 /// Asynchronously applies one ordered sparse directory mutation batch.
-///
-/// Native and browser execution drive the same iterative path-copy machine;
-/// only immutable-object suspension differs.
-///
-/// # Errors
-///
-/// Returns the same semantic, validation, storage, cancellation, and work
-/// failures as [`apply_tree_mutations`].
 pub async fn apply_tree_mutations_async<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -281,7 +238,6 @@ pub async fn apply_tree_mutations_async<S: crate::AsyncObjectStore>(
         .await.map_err(|error| OperationFailure::new(project_tree_error(error), accounting.spent()))
 }
 
-/// Borrows caller-owned mutation storage and uses the original invocation AL.
 pub(crate) async fn apply_tree_mutations_with_accounting<S: crate::AsyncObjectStore>(
     store: &S, root: ObjectId, mutations: &[TreeMutation], maximum_mutations: u32,
     limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,

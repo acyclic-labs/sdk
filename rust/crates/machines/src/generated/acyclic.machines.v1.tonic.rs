@@ -61,9 +61,6 @@ pub mod machines_service_client {
             MachinesServiceClient::new(InterceptedService::new(inner, interceptor))
         }
         /// Compress requests with the given encoding.
-        ///
-        /// This requires the server to support it otherwise it might respond with an
-        /// error.
         #[must_use]
         pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
             self.inner = self.inner.send_compressed(encoding);
@@ -76,16 +73,12 @@ pub mod machines_service_client {
             self
         }
         /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
         #[must_use]
         pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.inner = self.inner.max_decoding_message_size(limit);
             self
         }
         /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
         #[must_use]
         pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.inner = self.inner.max_encoding_message_size(limit);
@@ -795,16 +788,12 @@ pub mod machines_service_server {
             self
         }
         /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
         #[must_use]
         pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
         /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
         #[must_use]
         pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
