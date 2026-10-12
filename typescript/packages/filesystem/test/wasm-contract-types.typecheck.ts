@@ -1,26 +1,5 @@
-import type {
-  WasmRawChangeSet,
-  WasmRawCheckout,
-  WasmRawFs,
-  WasmRawGeneration,
-  WasmRawJoinPlan,
-  WasmRawResolvedFile,
-  WasmRawResolvedFiles,
-  WasmRawSpeculation,
-  WasmRawTransaction,
-  WasmRawVolume,
-  WasmRawWorkspace,
-  VolumeLimits,
-  VolumeOptions,
-  CheckoutOptions,
-  JoinOptions,
-  WorkspaceCommit,
-  TreeEntrySnapshot,
-  FileRecordSnapshot,
-  WasmBindings,
-  TransactionConflict,
-  TransactionRebaseResult,
-} from "../src/contracts.js";
+import type { VolumeLimits, VolumeOptions, CheckoutOptions, JoinOptions, WorkspaceCommit, TreeEntrySnapshot, FileRecordSnapshot, TransactionConflict, TransactionRebaseResult } from "../src/contracts.js";
+import type { WasmRawChangeSet, WasmRawCheckout, WasmRawFs, WasmRawGeneration, WasmRawJoinPlan, WasmRawResolvedFile, WasmRawResolvedFiles, WasmRawSpeculation, WasmRawTransaction, WasmRawVolume, WasmRawWorkspace, WasmBindings } from "../src/binding-types.js";
 import type * as GeneratedWasm from "../generated/wasm/acyclic_fs_wasm.js";
 
 declare const generatedTransaction: GeneratedWasm.BrowserTransaction;
