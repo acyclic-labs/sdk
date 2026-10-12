@@ -6,13 +6,13 @@ use crate::contract::capability;
 use crate::{
     Admission, BatchId, Capabilities, EffectId, Error, GroupId, InteractionId, OperationId,
     Outcome, Result, TaskId,
-    context::{Context, ContextInput, ContextPipeline},
+    context::ContextPipeline,
     conversation::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, MAX_PRIVATE_DIRECTORY_PAGE,
-        PrivateDirectoryPage, VolumeClass, VolumeOperation, VolumeRef, verified_content_bytes,
+        PrivateDirectoryPage, VolumeOperation, VolumeRef, verified_content_bytes,
     },
     core::{ExtensionAdmission, OriginalExtensionBinding, Reducer, SchemaRegistry, Scope},
-    durable_tool::{ResumableToolRegistry, ResumableToolSession},
+    durable_tool::ResumableToolRegistry,
     executor::ModelEventAdmission,
     extension::{ExtensionLeases, ExtensionRuntime},
     interaction::{
@@ -218,50 +218,6 @@ impl<I, O> TaskDefinition<I, O> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         { self.native_definition_source = None; }
         Ok(self)
-    }
-
-    /// Adds a borrowed requirement before native registration, preserving the actual constructor custody rather than adopting an ordinary builder.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn requires_with_native_work(
-        self, requirement: &str, metadata_custody: acyclic_fs::NativeAllocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let mut input = (self, metadata_custody);
-        let source = input.0.native_definition_source.as_ref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task requirement builder has no native constructor receipt",
-        })?;
-        if input.0.native_schema_custody.is_none()
-            || input.0.native_metadata_custody.is_some()
-            || !source.work.shares_ledger(work)
-            || !input.1.work().shares_ledger(work)
-            || input.1.bytes() < source.bytes
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "task requirement custody differs from its original constructor",
-            });
-        }
-        match &input.0.implementation {
-            TaskImplementation::Resumable(machine) => {
-                machine.identity_with_native_work(work)?;
-            }
-            TaskImplementation::Live(_) => return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "live task has no native requirement builder",
-            }),
-        }
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let result = input.0.requires_with_io(std::borrow::Cow::Borrowed(requirement), Some(&io));
-        let retained = result.as_ref().copied().unwrap_or(0);
-        let (_, mut additional) = crate::workflow::finish_native_io(result, io, retained)?;
-        input.1.absorb(&mut additional).map_err(|cause| Error::NativeWork {
-            cause, custody: Some(additional),
-        })?;
-        if let Some(source) = input.0.native_definition_source.as_mut() {
-            source.bytes = input.1.bytes();
-        }
-        Ok(input)
     }
 
     fn requires_with_io(
@@ -990,19 +946,6 @@ fn task_definition_digest_with_io(
     }, io)
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn clone_child_schema_with_work(
-    schema: &Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<Value> {
-    if work.as_deref().and_then(|io| io.original_native_work()).is_none() {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "registered schema copy requires its original native ledger" });
-    }
-    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-    let copied = crate::core::copy_value(schema, &mut quota)?;
-    quota.transfer();
-    Ok(copied)
-}
 
 pub(crate) fn scope_metadata_boundary(
     work: &Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1606,18 +1549,7 @@ impl TaskRegistry {
         parent: TaskId,
         scope: &RuntimeScope,
     ) -> Result<TaskAdmissionRecord> {
-        self.child_admission_with_work(operation, name, version, input, parent, scope, &mut None)
-    }
-
-    #[cfg(feature = "filesystem")]
-    fn child_admission_with_work(
-        &self, operation: OperationId, name: &str, version: &str, input: Value,
-        parent: TaskId, scope: &RuntimeScope,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<TaskAdmissionRecord> {
-        self.registered_admission_with_work(
-            operation, name, version, input, Some(parent), None, scope, work,
-        )
+        self.registered_admission_with_work(operation, name, version, input, Some(parent), None, scope, &mut None)
     }
 
     fn registered_admission_with_work(
@@ -2232,13 +2164,7 @@ impl TaskAdmissionRecord {
 
     /// Rejects missing, extra, or noncanonical v2 admission fields.
     pub fn from_canonical_value(value: Value) -> Result<Self> {
-        Self::from_canonical_value_with_work(value, &mut None)
-    }
-
-    pub(crate) fn from_canonical_value_with_work(
-        value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        Self::from_canonical_value_counted_with_work(value, work).map(|(admission, _)| admission)
+        Self::from_canonical_value_counted_with_work(value, &mut None).map(|(admission, _)| admission)
     }
 
     pub(crate) fn from_canonical_value_counted_with_work(
@@ -2880,7 +2806,7 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
         _interaction: Interaction, _request_custody: acyclic_fs::NativeAllocation,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>> {
-        let _paid = NativePolicyPayload { value: _interaction, custody: _request_custody };
+        let _paid = (_interaction, _request_custody);
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
             reason: "durable owner has no original-ledger interaction route" })
     }
@@ -3096,7 +3022,7 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         _interaction: Interaction, _request_custody: acyclic_fs::NativeAllocation,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>> {
-        let _paid = NativePolicyPayload { value: _interaction, custody: _request_custody };
+        let _paid = (_interaction, _request_custody);
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
             reason: "task state has no original-ledger interaction route" })
     }
@@ -3586,7 +3512,7 @@ pub trait DurableEffectObserver: acyclic_stream::ProviderPlatform {
 
 /// Replaceable local interaction router.
 pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
-    /// Returns a typed outcome while retaining request and answer bytes in its own provider; callers must not journal either body.
+    /// Routes an interaction while retaining its payloads in the provider.
     fn route<'a>(
         &'a self,
         operation_id: OperationId,
@@ -3607,7 +3533,7 @@ pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
         _request_custody: acyclic_fs::NativeAllocation,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>> {
-        let _paid = NativePolicyPayload { value: _interaction, custody: _request_custody };
+        let _paid = (_interaction, _request_custody);
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
             reason: "interaction router has no original-ledger route" })
     }
@@ -4181,13 +4107,6 @@ impl RuntimeScope {
         &self.resource_proofs
     }
 
-    pub(crate) fn with_created_access(
-        &self, admission: &TaskAdmissionRecord,
-        access: Option<crate::resource_preparation::CreatedResourceAccess>,
-    ) -> Result<Self> {
-        self.with_created_access_with_work(admission, access, &mut None).map(|(scope, _)| scope)
-    }
-
     pub(crate) fn with_created_access_with_work(
         &self, admission: &TaskAdmissionRecord,
         access: Option<crate::resource_preparation::CreatedResourceAccess>,
@@ -4327,7 +4246,7 @@ impl RuntimeScope {
         lease.fence()
     }
 
-    /// Current actor comes from the provider-authenticated scratch allocation, including read-only attenuation, never from a declarer or a task UUID.
+    /// Returns the actor authenticated by the scratch allocation.
     pub(crate) fn current_created_agent(&self) -> Result<Option<crate::AgentId>> {
         self.current_created_private_volume()?.map(|volume| match volume.owner() {
             crate::conversation::VolumeOwner::Agent(agent) => Ok(*agent),
@@ -4336,12 +4255,12 @@ impl RuntimeScope {
     }
 
     pub(crate) fn current_created_private_volume(&self) -> Result<Option<&VolumeRef>> {
-        Ok(self.created_access.as_ref().map(|access| access.current_content())
+        Ok(self.created_access.as_ref().map(|access| access.current_content(&mut None))
             .transpose()?.flatten().map(|binding| &binding.volume))
     }
 
     pub(crate) fn current_created_authority(&self) -> Result<Option<&crate::core::Authority>> {
-        Ok(self.created_access.as_ref().map(|access| access.current_content())
+        Ok(self.created_access.as_ref().map(|access| access.current_content(&mut None))
             .transpose()?.flatten().and_then(|binding| binding.authority.as_ref()))
     }
 
@@ -4354,7 +4273,7 @@ impl RuntimeScope {
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(self.created_access.as_ref().map(|access|
-            access.current_content_with_work(&mut Some(&mut io)))
+            access.current_content(&mut Some(&mut io)))
             .transpose()?.flatten().map(|binding| &binding.volume))
     }
 
@@ -4367,7 +4286,7 @@ impl RuntimeScope {
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(self.created_access.as_ref().map(|access|
-            access.current_content_with_work(&mut Some(&mut io)))
+            access.current_content(&mut Some(&mut io)))
             .transpose()?.flatten().and_then(|binding| binding.authority.as_ref()))
     }
 
@@ -4949,10 +4868,6 @@ impl TaskDependencyValidator<'_> {
     }
 }
 
-fn parse_dependency_target(requirement: &str, prefix: &str) -> Result<Option<(String, String)>> {
-    parse_dependency_target_observed(requirement, prefix, None)
-}
-
 fn parse_dependency_target_observed(
     requirement: &str, prefix: &str, io: StartupIo<'_>,
 ) -> Result<Option<(String, String)>> {
@@ -5025,15 +4940,15 @@ pub(crate) fn tool_approval_request_with_native_work(
     prompt_custody: acyclic_fs::NativeAllocation,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<((OperationId, Interaction), acyclic_fs::NativeAllocation)> {
-    let paid = NativePolicyPayload { value: prompt, custody: prompt_custody };
-    if !paid.custody.work().shares_ledger(work)
-        || paid.custody.bytes() < paid.value.capacity() as u64
+    let paid = (prompt, prompt_custody);
+    if !paid.1.work().shares_ledger(work)
+        || paid.1.bytes() < paid.0.capacity() as u64
     {
         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
             reason: "approval prompt does not retain its original ledger" });
     }
     work.remaining()?;
-    if paid.value.trim().is_empty() {
+    if paid.0.trim().is_empty() {
         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
             reason: "approval prompt is empty" });
     }
@@ -5042,16 +4957,10 @@ pub(crate) fn tool_approval_request_with_native_work(
         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
             reason: "approval action digest is empty" });
     }
-    let NativePolicyPayload { value: prompt, custody } = paid;
+    let (prompt, custody) = paid;
     Ok(((operation, Interaction::Approval {
         prompt, operation_id: invocation.operation_id, action_digest: digest,
     }), custody))
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct NativePolicyPayload<T> {
-    value: T,
-    custody: acyclic_fs::NativeAllocation,
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -5063,20 +4972,15 @@ type ToolPolicyCustody = Option<acyclic_fs::NativeAllocation>;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 type ToolPolicyCustody = Option<()>;
 
-struct PaidPolicyValue<T> {
-    value: T,
-    custody: ToolPolicyCustody,
-}
-
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn validate_native_policy_identity(
-    paid: &PaidPolicyValue<ComponentIdentity>, work: &acyclic_fs::NativeMaterializationWork,
+    paid: &(ComponentIdentity, ToolPolicyCustody), work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    let custody = paid.custody.as_ref().ok_or(Error::NativeBoundary {
+    let custody = paid.1.as_ref().ok_or(Error::NativeBoundary {
         code: crate::wire::ErrorCode::Conflict,
         reason: "policy identity does not retain its original ledger",
     })?;
-    validate_policy_identity_custody_with_native_work(&paid.value, custody, work)
+    validate_policy_identity_custody_with_native_work(&paid.0, custody, work)
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -5119,14 +5023,14 @@ pub(crate) fn validate_policy_identity_with_native_work(
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn validate_native_policy_decision(
-    paid: &PaidPolicyValue<ToolPolicyDecision>, work: &acyclic_fs::NativeMaterializationWork,
+    paid: &(ToolPolicyDecision, ToolPolicyCustody), work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    let bytes = match &paid.value {
+    let bytes = match &paid.0 {
         ToolPolicyDecision::Allow => 0,
         ToolPolicyDecision::Deny { reason } => reason.capacity() as u64,
         ToolPolicyDecision::RequireApproval { prompt } => prompt.capacity() as u64,
     };
-    if !paid.custody.as_ref().is_some_and(|custody| custody.work().shares_ledger(work)
+    if !paid.1.as_ref().is_some_and(|custody| custody.work().shares_ledger(work)
         && custody.bytes() >= bytes)
     {
         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
@@ -5212,7 +5116,7 @@ pub struct ContentBindings {
     pub writer: Option<Arc<dyn ContentPublisher>>,
 }
 
-/// Artifact access uses the same immutable, digest-verified file contract as conversation content, but is selected independently of workspace files.
+/// Artifact access uses immutable file references.
 pub type ArtifactBindings = ContentBindings;
 
 /// Immutable admission bindings assembled before tasks can run.
@@ -5394,7 +5298,7 @@ pub(crate) fn validate_child_page_request(
     Ok(())
 }
 
-/// Checks one `(revision, next_after)` page of `(slot, id)` children against its `(expected_revision, after_slot, maximum)` request: unique non-nil identities in strictly increasing valid slot order, continuing from the last returned slot.
+/// Validates a pinned child page against its requested cursor and bounds.
 pub(crate) fn validate_child_page<'a>(
     label: &str,
     (revision, next_after): (u64, Option<&str>),
@@ -5766,7 +5670,7 @@ impl AgentHarness {
         Ok(Arc::new(bound))
     }
 
-    /// Returns the parent-authorized workspace boundary only while this immutable runtime scope retains project fork or merge authority.
+    /// Returns the authorized workspace boundary.
     pub fn workspaces(&self) -> Result<Arc<dyn crate::merge::ProjectWorkspaceProvider>> {
         if !self.scope.grants().contains(capability::FORK_PUBLISH)
             && !self.scope.grants().contains(capability::PROJECT_MERGE)
@@ -5859,19 +5763,6 @@ impl AgentHarness {
         Arc::new(bound)
     }
 
-    /// Observes an addressable interaction without changing its state.
-    pub async fn inspect_interaction(
-        &self,
-        scope: Scope,
-        id: InteractionId,
-    ) -> Result<Option<(InteractionTicket, Option<InteractionResolution>)>> {
-        self.interaction_resolver
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("interaction resolver is not bound".into()))?
-            .inspect(scope, id)
-            .await
-    }
-
     /// Submits one signed, versioned answer through its conversation owner.
     pub async fn resolve_answer(
         &self,
@@ -5959,7 +5850,7 @@ impl AgentHarness {
         Self::with_content(tasks, tools, scope, concurrency, host, interactions, None)
     }
 
-    /// Binds exact owner-mediated content access without coupling Harness core to Filesystem, Objects, or another concrete storage implementation.
+    /// Binds owner-mediated content access.
     pub fn with_content(
         tasks: TaskRegistry,
         tools: ToolRegistry,
@@ -6710,8 +6601,8 @@ impl AgentHarness {
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         crate::store::history::HistoryIo::absorb_native_custody(&mut io, input.1)?;
-        let record = self.tasks.child_admission_with_work(
-            operation, name, version, input.0, parent, scope, &mut Some(&mut io),
+        let record = self.tasks.registered_admission_with_work(
+            operation, name, version, input.0, Some(parent), None, scope, &mut Some(&mut io),
         )?;
         let bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
             .checked_add(record.logical_owned_bytes()?)
@@ -7633,19 +7524,6 @@ impl TaskContext {
         Ok(child)
     }
 
-    /// Builds a transient model view from explicit sources for live task code.
-    pub async fn build_context(&self, input: &ContextInput) -> Result<Context> {
-        if self.durable_task.is_some() {
-            return Err(Error::Unsupported(
-                "durable context build requires a recorded effect".into(),
-            ));
-        }
-        self.harness
-            .context
-            .run_bounded(input, self.scope.limits())
-            .await
-    }
-
     async fn verify_model_files(&self, messages: &[ModelMessage]) -> Result<()> {
         let limits = self.scope.limits();
         let mut files = Vec::new();
@@ -7773,7 +7651,7 @@ impl TaskContext {
             tools,
             max_output_tokens,
         };
-        let request = crate::model::PreparedModelRequest::prepare(request, self.scope.limits())?;
+        let request = crate::model::PreparedModelRequest::prepare(request, self.scope.limits(), None)?;
         self.verify_model_files(&request.request().messages).await?;
         let capacity = binding.provider.context_capacity(&binding.model)?;
         capacity.validate()?;
@@ -7786,7 +7664,7 @@ impl TaskContext {
         let request = if max_output_tokens.is_none() {
             let mut bounded = request.request().clone();
             bounded.max_output_tokens = Some(output_tokens);
-            crate::model::PreparedModelRequest::prepare(bounded, self.scope.limits())?
+            crate::model::PreparedModelRequest::prepare(bounded, self.scope.limits(), None)?
         } else {
             request
         };
@@ -7917,32 +7795,6 @@ impl TaskContext {
             .await
     }
 
-    /// Verifies whole-volume READ under this issued context and its original owner.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn verify_original_volume_read_with_native_work<P: acyclic_stream::StreamProvider>(
-        &self, owner: &crate::durable_host::TaskJournalOwner<P>, volume: &VolumeRef,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.charge(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork {cause,custody:None})?;
-        let (task, fence) = owner.task_binding();
-        if !self.original_task_binding_matches(task, fence) {
-            return Err(Error::NativeBoundary {code:crate::wire::ErrorCode::Unauthorized,
-                reason:"project READ context differs from its original task owner"});
-        }
-        owner.require_volume_grant_with_native_work(volume, crate::conversation::VolumeOperation::Read, work)?;
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let granted = io.contains_capability(&self.scope.grants, volume, "volume:read:")?
-            || match self.scope.created_grants() {
-                Some(grants) => io.contains_capability(grants, volume, "volume:read:")?,
-                None => false,
-            };
-        if !granted {
-            return Err(Error::NativeBoundary {code:crate::wire::ErrorCode::Unauthorized,
-                reason:"issued task context does not retain whole-project READ"});
-        }
-        owner.verify_read_access_with_native_work(work).await
-    }
 
     /// Reads through the original bound provider on the caller's native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -8332,8 +8184,7 @@ impl TaskContext {
         let content = binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
         let writer = content.writer.as_ref()
             .ok_or_else(|| Error::Unauthorized("task has no owner-bound content writer".into()))?;
-        let capability = io.receive_content(writer.volume().capability_measured(VolumeOperation::Write,
-            io.remaining()?, &io.cancellation))?;
+        let capability = io.capability(writer.volume(), "volume:write:")?;
         if !self.scope.grants.contains(&capability) {
             return Err(Error::Unauthorized("task scope cannot write this volume".into()));
         }
@@ -8573,69 +8424,6 @@ impl TaskContext {
         serde_json::from_value(result.value).map_err(|error| Error::Invalid(error.to_string()))
     }
 
-    /// Executes a durable tool under a stable operation ID.
-    pub async fn call_durable<I, O>(
-        &self,
-        operation_id: OperationId,
-        tool: &ToolRef<I, O>,
-        input: I,
-    ) -> Result<Outcome<O>>
-    where
-        I: Serialize,
-        O: DeserializeOwned,
-    {
-        let task_id = self.durable_task.ok_or_else(|| {
-            Error::Unsupported("durable tool calls require an admitted task".into())
-        })?;
-        let binding = self
-            .harness
-            .tools
-            .get_version(&tool.definition.name, &tool.definition.revision)
-            .ok_or_else(|| Error::NotFound(format!("tool {}", tool.definition.name)))?;
-        if binding.definition != tool.definition {
-            return Err(Error::Conflict(
-                "tool definition changed after lookup".into(),
-            ));
-        }
-        let required = capability::tool_call(&tool.definition.name);
-        if !self.scope.grants.contains(&required) {
-            return Err(Error::Unauthorized(format!("scope lacks {required}")));
-        }
-        let arguments =
-            serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
-        validate_value(&tool.definition.input_schema, &arguments, "tool input")?;
-        let state = self
-            .harness
-            .state
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
-        let context = ToolContext::new(self.clone(), operation_id, operation_id.to_string())?;
-        Ok(
-            match state
-                .execute_tool(
-                    task_id,
-                    operation_id,
-                    tool.definition.clone(),
-                    arguments,
-                    self.scope.clone(),
-                    context,
-                )
-                .await?
-            {
-                Outcome::Succeeded(value) => {
-                    validate_value(&tool.definition.output_schema, &value, "tool output")?;
-                    Outcome::Succeeded(
-                        serde_json::from_value(value)
-                            .map_err(|error| Error::Invalid(error.to_string()))?,
-                    )
-                }
-                Outcome::Failed { message } => Outcome::Failed { message },
-                Outcome::Cancelled => Outcome::Cancelled,
-                Outcome::Indeterminate { operation_id } => Outcome::Indeterminate { operation_id },
-            },
-        )
-    }
-
     /// Opens this context's registered task from its retained admission.
     pub async fn open_resumable_task<I: 'static, O: 'static>(
         &self,
@@ -8644,33 +8432,6 @@ impl TaskContext {
         journal: Arc<dyn WorkflowJournal>,
     ) -> Result<ResumableTaskSession> {
         definition.open(self, fence, journal).await
-    }
-
-    /// Opens one registered, version-pinned resumable tool under this task's exact call scope.
-    pub async fn open_resumable_tool<I: Serialize>(
-        &self,
-        operation_id: OperationId,
-        name: &str,
-        revision: &str,
-        input: I,
-        journal: Arc<dyn WorkflowJournal>,
-    ) -> Result<ResumableToolSession> {
-        let tool = self
-            .harness
-            .resumable_tools
-            .get(name, revision)
-            .ok_or_else(|| Error::NotFound(format!("resumable tool {name}@{revision}")))?;
-        let arguments =
-            serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
-        let call_id = operation_id.to_string();
-        let invocation = ToolInvocation {
-            operation_id,
-            call_id: call_id.clone(),
-            name: name.to_owned(),
-            arguments,
-        };
-        let context = ToolContext::new(self.clone(), operation_id, call_id)?;
-        tool.open(context, invocation, journal).await
     }
 
     /// Applies the bound policy to one exact action before its executor is dispatched.
@@ -8815,26 +8576,26 @@ impl TaskContext {
             if let Some(paid) = self.policy_approval_with_work(
                 policy.as_ref(), Some((identity, bound_reason)), definition, invocation, work, scope,
             ).await? {
-                let PaidPolicyValue { value: (approval_id, request), custody } = paid;
-                let outcome = match work {
+                let ((approval_id, request), custody) = paid;
+                let outcome: (InteractionOutcome, ToolPolicyCustody) = match work {
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     Some(work) => {
                         let (value, custody) = self.interact_with_native_work_and_router(
                             approval_id, request, custody.expect("native approval retains its prompt"), work, command_router, scope,
                         ).await?;
-                        PaidPolicyValue { value, custody: Some(custody) }
+                        (value, Some(custody))
                     }
-                    _ => PaidPolicyValue { value: self.interact(approval_id, request).await?, custody: None },
+                    _ => (self.interact(approval_id, request).await?, None),
                 };
-                if let InteractionOutcome::Indeterminate { operation_id } = &outcome.value {
+                if let InteractionOutcome::Indeterminate { operation_id } = &outcome.0 {
                     return Ok(Some(*operation_id));
                 }
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if work.is_some() && matches!(&outcome.value, InteractionOutcome::Answered { .. }) {
+                if work.is_some() && matches!(&outcome.0, InteractionOutcome::Answered { .. }) {
                     return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                         reason: "approval resolved with a question answer" });
                 }
-                check_tool_approval(outcome.value)?;
+                check_tool_approval(outcome.0)?;
             }
         }
         Ok(None)
@@ -8845,7 +8606,7 @@ impl TaskContext {
         &self, policy: &dyn ToolPolicy, definition: &ToolDefinition, invocation: &ToolInvocation,
     ) -> Result<Option<(OperationId, Interaction)>> {
         Ok(self.policy_approval_with_work(policy, None, definition, invocation, None, &self.scope)
-            .await?.map(|paid| paid.value))
+            .await?.map(|paid| paid.0))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -8861,26 +8622,26 @@ impl TaskContext {
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                 reason: "policy is not an original task binding" })?;
         Ok(self.policy_approval_with_work(policy, Some((expected, "policy identity changed after binding")), definition, invocation, Some(work), scope)
-            .await?.map(|paid| (paid.value, paid.custody.expect("native approval retains its prompt"))))
+            .await?.map(|paid| (paid.0, paid.1.expect("native approval retains its prompt"))))
     }
 
     async fn policy_approval_with_work(
         &self, policy: &dyn ToolPolicy, expected: Option<(&ComponentIdentity, &'static str)>,
         definition: &ToolDefinition, invocation: &ToolInvocation, work: Option<&ToolPolicyWork>, scope: &RuntimeScope,
-    ) -> Result<Option<PaidPolicyValue<(OperationId, Interaction)>>> {
-        let identity = match work {
+    ) -> Result<Option<((OperationId, Interaction), ToolPolicyCustody)>> {
+        let identity: (ComponentIdentity, ToolPolicyCustody) = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(work) => {
                 policy.supports_native_policy(work)?;
                 let (value, custody) = policy.identity_with_native_work(work)?;
-                let paid = PaidPolicyValue { value, custody: Some(custody) };
+                let paid = (value, Some(custody));
                 validate_native_policy_identity(&paid, work)?;
                 paid
             }
-            _ => PaidPolicyValue { value: policy.identity(), custody: None },
+            _ => (policy.identity(), None),
         };
         if let Some((expected, reason)) = expected {
-            if expected != &identity.value {
+            if expected != &identity.0 {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 if work.is_some() {
                     return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason });
@@ -8888,7 +8649,7 @@ impl TaskContext {
                 return Err(Error::Conflict(reason.into()));
             }
         }
-        let decision = match work {
+        let decision: (ToolPolicyDecision, ToolPolicyCustody) = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(work) => {
                 let future = policy.evaluate_with_native_work(invocation, scope, work)?;
@@ -8897,23 +8658,23 @@ impl TaskContext {
                         reason: "policy evaluator belongs to another ledger" });
                 }
                 let (value, custody) = future.await?;
-                let paid = PaidPolicyValue { value, custody: Some(custody) };
+                let paid = (value, Some(custody));
                 validate_native_policy_decision(&paid, work)?;
                 paid
             }
-            _ => PaidPolicyValue { value: policy.evaluate(invocation, scope).await?, custody: None },
+            _ => (policy.evaluate(invocation, scope).await?, None),
         };
-        let after = match work {
+        let after: (ComponentIdentity, ToolPolicyCustody) = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(work) => {
                 let (value, custody) = policy.identity_with_native_work(work)?;
-                let paid = PaidPolicyValue { value, custody: Some(custody) };
+                let paid = (value, Some(custody));
                 validate_native_policy_identity(&paid, work)?;
                 paid
             }
-            _ => PaidPolicyValue { value: policy.identity(), custody: None },
+            _ => (policy.identity(), None),
         };
-        if after.value != identity.value {
+        if after.0 != identity.0 {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.is_some() {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
@@ -8922,7 +8683,7 @@ impl TaskContext {
             return Err(Error::Conflict("policy identity changed during evaluation".into()));
         }
         drop(after);
-        let PaidPolicyValue { value: decision, custody } = decision;
+        let (decision, custody) = decision;
         match decision {
             ToolPolicyDecision::Allow => Ok(None),
             ToolPolicyDecision::Deny { reason } => {
@@ -8939,15 +8700,12 @@ impl TaskContext {
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     Some(work) => {
                         let (value, custody) = tool_approval_request_with_native_work(
-                            task, &identity.value, definition, invocation, prompt,
+                            task, &identity.0, definition, invocation, prompt,
                             custody.expect("native decision retains its prompt"), work,
                         )?;
-                        Ok(Some(PaidPolicyValue { value, custody: Some(custody) }))
+                        Ok(Some((value, Some(custody))))
                     }
-                    _ => Ok(Some(PaidPolicyValue {
-                        value: tool_approval_request(task, &identity.value, definition, invocation, prompt)?,
-                        custody: None,
-                    })),
+                    _ => Ok(Some((tool_approval_request(task, &identity.0, definition, invocation, prompt)?, None))),
                 }
             }
         }
@@ -8992,17 +8750,7 @@ impl TaskContext {
             scope: self.scope.clone(),
             policy_overrides: self.policy_overrides.clone(),
             durable_parent: self.durable_task,
-            id: None,
-            batch_policy: BatchGroupPolicy::CollectAll,
         }
-    }
-
-    /// Retains an identity before admitting a durable batch.
-    #[must_use]
-    pub fn group_with_id(&self, id: GroupId) -> RuntimeGroup {
-        let mut group = self.group();
-        group.id = Some(id);
-        group
     }
 
     /// Admits a durable child using an explicit stable operation identity.
@@ -9099,14 +8847,14 @@ impl TaskContext {
         command_router: Option<&dyn InteractionRouter>,
         scope: &RuntimeScope,
     ) -> Result<(InteractionOutcome, acyclic_fs::NativeAllocation)> {
-        let paid = NativePolicyPayload { value: interaction, custody: request_custody };
+        let paid = (interaction, request_custody);
         self.require_original_native_work(work)?;
-        if !paid.custody.work().shares_ledger(work) {
+        if !paid.1.work().shares_ledger(work) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                 reason: "interaction request belongs to another original ledger" });
         }
-        if let Interaction::Approval { prompt, .. } = &paid.value {
-            if paid.custody.bytes() < prompt.capacity() as u64 {
+        if let Interaction::Approval { prompt, .. } = &paid.0 {
+            if paid.1.bytes() < prompt.capacity() as u64 {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "approval request does not retain its original prompt" });
             }
@@ -9131,7 +8879,7 @@ impl TaskContext {
         }
         let mut io = crate::store::history::native_work_io(work)?;
         let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
-        paid.value.validate_with_work(&mut observed)?;
+        paid.0.validate_with_work(&mut observed)?;
         if !scope.grants.contains(capability::INTERACTION_ROUTE) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "scope lacks interaction:route" });
@@ -9141,10 +8889,10 @@ impl TaskContext {
                 reason: "interaction operation must differ from task admission" });
         }
         let future = if let Some(router) = router {
-            let NativePolicyPayload { value: interaction, custody: request_custody } = paid;
+            let (interaction, request_custody) = paid;
             router.route_with_native_work(operation_id, interaction, request_custody, work)?
         } else if let (Some(task), Some(state)) = (self.durable_task, state) {
-            let NativePolicyPayload { value: interaction, custody: request_custody } = paid;
+            let (interaction, request_custody) = paid;
             state.interact_with_native_work(task, operation_id, interaction, request_custody, work)?
         } else {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
@@ -9155,12 +8903,12 @@ impl TaskContext {
                 reason: "interaction route belongs to another original ledger" });
         }
         let (value, custody) = future.await?;
-        let paid = NativePolicyPayload { value, custody };
-        if !paid.custody.work().shares_ledger(work) {
+        let paid = (value, custody);
+        if !paid.1.work().shares_ledger(work) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                 reason: "interaction outcome belongs to another original ledger" });
         }
-        if let InteractionOutcome::Answered { answer } = &paid.value {
+        if let InteractionOutcome::Answered { answer } = &paid.0 {
             let owned = answer.logical_owned_bytes().map_err(|error| {
                 if error.is_native_failure() { error } else {
                     Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
@@ -9170,13 +8918,13 @@ impl TaskContext {
             let bytes = owned.checked_add(std::mem::size_of::<FileRef>() as u64)
                 .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "interaction answer ownership overflows" })?;
-            if paid.custody.bytes() < bytes {
+            if paid.1.bytes() < bytes {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "interaction answer does not retain its original metadata" });
             }
         }
         work.remaining()?;
-        Ok((paid.value, paid.custody))
+        Ok((paid.0, paid.1))
     }
 
     /// Opens a schema-constrained question by stable identity.
@@ -9250,17 +8998,6 @@ impl TaskContext {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (crate::durable_host::MailSendAck, acyclic_fs::NativeAllocation)>> {
         self.native_mailbox(work)?.send_with_native_work(recipient, message_id, payload, work)
-    }
-
-    /// Reads one exact retained parcel selection on that same native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn read_received_mail_with_native_work<'a>(
-        &'a self,
-        receive_operation: OperationId,
-        item: &'a InboxItem,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        self.native_mailbox(work)?.read_received_with_native_work(receive_operation, item, work)
     }
 
     /// Reads a bounded original-owner inbox page without rebuilding a scope.
@@ -9453,8 +9190,6 @@ pub struct RuntimeGroup {
     scope: RuntimeScope,
     policy_overrides: Vec<(ComponentIdentity, Arc<dyn ToolPolicy>)>,
     durable_parent: Option<TaskId>,
-    id: Option<GroupId>,
-    batch_policy: BatchGroupPolicy,
 }
 
 /// Ordered immutable batch selection.
@@ -10002,387 +9737,6 @@ impl<I, O> ToolRef<I, O> {
 impl RuntimeGroup {
     /// Selects the immutable completion policy for subsequently admitted durable batches.
     #[must_use]
-    pub fn with_batch_policy(mut self, policy: BatchGroupPolicy) -> Self {
-        self.batch_policy = policy;
-        self
-    }
-
-    fn durable_batch_request<I, O>(
-        &self,
-        definition: &Arc<TaskDefinition<I, O>>,
-        batch: Batch<I>,
-    ) -> Result<DurableBatchRequest>
-    where
-        I: Serialize + 'static,
-        O: 'static,
-    {
-        self.harness.assert_durable_policy_bindings()?;
-        if self.batch_policy == BatchGroupPolicy::CancelOnFailure
-            && !self
-                .harness
-                .spawner
-                .as_ref()
-                .is_some_and(|spawner| spawner.supports_batch_cancellation())
-        {
-            return Err(Error::Unsupported(
-                "durable cancel-on-failure requires owner-retained batch cancellation".into(),
-            ));
-        }
-        let group_id = self.id.ok_or_else(|| {
-            Error::Invalid("durable batch requires a caller-retained group ID".into())
-        })?;
-        let parent = self.durable_parent;
-        if !self.policy_overrides.is_empty() {
-            return Err(Error::Unsupported(
-                "durable batch policy overrides require a pinned host policy".into(),
-            ));
-        }
-        let registered = self
-            .harness
-            .tasks
-            .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
-        if !Arc::ptr_eq(&registered, definition) {
-            return Err(Error::Conflict(
-                "batch task definition is not the registered version".into(),
-            ));
-        }
-        if parent.is_some() {
-            require_task_spawn(&self.scope, definition)?;
-        }
-        let TaskImplementation::Resumable(machine) = &definition.implementation else {
-            return Err(Error::Unsupported(
-                "durable batch cannot admit a process-local task".into(),
-            ));
-        };
-        let inputs = batch
-            .inputs
-            .into_iter()
-            .map(|input| {
-                let value = serde_json::to_value(input)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                validate_value(&definition.input_schema, &value, "batch input")?;
-                Ok(value)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        DurableBatchRequest::from_parts(
-            group_id,
-            batch.id,
-            self.batch_policy,
-            &definition.identity.name,
-            &definition.identity.version,
-            inputs,
-            definition.input_schema.clone(),
-            definition.output_schema.clone(),
-            definition.requirements(),
-            &machine.identity().digest,
-            parent,
-            self.scope.grants().clone(),
-            self.scope.limits(),
-            self.scope.run_limits(),
-            self.scope.extensions().cloned(),
-            self.harness.policy_identity.clone(),
-            None,
-        )
-    }
-
-    async fn admitted_batch<O>(
-        &self,
-        request: &DurableBatchRequest,
-        decisions: Vec<Admission<TaskId>>,
-        host: Arc<dyn TaskStateProvider>,
-        extensions: Option<ExtensionLeases>,
-    ) -> Result<AdmissionBatch<O>> {
-        if decisions.len() != request.inputs.len() {
-            return Err(Error::Storage("batch host omitted an input slot".into()));
-        }
-        let mut entries = Vec::with_capacity(decisions.len());
-        for (index, admission) in decisions.into_iter().enumerate() {
-            let operation_id = request.operation_id(index);
-            let admission = match admission {
-                Admission::Accepted(task_id) => {
-                    let expected = request.member_admission(index)?;
-                    match self
-                        .harness
-                        .verify_spawner_admission(task_id, &expected)
-                        .await
-                    {
-                        Ok(()) => Admission::Accepted(RuntimeTask::Durable {
-                            task_id,
-                            host: Arc::clone(&host),
-                            output_schema: request.output_schema.clone(),
-                            extensions: None,
-                        }),
-                        Err(Error::Indeterminate(returned)) if returned == operation_id => {
-                            Admission::Indeterminate { operation_id }
-                        }
-                        Err(error) => return Err(error),
-                    }
-                }
-                Admission::Rejected { reason } => Admission::Rejected { reason },
-                Admission::Indeterminate {
-                    operation_id: returned,
-                } => {
-                    if returned != operation_id {
-                        return Err(Error::Storage(
-                            "batch host returned another operation identity".into(),
-                        ));
-                    }
-                    Admission::Indeterminate { operation_id }
-                }
-            };
-            entries.push(BatchEntry {
-                key: InputKey {
-                    batch_id: request.batch_id,
-                    index,
-                },
-                admission,
-            });
-        }
-        let spawner = self
-            .harness
-            .spawner
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("durable batch spawner is not bound".into()))?;
-        if request.group_policy == BatchGroupPolicy::CancelOnFailure
-            && !spawner.supports_batch_cancellation()
-        {
-            return Err(Error::Unsupported(
-                "durable batch cancellation is not bound".into(),
-            ));
-        }
-        Ok(AdmissionBatch {
-            group_id: request.group_id,
-            batch_id: request.batch_id,
-            entries,
-            policy: request.group_policy,
-            spawner: Arc::clone(spawner),
-            extensions,
-        })
-    }
-
-    /// Publishes the exact batch request before any child admission.
-    pub async fn spawn_batch<I, O>(
-        &self,
-        definition: &Arc<TaskDefinition<I, O>>,
-        batch: Batch<I>,
-    ) -> Result<AdmissionBatch<O>>
-    where
-        I: Serialize + 'static,
-        O: 'static,
-    {
-        let mut request = self.durable_batch_request(definition, batch)?;
-        let host = self
-            .harness
-            .state
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("durable batch state is not bound".into()))?;
-        let spawner = self
-            .harness
-            .spawner
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("durable batch spawner is not bound".into()))?;
-        let retained_batch = spawner.load_batch(request.batch_id).await?;
-        if let Some(retained) = retained_batch.as_ref() {
-            retained.validate()?;
-            let mut base = retained.clone();
-            base.execution = None;
-            if base.canonical_value() != request.canonical_value() {
-                return Err(Error::Conflict(
-                    "batch identity belongs to another request".into(),
-                ));
-            }
-            self.harness
-                .validate_execution_placement(retained.execution.as_ref())?;
-            request = retained.clone();
-        } else if let Some(execution) = &self.harness.execution {
-            let placement = execution.qualify_batch(&request).await?;
-            placement.validate()?;
-            if placement.provider != execution.identity() {
-                return Err(Error::Conflict(
-                    "batch qualifier returned another provider".into(),
-                ));
-            }
-            request.execution = Some(placement);
-            request.validate()?;
-        }
-        let extension_leases = self
-            .harness
-            .retain_task_extensions(definition, &request.scope)?;
-        let decisions = spawner.admit_batch(request.clone()).await?;
-        self.admitted_batch(&request, decisions, Arc::clone(host), extension_leases)
-            .await
-    }
-
-    /// Observes one exact retained request without admitting absent members.
-    pub async fn reconcile_batch<I, O>(
-        &self,
-        definition: &Arc<TaskDefinition<I, O>>,
-        batch: Batch<I>,
-    ) -> Result<Option<AdmissionBatch<O>>>
-    where
-        I: Serialize + 'static,
-        O: 'static,
-    {
-        let expected = self.durable_batch_request(definition, batch)?;
-        let host = self
-            .harness
-            .state
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("durable batch state is not bound".into()))?;
-        let spawner = self
-            .harness
-            .spawner
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("durable batch spawner is not bound".into()))?;
-        let Some(request) = spawner.load_batch(expected.batch_id).await? else {
-            return Ok(None);
-        };
-        request.validate()?;
-        let mut base = request.clone();
-        base.execution = None;
-        if base.canonical_value() != expected.canonical_value() {
-            return Err(Error::Conflict(
-                "retained batch differs from its requested inputs or scope".into(),
-            ));
-        }
-        self.harness
-            .validate_execution_placement(request.execution.as_ref())?;
-        let Some(decisions) = spawner.reconcile_batch(request.clone()).await? else {
-            return Err(Error::Storage("retained batch disappeared".into()));
-        };
-        let extension_leases = self
-            .harness
-            .retain_task_extensions_existing(definition, &request.scope)?;
-        self.admitted_batch(
-            &request,
-            decisions,
-            Arc::clone(host),
-            Some(extension_leases),
-        )
-        .await
-        .map(Some)
-    }
-
-    /// Reattaches to an owner's immutable batch by its caller-retained ID, without reconstructing the original inputs or resubmitting absent work.
-    pub async fn reconcile_batch_id<I, O>(
-        &self,
-        definition: &Arc<TaskDefinition<I, O>>,
-        batch_id: BatchId,
-    ) -> Result<Option<AdmissionBatch<O>>>
-    where
-        I: 'static,
-        O: 'static,
-    {
-        self.harness.assert_durable_policy_bindings()?;
-        if !self.policy_overrides.is_empty() {
-            return Err(Error::Unsupported(
-                "durable batch policy overrides require a pinned host policy".into(),
-            ));
-        }
-        let group_id = self.id.ok_or_else(|| {
-            Error::Invalid("durable batch requires a caller-retained group ID".into())
-        })?;
-        let parent = self.durable_parent;
-        let registered = self
-            .harness
-            .tasks
-            .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
-        if !Arc::ptr_eq(&registered, definition) {
-            return Err(Error::Conflict("batch task definition changed".into()));
-        }
-        if parent.is_some() {
-            require_task_spawn(&self.scope, definition)?;
-        }
-        let TaskImplementation::Resumable(machine) = &definition.implementation else {
-            return Err(Error::Unsupported("batch task is not resumable".into()));
-        };
-        let host = self
-            .harness
-            .state
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("durable batch state is not bound".into()))?;
-        let spawner = self
-            .harness
-            .spawner
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("durable batch spawner is not bound".into()))?;
-        let Some(request) = spawner.load_batch(batch_id).await? else {
-            return Ok(None);
-        };
-        request.validate()?;
-        if request.group_id != group_id
-            || request.group_policy != self.batch_policy
-            || request.parent != parent
-            || request.task != *definition.identity()
-            || request.machine != *machine.identity()
-            || request.input_schema != definition.input_schema
-            || request.output_schema != definition.output_schema
-            || request.scope.grants() != self.scope.grants()
-            || request.scope.limits() != self.scope.limits()
-            || request.scope.run_limits() != self.scope.run_limits()
-            || request.scope.extensions() != self.scope.extensions()
-            || request.policy.as_ref() != self.harness.policy_identity.as_ref()
-        {
-            return Err(Error::Conflict(
-                "retained batch differs from its pinned group bindings".into(),
-            ));
-        }
-        self.harness
-            .validate_execution_placement(request.execution.as_ref())?;
-        let decisions = spawner
-            .reconcile_batch(request.clone())
-            .await?
-            .ok_or_else(|| Error::Storage("retained batch disappeared".into()))?;
-        let extension_leases = self
-            .harness
-            .retain_task_extensions_existing(definition, &request.scope)?;
-        self.admitted_batch(
-            &request,
-            decisions,
-            Arc::clone(host),
-            Some(extension_leases),
-        )
-        .await
-        .map(Some)
-    }
-
-    /// Retains one owner-side cancellation declaration before requesting any accepted member.
-    pub async fn cancel_batch_id<I, O>(
-        &self,
-        definition: &Arc<TaskDefinition<I, O>>,
-        batch_id: BatchId,
-    ) -> Result<Option<BatchCancellationReport>>
-    where
-        I: 'static,
-        O: DeserializeOwned + Send + 'static,
-    {
-        let Some(admitted) = self.reconcile_batch_id(definition, batch_id).await? else {
-            return Ok(None);
-        };
-        let spawner = self
-            .harness
-            .spawner
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("durable batch spawner is not bound".into()))?;
-        let report = spawner.cancel_batch(batch_id).await?.ok_or_else(|| {
-            Error::Storage("retained batch disappeared during cancellation".into())
-        })?;
-        if report.group_id != admitted.group_id
-            || report.batch_id != admitted.batch_id
-            || report.entries.len() != admitted.entries.len()
-            || report
-                .entries
-                .iter()
-                .enumerate()
-                .any(|(index, (key, _))| *key != InputKey { batch_id, index })
-        {
-            return Err(Error::Storage(
-                "batch owner returned another cancellation report".into(),
-            ));
-        }
-        Ok(Some(report))
-    }
-
     /// Admits one registered typed member into this group.
     pub async fn spawn<I, O>(
         &self,
@@ -10499,14 +9853,6 @@ impl RuntimeGroup {
         F: FnMut(A, Result<Outcome<O>>) -> A,
     {
         ordered_reduce_runtime(tasks, initial, reducer).await
-    }
-
-    /// Streams admitted outcomes as they complete, retaining each task ID.
-    pub fn as_completed<O: DeserializeOwned + Send + 'static>(
-        &self,
-        tasks: Vec<RuntimeTask<O>>,
-    ) -> BoxStream<'static, (String, Result<Outcome<O>>)> {
-        completion_stream_runtime(tasks)
     }
 
     /// Returns the first terminal outcome; group cancellation remains explicit.
@@ -10704,39 +10050,6 @@ mod tests {
         crate::resource_preparation::ResourceCreationProofRef {
             provider, preparation: TaskId::new(), resource, evidence,
         }
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_proof_vector_copy_retains_only_physically_produced_fields() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
-        let proofs = [retained_proof_copy_input()];
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(WorkBudget {
-            allocation_operations: 32,
-            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 8192,
-            bytes_copied: 4096,
-            items_examined: 32,
-            ..WorkBudget::default()
-        }, &cancellation).expect("original field-copy ledger");
-        let mut io = crate::store::history::native_work_io(&work)
-            .expect("original copy observer");
-        let copied = RuntimeScope::clone_resource_proofs_with_work(&proofs, &mut Some(&mut io))?;
-        assert_eq!(copied, proofs);
-        let mut actual = copied.capacity()
-            * std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>();
-        for proof in &copied {
-            actual += (proof.provider.logical_owned_bytes()?
-                + proof.resource.logical_owned_bytes()?
-                + proof.evidence.logical_owned_bytes()?) as usize;
-        }
-        let custody = io.into_custody();
-        assert_eq!(custody.bytes(), actual as u64);
-        assert_eq!(work.receipt().items_examined, 1);
-        assert!(custody.work().shares_ledger(&work));
-        drop(copied);
-        drop(custody);
-        Ok(())
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -11137,165 +10450,13 @@ mod tests {
     }
 
     #[test]
-    fn generated_admission_declarations_cover_every_rust_owned_wire_field() -> Result<()> {
+    fn generated_admission_fields_match_serialized_contracts() -> Result<()> {
         let Some(source) = generated_wasm_declarations()? else {
             eprintln!(
                 "skipping generated WASM declaration freshness check: TypeScript package is absent"
             );
             return Ok(());
         };
-        let expected = [
-            (
-                "WasmMachineIdentityWire",
-                ["name", "version", "digest"].as_slice(),
-            ),
-            (
-                "WasmNativeLimitsWire",
-                [
-                    "file_bytes",
-                    "path_bytes",
-                    "attachments",
-                    "render_bytes",
-                    "model_steps",
-                    "model_events_per_step",
-                    "tool_calls_per_step",
-                    "context_messages",
-                ]
-                .as_slice(),
-            ),
-            (
-                "WasmTaskRunLimitsWire",
-                ["concurrency", "max_steps", "deadline_epoch_ms"].as_slice(),
-            ),
-            (
-                "WasmProviderRefWire",
-                ["namespace", "family", "version"].as_slice(),
-            ),
-            ("WasmProjectVolumeOwnerWire", ["kind", "id"].as_slice()),
-            ("WasmAgentVolumeOwnerWire", ["kind", "id"].as_slice()),
-            ("WasmSessionVolumeOwnerWire", ["kind", "id"].as_slice()),
-            (
-                "WasmVolumeRefWire",
-                ["provider", "id", "class", "owner"].as_slice(),
-            ),
-            (
-                "WasmFileDescriptorWire",
-                ["sha256", "byte_length", "media_type"].as_slice(),
-            ),
-            (
-                "WasmFileRefWire",
-                ["volume", "path", "version", "descriptor", "display_name"].as_slice(),
-            ),
-            ("WasmAuthorityWire", ["kind", "id"].as_slice()),
-            (
-                "WasmEventReferenceWire",
-                ["authority", "revision"].as_slice(),
-            ),
-            (
-                "WasmExtensionDependencyWire",
-                ["name", "version"].as_slice(),
-            ),
-            (
-                "WasmExtensionConfigurationWire",
-                ["extension", "schema_digest", "content"].as_slice(),
-            ),
-            (
-                "WasmResourceRefWire",
-                ["kind", "provider", "key", "version"].as_slice(),
-            ),
-            (
-                "WasmExecutionPlacementWire",
-                ["provider", "build", "environment", "readiness_revision"].as_slice(),
-            ),
-            (
-                "WasmExtensionAdmissionWire",
-                ["source", "selected", "configurations"].as_slice(),
-            ),
-            (
-                "WasmTaskAdmissionWire",
-                [
-                    "contract",
-                    "operation_id",
-                    "task",
-                    "machine",
-                    "input",
-                    "input_schema",
-                    "output_schema",
-                    "parent",
-                    "resource_proofs",
-                    "grants",
-                    "limits",
-                    "run_limits",
-                    "policy",
-                    "extensions",
-                    "execution",
-                ]
-                .as_slice(),
-            ),
-            (
-                "WasmDurableBatchWire",
-                [
-                    "contract",
-                    "group_id",
-                    "batch_id",
-                    "group_policy",
-                    "task",
-                    "machine",
-                    "inputs",
-                    "input_schema",
-                    "output_schema",
-                    "parent",
-                    "resource_proofs",
-                    "grants",
-                    "limits",
-                    "run_limits",
-                    "extensions",
-                    "policy",
-                    "execution",
-                ]
-                .as_slice(),
-            ),
-            (
-                "WasmBatchAdmissionRequest",
-                [
-                    "contract",
-                    "groupId",
-                    "batchId",
-                    "taskName",
-                    "revision",
-                    "implementationDigest",
-                    "parentTaskId",
-                    "policy",
-                    "members",
-                    "canonical",
-                    "inputDigest",
-                ]
-                .as_slice(),
-            ),
-            (
-                "WasmTaskAdmissionIdentities",
-                ["task", "machine"].as_slice(),
-            ),
-        ];
-        for (name, fields) in expected {
-            assert_eq!(
-                generated_interface_fields(&source, name),
-                fields.iter().map(|field| (*field).to_owned()).collect()
-            );
-        }
-        let compact = source.split_whitespace().collect::<String>();
-        for signature in [
-            "exportfunctionadmitBatch(value:WasmBatchAdmissionInput):WasmDurableBatchWire;",
-            "exportfunctionadmitBatchRequest(value:WasmBatchAdmissionInput):WasmBatchAdmissionRequest;",
-            "exportfunctionadmitTask(value:WasmTaskAdmissionInput):WasmTaskAdmissionWire;",
-            "exportfunctiontaskAdmissionIdentities(value:WasmTaskIdentityInput):WasmTaskAdmissionIdentities;",
-        ] {
-            assert!(
-                compact.contains(signature),
-                "missing generated signature {signature}"
-            );
-        }
-
         let schema = serde_json::json!({"type": "integer"});
         let requirements = BTreeSet::new();
         let mut extension_value: Value =
@@ -11445,57 +10606,6 @@ mod tests {
                 "generated declaration drift for populated nested {name}"
             );
         }
-        Ok(())
-    }
-
-    #[test]
-    fn generated_file_ref_wire_matches_rust_serde_fixture() -> Result<()> {
-        let file = FileRef::new(
-            VolumeRef::new(
-                ProviderRef::new("local", "filesystem", "2")?,
-                "project",
-                VolumeClass::Project,
-                VolumeOwner::Project("workspace".into()),
-            )?,
-            "config.json",
-            "generation-1",
-            FileDescriptor::from_bytes(br#"{}"#, "application/json")?,
-            "config.json",
-        )?;
-        let value =
-            serde_json::to_value(&file).map_err(|error| Error::Invalid(error.to_string()))?;
-        let Some(source) = generated_wasm_declarations()? else {
-            eprintln!("skipping generated FileRef declaration check: TypeScript package is absent");
-            return Ok(());
-        };
-        let object_fields = |value: &Value| {
-            value
-                .as_object()
-                .map(|fields| fields.keys().cloned().collect::<BTreeSet<_>>())
-                .unwrap_or_default()
-        };
-        assert_eq!(
-            object_fields(&value),
-            generated_interface_fields(&source, "WasmFileRefWire")
-        );
-        assert_eq!(
-            object_fields(&value["volume"]),
-            generated_interface_fields(&source, "WasmVolumeRefWire")
-        );
-        assert_eq!(
-            object_fields(&value["volume"]["provider"]),
-            generated_interface_fields(&source, "WasmProviderRefWire")
-        );
-        assert_eq!(
-            object_fields(&value["volume"]["owner"]),
-            generated_interface_fields(&source, "WasmProjectVolumeOwnerWire")
-        );
-        assert_eq!(
-            object_fields(&value["descriptor"]),
-            generated_interface_fields(&source, "WasmFileDescriptorWire")
-        );
-        assert_eq!(value["volume"]["owner"]["kind"], "project");
-        assert_eq!(value["descriptor"]["media_type"], "application/json");
         Ok(())
     }
 
@@ -11807,7 +10917,7 @@ mod tests {
         assert!(matches!(validate_policy_identity_with_native_work(&identity, &custody, &work),
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "policy name is invalid" })));
         assert_eq!(work.receipt(), observed);
-        drop(NativePolicyPayload { value: identity, custody });
+        drop((identity, custody));
         let (decision, custody) = policy.evaluate_with_native_work(&invocation, &scope, &work)?.await?;
         let ToolPolicyDecision::RequireApproval { prompt } = decision else { panic!("fixture approval"); };
         assert_eq!(custody.bytes(), prompt.capacity() as u64);
@@ -11824,9 +10934,9 @@ mod tests {
         assert_eq!(prompt.as_ptr(), pointer);
         assert!(custody.work().shares_ledger(&work));
         assert!(work.receipt().bytes_hashed > 32);
-        let paid = NativePolicyPayload { value: actual, custody };
+        let paid = (actual, custody);
         let live = work.live_allocation_bytes();
-        assert!(live >= acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + paid.custody.bytes());
+        assert!(live >= acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + paid.1.bytes());
         drop(paid);
         assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
         Ok(())

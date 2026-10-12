@@ -1460,7 +1460,7 @@ pub(crate) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host.validate_provider(reference.as_resource().provider())?;
     let name = std::str::from_utf8(reference.as_resource().key())
         .map_err(|_| Error::Invalid("workspace reference key must be UTF-8".into()))?;
-    io.receive(host.filesystem.open_workspace_measured(name, io.remaining()?, &io.cancellation).await)
+    io.receive(host.filesystem.open_workspace(name, io.remaining()?, &io.cancellation).await)
 }
 
 pub(crate) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1580,7 +1580,7 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
     host: &FilesystemHost<A, O>, name: &str, key: &IdempotencyKey, io: Option<&PreparationIo>,
 ) -> Result<()> {
     let Some(io) = io else {
-        host.filesystem.create_workspace(name).await.map_err(map_error)?;
+        host.filesystem.create_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?;
         return Ok(());
     };
     let lifecycle = if host.filesystem.capabilities().durable {
@@ -1609,7 +1609,7 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
     let operation = acyclic_fs::OperationId::from_bytes(
         super::super::filesystem_key(key).into_bytes(),
     );
-    io.receive(host.filesystem.create_workspace_with_operation_measured(
+    io.receive(host.filesystem.create_workspace_with_operation(
         name, acyclic_fs::VolumeConfig::portable(lifecycle),
         operation, io.remaining()?, &io.cancellation,
     ).await)?;

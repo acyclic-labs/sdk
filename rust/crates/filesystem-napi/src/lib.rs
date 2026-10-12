@@ -4086,8 +4086,8 @@ impl NativeFs {
     #[napi]
     pub async fn create_workspace(&self, name: String) -> Result<NativeWorkspace> {
         self.inner
-            .create_workspace(name)
-            .await
+            .create_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
             .map_err(napi_error)
     }
@@ -4147,8 +4147,8 @@ impl NativeFs {
     #[napi]
     pub async fn open_workspace(&self, name: String) -> Result<NativeWorkspace> {
         self.inner
-            .open_workspace(name)
-            .await
+            .open_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
             .map_err(napi_error)
     }
@@ -8537,7 +8537,7 @@ mod tests {
             },
         )
         .await?;
-        let workspace = fs.create_workspace("main".to_owned()).await?;
+        let workspace = fs.create_workspace("main".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert_eq!(workspace.name(), "main");
         let committed = workspace
             .write("/value.bin".to_owned(), Buffer::from(vec![0, 1, 2, 255]))
@@ -8624,8 +8624,8 @@ mod tests {
             },
         )
         .await?
-        .open_workspace("main".to_owned())
-        .await?;
+        .open_workspace("main".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert_eq!(
             reopened
                 .read("/value.bin".to_owned(), bigint(16))
@@ -8708,7 +8708,7 @@ mod tests {
             },
         )
         .await?;
-        let main = fs.create_workspace("main".to_owned()).await?;
+        let main = fs.create_workspace("main".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         main.write("/base".to_owned(), Buffer::from(vec![1_u8]))
             .await?;
         let agent = main.fork("agent".to_owned(), None).await?;
@@ -8764,7 +8764,7 @@ mod tests {
             },
         )
         .await?;
-        let workspace = fs.create_workspace("leased".to_owned()).await?;
+        let workspace = fs.create_workspace("leased".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let coordinator = fs.operation_windows();
         let parent = workspace.inner.head().await?;
         let now = std::time::SystemTime::now()

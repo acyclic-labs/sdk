@@ -279,8 +279,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         let reference = required(reference, "workspace")?;
         let workspace = self
             .filesystem
-            .open_workspace(&reference.name)
-            .await
+            .open_workspace(&reference.name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         if workspace.id().into_bytes().as_slice() != reference.workspace_id {
             return Err(Status::failed_precondition(
@@ -383,9 +383,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 existing_operation: true,
             });
         }
+        let cancellation = crate::CancellationToken::new();
+        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
         let (current, head) = self
             .filesystem
-            .workspace_head_state(&target.volume, &mut crate::kernel::allocation::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()), &crate::CancellationToken::new())
+            .workspace_head_state(&target.volume, &mut accounting, &cancellation)
             .await
             .map_err(|error| status(&error))?;
         if current == expected {
@@ -497,8 +499,8 @@ where
         config.profile = profile;
         let workspace = self
             .filesystem
-            .create_workspace_with_config_operation(request.name, config, Some(operation_id))
-            .await
+            .create_workspace_with_config_operation(request.name, config, Some(operation_id), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&workspace).await?),
@@ -517,8 +519,8 @@ where
             }
             wire::open_workspace_request::Selector::Name(name) => self
                 .filesystem
-                .open_workspace(name)
-                .await
+                .open_workspace(name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| status(&error))?,
         };
         Ok(Response::new(wire::WorkspaceResponse {
@@ -1321,8 +1323,8 @@ where
             .map_err(|failure| Status::unavailable(failure.error.to_string()))?;
         let workspace = self
             .filesystem
-            .open_workspace(&workspace_ref.name)
-            .await
+            .open_workspace(&workspace_ref.name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         Ok(Response::new(wire::ImportResponse {
             outcome: Some(mutation(

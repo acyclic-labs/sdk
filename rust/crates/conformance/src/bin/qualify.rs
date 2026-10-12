@@ -610,8 +610,8 @@ async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> Result<(), S
     let fs = Box::pin(Fs::local(LocalOptions::new(&root)))
         .await
         .map_err(|error| error.to_string())?;
-    let workspace = Box::pin(fs.create_workspace("consumer-history"))
-        .await
+    let workspace = Box::pin(fs.create_workspace("consumer-history", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| error.to_string())?;
     let mut rng = seed | 1;
     let mut expected = std::collections::BTreeMap::<String, Bytes>::new();
@@ -642,17 +642,17 @@ async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> Result<(), S
             }
         }
     }
-    Box::pin(workspace.write("/unicode-é›ª.txt", Bytes::from_static(b"utf8 path")))
+    Box::pin(workspace.write("/unicode-雪.txt", Bytes::from_static(b"utf8 path")))
         .await
         .map_err(|error| error.to_string())?;
-    expected.insert("/unicode-é›ª.txt".into(), Bytes::from_static(b"utf8 path"));
+    expected.insert("/unicode-雪.txt".into(), Bytes::from_static(b"utf8 path"));
     drop(workspace);
     drop(fs);
     let reopened = Box::pin(Fs::local(LocalOptions::new(&root)))
         .await
         .map_err(|error| error.to_string())?;
-    let workspace = Box::pin(reopened.open_workspace("consumer-history"))
-        .await
+    let workspace = Box::pin(reopened.open_workspace("consumer-history", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| error.to_string())?;
     for (path, value) in expected {
         let observed = Box::pin(workspace.read(&path, 64))
@@ -676,7 +676,7 @@ async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), String> {
     }
     std::fs::write(root.join("wanted"), b"0123456789").map_err(|error| error.to_string())?;
     let source =
-        NativeDemandSource::open(&root, FilesystemProfile::Portable, VolumeLimits::default())
+        NativeDemandSource::open(&root, FilesystemProfile::Portable, VolumeLimits::default(), None, None)
             .await
             .map_err(|error| error.to_string())?;
     let wanted = PortablePath::parse("/wanted", VolumeLimits::default())
@@ -826,8 +826,8 @@ async fn filesystem_sqlite_wal(root: std::path::PathBuf) -> Result<(), String> {
     let fs = Box::pin(Fs::local(LocalOptions::new(&store)))
         .await
         .map_err(|error| error.to_string())?;
-    let workspace = Box::pin(fs.create_workspace("sqlite-wal"))
-        .await
+    let workspace = Box::pin(fs.create_workspace("sqlite-wal", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| error.to_string())?;
     let mount = workspace
         .mount(&destination, MountOptions::read_write())

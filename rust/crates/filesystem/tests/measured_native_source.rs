@@ -201,8 +201,8 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     assert_eq!(advanced.epoch, reference.epoch + 1);
     assert!(matches!(source.validate_current_with_native_work(reference, &work), Err(DemandError::StaleSource)));
     assert_eq!(source.validate_root_with_native_work(&root, identity, &work)?, advanced);
-    let ordinary = NativeDemandSource::open_with_reference(
-        &root, FilesystemProfile::Portable, VolumeLimits::default(), reference,
+    let ordinary = NativeDemandSource::open(
+        &root, FilesystemProfile::Portable, VolumeLimits::default(), Some(reference), None,
     ).await?;
     let prefix = work.receipt();
     assert!(matches!(ordinary.validate_root_with_native_work(&root, identity, &work), Err(DemandError::NativeWorkUnavailable)));
@@ -400,7 +400,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     for stage in 1..=4 {
         let operation = OperationId::new();
-        let prior = Fs::memory().create_workspace_with_operation_measured(
+        let prior = Fs::memory().create_workspace_with_operation(
             "companion-fault", config, operation, budget, &CancellationToken::new(),
         ).await?;
         let fs = Fs::memory();
@@ -414,7 +414,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         assert_eq!(*failure.work, prior.work.checked_add(attachment_root_hash_work(stage)?)?.checked_add(store.spent_work())?);
         failure.work.verify(budget)?;
         assert_eq!(store.requests.load(Ordering::SeqCst), stage);
-        let workspace = fs.open_workspace("companion-fault").await?;
+        let workspace = fs.open_workspace("companion-fault", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let initial = workspace.operation_generation(
             IdempotencyKey::from_bytes(operation.into_bytes()),
         ).await?.ok_or("companion failure lost the real committed creation")?;
@@ -449,7 +449,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
 async fn attachment_creation_failure_and_companion_admission_keep_exact_prior_work() -> TestResult {
     let directory = tempfile::tempdir()?;
     let source = Arc::new(NativeDemandSource::open(
-        directory.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+        directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
     ).await?);
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     let operation = OperationId::new();
@@ -457,7 +457,7 @@ async fn attachment_creation_failure_and_companion_admission_keep_exact_prior_wo
     let cancellation = CancellationToken::new();
     let mut denied_creation = budget;
     denied_creation.authority_records_read = 0;
-    let failed_creation = Fs::memory().create_workspace_with_operation_measured(
+    let failed_creation = Fs::memory().create_workspace_with_operation(
         "creation-before-binding", config, operation, denied_creation, &cancellation,
     ).await.err().ok_or("creation admitted zero authority reads")?;
     assert!(failed_creation.work.authority_records_appended > 0);
@@ -472,7 +472,7 @@ async fn attachment_creation_failure_and_companion_admission_keep_exact_prior_wo
     failure.work.verify(denied_creation)?;
     assert_eq!(store.requests.load(Ordering::SeqCst), 0);
 
-    let prior = Fs::memory().create_workspace_with_operation_measured(
+    let prior = Fs::memory().create_workspace_with_operation(
         "companion-admission", config, operation, budget, &cancellation,
     ).await?;
     let mut denied_companion = budget;
@@ -486,7 +486,7 @@ async fn attachment_creation_failure_and_companion_admission_keep_exact_prior_wo
     assert_eq!(*failure.work, prior.work);
     failure.work.verify(denied_companion)?;
     assert_eq!(store.requests.load(Ordering::SeqCst), 1);
-    let workspace = fs.open_workspace("companion-admission").await?;
+    let workspace = fs.open_workspace("companion-admission", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(store.inner.load_lazy_workspace(workspace.id()).await?.is_none());
     let recovered = LazyWorkspace::attach_with_operation_measured(
         &fs, "companion-admission", source.clone(), store.clone(), config, operation,
@@ -505,7 +505,7 @@ async fn attachment_creation_failure_and_companion_admission_keep_exact_prior_wo
     assert!(matches!(failure.error, LazyWorkspaceError::Cancelled));
     assert_eq!(*failure.work, WorkCounters::default());
     assert_eq!(untouched.requests.load(Ordering::SeqCst), 0);
-    assert!(fs.open_workspace("cancelled-attachment").await.is_err());
+    assert!(fs.open_workspace("cancelled-attachment", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     Ok(())
 }
 
@@ -527,7 +527,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     let store = FaultingCompanion::new(0);
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     let operation = OperationId::new();
-    let prior = Fs::memory().create_workspace_with_operation_measured(
+    let prior = Fs::memory().create_workspace_with_operation(
         "epoch-attachment", config, operation, budget, &cancellation,
     ).await?;
     let created = LazyWorkspace::attach_with_operation_measured(
@@ -563,7 +563,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         directory.path().to_path_buf(), FilesystemProfile::Portable, VolumeLimits::default(),
         advanced, Some(observer.clone()), budget, &cancellation,
     ).await?.value);
-    let retry_prior = fs.create_workspace_with_operation_measured(
+    let retry_prior = fs.create_workspace_with_operation(
         "epoch-attachment", config, operation, budget, &cancellation,
     ).await?;
     store.reset_work();
@@ -583,7 +583,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         directory.path().to_path_buf(), FilesystemProfile::Portable, VolumeLimits::default(),
         SourceReference { identity: [52; 16], epoch: advanced.epoch }, None, budget, &cancellation,
     ).await?.value);
-    let prior = fs.create_workspace_with_operation_measured(
+    let prior = fs.create_workspace_with_operation(
         "epoch-attachment", config, operation, budget, &cancellation,
     ).await?;
     store.reset_work();
@@ -595,7 +595,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     assert_eq!(*rejected.work, prior.work.checked_add(store.spent_work())?);
     rejected.work.verify(budget)?;
     assert_eq!(store.load_lazy_workspace(workspace_id).await?, Some(rebound.value));
-    assert_eq!(fs.open_workspace("epoch-attachment").await?.head().await?.id(), head);
+    assert_eq!(fs.open_workspace("epoch-attachment", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.head().await?.id(), head);
     assert_eq!(observer.0.load(Ordering::SeqCst), 0);
     Ok(())
 }
@@ -614,7 +614,7 @@ fn requested(name: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
 async fn native_request_denials_precede_real_io_and_buffer_allocation() -> TestResult {
     let directory = tempfile::tempdir()?;
     std::fs::write(directory.path().join("file"), b"actual source bytes")?;
-    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let path = requested("file")?;
     let token = CancellationToken::new();
     let budget = finite_budget()?;
@@ -663,7 +663,7 @@ async fn native_request_denials_precede_real_io_and_buffer_allocation() -> TestR
 async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -> TestResult {
     let directory = tempfile::tempdir()?;
     std::fs::write(directory.path().join("file"), b"native-read")?;
-    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let path = requested("file")?;
     let token = CancellationToken::new();
     let budget = finite_budget()?;
@@ -695,7 +695,7 @@ async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -
 async fn native_continuation_replays_consumed_entries_after_budget_denial() -> TestResult {
     let directory = tempfile::tempdir()?;
     for index in 0..8 { std::fs::write(directory.path().join(format!("entry-{index}")), b"body")?; }
-    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let path = requested("")?;
     let token = CancellationToken::new();
     let budget = finite_budget()?;
@@ -729,7 +729,7 @@ async fn filtered_native_source_forwards_allowances_and_retains_real_failures() 
     let directory = tempfile::tempdir()?;
     std::fs::write(directory.path().join("visible"), b"visible")?;
     std::fs::write(directory.path().join("private"), b"private")?;
-    let native = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let native = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let source = FilteredDemandSource::new(native, vec![requested("private")?]);
     let token = CancellationToken::new();
     let budget = finite_budget()?;
@@ -765,7 +765,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
     let bytes = units.into_iter().flat_map(u16::to_le_bytes).collect::<Vec<_>>();
     let name = LogicalName::new(NameEncoding::WindowsUtf16Le, bytes, limits.maximum_component_bytes)?;
     let path = NamespacePath::new(vec![name.clone()], limits)?;
-    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Windows, limits).await?;
+    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Windows, limits, None, None).await?;
     let token = CancellationToken::new();
     let budget = finite_budget()?;
     let node = source.lookup(source.reference(), &path, budget, &token).await?.value.ok_or("opaque file absent")?;
@@ -783,8 +783,8 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
         .await.err().ok_or("native UTF16 path/read allocation exceeded allowance")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
     failure.work.verify(limited)?;
-    let reopened = NativeDemandSource::open_with_reference(
-        directory.path(), FilesystemProfile::Windows, limits, source.reference(),
+    let reopened = NativeDemandSource::open(
+        directory.path(), FilesystemProfile::Windows, limits, Some(source.reference()), None,
     ).await?;
     let read = reopened.read_range(reopened.reference(), &path, node.version, 0, 6, budget, &token).await?;
     assert_eq!(read.value.bytes.as_ref(), b"opaque");
@@ -796,7 +796,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
 async fn filtered_page_reserves_comparisons_before_committing_native_cursor() -> TestResult {
     let directory = tempfile::tempdir()?;
     for name in ["a", "b", "c"] { std::fs::write(directory.path().join(name), b"actual")?; }
-    let native = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let native = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let source = FilteredDemandSource::new(native, vec![requested("private")?, requested("excluded")?]);
     let root = requested("")?;
     let token = CancellationToken::new();
@@ -829,7 +829,7 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
 async fn native_unpublished_pages_restore_initial_and_continuation_positions() -> TestResult {
     let directory = tempfile::tempdir()?;
     for name in ["a", "b", "c", "d"] { std::fs::write(directory.path().join(name), b"body")?; }
-    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let root = requested("")?;
     let token = CancellationToken::new();
     let budget = finite_budget()?;
@@ -870,7 +870,7 @@ async fn native_unpublished_pages_restore_initial_and_continuation_positions() -
 async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry() -> TestResult {
     let directory = tempfile::tempdir()?;
     for name in ["a", "b", "c"] { std::fs::write(directory.path().join(name), b"actual")?; }
-    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default()).await?;
+    let source = NativeDemandSource::open(directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
     let root = requested("")?;
     let live = CancellationToken::new();
     let budget = finite_budget()?;

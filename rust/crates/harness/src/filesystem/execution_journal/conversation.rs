@@ -193,14 +193,16 @@ where
                 "turn identity is bound to another context selection".into(),
             ));
         }
-        let selected = select_model_context_at_revision(
+        let selected = select_model_context(
             historical,
+            selection.conversation_revision,
             selection,
             self.input_verifier.as_deref().ok_or_else(|| Error::Unsupported("canonical conversation reader is not bound".into()))?,
             limits.context_messages,
             limits.attachments,
             limits.render_bytes,
             limits.attachments,
+            None,
         )
         .await?;
         drop(aggregate);

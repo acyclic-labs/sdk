@@ -95,7 +95,7 @@ async fn native_control_events_preserve_the_original_until_actual_parent_buffer_
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let fs = crate::Fs::memory();
-    let workspace = fs.create_workspace("native-parent-buffer-custody").await?;
+    let workspace = fs.create_workspace("native-parent-buffer-custody", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let checkout = workspace.checkout_measured(
         crate::model::GenerationSelector::Head, crate::model::CheckoutMode::read_only_pinned(),
         WorkBudget::UNBOUNDED, &cancellation,
@@ -167,7 +167,7 @@ async fn native_data_is_already_original_standing_but_retires_with_its_actual_na
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let fs = crate::Fs::memory();
-    let workspace = fs.create_workspace("native-name-buffer-custody").await?;
+    let workspace = fs.create_workspace("native-name-buffer-custody", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let checkout = workspace.checkout_measured(
         crate::model::GenerationSelector::Head, crate::model::CheckoutMode::read_only_pinned(),
         WorkBudget::UNBOUNDED, &cancellation,

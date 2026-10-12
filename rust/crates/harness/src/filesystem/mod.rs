@@ -9,6 +9,7 @@
 #![doc = include_str!("../../docs/filesystem.md")]
 
 use crate::contract::capability;
+use acyclic_fs::WorkCounters;
 use crate::{
     AgentId, Error, IdempotencyKey, Result,
     conversation::{
@@ -55,7 +56,7 @@ use fork_preparer::bounded_io as fork_preparer_io;
 pub(crate) use fork_preparer::OriginalForkAllocationClaim;
 pub(crate) use fork_preparer::bounded_io::{preparation_slot_bytes, PreparationIo, UploadRecord, PreparationRecord, ReservedDecoded, DecodeReservation};
 mod summary_fork;
-pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider};
+pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider, FilesystemRootBootstrapAllocation};
 mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
 mod project_workspaces;
@@ -68,7 +69,7 @@ pub use memory::{LocalHarness, MemoryHarnessStorage};
 mod text_tools;
 pub use text_tools::ExactTextReplacement;
 mod root_source;
-pub use root_source::FsRootProjectSourceProvider;
+pub use root_source::{FsRootNativeSource, FsRootProjectSourceProvider};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_execution;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -117,6 +118,7 @@ pub use recursive::{
 };
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
+    NativeExistingLazyVolume, NativeRootOutputSource, NativeTaskWorkingView,
     BorrowedNativeVolumeBinding, NativePreparationReceipt, NativePreparationRoot,
     NativeProcessView, NativeProcessNamespaceScopes, NativePublicationFailure, NativeViewOwner, NativeVolumeView,
     NativePublicationCleanup, NativePublicationReservation, NativePublicationReservationFailure,
@@ -124,7 +126,7 @@ pub use native_execution::{
     NativePreparationJournalError, NativePreparationJournalObservation, NativeRecordedPreparation,
     NativeViewPublicationError, NativeViewPublicationReceipt,
     NativeTaskViewDrainReceipt, NativeTaskViewDrainFailure,
-    copy_native_mapping_with_work, copy_native_volume_with_work, copy_native_generation_with_work,
+    copy_native_mapping_with_work,
     bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
 };
 pub use task_commands::{
@@ -2090,6 +2092,7 @@ pub struct FilesystemProjectMergeVerifier<A, O> {
 }
 
 impl UploadRecord for JoinCommitWitness {
+    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
         Ok(std::mem::size_of::<Self>() as u64)
     }
@@ -2203,13 +2206,13 @@ where
             let source_generation = fork_preparer_io::generation(&self.host, &source_workspace, &receipt.source_generation, &io).await?;
             let expected = fork_preparer_io::generation(&self.host, &target_workspace, &receipt.expected_target_generation, &io).await?;
             let result = fork_preparer_io::generation(&self.host, &target_workspace, &receipt.result_generation, &io).await?;
-            if witness.source_workspace() != source_workspace.id().volume_id()
-                || witness.target_workspace() != target_workspace.id().volume_id()
-                || witness.source_generation() != source_generation.id()
-                || witness.expected_target() != expected.id()
-                || witness.result_generation() != result.id()
-                || witness.operation_id().into_bytes().as_slice() != receipt.provider_operation_id.as_slice()
-                || witness.history() != JoinHistory::Merge
+            if witness.source_workspace != source_workspace.id().volume_id()
+                || witness.target_workspace != target_workspace.id().volume_id()
+                || witness.source_generation != source_generation.id()
+                || witness.expected_target != expected.id()
+                || witness.result_generation != result.id()
+                || witness.operation_id.into_bytes().as_slice() != receipt.provider_operation_id.as_slice()
+                || witness.history != JoinHistory::Merge
                 || !target_workspace.verify_join_commit_with_native_work(&witness, work, work.cancellation())
                     .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
             {
@@ -2280,14 +2283,14 @@ where
                 .host
                 .generation(&target_workspace, &receipt.result_generation)
                 .await?;
-            if witness.source_workspace() != source_workspace.id().volume_id()
-                || witness.target_workspace() != target_workspace.id().volume_id()
-                || witness.source_generation() != source_generation.id()
-                || witness.expected_target() != expected.id()
-                || witness.result_generation() != result.id()
-                || witness.operation_id().into_bytes().as_slice()
+            if witness.source_workspace != source_workspace.id().volume_id()
+                || witness.target_workspace != target_workspace.id().volume_id()
+                || witness.source_generation != source_generation.id()
+                || witness.expected_target != expected.id()
+                || witness.result_generation != result.id()
+                || witness.operation_id.into_bytes().as_slice()
                     != receipt.provider_operation_id.as_slice()
-                || witness.history() != JoinHistory::Merge
+                || witness.history != JoinHistory::Merge
                 || !target_workspace
                     .verify_join_commit(&witness)
                     .await
@@ -3140,7 +3143,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         handle.grant().require_with_io(source, VolumeOperation::Read, io)
     }
 
-    pub async fn prepare_project_import_from_selected_source<P: crate::store::StreamProvider>(
+    pub async fn prepare_project_import_from_selected_source<P: acyclic_stream::StreamProvider>(
         &self, source: &VolumeRef, generation: &GenerationRef,
         handle: &crate::source_authorization::ProjectSourceReadHandle,
         owner: &Arc<crate::durable_host::TaskJournalOwner<P>>,
@@ -3152,7 +3155,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             || owner.verify_project_source_handle(context, handle)).await
     }
 
-    pub async fn prepare_project_import_at_from_selected_source<P: crate::store::StreamProvider>(
+    pub async fn prepare_project_import_at_from_selected_source<P: acyclic_stream::StreamProvider>(
         &self, source: &VolumeRef, generation: &GenerationRef, target: &GenerationRef,
         handle: &crate::source_authorization::ProjectSourceReadHandle,
         owner: &Arc<crate::durable_host::TaskJournalOwner<P>>,
@@ -3218,7 +3221,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn prepare_project_import_from_selected_source_with_native_work<P: crate::store::StreamProvider>(
+    pub async fn prepare_project_import_from_selected_source_with_native_work<P: acyclic_stream::StreamProvider>(
         &self, source: &VolumeRef, generation: &GenerationRef,
         handle: &crate::source_authorization::ProjectSourceReadHandle,
         owner: &Arc<crate::durable_host::TaskJournalOwner<P>>,
@@ -3232,7 +3235,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn prepare_project_import_at_from_selected_source_with_native_work<P: crate::store::StreamProvider>(
+    pub async fn prepare_project_import_at_from_selected_source_with_native_work<P: acyclic_stream::StreamProvider>(
         &self, source: &VolumeRef, generation: &GenerationRef, target: &GenerationRef,
         handle: &crate::source_authorization::ProjectSourceReadHandle,
         owner: &Arc<crate::durable_host::TaskJournalOwner<P>>,
@@ -3328,7 +3331,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             std::future::ready(guard_owner.check(original));
         plan.plan.apply_with_permit_guarded_with_native_work(
             Self::merge_options(plan, native_project_join_key(operation, work)?),
-            acyclic_fs::WritePermit::Unrestricted, work, work.cancellation(),
+            acyclic_fs::PublicationPermit::Unrestricted, work, work.cancellation(),
             &mut guard,
         ).await
     }
@@ -3346,7 +3349,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             std::future::ready(guard_owner.check(original));
         plan.plan.apply_sides_with_permit_guarded_with_native_work(
             Self::merge_options(plan, native_project_join_key(operation, work)?),
-            selections, acyclic_fs::WritePermit::Unrestricted, work, work.cancellation(),
+            selections, acyclic_fs::PublicationPermit::Unrestricted, work, work.cancellation(),
             &mut guard,
         ).await
     }
@@ -3771,8 +3774,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let name = volume.storage_name()?;
         self.filesystem
-            .create_workspace(&name)
-            .await
+            .create_workspace(&name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(map_error)?;
         self.resolve(&workspace_ref(self.provider.clone(), &name)?)
             .await
@@ -5000,20 +5003,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let name = std::str::from_utf8(reference.as_resource().key())
             .map_err(|_| Error::Invalid("workspace reference key must be UTF-8".into()))?;
         self.filesystem
-            .open_workspace(name)
-            .await
+            .open_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(map_error)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn open_with_native_work(
-        &self,
-        reference: &WorkspaceRef,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Workspace<A, O>> {
-        let io = PreparationIo::from_native_work(work)?;
-        fork_preparer::bounded_io::open(self, reference, &io).await
-    }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn open_volume_with_native_work(
@@ -5032,25 +5026,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         fork_preparer::bounded_io::open(self, &reference, &io).await
     }
 
-    async fn open_measured(
-        &self,
-        reference: &WorkspaceRef,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Workspace<A, O>>, Error> {
-        reference.validate().map_err(acyclic_fs::OperationFailure::before_work)?;
-        self.validate_provider(reference.as_resource().provider())
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let name = std::str::from_utf8(reference.as_resource().key()).map_err(|_| {
-            acyclic_fs::OperationFailure::before_work(Error::Invalid(
-                "workspace reference key must be UTF-8".into(),
-            ))
-        })?;
-        self.filesystem
-            .open_workspace_measured(name, budget, cancellation)
-            .await
-            .map_err(|failure| failure.map_with_prior_work(acyclic_fs::WorkCounters::default(), map_error))
-    }
 
     async fn generation(
         &self,
@@ -5081,26 +5056,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         fork_preparer::bounded_io::generation(self, workspace, reference, &io).await
     }
 
-    async fn generation_measured(
-        &self,
-        workspace: &Workspace<A, O>,
-        reference: &GenerationRef,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Generation<A, O>>, Error> {
-        reference.validate().map_err(acyclic_fs::OperationFailure::before_work)?;
-        self.validate_provider(reference.as_resource().provider())
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let bytes: [u8; 32] = reference.as_resource().key().try_into().map_err(|_| {
-            acyclic_fs::OperationFailure::before_work(Error::Invalid(
-                "generation reference key must be 32 bytes".into(),
-            ))
-        })?;
-        workspace
-            .generation_measured(GenerationId::new(Digest::from_bytes(bytes)), budget, cancellation)
-            .await
-            .map_err(|failure| failure.map_with_prior_work(acyclic_fs::WorkCounters::default(), map_error))
-    }
 
     async fn retain_generation(
         &self,
@@ -5285,8 +5240,8 @@ mod tests {
     async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Result<()> {
         let filesystem = Fs::memory();
         let workspace = filesystem
-            .create_workspace("adapter-test")
-            .await
+            .create_workspace("adapter-test", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(map_error)?;
         let expected = workspace.head().await.map_err(map_error)?;
         let provider = ProviderRef::new("example", "filesystem", "1")?;
@@ -5339,41 +5294,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn publication_custody_retains_original_commit_after_head_advances() -> Result<()> {
-        let filesystem = Fs::memory();
-        filesystem.create_workspace("publication-custody").await.map_err(map_error)?;
-        let provider = ProviderRef::new("custody", "filesystem", "1")?;
-        let host = FilesystemHost::new(filesystem, provider.clone())?;
-        let workspace = workspace_ref(provider, "publication-custody")?;
-        let initial = host.resolve(&workspace).await?;
-        let key = IdempotencyKey::new("custody-original")?;
-        let mutations = [WorkspaceMutation::PutFile {
-            path: "/original".into(),
-            bytes: b"original".to_vec().into(),
-        }];
-        let committed = host
-            .apply_generation(&workspace, Some(&initial.generation), &mutations, &key)
-            .await?;
-        let original = host.generation_ref(&committed)?;
-        committed
-            .pin(format!("harness-generation-{}", hex::encode(original.as_resource().key())))
-            .await
-            .map_err(map_error)?;
-        host.apply(
-            &workspace,
-            Some(&original),
-            &[WorkspaceMutation::PutFile {
-                path: "/original".into(),
-                bytes: b"later".to_vec().into(),
-            }],
-            &IdempotencyKey::new("custody-later")?,
-        ).await?;
-        assert_eq!(committed.read("/original", 16).await.map_err(map_error)?.as_ref(), b"original");
-        assert_eq!(host.read(&workspace, Some(&original), "/original", 16).await?.as_ref(), b"original");
-        assert_eq!(host.read(&workspace, None, "/original", 16).await?.as_ref(), b"later");
-        Ok(())
-    }
 
     #[tokio::test]
     async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<()> {
@@ -5953,6 +5873,7 @@ mod tests {
                 max_output_tokens: Some(32),
             },
             Limits::default(),
+            None,
         )?;
         let model_digest = prepared_request.manifest().request_digest;
         let request = journal

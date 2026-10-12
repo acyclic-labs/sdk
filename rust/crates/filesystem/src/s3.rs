@@ -1130,9 +1130,9 @@ mod tests {
     async fn s3_view_is_the_same_generation_and_copy_is_body_free()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("s3").await?;
+        let workspace = fs.create_workspace("s3", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let s3 = workspace.s3();
-        let other = fs.create_workspace("another-s3-workspace").await?;
+        let other = fs.create_workspace("another-s3-workspace", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut foreign = other.begin_transaction(IdempotencyKey::new()).await?;
         assert!(matches!(
             s3.write_staged(&mut foreign, "foreign", &[]).await,
@@ -1213,7 +1213,7 @@ mod tests {
     async fn listing_is_bounded_and_pagination_is_stable() -> Result<(), Box<dyn std::error::Error>>
     {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("pages").await?;
+        let workspace = fs.create_workspace("pages", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let s3 = workspace.s3();
         for key in ["a", "b", "c"] {
             s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
@@ -1280,7 +1280,7 @@ mod tests {
     async fn delimiter_pages_preserve_order_and_exact_resume()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("delimiter-pages").await?;
+        let workspace = fs.create_workspace("delimiter-pages", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let s3 = workspace.s3();
         for key in ["a/one", "a/two", "b/one", "c"] {
             s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
@@ -1323,7 +1323,7 @@ mod tests {
     async fn listing_pages_use_flat_key_order_without_scanning_every_entry()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("lazy-listing").await?;
+        let workspace = fs.create_workspace("lazy-listing", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let s3 = workspace.s3();
         for key in ["a/x", "a-", "a.", "a0", "b", "z"] {
             s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
@@ -1364,7 +1364,7 @@ mod tests {
     #[tokio::test]
     async fn listing_matches_an_independent_key_model() -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("listing-model").await?;
+        let workspace = fs.create_workspace("listing-model", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let s3 = workspace.s3();
         let keys = [
             "a/x",
@@ -1427,7 +1427,7 @@ mod tests {
     async fn listing_uses_fetched_witness_before_requesting_another_page()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("listing-witness").await?;
+        let workspace = fs.create_workspace("listing-witness", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let s3 = workspace.s3();
         for key in ["a", "b", "c", "d", "p/x"] {
             s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
@@ -1469,7 +1469,7 @@ mod tests {
         assert_eq!(two.entries_examined, 3);
         assert!(two.next_continuation.is_some());
 
-        let workspace = fs.create_workspace("listing-prefix-witness").await?;
+        let workspace = fs.create_workspace("listing-prefix-witness", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let s3 = workspace.s3();
         for key in ["a", "b/x", "c", "d"] {
             s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
@@ -1500,7 +1500,7 @@ mod tests {
     async fn flat_continuations_seek_without_replaying_earlier_pages()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("flat-seek").await?;
+        let workspace = fs.create_workspace("flat-seek", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let s3 = workspace.s3();
         for index in 0..32 {
             s3.put_object(
@@ -1531,7 +1531,7 @@ mod tests {
     async fn object_cursor_seeks_past_dense_predecessor_keys()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("dense-list-cursor").await?;
+        let workspace = fs.create_workspace("dense-list-cursor", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let s3 = workspace.s3();
         for index in 0..32 {
             s3.put_object(
@@ -1575,7 +1575,7 @@ mod tests {
     async fn object_cursor_at_a_directory_includes_its_descendants()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("directory-marker").await?;
+        let workspace = fs.create_workspace("directory-marker", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let s3 = workspace.s3();
         s3.put_object("a/x", Bytes::from_static(b"x"), IdempotencyKey::new())
             .await?;
@@ -1607,7 +1607,7 @@ mod tests {
     async fn listing_descends_to_the_exact_prefix_frontier_without_unrelated_subtrees()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("prefix-frontier").await?;
+        let workspace = fs.create_workspace("prefix-frontier", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let s3 = workspace.s3();
         for index in 0..32 {
             s3.put_object(
@@ -1650,7 +1650,7 @@ mod tests {
     async fn multipart_stages_off_authority_and_publishes_one_ordered_generation()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("multipart").await?;
+        let workspace = fs.create_workspace("multipart", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let before = workspace.head().await?.id();
         let mut upload = workspace
             .s3()

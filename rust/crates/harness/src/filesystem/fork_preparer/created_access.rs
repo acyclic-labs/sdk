@@ -20,6 +20,10 @@ pub struct FilesystemResourceCreationProvider<A, O> {
     host: Arc<FilesystemHost<A, O>>,
     issuer: AuthorityIssuer,
     #[cfg(not(target_arch = "wasm32"))]
+    root_project: std::sync::OnceLock<Arc<FilesystemRootBootstrapAllocation<A, O>>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    root_scratch: std::sync::OnceLock<Arc<FilesystemRootBootstrapAllocation<A, O>>>,
+    #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
@@ -27,7 +31,15 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
     /// Binds the Filesystem host and the preparation coordinator's issuer.
     pub fn new(host: Arc<FilesystemHost<A, O>>, issuer: AuthorityIssuer) -> Result<Self> {
         host.provider.validate()?;
-        Ok(Self { host, issuer, #[cfg(not(target_arch = "wasm32"))] native_custody: None })
+        Ok(Self {
+            host, issuer,
+            #[cfg(not(target_arch = "wasm32"))]
+            root_project: std::sync::OnceLock::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            root_scratch: std::sync::OnceLock::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: None,
+        })
     }
 
     /// Copies the configured signing identity through the original ledger.
@@ -42,7 +54,10 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         let (issuer, mut issuer_custody) = issuer.clone_with_native_work(work)?;
         custody.absorb(&mut issuer_custody)
             .map_err(|cause| Error::NativeWork { cause, custody: Some(issuer_custody) })?;
-        Ok(Self { host, issuer, native_custody: Some(custody) })
+        Ok(Self {
+            host, issuer, native_custody: Some(custody),
+            root_project: std::sync::OnceLock::new(), root_scratch: std::sync::OnceLock::new(),
+        })
     }
 
     /// Shares the already paid logical creator Self with one SDK Arc attempt.
@@ -474,7 +489,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocat
                 &name, self.config, self.operation, work, &io.cancellation,
             ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
         } else {
-            io.receive(self.host.filesystem.workspace_for_creation_operation_measured(
+            io.receive(self.host.filesystem.workspace_for_creation_operation(
                 &name, self.config, self.operation, io.remaining()?, &io.cancellation,
             ).await)?
         };
@@ -559,7 +574,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             reason: "Root eager content does not select a lazy publication candidate",
         })?;
         io.verify_publication_lease(lease.as_ref()).await?;
-        self.reauthenticate(i, Some(io)).await?;
+        self.reauthenticate_with_io(io).await?;
         let source = self.native_source.as_ref().expect("authenticated original lazy source");
         let snapshot = self.native_snapshot.expect("authenticated original lazy snapshot");
         let hashing = WorkCounters { bytes_hashed: key.as_str().len() as u64,
@@ -619,7 +634,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "Root content handle names another original namespace" });
         }
-        self.allocation.reauthenticate(i, Some(io)).await
+        self.allocation.reauthenticate_with_io(io).await
     }
 
     async fn authenticate_original(&self, volume: &VolumeRef) -> Result<()> {
@@ -1631,7 +1646,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
                     reason: "Root content original admission does not declare Project or Scratch READ" });
             }
             let writable = allocation.writable && context.original_root().grants.contains(&write);
-            allocation.reauthenticate(&i, Some(&io)).await?;
+            allocation.reauthenticate_with_io(&io).await?;
             let id = Self::owned_label("root-created:", &name, &io)?;
             drop(name);
             drop(name_hold);

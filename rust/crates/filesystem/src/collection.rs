@@ -920,7 +920,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = crate::CancellationToken::new();
         let fs = crate::Fs::memory();
-        let workspace = fs.create_workspace("registered-collection-root-custody").await?;
+        let workspace = fs.create_workspace("registered-collection-root-custody", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/seed", "body").await?;
         let checkout = workspace.checkout_measured(
             crate::model::GenerationSelector::Head,

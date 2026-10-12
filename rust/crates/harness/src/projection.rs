@@ -10,7 +10,6 @@ use crate::{
     model::{FileProjectionPolicy, ModelContent, ModelContentPart, ModelMessage, ModelRole},
     tool::ToolInvocation,
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 use std::collections::{HashMap, HashSet};
@@ -51,103 +50,6 @@ impl crate::filesystem::PreparationRecord for ProjectedToolInvocation {
     }
     fn json_value_schema() -> crate::contract::JsonValueSchema {
         crate::contract::JsonValueSchema::ProjectedToolInvocation
-    }
-}
-
-#[cfg(feature = "filesystem")]
-impl crate::filesystem::PreparationRecord for crate::model::ToolResultContent {
-    fn maximum_slot_bytes() -> u64 {
-        <crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
-            .max(std::mem::size_of::<Self>() as u64)
-    }
-    fn diagnostic_label_bytes() -> u64 {
-        crate::contract::preparation_serde_diagnostic_label_bytes()
-    }
-    fn json_value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::ToolResultContent
-    }
-}
-
-/// Provider-owned, grant-checked resolver for a complete attachment manifest.
-pub trait AttachmentListResolver: acyclic_stream::ProviderPlatform {
-    /// Verifies the pinned manifest bytes and returns its complete ordered list.
-    fn resolve<'a>(
-        &'a self,
-        manifest: &'a FileRef,
-        item_count: u32,
-    ) -> BoxFuture<'a, Result<Vec<Attachment>>>;
-
-    /// Reads one bounded, exact structured artifact for tool-context projection.
-    fn read<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "tool artifact resolution is unavailable".into(),
-            ))
-        })
-    }
-
-    /// Resolves the original pinned manifest on the caller's native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn resolve_with_native_work<'a>(
-        &'a self,
-        _manifest: &'a FileRef,
-        _item_count: u32,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<Attachment>, acyclic_fs::NativeAllocation)>> {
-        _work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native attachment resolver capability is unavailable",
-        })
-    }
-
-    /// Reads an exact artifact using the provider's original grant checks.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn read_with_native_work<'a>(
-        &'a self,
-        _file: &'a FileRef,
-        _maximum_bytes: u64,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        _work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native tool artifact resolver capability is unavailable",
-        })
-    }
-}
-
-impl<T: ContentResidencyVerifier + ?Sized> AttachmentListResolver for T {
-    fn resolve<'a>(
-        &'a self,
-        manifest: &'a FileRef,
-        item_count: u32,
-    ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-        Box::pin(async move { self.load_manifest(manifest, item_count).await })
-    }
-
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        ContentResidencyVerifier::read(self, file)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn resolve_with_native_work<'a>(
-        &'a self,
-        manifest: &'a FileRef,
-        item_count: u32,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<Attachment>, acyclic_fs::NativeAllocation)>> {
-        ContentResidencyVerifier::load_manifest_with_native_work(self, manifest, item_count, work)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn read_with_native_work<'a>(
-        &'a self,
-        file: &'a FileRef,
-        maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        ContentResidencyVerifier::read_with_native_work(self, file, maximum_bytes, work)
     }
 }
 
@@ -400,56 +302,7 @@ impl SelectedModelContext {
     }
 }
 
-/// Selects a bounded ordered subset.
-#[allow(
-    clippy::too_many_lines,
-    reason = "projection enforces one bounded ordered selection"
-)]
-pub async fn select_model_context<R: AttachmentListResolver + ?Sized>(
-    conversation: &ConversationState,
-    selection: ModelContextSelection,
-    resolver: &R,
-    maximum_messages: usize,
-    maximum_attachments: usize,
-    maximum_render_bytes: u64,
-) -> Result<SelectedModelContext> {
-    select_model_context_with_projection_limit(
-        conversation,
-        selection,
-        resolver,
-        maximum_messages,
-        maximum_attachments,
-        maximum_render_bytes,
-        maximum_attachments,
-    )
-    .await
-}
-
-/// Selects a bounded ordered subset with an explicit provider attachment allowance.
-#[allow(
-    clippy::too_many_lines,
-    reason = "projection enforces one bounded ordered selection"
-)]
-pub async fn select_model_context_with_projection_limit<R: AttachmentListResolver + ?Sized>(
-    conversation: &ConversationState,
-    selection: ModelContextSelection,
-    resolver: &R,
-    maximum_messages: usize,
-    maximum_attachments: usize,
-    maximum_render_bytes: u64,
-    maximum_projected_attachments: usize,
-) -> Result<SelectedModelContext> {
-    select_model_context_with_projection_limit_and_io(
-        conversation, selection, resolver, maximum_messages, maximum_attachments,
-        maximum_render_bytes, maximum_projected_attachments, None,
-    ).await
-}
-
-#[allow(
-    clippy::too_many_lines, clippy::too_many_arguments,
-    reason = "one canonical ordered reducer shares the original optional preparation IO"
-)]
-async fn select_model_context_with_projection_limit_and_io<R: AttachmentListResolver + ?Sized>(
+async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVerifier + ?Sized>(
     conversation: &ConversationState,
     selection: ModelContextSelection,
     resolver: &R,
@@ -608,27 +461,12 @@ async fn select_model_context_with_projection_limit_and_io<R: AttachmentListReso
     })
 }
 
-/// Selects from a loaded, possibly compacted conversation view whose authoritative revision is retained separately from the number of loaded messages.
-pub async fn select_model_context_at_revision<R: AttachmentListResolver + ?Sized>(
-    conversation: &ConversationState,
-    selection: ModelContextSelection,
-    resolver: &R,
-    maximum_messages: usize,
-    maximum_attachments: usize,
-    maximum_render_bytes: u64,
-    maximum_projected_attachments: usize,
-) -> Result<SelectedModelContext> {
-    select_model_context_at_revision_with_io(
-        conversation, selection, resolver, maximum_messages, maximum_attachments,
-        maximum_render_bytes, maximum_projected_attachments, None,
-    ).await
-}
-
-/// Native copies and transferred same-ledger payloads remain owned by `io`.
+/// Projects a selection from the explicitly pinned conversation revision.
 #[allow(clippy::too_many_arguments,
     reason = "the original revision selection ABI adds only its original optional preparation IO")]
-pub(crate) async fn select_model_context_at_revision_with_io<R: AttachmentListResolver + ?Sized>(
+pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
     conversation: &ConversationState,
+    conversation_revision: u64,
     selection: ModelContextSelection,
     resolver: &R,
     maximum_messages: usize,
@@ -640,7 +478,7 @@ pub(crate) async fn select_model_context_at_revision_with_io<R: AttachmentListRe
     validate_model_context_selection_at_revision_with_io(
         conversation,
         &selection,
-        selection.conversation_revision,
+        conversation_revision,
         io,
     )?;
     let original_revision = selection.conversation_revision;
@@ -954,17 +792,14 @@ fn validate_projection_tool_identity(
 
 struct ProjectionIndex<'a, T> {
     values: HashMap<Uuid, T>,
-    held: ProjectionIndexHold<'a>,
-}
-
-struct ProjectionIndexHold<'a> {
     io: Option<&'a crate::executor::PreparationIo>,
     #[cfg(feature = "filesystem")]
     bytes: u64,
 }
 
-impl Drop for ProjectionIndexHold<'_> {
+impl<T> Drop for ProjectionIndex<'_, T> {
     fn drop(&mut self) {
+        drop(std::mem::take(&mut self.values));
         #[cfg(feature = "filesystem")]
         if let Some(io) = self.io {
             io.release(self.bytes).expect("projection index owns its live logical slots");
@@ -974,20 +809,18 @@ impl Drop for ProjectionIndexHold<'_> {
 
 impl<'a, T> ProjectionIndex<'a, T> {
     fn new(io: Option<&'a crate::executor::PreparationIo>) -> Self {
-        Self { values: HashMap::new(), held: ProjectionIndexHold {
-            io, #[cfg(feature = "filesystem")] bytes: 0,
-        } }
+        Self { values: HashMap::new(), io, #[cfg(feature = "filesystem")] bytes: 0 }
     }
 
     fn insert(&mut self, id: &Uuid, value: T) -> Result<()> {
-        projection_step(self.held.io, 1)?;
+        projection_step(self.io, 1)?;
         #[cfg(feature = "filesystem")]
-        if let Some(io) = self.held.io {
+        if let Some(io) = self.io {
             let bytes = std::mem::size_of::<(Uuid, T)>() as u64;
-            let total = self.held.bytes.checked_add(bytes)
+            let total = self.bytes.checked_add(bytes)
                 .ok_or_else(|| projection_invalid(Some(io), "projection index ownership overflows"))?;
             io.claim(bytes)?;
-            self.held.bytes = total;
+            self.bytes = total;
             let copied = acyclic_fs::WorkCounters {
                 bytes_copied: 16, ..Default::default()
             };
@@ -999,7 +832,7 @@ impl<'a, T> ProjectionIndex<'a, T> {
     }
 
     fn get(&self, id: &Uuid) -> Result<Option<&T>> {
-        projection_step(self.held.io, 1)?;
+        projection_step(self.io, 1)?;
         Ok(self.values.get(id))
     }
 }
@@ -1113,7 +946,7 @@ impl Iterator for ProjectionFiles<'_> {
     }
 }
 
-async fn resolve_projection_attachments<'a, R: AttachmentListResolver + ?Sized>(
+async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized>(
     message: &'a ConversationMessage, resolver: &'a R, maximum_attachments: usize,
     io: Option<&'a crate::executor::PreparationIo>,
 ) -> Result<ProjectionAttachments<'a>> {
@@ -1126,7 +959,7 @@ async fn resolve_projection_attachments<'a, R: AttachmentListResolver + ?Sized>(
                 if *item_count as usize > maximum_attachments {
                     return Err(projection_invalid(Some(io), "selected message exceeds attachment projection limit"));
                 }
-                let (items, custody) = resolver.resolve_with_native_work(
+                let (items, custody) = resolver.load_manifest_with_native_work(
                     manifest, *item_count, io.original_native_work().expect("checked native work"),
                 )?.await?;
                 let source = NativeProjectionSource { value: items, custody };
@@ -1159,7 +992,7 @@ async fn resolve_projection_attachments<'a, R: AttachmentListResolver + ?Sized>(
     Ok(ProjectionAttachments::Owned(resolve_attachments(message, resolver, maximum_attachments).await?))
 }
 
-async fn read_projected_invocation<R: AttachmentListResolver + ?Sized>(
+async fn read_projected_invocation<R: ContentResidencyVerifier + ?Sized>(
     resolver: &R, file: &FileRef, maximum_bytes: u64,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<ProjectedToolInvocation> {
@@ -1183,7 +1016,7 @@ async fn read_projected_invocation<R: AttachmentListResolver + ?Sized>(
     read_json_artifact(resolver, file, maximum_bytes).await
 }
 
-async fn read_projected_tool_result<R: AttachmentListResolver + ?Sized>(
+async fn read_projected_tool_result<R: ContentResidencyVerifier + ?Sized>(
     resolver: &R, file: &FileRef, maximum_bytes: u64,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<crate::model::ToolResultContent> {
@@ -1409,7 +1242,7 @@ fn convert_owned_projection_source<'a, T: NativeProjectionArtifact>(
 }
 
 #[cfg(feature = "filesystem")]
-async fn read_owned_projection_value<'io, R: AttachmentListResolver + ?Sized>(
+async fn read_owned_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     resolver: &R, file: &FileRef, maximum_bytes: u64,
     io: &'io crate::executor::PreparationIo,
 ) -> Result<crate::filesystem::ReservedDecoded<'io, serde_json::Value>> {
@@ -1436,7 +1269,7 @@ async fn read_owned_projection_value<'io, R: AttachmentListResolver + ?Sized>(
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-async fn read_native_projection_value<'io, R: AttachmentListResolver + ?Sized>(
+async fn read_native_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     resolver: &R, file: &FileRef, maximum_bytes: u64,
     io: &'io crate::executor::PreparationIo,
 ) -> Result<crate::filesystem::ReservedDecoded<'io, serde_json::Value>> {
@@ -1459,7 +1292,7 @@ async fn read_native_projection_value<'io, R: AttachmentListResolver + ?Sized>(
     Ok(parsed)
 }
 
-async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Sized>(
+async fn read_json_artifact<T: DeserializeOwned, R: ContentResidencyVerifier + ?Sized>(
     resolver: &R,
     file: &FileRef,
     maximum_bytes: u64,
@@ -1509,7 +1342,7 @@ fn validate_model_json_numbers(
     }
 }
 
-async fn resolve_attachments<R: AttachmentListResolver + ?Sized>(
+async fn resolve_attachments<R: ContentResidencyVerifier + ?Sized>(
     message: &ConversationMessage,
     resolver: &R,
     maximum_attachments: usize,
@@ -1525,7 +1358,7 @@ async fn resolve_attachments<R: AttachmentListResolver + ?Sized>(
                     "selected message exceeds attachment projection limit".into(),
                 ));
             }
-            let items = resolver.resolve(manifest, *item_count).await?;
+            let items = resolver.load_manifest(manifest, *item_count).await?;
             if items.len() != *item_count as usize {
                 return Err(Error::Invalid(
                     "attachment manifest count does not match its declared count".into(),
@@ -1545,6 +1378,7 @@ async fn resolve_attachments<R: AttachmentListResolver + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_stream::BoxProviderFuture as BoxFuture;
     use crate::conversation::{
         ConversationMessage, FileDescriptor, VolumeClass, VolumeOwner, VolumeRef,
     };
@@ -1560,8 +1394,12 @@ mod tests {
         calls: AtomicUsize,
     }
 
-    impl AttachmentListResolver for Resolver {
-        fn resolve<'a>(
+    impl ContentResidencyVerifier for Resolver {
+        fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Err(Error::Unsupported("projection-only reader".into())) })
+        }
+
+        fn load_manifest<'a>(
             &'a self,
             _manifest: &'a FileRef,
             _item_count: u32,
@@ -1575,8 +1413,12 @@ mod tests {
         bytes: Vec<u8>,
     }
 
-    impl AttachmentListResolver for ArtifactResolver {
-        fn resolve<'a>(
+    impl ContentResidencyVerifier for ArtifactResolver {
+        fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Err(Error::Unsupported("projection-only reader".into())) })
+        }
+
+        fn load_manifest<'a>(
             &'a self,
             _manifest: &'a FileRef,
             _item_count: u32,
@@ -1739,35 +1581,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn projected_context_dispatch_admission_uses_native_model_bounds() {
-        let id = Uuid::new_v4();
-        let mut selected = SelectedModelContext {
-            selection: ModelContextSelection {
-                checkpoint: None,
-                conversation_revision: 1,
-                message_ids: vec![id],
-            },
-            messages: vec![ModelMessage {
-                role: ModelRole::User,
-                content: ModelContent::Text("hello".into()),
-            }],
-        };
-        assert!(selected.validate_for_dispatch(Limits::default()).is_ok());
-
-        let limits = Limits {
-            render_bytes: 4,
-            ..Limits::default()
-        };
-        assert!(selected.validate_for_dispatch(limits).is_err());
-
-        selected.messages[0].role = ModelRole::Assistant;
-        assert!(selected.validate_for_dispatch(Limits::default()).is_err());
-        selected.messages[0].role = ModelRole::User;
-        selected.selection.message_ids.clear();
-        assert!(selected.validate_for_dispatch(Limits::default()).is_err());
-    }
-
     #[tokio::test]
     async fn manifest_projection_checks_limit_before_resolution_and_exact_count_after() -> Result<()>
     {
@@ -1808,11 +1621,14 @@ mod tests {
         assert!(
             select_model_context(
                 &conversation,
+                (&conversation).logical_revision(),
                 selection.clone(),
                 &resolver,
                 256,
                 1,
-                128 * 1024
+                128 * 1024,
+                1,
+                None,
             )
             .await
             .is_err()
@@ -1821,11 +1637,14 @@ mod tests {
         assert!(
             select_model_context(
                 &conversation,
+                (&conversation).logical_revision(),
                 selection.clone(),
                 &resolver,
                 256,
                 2,
-                128 * 1024
+                128 * 1024,
+                2,
+                None,
             )
             .await
             .is_err()
@@ -1836,7 +1655,7 @@ mod tests {
             calls: AtomicUsize::new(0),
         };
         let projected =
-            select_model_context(&conversation, selection, &resolver, 256, 2, 128 * 1024).await?;
+            select_model_context(&conversation, (&conversation).logical_revision(), selection, &resolver, 256, 2, 128 * 1024, 2, None).await?;
         assert_eq!(projected.messages.len(), 1);
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
         Ok(())
@@ -1895,14 +1714,18 @@ mod tests {
             ordinary: AtomicUsize,
             native: AtomicUsize,
         }
-        impl AttachmentListResolver for NativeResolver {
-            fn resolve<'a>(
+        impl ContentResidencyVerifier for NativeResolver {
+        fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Err(Error::Unsupported("projection-only reader".into())) })
+        }
+
+            fn load_manifest<'a>(
                 &'a self, _: &'a FileRef, _: u32,
             ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
                 self.ordinary.fetch_add(1, Ordering::SeqCst);
                 Box::pin(async { Ok(Vec::new()) })
             }
-            fn resolve_with_native_work<'a>(
+            fn load_manifest_with_native_work<'a>(
                 &'a self, _: &'a FileRef, _: u32,
                 work: &'a acyclic_fs::NativeMaterializationWork,
             ) -> Result<crate::NativeFutureBundle<'a, (Vec<Attachment>, acyclic_fs::NativeAllocation)>> {
@@ -1940,213 +1763,4 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_foreign_manifest_payload_is_copied_without_rebinding_its_guard() -> Result<()> {
-        let source_work = projection_native_work()?;
-        let output_work = projection_native_work()?;
-        let io = crate::filesystem::PreparationIo::from_native_work(&output_work)?;
-        let (reference, mut custody) = file(AgentId::new(), "attachment.txt", "text/plain")?
-            .clone_with_native_work(&source_work)?;
-        let mut vector_custody = source_work.claim(std::mem::size_of::<Attachment>() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let items = vec![Attachment { file: reference, label: None }];
-        custody.absorb(&mut vector_custody)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let expected = items[0].file.clone();
-        let baseline = source_work.remaining()
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes;
-        let source = ProjectionAttachments::Native(NativeProjectionSource { value: items, custody });
-        let mut files = source.into_projected(1, Some(&io))?;
-        let projected = files.next().expect("selected file")?;
-        assert_eq!(projected, expected);
-        assert!(output_work.receipt().bytes_copied > 0);
-        assert_eq!(source_work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?
-            .peak_allocation_bytes, baseline);
-        drop(files);
-        assert!(source_work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?
-            .peak_allocation_bytes > baseline);
-        drop(projected);
-        drop(io);
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_same_ledger_manifest_moves_the_original_paid_file_payload() -> Result<()> {
-        let work = projection_native_work()?;
-        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        let (reference, mut custody) = file(AgentId::new(), "attachment.txt", "text/plain")?
-            .clone_with_native_work(&work)?;
-        let retained = reference.logical_owned_bytes()?;
-        let mut vector_custody = work.claim(std::mem::size_of::<Attachment>() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let items = vec![Attachment { file: reference, label: None }];
-        custody.absorb(&mut vector_custody)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let before = work.receipt();
-        let source = ProjectionAttachments::Native(NativeProjectionSource { value: items, custody });
-        let mut files = source.into_projected(1, Some(&io))?;
-        let projected = files.next().expect("selected file")?;
-        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
-        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
-        assert_eq!(io.owned_bytes()?, retained);
-        drop(files);
-        assert_eq!(io.owned_bytes()?, retained);
-        drop(projected);
-        drop(io);
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_tool_conversion_preserves_original_owned_map_raw_semantics_without_reencoding() -> Result<()> {
-        let work = projection_native_work()?;
-        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        let input = br#"{"call_id":"ok","name":"x","arguments":{"z":true,"$serde_json::private::RawValue":"{\"captured\":7}"}}"#;
-        let parsed = io.decode_preparation_with_code::<serde_json::Value>(
-            input, crate::wire::ErrorCode::Invalid,
-        )?;
-        validate_model_json_numbers(&parsed.value, Some(&io))?;
-        let source_reads = work.receipt().source_bytes_read;
-        let original: serde_json::Value = crate::contract::json_from_slice(input)?;
-        let expected = serde_json::from_value::<ProjectedToolInvocation>(original);
-        let projected = convert_native_projection_value::<ProjectedToolInvocation>(
-            parsed, input.len() as u64, &io,
-        );
-        match (projected, expected) {
-            (Ok(projected), Ok(expected)) => {
-                assert_eq!(projected.call_id, expected.call_id);
-                assert_eq!(projected.name, expected.name);
-                assert_eq!(projected.arguments, expected.arguments);
-                assert_eq!(io.owned_bytes()?, projected.heap_owned_bytes(&io)?);
-                drop(projected);
-            }
-            (Err(Error::NativeDecode { source, custody: Some(custody), .. }), Err(expected)) => {
-                assert_eq!(source.classify(), expected.classify());
-                assert_eq!(source.to_string(), expected.to_string());
-                assert!(custody.work().shares_ledger(&work));
-                drop(source);
-                drop(custody);
-            }
-            _ => panic!("native converter must preserve the original owned-Value result"),
-        }
-        assert_eq!(work.receipt().bytes_encoded, 0);
-        assert_eq!(work.receipt().source_bytes_read, source_reads);
-        drop(io);
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_tool_conversion_preserves_original_decode_cause_and_paid_diagnostic_guard() -> Result<()> {
-        let work = projection_native_work()?;
-        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        let input = br#"{"kind":"parts","parts":[{"kind":"file","file":123,"policy":"reference"}]}"#;
-        let parsed = io.decode_preparation_with_code::<serde_json::Value>(
-            input, crate::wire::ErrorCode::Invalid,
-        )?;
-        let error = convert_native_projection_value::<crate::model::ToolResultContent>(
-            parsed, input.len() as u64, &io,
-        ).err().expect("original typed converter rejects integer FileRef");
-        let Error::NativeDecode { source, custody: Some(custody), .. } = error else {
-            panic!("typed conversion must retain its original serde cause and admitted guard");
-        };
-        assert!(source.is_data());
-        assert!(custody.bytes() > 0);
-        assert!(custody.work().shares_ledger(&work));
-        assert_eq!(io.owned_bytes()?, 0);
-        assert_eq!(work.receipt().bytes_encoded, 0);
-        drop(source);
-        drop(custody);
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[tokio::test]
-    async fn native_tool_result_runs_both_original_converters_after_one_funded_read() -> Result<()> {
-        struct NativeArtifact {
-            bytes: &'static [u8],
-            ordinary: AtomicUsize,
-            native: AtomicUsize,
-        }
-        impl AttachmentListResolver for NativeArtifact {
-            fn resolve<'a>(
-                &'a self, _: &'a FileRef, _: u32,
-            ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-                Box::pin(async { Err(Error::Invalid("unused manifest resolver".into())) })
-            }
-            fn read<'a>(&'a self, _: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-                self.ordinary.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async { Err(Error::Invalid("ordinary read must not run".into())) })
-            }
-            fn read_with_native_work<'a>(
-                &'a self, _: &'a FileRef, _: u64,
-                work: &'a acyclic_fs::NativeMaterializationWork,
-            ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-                crate::NativeFutureBundle::new(work, || async move {
-                    self.native.fetch_add(1, Ordering::SeqCst);
-                    let copied = acyclic_fs::WorkCounters {
-                        bytes_copied: self.bytes.len() as u64, ..Default::default()
-                    };
-                    work.admit(copied).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    let mut custody = work.claim(self.bytes.len() as u64)
-                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    let bytes = self.bytes.to_vec();
-                    if let Err(cause) = custody.reconcile_capacity(bytes.capacity() as u64) {
-                        return Err(Error::NativeWork { cause, custody: Some(custody) });
-                    }
-                    work.charge(copied).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    acyclic_stream::OwnedBytes::from_vec_with_guard(
-                        bytes, custody, work.runtime_meter_owner(),
-                    ).map_err(|failure| match failure.into_error() {
-                        acyclic_stream::PreparedOwnedBytesError::Admission(source) =>
-                            Error::NativeWork { cause: work.runtime_error(source), custody: None },
-                        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized =>
-                            Error::NativeBoundary {
-                                code: crate::wire::ErrorCode::Storage,
-                                reason: "native artifact bytes are not fully initialized",
-                            },
-                        acyclic_stream::PreparedOwnedBytesError::NotUnique =>
-                            Error::NativeBoundary {
-                                code: crate::wire::ErrorCode::Storage,
-                                reason: "native artifact bytes are not uniquely owned",
-                            },
-                    })
-                })
-            }
-        }
-        let input = br#"{"kind":"json","value":{"z":true,"$serde_json::private::RawValue":"{\"z\":false,\"$serde_json::private::RawValue\":\"{\\\"captured\\\":7}\"}"}}"#;
-        let ordinary: serde_json::Value = crate::contract::json_from_slice(input)?;
-        let expected = serde_json::from_value::<serde_json::Value>(ordinary)
-            .and_then(serde_json::from_value::<crate::model::ToolResultContent>);
-        let agent = AgentId::new();
-        let template = file(agent, "result.json", "application/json")?;
-        let reference = FileRef::new(
-            template.volume().clone(), "result.json", "v1",
-            FileDescriptor::from_bytes(input, "application/json")?, "result.json",
-        )?;
-        let resolver = NativeArtifact {
-            bytes: input, ordinary: AtomicUsize::new(0), native: AtomicUsize::new(0),
-        };
-        let work = projection_native_work()?;
-        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        let actual = read_projected_tool_result(&resolver, &reference, input.len() as u64, Some(&io)).await;
-        match (actual, expected) {
-            (Ok(actual), Ok(expected)) => {
-                assert_eq!(actual, expected);
-                drop(actual);
-            }
-            (Err(Error::NativeDecode { source, custody: Some(custody), .. }), Err(expected)) => {
-                assert_eq!(source.to_string(), expected.to_string());
-                drop(source);
-                drop(custody);
-            }
-            _ => panic!("native tool result must preserve both original consuming converters"),
-        }
-        assert_eq!(resolver.ordinary.load(Ordering::SeqCst), 0);
-        assert_eq!(resolver.native.load(Ordering::SeqCst), 1);
-        assert_eq!(work.receipt().bytes_encoded, 0);
-        Ok(())
-    }
 }

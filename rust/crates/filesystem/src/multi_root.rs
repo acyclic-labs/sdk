@@ -2904,7 +2904,7 @@ mod tests {
     #[tokio::test]
     async fn add_all_declares_pathless_typed_conflicts() -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let target = fs.create_workspace("pathless-conflict-target").await?;
+        let target = fs.create_workspace("pathless-conflict-target", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let head = target.head().await?;
         let publisher = WorkspaceMultiRootPublisher::new(Resolver {
             workspaces: Mutex::new(BTreeMap::from([(target.id(), target.clone())])),
@@ -3192,7 +3192,7 @@ mod tests {
     async fn workspace_publisher_previews_then_publishes_the_pinned_child_generation()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("publisher-parent").await?;
+        let parent = fs.create_workspace("publisher-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut base_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
         base_tx.write_text("/base.txt", "base").await?;
         let TransactionCommit::Committed(base) = base_tx.commit().await? else {
@@ -3269,7 +3269,7 @@ mod tests {
     async fn automatic_text_markers_are_reported_not_published()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("publisher-conflict-parent").await?;
+        let parent = fs.create_workspace("publisher-conflict-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut base_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
         base_tx.write_text("/conflicted.txt", "base\n").await?;
         let TransactionCommit::Committed(base) = base_tx.commit().await? else {
@@ -3334,7 +3334,7 @@ mod tests {
     async fn child_wins_binding_policy_overrides_explicit_parent_resolution()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("child-wins-parent").await?;
+        let parent = fs.create_workspace("child-wins-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         parent.write_text("/base.txt", "base").await?;
         let base = parent.head().await?;
         let child = parent
@@ -3407,7 +3407,7 @@ mod tests {
     async fn independent_same_name_directory_creations_merge_by_path()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("directory-race-parent").await?;
+        let parent = fs.create_workspace("directory-race-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let base = parent.head().await?;
         let child = parent
             .fork(
@@ -3498,7 +3498,7 @@ mod tests {
     async fn conflicted_publication_projects_edits_and_continues_durably_case()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("conflict-parent").await?;
+        let parent = fs.create_workspace("conflict-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut base_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
         base_tx.write_text("/file.txt", "base\n").await?;
         let TransactionCommit::Committed(base) = base_tx.commit().await? else {
@@ -3624,7 +3624,7 @@ mod tests {
     async fn conflicted_publication_abort_restores_premerge_generation()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("abort-parent").await?;
+        let parent = fs.create_workspace("abort-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut base_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
         base_tx.write_text("/file.txt", "base\n").await?;
         let TransactionCommit::Committed(base) = base_tx.commit().await? else {
@@ -3718,7 +3718,7 @@ mod tests {
         // driver: the projection holds the record back, so it differs from the
         // pre-merge target in no path. Abort must still clear the operation.
         let fs = Fs::memory();
-        let parent = fs.create_workspace("empty-abort-parent").await?;
+        let parent = fs.create_workspace("empty-abort-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut base_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
         base_tx.write_text("/keep.txt", "base\n").await?;
         let TransactionCommit::Committed(base) = base_tx.commit().await? else {

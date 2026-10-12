@@ -80,7 +80,7 @@ async fn mounted_workflow(
     args: &[&str],
 ) -> Result<(u128, u128, u128, u128), Box<dyn std::error::Error>> {
     let demand = Arc::new(
-        NativeDemandSource::open(source, FilesystemProfile::Portable, VolumeLimits::default())
+        NativeDemandSource::open(source, FilesystemProfile::Portable, VolumeLimits::default(), None, None)
             .await?,
     );
     let lazy = LazyWorkspace::attach(fs, name, demand, MemoryLazyWorkspaceStore::default()).await?;
@@ -192,7 +192,7 @@ async fn qualify_linux_lazy_source_promotion() -> Result<(), Box<dyn std::error:
         NativeDemandSource::open(
             source.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?,
     );
@@ -294,7 +294,7 @@ async fn qualify_linux_write_unlink_visibility() -> Result<(), Box<dyn std::erro
         NativeDemandSource::open(
             source.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?,
     );
@@ -395,7 +395,7 @@ async fn qualify_linux_open_hardlink_unlink() -> Result<(), Box<dyn std::error::
         NativeDemandSource::open(
             source.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?,
     );
@@ -471,7 +471,7 @@ async fn qualify_linux_ancestor_whiteout() -> Result<(), Box<dyn std::error::Err
         NativeDemandSource::open(
             source.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?,
     );
@@ -532,7 +532,7 @@ async fn qualify_linux_source_rename_visibility() -> Result<(), Box<dyn std::err
         NativeDemandSource::open(
             source.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?,
     );
@@ -668,7 +668,7 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
         NativeDemandSource::open(
             source.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?,
     );
@@ -882,7 +882,7 @@ async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Erro
         NativeDemandSource::open(
             source.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?,
     );
@@ -1022,8 +1022,8 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
     let workspace = fs
-        .create_workspace("linux-exact-materializer-costs")
-        .await?;
+        .create_workspace("linux-exact-materializer-costs", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
     transaction.create_dir_all("/hot/d000").await?;
     for index in 0..100 {

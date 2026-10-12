@@ -73,7 +73,7 @@ async fn native_owner_guard_exhausts_phase_cancel_and_fence_conditions() -> Resu
                                 && same_placement
                                 && (!cancelled || settlement);
                             assert_eq!(
-                                require_execution_owner(&state, &fence, settlement).is_ok(),
+                                require_execution_owner(&state, &fence, settlement, &mut None).is_ok(),
                                 expected,
                                 "{phase:?}, cancelled={cancelled}, settlement={settlement}, reserved={reserved}, same_id={same_id}, same_placement={same_placement}"
                             );
@@ -809,7 +809,10 @@ where
             .await?.with_invocation_cancellation(work.cancellation()).into_native_shared(work)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let project = self.source.clone_with_native_work(work)?;
-        let generation = crate::filesystem::copy_native_generation_with_work(generation, work)?;
+        let generation = crate::resources::GenerationRef::new_with_native_work(
+            generation.as_resource().provider(), generation.as_resource().key(),
+            generation.as_resource().version(), work,
+        )?;
         let snapshot = (crate::source_authorization::ProjectSourceSnapshot {
             project: project.0, generation: generation.0,
             native_snapshot: Some(io.value_json(&candidate, 128 * 1024 * 1024)?),
@@ -1607,7 +1610,7 @@ where
                 std::fs::write(physical.join("cold.txt"), b"genuine cold project")
                     .map_err(|error| Error::Storage(error.to_string()))?;
                 let demand = Arc::new(acyclic_fs::NativeDemandSource::open(&physical,
-                    acyclic_fs::FilesystemProfile::Portable, acyclic_fs::VolumeLimits::default())
+                    acyclic_fs::FilesystemProfile::Portable, acyclic_fs::VolumeLimits::default(), None, None)
                     .await.map_err(|error| Error::Storage(error.to_string()))?);
                 let workspace = files.open_volume_with_native_work(&source, work).await?;
                 let lazy = acyclic_fs::LazyWorkspace::open_or_attach(workspace, demand,
@@ -1644,9 +1647,10 @@ where
                 project_policy = Some(crate::filesystem::FsRootProjectSourceProvider::new_with_native_work(
                     Arc::clone(&files), issuer.audience(), task_id, work,
                 )?.with_bootstrap_source_with_native_work(protected, work)?);
-                project_generation = Some(crate::filesystem::copy_native_generation_with_work(
-                    borrowed[0].generation, work,
-                )?);
+                project_generation = Some(crate::resources::GenerationRef::new_with_native_work(
+            borrowed[0].generation.as_resource().provider(), borrowed[0].generation.as_resource().key(),
+            borrowed[0].generation.as_resource().version(), work,
+        )?);
                 let namespace = NativeVolumeNamespace::LazyMount { snapshot };
                 let mut mixed_borrowed = borrowed;
                 mixed_borrowed[0].namespace = &namespace;
@@ -1655,11 +1659,11 @@ where
                 )?.await?;
                 lazy_mount = Some(Arc::clone(&mount));
                 lazy_work = Some(volume_work.clone());
-                NativeVolumeView::prepare_mixed_with_native_work(&owner, &guards.0,
+                NativeVolumeView::prepare_with_native_work(&owner, &guards.0,
                     &preparation_root, &options, &mixed_borrowed, &[Some(&held), None, None], work)?.await?
             } else {
                 NativeVolumeView::prepare_with_native_work(
-                    &owner, &guards.0, &preparation_root, &options, &borrowed, work,
+                    &owner, &guards.0, &preparation_root, &options, &borrowed, &[], work,
                 )?.await?
             };
             view.into_arc_with_native_work(work)?
@@ -2506,7 +2510,7 @@ async fn partial_native_preparation_rechecks_destination_head_before_attachment(
 async fn native_staging_leaf_replacement_is_rejected_at_actual_open_before_writes() -> Result<()> {
     let seed = process_fixture("write", true).await?;
     let filesystem = Fs::memory();
-    let workspace = filesystem.create_workspace("bound-native-staging").await
+    let workspace = filesystem.create_workspace("bound-native-staging", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| Error::Storage(error.to_string()))?;
     workspace.write("/input.txt", Bytes::from_static(b"original selected generation")).await
         .map_err(|error| Error::Storage(error.to_string()))?;

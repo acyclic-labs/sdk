@@ -900,7 +900,7 @@ mod tests {
     #[tokio::test]
     async fn a_durable_planned_child_is_completed_by_retry_after_a_crash() {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("root").await.expect("root");
+        let parent = fs.create_workspace("root", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("root");
         let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
         graph.register_root(&parent).await.expect("register root");
         let parent_head = parent.head().await.expect("parent head");

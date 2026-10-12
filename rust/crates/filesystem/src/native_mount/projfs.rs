@@ -11376,7 +11376,7 @@ mod tests {
     {
         let root = tempfile::tempdir()?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("advance-projfs").await?;
+        let workspace = engine.create_workspace("advance-projfs", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let path = root.path().join("mount");
         std::fs::create_dir(&path)?;
         let mount = workspace
@@ -11858,7 +11858,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("rustc-projfs").await?;
+        let workspace = engine.create_workspace("rustc-projfs", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
         transaction
             .create_file(
@@ -11920,7 +11920,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("metadata-projfs").await?;
+        let workspace = engine.create_workspace("metadata-projfs", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
         transaction
             .create_file(
@@ -11982,7 +11982,7 @@ mod tests {
 
         let root = tempfile::tempdir()?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("rename-unread-projfs").await?;
+        let workspace = engine.create_workspace("rename-unread-projfs", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
         transaction
             .create_file(
@@ -12029,7 +12029,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("replace-projfs").await?;
+        let workspace = engine.create_workspace("replace-projfs", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
         transaction
             .create_file(
@@ -12100,7 +12100,7 @@ mod tests {
 
         let root = tempfile::tempdir()?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("watch-projfs").await?;
+        let workspace = engine.create_workspace("watch-projfs", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
         transaction
             .create_file(
@@ -12204,7 +12204,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("nested-projfs").await?;
+        let workspace = engine.create_workspace("nested-projfs", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let path = root.path().join("mount");
         std::fs::create_dir(&path)?;
         let mount = workspace
@@ -12237,7 +12237,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("enumeration-rebase").await?;
+        let workspace = engine.create_workspace("enumeration-rebase", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
         for index in 0..300 {
             transaction

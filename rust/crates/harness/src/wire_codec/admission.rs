@@ -206,7 +206,7 @@ impl<'a, 'b> Quota<'a, 'b> {
         Self { work, bytes }
     }
     pub(crate) fn work(&mut self) -> &mut Option<&'b mut dyn HistoryIo> { self.work }
-    pub(super) fn replace(&mut self, bytes: u64) -> Result<()> {
+    pub(crate) fn replace(&mut self, bytes: u64) -> Result<()> {
         if bytes <= self.bytes {
             if let Some(work) = self.work.as_deref_mut() { work.release_owned(self.bytes - bytes)?; }
         } else if let Some(work) = self.work.as_deref_mut() {

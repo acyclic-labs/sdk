@@ -476,8 +476,8 @@ async fn rename_hydration_case() -> Result<(), Failure> {
     fs::create_dir(&mount_path)?;
     let engine = Fs::local(LocalOptions::new(root.path().join("store"))).await?;
     let workspace = engine
-        .create_workspace_with_config("rename-hydration", VolumeConfig::native(Lifecycle::Durable))
-        .await?;
+        .create_workspace_with_config("rename-hydration", VolumeConfig::native(Lifecycle::Durable), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut fixture = workspace
         .begin_transaction(acyclic_fs::IdempotencyKey::new())
         .await?;
@@ -819,8 +819,8 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     fs::write(root.path().join("outside-guard"), b"outside-safe")?;
     let engine = Fs::local(LocalOptions::new(&store)).await?;
     let workspace = engine
-        .create_workspace_with_config("native-matrix", VolumeConfig::native(Lifecycle::Durable))
-        .await?;
+        .create_workspace_with_config("native-matrix", VolumeConfig::native(Lifecycle::Durable), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace
         .begin_transaction(acyclic_fs::IdempotencyKey::new())
         .await?;
@@ -1707,7 +1707,7 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
         runtime.block_on(async {
             eprintln!("qualification phase: reopening durable crash workspace");
             let engine = Fs::local(LocalOptions::new(crash_root.join("store"))).await?;
-            let workspace = engine.open_workspace("crash-owner").await?;
+            let workspace = engine.open_workspace("crash-owner", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             if workspace.read("/alive.txt", 16).await?.as_ref() != b"alive" {
                 return Err::<(), Failure>("durable workspace lost crash fixture".into());
             }
@@ -1768,8 +1768,8 @@ fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Result<(), Fail
         fs::create_dir_all(&root)?;
         let engine = Fs::local(LocalOptions::new(root.join("store"))).await?;
         let workspace = engine
-            .create_workspace_with_config("crash-owner", VolumeConfig::native(Lifecycle::Durable))
-            .await?;
+            .create_workspace_with_config("crash-owner", VolumeConfig::native(Lifecycle::Durable), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/alive.txt", "alive").await?;
         let _mount = workspace.mount(&mount, MountOptions::read_write()).await?;
         #[cfg(windows)]

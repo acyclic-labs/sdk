@@ -4723,7 +4723,7 @@ where
             work.items(1)?;
             let mut namespace = work.namespace_buffer(path, candidate.volume_config())?;
             let lookup = if let Some(original) = work.meter.original_native_work() {
-                candidate.lookup_no_follow_with_metadata_with_native_work(
+                candidate.lookup_no_follow_with_metadata(
                     namespace.value.as_ref().expect("original removal namespace"), &original, cancellation,
                 ).await.map_err(mount_engine_error)?
             } else {
@@ -4770,14 +4770,15 @@ where
         }
         // Replace the surviving hard-linked identity directly, never by a
         // source path that could re-read stale bytes.
-        for (file_id, record, _, _) in dirty {
+        for index in 0..dirty.len() {
+            let (file_id, record, _, _) = dirty[index];
             work.items(1)?;
             let result = if let Some(original) = work.meter.original_native_work() {
-                candidate.read_file_record_by_id_with_native_work(*file_id, &original, cancellation)
+                candidate.read_file_record_by_id(file_id, &original, cancellation)
                     .await.map_err(mount_engine_error)
             } else {
                 let (budget, prior_live) = work.sdk_scope()?;
-                let result = candidate.read_file_record_by_id(*file_id, budget, cancellation).await;
+                let result = candidate.read_file_record_by_id(file_id, budget, cancellation).await;
                 work.accept_sdk(result, prior_live, mount_engine_error)
             };
             let live = match result {
@@ -4790,7 +4791,7 @@ where
                 if live.kind != record.kind { return Err(MountSourceError::Stale); }
                 let mut replacements = work.owned_vec(1)?;
                 replacements.value.push(Mutation::File {
-                    file_id: *file_id, mutation: FileMutation::ReplaceRecord { record: *record },
+                    file_id: file_id, mutation: FileMutation::ReplaceRecord { record: record },
                 });
                 if let Some(original) = work.meter.original_native_work() {
                     let (operations, allocation) = replacements.take_native_parts()?;
@@ -7510,7 +7511,7 @@ where
 
     fn fence_changes(&self) -> Result<(), MountSourceError> {
         self.source_watch.as_ref().map_or(Ok(()), |watch| {
-            watch.fence(WorkBudget::UNBOUNDED, &CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| lazy_error(failure.error.into()))
+            watch.fence(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| lazy_error(failure.error.into()))
         })
     }
 
@@ -9401,7 +9402,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -9506,7 +9507,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root,
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -9738,7 +9739,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join("source-only"), b"source")?;
         let demand = Arc::new(crate::demand::native::NativeDemandSource::open(
-            root.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+            root.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
         ).await?);
         let fs = crate::Fs::memory();
         let store = crate::MemoryLazyWorkspaceStore::default();
@@ -9912,7 +9913,7 @@ mod tests {
             std::fs::write(source_root.path().join("a"), b"source")?;
             std::fs::hard_link(source_root.path().join("a"), source_root.path().join("b"))?;
             let demand = Arc::new(crate::demand::native::NativeDemandSource::open(
-                source_root.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+                source_root.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
             ).await?);
             let simulation = Simulation::default();
             let (authority, objects) = simulation.stores();
@@ -9984,7 +9985,7 @@ mod tests {
             drop(held);
             drop(view);
             let reopened = LazyWorkspace::open(
-                fs.open_workspace("bounded-mount-fault").await?, demand, store,
+                fs.open_workspace("bounded-mount-fault", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, demand, store,
             ).await?;
             assert!(matches!(reopened.lookup("/a").await,
                 Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)));
@@ -10066,7 +10067,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -10139,7 +10140,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -10231,7 +10232,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -10309,7 +10310,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -10417,7 +10418,7 @@ mod tests {
             NativeDemandSource::open(
                 source_root.path(),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(),
+                VolumeLimits::default(), None, None,
             )
             .await?,
         );
@@ -10513,7 +10514,7 @@ mod tests {
                 NativeDemandSource::open(
                     source_root.path(),
                     FilesystemProfile::Portable,
-                    VolumeLimits::default(),
+                    VolumeLimits::default(), None, None,
                 )
                 .await?,
             );
@@ -11345,7 +11346,7 @@ mod tests {
         Ok(crate::demand::native::NativeDemandSource::open(
             source,
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?)
     }
@@ -12493,7 +12494,7 @@ mod tests {
         Ok(crate::demand::native::NativeDemandSource::open(
             source,
             profile,
-            crate::model::VolumeLimits::default(),
+            crate::model::VolumeLimits::default(), None, None,
         )
         .await?)
     }

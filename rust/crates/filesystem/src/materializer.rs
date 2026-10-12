@@ -8655,7 +8655,7 @@ mod tests {
         for name in ["one", "two"] { std::fs::write(root.join(name), b"before").expect("baseline"); }
         std::fs::write(root.join("untouched"), b"dirty user data").expect("untouched user data");
         let fs = crate::Fs::memory();
-        let workspace = fs.create_workspace("native-publication").await.expect("workspace");
+        let workspace = fs.create_workspace("native-publication", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("workspace");
         for name in ["/one", "/two", "/untouched"] { workspace.write_text(name, "before").await.expect("logical baseline"); }
         let from = workspace.head().await.expect("original generation");
         for name in ["/one", "/two"] { workspace.write_text(name, "after").await.expect("logical target"); }
@@ -8724,7 +8724,7 @@ mod tests {
         std::fs::create_dir(&root).expect("checkout");
         std::fs::write(root.join("new"), b"after").expect("matching but unauthenticated user file");
         let fs = crate::Fs::memory();
-        let workspace = fs.create_workspace("before-absent").await.expect("workspace");
+        let workspace = fs.create_workspace("before-absent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("workspace");
         let from = workspace.head().await.expect("empty baseline");
         workspace.write_text("/new", "after").await.expect("target");
         let to = workspace.head().await.expect("target generation");
@@ -8784,7 +8784,7 @@ mod tests {
         std::fs::write(root.join("tree/file"), b"dirty untouched").expect("dirty descendant");
         std::fs::write(root.join("tree/user"), b"unknown untouched").expect("unknown descendant");
         let fs = crate::Fs::memory();
-        let workspace = fs.create_workspace("structural-source").await.expect("workspace");
+        let workspace = fs.create_workspace("structural-source", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("workspace");
         let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new()).await.expect("logical transaction");
         transaction.create_directory("/tree").await.expect("logical directory");
         transaction.write_text("/tree/file", "before").await.expect("logical descendant");
@@ -8924,7 +8924,7 @@ mod tests {
         std::fs::write(root.join("file"), b"before").expect("original source");
         std::fs::write(operation.join("target/file"), b"after").expect("actual stage");
         let fs = crate::Fs::memory();
-        let workspace = fs.create_workspace("native-capture-barrier").await.expect("workspace");
+        let workspace = fs.create_workspace("native-capture-barrier", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("workspace");
         workspace.write_text("/file", "before").await.expect("original authored source");
         let from = workspace.head().await.expect("immutable original generation");
         let budget = finite_native_budget();

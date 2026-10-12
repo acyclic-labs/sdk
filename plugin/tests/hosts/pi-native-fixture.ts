@@ -3,14 +3,10 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
 import { VERSION, SessionManager } from "@earendil-works/pi-coding-agent";
-import { invokePi, piEnvironment } from "./pi-fixture.ts";
+import { invokePi, nodeExecutable, pinnedPiCli, piEnvironment } from "./pi-fixture.ts";
 
 const execute = promisify(execFile);
-export const pinnedPiCli = fileURLToPath(new URL(
-  "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url,
-));
 
 export interface InstalledNativeFixture {
   binary: string;
@@ -121,7 +117,7 @@ export async function installedNativeFixture(
     "--no-extensions", "--no-mcp", "--no-builtin-tools", "-e", extension, "-e", provider, "--", prompt,
   ], project, directory, environment);
   const runJson = async (prompt: string, onJsonLine: (line: string) => void, model = "probe") => {
-    const invocation = execute(process.execPath, [pinnedPiCli,
+    const invocation = execute(nodeExecutable, [pinnedPiCli,
       "--print", "--mode", "json", "--session", session,
       "--provider", "acyclic-native-qualification", "--model", model,
       "--no-extensions", "--no-mcp", "--no-builtin-tools", "-e", extension, "-e", provider, "--", prompt,

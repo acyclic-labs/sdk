@@ -403,8 +403,8 @@ mod capture_policy_tests {
         std::fs::write(temporary.path().join("sub/changed.txt"), b"changed")?;
         std::fs::write(temporary.path().join("sub/unrelated.txt"), b"unrelated")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-ancestor")
-            .await?;
+            .create_workspace("watch-ancestor", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut checkout = workspace
             .checkout(
                 crate::model::GenerationSelector::Head,
@@ -459,8 +459,8 @@ mod capture_policy_tests {
         std::fs::create_dir(temporary.path().join("pkg"))?;
         std::fs::write(temporary.path().join("pkg/shared.rs"), b"VALUE = 1")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-directory")
-            .await?;
+            .create_workspace("watch-directory", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut checkout = workspace
             .checkout(
                 crate::model::GenerationSelector::Head,
@@ -515,8 +515,8 @@ mod capture_policy_tests {
         std::fs::create_dir(temporary.path().join("sub"))?;
         std::fs::write(temporary.path().join("old.txt"), b"old")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-rename-parent")
-            .await?;
+            .create_workspace("watch-rename-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/old.txt", "old").await?;
         let mut checkout = workspace
             .checkout(
@@ -579,8 +579,8 @@ mod capture_policy_tests {
         std::fs::create_dir(temporary.path().join("old"))?;
         std::fs::write(temporary.path().join("old/file.txt"), b"old")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-renamed-directory")
-            .await?;
+            .create_workspace("watch-renamed-directory", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace
             .begin_transaction(crate::IdempotencyKey::new())
             .await?;
@@ -678,8 +678,8 @@ mod capture_policy_tests {
             std::fs::write(temporary.path().join(directory).join("inner.txt"), b"x")?;
         }
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-expansion")
-            .await?;
+            .create_workspace("watch-expansion", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut checkout = workspace
             .checkout(
                 crate::model::GenerationSelector::Head,
@@ -738,8 +738,8 @@ mod capture_policy_tests {
         std::fs::create_dir(temporary.path().join("sub"))?;
         std::fs::write(temporary.path().join("sub/new.txt"), b"new")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-stale-ancestor")
-            .await?;
+            .create_workspace("watch-stale-ancestor", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/sub", "old").await?;
         let mut checkout = workspace
             .checkout(
@@ -796,8 +796,8 @@ mod capture_policy_tests {
         std::fs::create_dir(temporary.path().join("sub"))?;
         std::fs::write(temporary.path().join("final.txt"), b"old")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("watch-rename-chain")
-            .await?;
+            .create_workspace("watch-rename-chain", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/old.txt", "old").await?;
         let mut checkout = workspace
             .checkout(
@@ -5039,7 +5039,7 @@ mod shared_watch_capture_tests {
             },
             crate::EmbeddedCapabilities::MEMORY,
         );
-        let workspace = fs.create_workspace("shared-watch-reentry").await?;
+        let workspace = fs.create_workspace("shared-watch-reentry", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/file", "prior watch value").await?;
         let mut checkout = workspace.checkout(
             crate::model::GenerationSelector::Head,
@@ -5622,7 +5622,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             }) {
                 let lookup_cancellation = capture_meter(meter).leaf(|work| work.cancellation().clone());
                 let prior = capture_sdk_in_heap_with_meter(
-                    |native| checkout.read_metadata_by_id_with_native_work(record.file_id, native, &lookup_cancellation),
+                    |native| checkout.read_metadata_by_id(record.file_id, native, &lookup_cancellation),
                     meter, &lookup_cancellation,
                 ).await?;
                 receipt.work = prior.work;
@@ -6593,7 +6593,7 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         );
         let stage_cancellation = meter.native().cancellation().clone();
         let content = capture_sdk_in_heap_with_meter(
-            |original| stager.stage_with_native_work(&mut bounded, range.length, original, &stage_cancellation),
+            |original| stager.stage(&mut bounded, range.length, original, &stage_cancellation),
             meter, &stage_cancellation,
         ).await;
         drop(bounded);
@@ -8086,8 +8086,8 @@ mod root_capture_regression {
         std::fs::set_permissions(source.path(), std::fs::Permissions::from_mode(0o750))?;
         std::fs::write(source.path().join("binary"), [0, 255, 10])?;
         let workspace = crate::Fs::memory()
-            .create_workspace("root-capture-regression")
-            .await?;
+            .create_workspace("root-capture-regression", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut checkout = workspace
             .checkout(
                 crate::model::GenerationSelector::Head,
@@ -8229,8 +8229,8 @@ mod capture_span_tests {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("private-name"), b"private-body")?;
         let workspace = crate::Fs::memory()
-            .create_workspace("capture-spans")
-            .await?;
+            .create_workspace("capture-spans", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut checkout = workspace
             .checkout(
                 crate::model::GenerationSelector::Head,
@@ -8373,8 +8373,8 @@ mod capture_span_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let workspace = crate::Fs::memory()
-            .create_workspace("filtered-capture")
-            .await?;
+            .create_workspace("filtered-capture", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut checkout = workspace
             .checkout(
                 crate::model::GenerationSelector::Head,
