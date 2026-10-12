@@ -266,12 +266,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             None,
         )?;
         let request = execution
-            .stage(
-                attempt,
-                "model-request".into(),
-                prepared.bytes().to_vec(),
-                "application/json",
-            )
+            .stage(attempt, "model-request", &prepared.bytes(), "application/json", None)?
             .await?;
         let start = |step, purpose, request_digest| ExecutionEvent::ModelStarted {
             step,
@@ -280,22 +275,14 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             request: request.clone(),
         };
         execution
-            .append(
-                attempt,
-                "request".into(),
-                ExecutionEvent::Started {
+            .append(attempt, "request", &ExecutionEvent::Started {
                     request_digest: [9; 32],
-                },
-            )
+                }, None)?
             .await?;
         for (step, claimed) in [(0, [4; 32]), (1, digest)] {
             assert!(
                 execution
-                    .append(
-                        attempt,
-                        "denied-model".into(),
-                        start(step, crate::executor::ModelPurpose::Response, claimed)
-                    )
+                    .append(attempt, "denied-model", &start(step, crate::executor::ModelPurpose::Response, claimed), None)?
                     .await
                     .is_err()
             );
@@ -304,18 +291,13 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         for _ in 0..2 {
             assert!(
                 execution
-                    .append_if_tail(attempt, 1, "model".into(), model_start.clone())
+                    .append_if_tail(attempt, 1, "model", &model_start, None)?
                     .await?
             );
         }
         assert!(
             execution
-                .append_if_tail(
-                    attempt,
-                    2,
-                    "uncharged-summary".into(),
-                    start(0, crate::executor::ModelPurpose::Summary, digest)
-                )
+                .append_if_tail(attempt, 2, "uncharged-summary", &start(0, crate::executor::ModelPurpose::Summary, digest), None)?
                 .await
                 .is_err()
         );
@@ -335,15 +317,11 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             crate::executor::stage_json(&execution, attempt, "tool-invocation", &invocation, None)
                 .await?;
         execution
-            .append(
-                attempt,
-                "tool".into(),
-                ExecutionEvent::ToolStarted {
+            .append(attempt, "tool", &ExecutionEvent::ToolStarted {
                     step: 0,
                     call_id: "owned-tool".into(),
                     invocation,
-                },
-            )
+                }, None)?
             .await?;
         assert!(
             matches!(execution.suspend_workflow_command_if_quiescent(1, attempt, None).await, Err(Error::Indeterminate(id)) if id == attempt)
@@ -367,16 +345,12 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             None,
         )?;
         unbound
-            .append(
-                uncharged,
-                "request".into(),
-                ExecutionEvent::Started {
+            .append(uncharged, "request", &ExecutionEvent::Started {
                     request_digest: [9; 32],
-                },
-            )
+                }, None)?
             .await?;
         unbound
-            .append(uncharged, "model".into(), model_start.clone())
+            .append(uncharged, "model", &model_start, None)?
             .await?;
         let adopted = crate::filesystem::FilesystemExecutionJournal::for_task(
             host.journal_owner(task_id, fence.clone()).await?,
@@ -704,7 +678,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         ));
         assert!(
             execution
-                .append(attempt, "model".into(), model_start.clone())
+                .append(attempt, "model", &model_start, None)?
                 .await
                 .is_err()
         );
@@ -715,11 +689,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         };
         assert!(
             execution
-                .append(
-                    attempt,
-                    "stale-tool-settlement".into(),
-                    settlement("owned-tool")
-                )
+                .append(attempt, "stale-tool-settlement", &settlement("owned-tool"), None)?
                 .await
                 .is_err()
         );
@@ -736,41 +706,37 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         )?;
         assert!(
             reopened
-                .append(attempt, "model".into(), model_start)
+                .append(attempt, &"model", &model_start, None)?
                 .await
                 .is_err()
         );
         assert!(
             reopened
-                .append(attempt, "missing-tool".into(), settlement("missing"))
+                .append(attempt, &"missing-tool", &settlement("missing"), None)?
                 .await
                 .is_err()
         );
         for _ in 0..2 {
             reopened
-                .append(attempt, "tool-settlement".into(), settlement("owned-tool"))
+                .append(attempt, &"tool-settlement", &settlement("owned-tool"), None)?
                 .await?;
         }
         assert!(
             reopened
-                .append(
-                    attempt,
-                    "another-tool-settlement".into(),
-                    settlement("owned-tool")
-                )
+                .append(attempt, &"another-tool-settlement", &settlement("owned-tool"), None)?
                 .await
                 .is_err()
         );
         for index in 0..70 {
             reopened
-                .append(attempt, format!("settlement-{index}"), observation.clone())
+                .append(attempt, &format!("settlement-{index}"), &observation, None)?
                 .await?;
         }
         reopened
-            .append(attempt, "settlement-69".into(), observation.clone())
+            .append(attempt, &"settlement-69", &observation, None)?
             .await?;
-        assert_eq!(reopened.replay(attempt, 0, 64).await?.len(), 64);
-        assert_eq!(reopened.replay(attempt, 64, 64).await?.len(), 10);
+        assert_eq!(reopened.replay(attempt, 0, 64, None)?.await?.len(), 64);
+        assert_eq!(reopened.replay(attempt, 64, 64, None)?.await?.len(), 10);
         let cold = crate::filesystem::FilesystemExecutionJournal::for_task(
             host.journal_owner(task_id, fence.clone()).await?,
             attempt,
@@ -782,14 +748,14 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             65_536,
             None,
         )?;
-        cold.append(attempt, "settlement-69".into(), observation.clone())
+        cold.append(attempt, "settlement-69", &observation, None)?
             .await?;
         let mut wrong = observation.clone();
         if let ExecutionEvent::Model { step, .. } = &mut wrong {
             *step = 1;
         }
         assert!(
-            cold.append(attempt, "settlement-69".into(), wrong)
+            cold.append(attempt, "settlement-69", &wrong, None)?
                 .await
                 .is_err()
         );
@@ -807,18 +773,14 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             None,
         )
         .await?;
-        cold.append(
-            attempt,
-            "model-completed".into(),
-            ExecutionEvent::Model {
+        cold.append(attempt, "model-completed", &ExecutionEvent::Model {
                 step: 0,
                 purpose: crate::executor::ModelPurpose::Response,
                 event: completed,
-            },
-        )
+            }, None)?
         .await?;
         assert!(
-            cold.append(attempt, "after-completed".into(), observation.clone())
+            cold.append(attempt, "after-completed", &observation, None)?
                 .await
                 .is_err()
         );
@@ -827,7 +789,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
                 .await
                 .is_err()
         );
-        cold.append(attempt, "settlement-69".into(), observation)
+        cold.append(attempt, "settlement-69", &observation, None)?
             .await?;
         assert_eq!(cold.replay(attempt, 64, 64).await?.len(), 11);
         let record = replacement_workflow.replay(0, 1).await?.pop().unwrap();

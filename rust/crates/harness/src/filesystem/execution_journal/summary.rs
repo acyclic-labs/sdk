@@ -163,7 +163,7 @@ impl ExecutionSummary {
         }
         let tool_key = self.require_next(&record.event, io)?;
         let digest = crate::executor::with_history_io(io, |work|
-            crate::contract::canonical_json_digest_with_work(&record.event, u64::MAX, work))?;
+            crate::contract::canonical_json_digest(&record.event, u64::MAX, work))?;
         if let Some(io) = io {
             let extra = match &record.event {
                 ExecutionEvent::ContextPrepared { .. } => std::mem::size_of::<(u32, bool)>(),

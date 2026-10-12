@@ -416,7 +416,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .source_admission(parent, &mut budget, quota.work())
             .await?;
         quota.adopt(retained)?;
-        if crate::contract::canonical_json_digest_with_work(
+        if crate::contract::canonical_json_digest(
             &caller,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             quota.work(),

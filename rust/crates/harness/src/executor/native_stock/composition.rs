@@ -4,7 +4,6 @@ use super::*;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeStockExecutor {
     pub(in crate::executor) stock: StockExecutor,
-    context: Option<(Arc<crate::runtime::TaskContext>, OperationId)>,
     pub(in crate::executor) interactions: Option<Arc<dyn crate::runtime::InteractionRouter>>,
     custody: acyclic_fs::NativeAllocation,
 }
@@ -41,7 +40,6 @@ impl StockExecutor {
         let custody = io.into_native_custody(retained)?;
         Ok(NativeStockExecutor {
             stock,
-            context: None,
             interactions: None,
             custody,
         })
@@ -88,7 +86,7 @@ impl NativeStockExecutor {
     ) -> Result<Self> {
         self.require_original_work(work)?;
         if !context.native_metadata_matches(work)
-            || !context.original_task_binding_matches(task, fence)
+            || !context.as_ref().original_task_binding_matches(task, fence)
         {
             return Err(crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -108,7 +106,7 @@ impl NativeStockExecutor {
         let mut incoming = io.into_native_custody(retained)?;
         self.custody.absorb(&mut incoming)?;
         self.stock.task = Some((host, task, fence));
-        self.context = Some((context, operation));
+        self.stock.task_context = Some((context, operation));
         Ok(self)
     }
 
@@ -120,16 +118,15 @@ impl NativeStockExecutor {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         self.require_original_work(work)?;
-        let Some((context, _)) = self.context.as_ref() else {
+        let Some((context, _)) = self.stock.task_context.as_ref() else {
             return Err(crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "stock policy has no original context binding",
             });
         };
-        context
-            .validate_stock_scope_with_native_work(scope, self.stock.limits, work)?;
+        context.validate_stock_scope_with_native_work(scope, self.stock.limits, work)?;
         if let Some(policy) = &policy {
-            let Some((_, original)) = context.stock_tool_policy_binding() else {
+            let Some((_, original)) = context.as_ref().stock_tool_policy_binding() else {
                 return Err(crate::Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "stock policy is not issued by this context",
@@ -208,9 +205,14 @@ impl NativeStockExecutor {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         self.require_original_work(work)?;
-        if self.context.as_ref().is_none_or(|(original, operation)| {
-            *operation != input.operation_id || !Arc::ptr_eq(original, context)
-        }) || !context.native_metadata_matches(work)
+        if self
+            .stock
+            .task_context
+            .as_ref()
+            .is_none_or(|(original, operation)| {
+                *operation != input.operation_id || !Arc::ptr_eq(original, context)
+            })
+            || !context.native_metadata_matches(work)
         {
             return Err(crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -227,8 +229,12 @@ impl NativeStockExecutor {
         input: &'a TurnInput,
         journal: &'a dyn ExecutionJournal,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (StockTurnProgress, acyclic_fs::NativeAllocation)>>
-    {
+    ) -> Result<
+        crate::NativeFutureBundle<
+            'a,
+            (ExecutionProgress<TurnOutput>, acyclic_fs::NativeAllocation),
+        >,
+    > {
         self.admit_execution(context, input, journal, work)?;
         native_progress(
             &self.stock,
@@ -236,28 +242,6 @@ impl NativeStockExecutor {
             input,
             journal,
             work,
-            self.stock.reconciliation_only,
-            self.interactions.as_ref(),
-        )
-    }
-
-    /// Reconciles the same journal without admitting a replacement effect.
-    pub(crate) fn execute_reconcile_progress_with_native_context<'a>(
-        &'a self,
-        context: &'a Arc<crate::runtime::TaskContext>,
-        input: &'a TurnInput,
-        journal: &'a dyn ExecutionJournal,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (StockTurnProgress, acyclic_fs::NativeAllocation)>>
-    {
-        self.admit_execution(context, input, journal, work)?;
-        native_progress(
-            &self.stock,
-            context,
-            input,
-            journal,
-            work,
-            true,
             self.interactions.as_ref(),
         )
     }

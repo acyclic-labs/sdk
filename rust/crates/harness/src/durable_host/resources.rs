@@ -604,13 +604,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 || receipt.origin.preparation_task != proof.preparation
                 || receipt.origin.intended_child != request.child.operation_id
                 || receipt.origin.admission_digest
-                    != crate::contract::canonical_json_digest_with_work(
+                    != crate::contract::canonical_json_digest(
                         &preparation,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         proof_custody.work(),
                     )?
                 || receipt.origin.request_digest
-                    != crate::contract::canonical_json_digest_with_work(
+                    != crate::contract::canonical_json_digest(
                         &request,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         proof_custody.work(),

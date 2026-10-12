@@ -118,8 +118,7 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
 pub(super) fn native_codec_error_custody(error: Error, custody: acyclic_fs::NativeAllocation) -> Error {
     match error {
         Error::NativeWork { cause, custody: None } => Error::NativeWork { cause, custody: Some(custody) },
-        Error::NativeDecode { code, source, custody: None } => Error::NativeDecode { code, source, custody: Some(custody) },
-        Error::NativeEncode { code, source, custody: None } => Error::NativeEncode { code, source, custody: Some(custody) },
+        Error::NativeJson { code, source, custody: None } => Error::NativeJson { code, source, custody: Some(custody) },
         error => error,
     }
 }

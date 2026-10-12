@@ -133,12 +133,12 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
         request.validate(&mut observer)?;
         let admission_digest = self.admission.canonical_digest_with_work(&mut observer)?;
-        let request_digest = crate::contract::canonical_json_digest_with_work(
+        let request_digest = crate::contract::canonical_json_digest(
             &self.admission.input,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,
         )?;
-        let supplied_digest = crate::contract::canonical_json_digest_with_work(
+        let supplied_digest = crate::contract::canonical_json_digest(
             request,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,

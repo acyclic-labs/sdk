@@ -264,7 +264,7 @@ async fn verify_journal(
         let after = records
             .last()
             .map_or(0, |record: &ExecutionRecord| record.sequence);
-        let batch = journal.replay(operation, after, 4).await?;
+        let batch = journal.replay(operation, after, 4, None)?.await?;
         if batch.is_empty() {
             break;
         }

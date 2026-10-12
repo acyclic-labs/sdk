@@ -172,8 +172,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             acyclic_stream::MAX_RECORD_BYTES as u64
         };
-        let digest = crate::contract::canonical_json_digest_with_work(&outcome, maximum, work)?;
-        let fence_digest = crate::contract::canonical_json_digest_with_work(
+        let digest = crate::contract::canonical_json_digest(&outcome, maximum, work)?;
+        let fence_digest = crate::contract::canonical_json_digest(
             &fence,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             work,

@@ -84,7 +84,7 @@ mod json;
 pub(crate) use json::{
     admit_json, admit_json_value_shape, json_owned_value_shape_bounded,
     json_typed_value_decode_owned_bytes, json_value_virtual_owned_bytes,
-    lexical_json_diagnostic_bytes, owned_logical_bytes,
+    lexical_json_diagnostic_bytes,
 };
 mod event_json;
 pub(crate) use event_json::{
