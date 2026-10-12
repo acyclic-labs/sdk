@@ -84,53 +84,28 @@ fn latency_admission_binds_authority_and_policy() {
         ..Default::default()
     };
     let bytes = view.encode_to_vec();
+    let validate = |view: &[u8], expected: &[u8], request: &wire::RetainWarmRequest| {
+        validate_customer_wire("warm_context", view, expected, &request.encode_to_vec())
+    };
     assert!(validate_retain_response(&view, &request).is_ok());
-    assert!(
-        validate_customer_wire("warm_context", &bytes, &[2; 32], &request.encode_to_vec()).is_ok()
-    );
-    for invalid in [
-        wire::RetainWarmRequest {
-            identity: None,
-            ..request.clone()
-        },
-        wire::RetainWarmRequest {
-            context: vec![9; 32],
-            ..request.clone()
-        },
-        wire::RetainWarmRequest {
-            latency_profile: vec![9; 32],
-            ..request.clone()
-        },
-        wire::RetainWarmRequest {
-            expires_at_ms: 111,
-            ..request.clone()
-        },
-        wire::RetainWarmRequest {
-            expires_at_ms: 0,
-            ..request.clone()
-        },
-    ] {
+    assert!(validate(&bytes, &[2; 32], &request).is_ok());
+    for fault in 0..5 {
+        let mut invalid = request.clone();
+        match fault {
+            0 => invalid.identity = None,
+            1 => invalid.context = vec![9; 32],
+            2 => invalid.latency_profile = vec![9; 32],
+            3 => invalid.expires_at_ms = 111,
+            _ => invalid.expires_at_ms = 0,
+        }
         assert!(validate_retain_response(&view, &invalid).is_err());
-        assert!(
-            validate_customer_wire("warm_context", &bytes, &[2; 32], &invalid.encode_to_vec())
-                .is_err()
-        );
+        assert!(validate(&bytes, &[2; 32], &invalid).is_err());
     }
-    assert!(
-        validate_customer_wire("warm_context", &bytes, &[9; 32], &request.encode_to_vec()).is_err()
-    );
+    assert!(validate(&bytes, &[9; 32], &request).is_err());
     for related in [vec![], vec![255]] {
         assert!(validate_customer_wire("warm_context", &bytes, &[2; 32], &related).is_err());
     }
-    assert!(
-        validate_customer_wire(
-            "warm_context",
-            &idle_view().encode_to_vec(),
-            &[2; 32],
-            &request.encode_to_vec()
-        )
-        .is_err()
-    );
+    assert!(validate(&idle_view().encode_to_vec(), &[2; 32], &request).is_err());
 }
 
 #[test]
@@ -148,55 +123,31 @@ fn latency_renewal_binds_authority_and_policy() {
         expires_at_ms: view.expires_at_ms,
         ..Default::default()
     };
+    let validate = |expected: &[u8], request: &wire::RenewWarmRequest| {
+        validate_customer_wire(
+            "warm_commitment",
+            &bytes,
+            expected,
+            &request.encode_to_vec(),
+        )
+    };
     assert!(validate_renew_response(&view, &renewal).is_ok());
-    assert!(
-        validate_customer_wire(
-            "warm_commitment",
-            &bytes,
-            &[1; 32],
-            &renewal.encode_to_vec()
-        )
-        .is_ok()
-    );
-    for invalid in [
-        wire::RenewWarmRequest {
-            identity: None,
-            ..renewal.clone()
-        },
-        wire::RenewWarmRequest {
-            commitment: vec![9; 32],
-            ..renewal.clone()
-        },
-        wire::RenewWarmRequest {
-            expires_at_ms: 111,
-            ..renewal.clone()
-        },
-        wire::RenewWarmRequest {
-            idle_timeout_ms: Some(10),
-            expires_at_ms: 0,
-            ..renewal.clone()
-        },
-    ] {
+    assert!(validate(&[1; 32], &renewal).is_ok());
+    for fault in 0..4 {
+        let mut invalid = renewal.clone();
+        match fault {
+            0 => invalid.identity = None,
+            1 => invalid.commitment = vec![9; 32],
+            2 => invalid.expires_at_ms = 111,
+            _ => {
+                invalid.idle_timeout_ms = Some(10);
+                invalid.expires_at_ms = 0;
+            }
+        }
         assert!(validate_renew_response(&view, &invalid).is_err());
-        assert!(
-            validate_customer_wire(
-                "warm_commitment",
-                &bytes,
-                &[1; 32],
-                &invalid.encode_to_vec()
-            )
-            .is_err()
-        );
+        assert!(validate(&[1; 32], &invalid).is_err());
     }
-    assert!(
-        validate_customer_wire(
-            "warm_commitment",
-            &bytes,
-            &[9; 32],
-            &renewal.encode_to_vec()
-        )
-        .is_err()
-    );
+    assert!(validate(&[9; 32], &renewal).is_err());
     assert!(validate_customer_wire("warm_commitment", &bytes, &[1; 32], &[255]).is_err());
 }
 
@@ -230,31 +181,18 @@ fn idle_admission_and_renewal_bind_exact_policy_without_resetting_baseline() {
         idle_kv: view.idle_kv.as_ref().unwrap().policy.clone(),
         ..Default::default()
     };
-    assert!(
+    let retain = |view: &wire::WarmView| {
         validate_customer_wire(
             "warm_context",
             &view.encode_to_vec(),
             &[2; 32],
-            &request.encode_to_vec()
+            &request.encode_to_vec(),
         )
-        .is_ok()
-    );
-    view.idle_kv
-        .as_mut()
-        .unwrap()
-        .policy
-        .as_mut()
-        .unwrap()
-        .profile = vec![8; 32];
-    assert!(
-        validate_customer_wire(
-            "warm_context",
-            &view.encode_to_vec(),
-            &[2; 32],
-            &request.encode_to_vec()
-        )
-        .is_err()
-    );
+    };
+    assert!(retain(&view).is_ok());
+    let policy = view.idle_kv.as_mut().unwrap().policy.as_mut().unwrap();
+    policy.profile = vec![8; 32];
+    assert!(retain(&view).is_err());
     let renewal = wire::RenewWarmRequest {
         identity: request.identity.clone(),
         commitment: vec![1; 32],
@@ -268,26 +206,18 @@ fn idle_admission_and_renewal_bind_exact_policy_without_resetting_baseline() {
         .as_mut()
         .unwrap()
         .idle_timeout_ms = 20;
+    let renew = |view: &wire::WarmView| {
+        validate_customer_wire(
+            "warm_commitment",
+            &view.encode_to_vec(),
+            &[1; 32],
+            &renewal.encode_to_vec(),
+        )
+    };
     view.expires_at_ms = 120;
-    assert!(
-        validate_customer_wire(
-            "warm_commitment",
-            &view.encode_to_vec(),
-            &[1; 32],
-            &renewal.encode_to_vec()
-        )
-        .is_ok()
-    );
+    assert!(renew(&view).is_ok());
     view.expires_at_ms = 130;
-    assert!(
-        validate_customer_wire(
-            "warm_commitment",
-            &view.encode_to_vec(),
-            &[1; 32],
-            &renewal.encode_to_vec()
-        )
-        .is_err()
-    );
+    assert!(renew(&view).is_err());
     let mixed = wire::RetainWarmRequest {
         latency_profile: vec![9; 32],
         ..request
@@ -337,36 +267,19 @@ fn completed_run_validates_the_full_result_context() {
     assert!(validate_run_view(&view, [2; 16]).is_ok());
     assert!(validate_customer_wire("run_view", &view.encode_to_vec(), &[2; 16], &[]).is_ok());
 
-    let mut missing_provenance = view.clone();
-    missing_provenance
-        .result
-        .as_mut()
-        .and_then(|result| result.context.as_mut())
-        .unwrap()
-        .provenance = None;
-    assert!(validate_run_view(&missing_provenance, [2; 16]).is_err());
-    assert!(
-        validate_customer_wire(
-            "run_view",
-            &missing_provenance.encode_to_vec(),
-            &[2; 16],
-            &[]
-        )
-        .is_err()
-    );
-
-    let mut invalid_digest = view;
-    invalid_digest
-        .result
-        .as_mut()
-        .and_then(|result| result.context.as_mut())
-        .unwrap()
-        .content_digest
-        .clear();
-    assert!(validate_run_view(&invalid_digest, [2; 16]).is_err());
-    assert!(
-        validate_customer_wire("run_view", &invalid_digest.encode_to_vec(), &[2; 16], &[]).is_err()
-    );
+    for missing_provenance in [true, false] {
+        let mut invalid = view.clone();
+        let context = invalid.result.as_mut().unwrap().context.as_mut().unwrap();
+        if missing_provenance {
+            context.provenance = None;
+        } else {
+            context.content_digest.clear();
+        }
+        assert!(validate_run_view(&invalid, [2; 16]).is_err());
+        assert!(
+            validate_customer_wire("run_view", &invalid.encode_to_vec(), &[2; 16], &[]).is_err()
+        );
+    }
 }
 
 #[test]

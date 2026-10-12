@@ -276,12 +276,7 @@ fn descriptor_declares_unique_http_routes_for_every_rpc() -> Result<(), Box<dyn 
             );
             let path = options.get_extension(&extension).into_owned();
             let prost_reflect::Value::String(path) = path else {
-                return Err(format!(
-                    "{}.{} has an invalid http_path option",
-                    service.name(),
-                    method.name()
-                )
-                .into());
+                panic!("http_path is not a string");
             };
             assert!(!path.is_empty());
             routes.push(path);
@@ -322,50 +317,26 @@ fn rejects_incomplete_receipts_and_sensitive_credentials() -> Result<(), Error> 
 fn evaluation_contract_binds_native_output_to_exact_grader_observation() -> Result<(), Error> {
     let view = completed_evaluation();
     validate_evaluation_view(&view, [6; 16])?;
-
-    let mut wrong_output = view.clone();
-    wrong_output
-        .result
-        .as_mut()
-        .and_then(|result| result.case_results.first_mut())
-        .and_then(|result| result.observation.as_mut())
-        .ok_or(Error::Invalid("missing case result"))?
-        .native_output_digest = vec![0; 32];
-    assert!(validate_evaluation_view(&wrong_output, [6; 16]).is_err());
-
-    let mut wrong_grader = view.clone();
-    wrong_grader
-        .result
-        .as_mut()
-        .and_then(|result| result.case_results.first_mut())
-        .and_then(|result| result.observation.as_mut())
-        .ok_or(Error::Invalid("missing case result"))?
-        .observation_digest = vec![9; 32];
-    assert!(validate_evaluation_view(&wrong_grader, [6; 16]).is_err());
-
-    let mut missing_score = view.clone();
-    missing_score
-        .result
-        .as_mut()
-        .and_then(|result| result.case_results.first_mut())
-        .ok_or(Error::Invalid("missing case result"))?
-        .metrics
-        .clear();
-    assert!(validate_evaluation_view(&missing_score, [6; 16]).is_err());
-
-    let mut missing_aggregate = view.clone();
-    missing_aggregate
-        .result
-        .as_mut()
-        .ok_or(Error::Invalid("missing evaluation result"))?
-        .aggregates
-        .clear();
-    assert!(validate_evaluation_view(&missing_aggregate, [6; 16]).is_err());
-
+    for fault in 0..4 {
+        let mut invalid = view.clone();
+        let result = invalid.result.as_mut().unwrap();
+        match fault {
+            0 | 1 => {
+                let observation = result.case_results[0].observation.as_mut().unwrap();
+                if fault == 0 {
+                    observation.native_output_digest = vec![0; 32];
+                } else {
+                    observation.observation_digest = vec![9; 32];
+                }
+            }
+            2 => result.case_results[0].metrics.clear(),
+            _ => result.aggregates.clear(),
+        }
+        assert!(validate_evaluation_view(&invalid, [6; 16]).is_err());
+    }
     let mut changed_spec = evaluation_spec();
     changed_spec.spec_digest = vec![10; 32];
     assert!(validate_evaluation_admission(&view, [6; 16], &changed_spec).is_err());
-
     let mut unbounded = evaluation_spec();
     unbounded.maximum_case_results = 2;
     assert!(validate_evaluation_spec(&unbounded).is_err());
