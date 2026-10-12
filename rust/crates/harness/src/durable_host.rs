@@ -2540,123 +2540,138 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// Resolves one exact retained parcel under its receiver's original lease and sole receive command.
     #[cfg(feature = "filesystem")]
     pub async fn read_received_mail_owned(
-        self: &Arc<Self>,
-        receiver: TaskId,
-        fence: crate::scheduler::LeaseFence,
-        receive_operation: OperationId,
-        item: &InboxItem,
+        self: &Arc<Self>, owner: &TaskJournalOwner<P>, receive_operation: OperationId,
+        item: &InboxItem, io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        let owner = self.journal_owner(receiver, fence.clone()).await?;
-        owner.verify(true, &mut None).await?;
-        if item.task_id != receiver || item.sequence == 0 {
-            return Err(Error::Unauthorized("parcel recipient or sequence differs".into()));
+        let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
+        let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+        if !owner.original_host_binding_matches(self) {
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
+                "parcel owner belongs to another host"));
         }
-        let path = format!("harness/v2/workflows/{}", owner.workflow_admission().operation_id);
-        let workflow = acyclic_stream::Stream::new(std::sync::Arc::clone(&owner.stream()), &path)?;
-        let tail = workflow.bounds().await
-            .map_err(|error| Error::Unauthorized(format!("parcel receive checkpoint is absent: {error}")))?.tail;
-        let index = tail.checked_sub(1)
-            .ok_or_else(|| Error::Unauthorized("parcel receive checkpoint is absent".into()))?;
-        let latest = self.read_mail_workflow_record(&owner, &workflow, index).await?;
-        let pending = latest.transition.commands.as_slice();
-        let receive = if let [command] = pending
+        owner.verify_read_access(&mut work).await?;
+        let (receiver, _) = owner.task_binding();
+        if item.task_id != receiver || item.sequence == 0 {
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
+                "parcel recipient or sequence differs"));
+        }
+        let path = crate::contract::preparation_format(
+            format_args!("harness/v2/workflows/{}", owner.workflow_admission().operation_id), io)?;
+        let _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
+        let workflow = crate::store::operations::stream_text_with_work(&owner.stream(), &path, &mut work)?;
+        let tail = crate::store::operations::bounds_with_work(&owner.stream(), workflow.stream.path(), &mut work).await?
+            .map_err(|error| crate::distributed::sdk_error(error, &work))?.tail;
+        let index = tail.checked_sub(1).ok_or_else(|| admission_boundary(&work,
+            crate::wire::ErrorCode::Unauthorized, "parcel receive checkpoint is absent"))?;
+        let latest = self.read_mail_workflow_record(owner, &workflow.stream, index, io).await?;
+        let prior;
+        let receive = if let [command] = latest.transition.commands.as_slice()
             && command.operation_id == receive_operation
             && command.kind == crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND
         {
-            command.clone()
+            command
         } else {
-            let results = latest.input["commands"].as_array()
-                .ok_or_else(|| Error::Unauthorized("parcel receive result is not committed".into()))?;
+            let results = latest.input["commands"].as_array().ok_or_else(|| admission_boundary(&work,
+                crate::wire::ErrorCode::Unauthorized, "parcel receive result is not committed"))?;
             let [result] = results.as_slice() else {
-                return Err(Error::Unauthorized("parcel must consume one receive result".into()));
+                return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
+                    "parcel must consume one receive result"));
             };
-            let exact = serde_json::to_value(Outcome::Succeeded(item.clone()))
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            if result["operation_id"] != serde_json::to_value(receive_operation)
-                .map_err(|error| Error::Invalid(error.to_string()))?
-                || result["value"] != exact
-            {
-                return Err(Error::Unauthorized("parcel differs from the committed receive result".into()));
+            let exact = match io {
+                Some(io) => io.value_json(&Outcome::Succeeded(item), acyclic_stream::MAX_RECORD_BYTES as u64)?,
+                None => serde_json::to_value(Outcome::Succeeded(item)).map_err(|error| Error::Invalid(error.to_string()))?,
+            };
+            let operation = match io {
+                Some(io) => io.value_json(&receive_operation, acyclic_stream::MAX_RECORD_BYTES as u64)?,
+                None => serde_json::to_value(receive_operation).map_err(|error| Error::Invalid(error.to_string()))?,
+            };
+            if result["operation_id"] != operation || result["value"] != exact {
+                return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
+                    "parcel differs from the committed receive result"));
             }
-            let prior_index = latest.prior.revision.checked_sub(1)
-                .ok_or_else(|| Error::Unauthorized("parcel receive outbox is absent".into()))?;
-            let prior = self.read_mail_workflow_record(&owner, &workflow, prior_index).await?;
+            let prior_index = latest.prior.revision.checked_sub(1).ok_or_else(|| admission_boundary(&work,
+                crate::wire::ErrorCode::Unauthorized, "parcel receive outbox is absent"))?;
+            prior = self.read_mail_workflow_record(owner, &workflow.stream, prior_index, io).await?;
             let [command] = prior.transition.commands.as_slice() else {
-                return Err(Error::Unauthorized("parcel requires a sole receive outbox".into()));
+                return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
+                    "parcel requires a sole receive outbox"));
             };
             if command.operation_id != receive_operation
-                || command.kind != crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND
-                || prior.next != latest.prior
-            {
-                return Err(Error::Unauthorized("parcel receive operation differs".into()));
+                || command.kind != crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND || prior.next != latest.prior {
+                return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
+                    "parcel receive operation differs"));
             }
-            command.clone()
+            command
         };
-        let receiver_admission = self.admission_with_work(owner.workflow_admission().operation_id, &mut None).await?;
-        let selection: crate::filesystem::MailReceiveTaskCommand = crate::contract::json_from_slice(
-            &self.read_mail_source(&receiver_admission, &receive.payload, &mut None).await?,
-        ).map_err(|error| Error::Unauthorized(format!("invalid retained parcel selection: {error}")))?;
+        let receiver_admission = self.admission_with_work(owner.workflow_admission().operation_id, &mut work).await?;
+        let selection: crate::filesystem::MailReceiveTaskCommand = mail::decode(
+            &self.read_mail_source(&receiver_admission, &receive.payload, &mut work).await?, io)?;
         if selection.after.checked_add(1) != Some(item.sequence) {
-            return Err(Error::Unauthorized("parcel cursor differs from the retained receive".into()));
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
+                "parcel cursor differs from the retained receive"));
         }
-        let records = self.mailbox(receiver)?.read(item.sequence - 1, 1).await?
-            .try_collect::<Vec<_>>().await?;
-        let [record] = records.as_slice() else {
-            return Err(Error::Unauthorized("parcel source is absent".into()));
-        };
-        let event: MailEvent = crate::contract::json_from_slice(&record.value)
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        if record.sequence.checked_add(1) != Some(item.sequence)
-            || event.message_id.to_string() != item.message_id || event.payload != item.payload
-            || crate::contract::canonical_json_bytes(&event)?.as_slice() != record.value.as_ref()
-        {
-            return Err(Error::Unauthorized("parcel differs from its retained mailbox item".into()));
+        let mailbox = self.mailbox(receiver)?;
+        let mut records = crate::store::operations::read_records_with_work(&self.stream, &mailbox,
+            item.sequence - 1, 1, &mut work).await?.map_err(|error| crate::distributed::sdk_error(error, &work))?;
+        let record = records.next(&mut work).await?.ok_or_else(|| admission_boundary(&work,
+            crate::wire::ErrorCode::Unauthorized, "parcel source is absent"))?;
+        if records.next(&mut work).await?.is_some() {
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized, "parcel source is absent"));
         }
-        let sender_admission = self.admission_with_work(OperationId::from_bytes(event.sender.into_bytes()), &mut None).await?;
-        let direct = mail::authorize_route(
-            event.sender, &sender_admission, receiver, &receiver_admission, None,
-        )?;
-        receiver_admission.limits.validate_file(&event.payload, &mut None)?;
-        if !direct && !read_granted(&receiver_admission.grants, &event.payload)? {
-            return Err(Error::Unauthorized("custom parcel requires recipient file authority".into()));
+        let event: MailEvent = mail::decode(&record.value, io)?;
+        let mut message = [0; 36];
+        let message = uuid::Uuid::from_bytes(event.message_id.into_bytes()).hyphenated().encode_lower(&mut message);
+        if record.sequence.checked_add(1) != Some(item.sequence) || message != item.message_id || event.payload != item.payload
+            || mail::encode(&event, acyclic_stream::MAX_RECORD_BYTES as u64, io)?.as_ref() != record.value.as_ref() {
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
+                "parcel differs from its retained mailbox item"));
         }
-        if !self.observe_mail_location(
-            event.sender, receiver, event.message_id, &record.value, Some(record.sequence), None
-        ).await? {
-            return Err(Error::Unauthorized("parcel has no original atomic receipt".into()));
+        let sender_admission = self.admission_with_work(OperationId::from_bytes(event.sender.into_bytes()), &mut work).await?;
+        let direct = mail::authorize_route(event.sender, &sender_admission, receiver, &receiver_admission, io)?;
+        receiver_admission.limits.validate_file(&event.payload, &mut work)?;
+        if !direct && !crate::runtime::read_granted_with_work(&receiver_admission.grants, &event.payload, &mut work)? {
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
+                "custom parcel requires recipient file authority"));
         }
-        let bytes = self.read_mail_source(&sender_admission, &event.payload, &mut None).await?;
-        owner.verify(true, &mut None).await?;
+        if !self.observe_mail_location(event.sender, receiver, event.message_id, &record.value, Some(record.sequence), io).await? {
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
+                "parcel has no original atomic receipt"));
+        }
+        let bytes = self.read_mail_source(&sender_admission, &event.payload, &mut work).await?;
+        owner.verify_read_access(&mut work).await?;
         Ok(bytes)
     }
 
     #[cfg(feature = "filesystem")]
     async fn read_mail_workflow_record(
-        &self,
-        owner: &TaskJournalOwner<P>,
-        workflow: &acyclic_stream::Stream<P>,
-        index: u64,
+        &self, owner: &TaskJournalOwner<P>, workflow: &acyclic_stream::Stream<P>, index: u64,
+        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<crate::workflow::WorkflowRecord> {
-        let records = workflow.read(index, 1).await?.try_collect::<Vec<_>>().await?;
-        let [record] = records.as_slice() else {
-            return Err(Error::Unauthorized("parcel workflow record is absent".into()));
+        let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
+        let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+        let mut records = crate::store::operations::read_records_with_work(&self.stream, workflow, index, 1, &mut work)
+            .await?.map_err(|error| crate::distributed::sdk_error(error, &work))?;
+        let record = records.next(&mut work).await?.ok_or_else(|| admission_boundary(&work,
+            crate::wire::ErrorCode::Unauthorized, "parcel workflow record is absent"))?;
+        if records.next(&mut work).await?.is_some() {
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized, "parcel workflow record is absent"));
+        }
+        let reference: FileRef = mail::decode(&record.value, io)?;
+        owner.input_limits().validate_file(&reference, &mut work)?;
+        if record.sequence != index || mail::encode(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, io)?.as_ref() != record.value.as_ref() {
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Storage, "parcel workflow reference differs"));
+        }
+        let (value, held) = self.read_json_with_work(&reference, &mut work).await?;
+        let _value = io.map(|io| io.guard_owned(held)).transpose()?;
+        let envelope: crate::workflow::WorkflowRecord = match io {
+            Some(io) => crate::filesystem::retain_decoded(io.value_decode_preparation(&value, crate::wire::ErrorCode::Storage)?),
+            None => serde_json::from_value(value).map_err(|error| Error::Storage(error.to_string()))?,
         };
-        let reference: FileRef = crate::contract::json_from_slice(&record.value)
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        owner.input_limits().validate_file(&reference, &mut None)?;
-        if record.sequence != index
-            || crate::contract::canonical_json_bytes(&reference)?.as_slice() != record.value.as_ref()
-        {
-            return Err(Error::Storage("parcel workflow reference differs".into()));
-        }
-        let value = self.read_json_with_work(&reference, &mut None).await.map(|(value, _)| value)?;
-        let envelope: crate::workflow::WorkflowRecord = serde_json::from_value(value)
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        envelope.validate(None)?;
+        envelope.validate(io)?;
         if envelope.prior.revision != index || envelope.next.revision != index + 1 {
-            return Err(Error::Storage("parcel workflow revision differs".into()));
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Storage, "parcel workflow revision differs"));
         }
-        owner.validate_workflow_record(&envelope, None)?;
+        owner.validate_workflow_record(&envelope, io)?;
         Ok(envelope)
     }
 

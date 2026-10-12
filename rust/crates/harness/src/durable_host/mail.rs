@@ -50,7 +50,7 @@ pub(crate) fn received_copy_operation(task: TaskId, receive: OperationId,
     Ok(OperationId::from_bytes(id))
 }
 
-fn encode<T: Serialize + ?Sized>(value: &T, maximum: u64, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
+pub(super) fn encode<T: Serialize + ?Sized>(value: &T, maximum: u64, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
     require_original(io)?;
     if io.is_none() { crate::contract::validate_json_byte_bound(value, maximum)?; }
     #[cfg(feature = "filesystem")]
@@ -63,7 +63,7 @@ fn encode<T: Serialize + ?Sized>(value: &T, maximum: u64, io: Option<&Preparatio
     Ok(operations::owned_bytes_from_retained_vec(bytes, &mut work)?.0)
 }
 
-fn decode<T: MailRecord>(bytes: &[u8], io: Option<&PreparationIo>) -> Result<T> {
+pub(super) fn decode<T: MailRecord>(bytes: &[u8], io: Option<&PreparationIo>) -> Result<T> {
     require_original(io)?;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io { return Ok(crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<T>, bytes, crate::wire::ErrorCode::Storage)?)); }

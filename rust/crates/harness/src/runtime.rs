@@ -7907,7 +7907,16 @@ impl TaskContext {
     /// Reads only one retained parcel selected by this task's original receive command.
     pub async fn read_received_mail(
         &self, receive_operation: OperationId, item: &InboxItem,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
+            return self.native_mailbox(original)?.read_received_with_native_work(receive_operation, item, original)?.await;
+        }
+        if work.is_some() {
+            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unsupported,
+                "parcel read requires an original native observer"));
+        }
         let mailbox = self.owned_mailbox.as_ref()
             .ok_or_else(|| Error::Unauthorized("parcel read requires a retained mailbox owner".into()))?;
         mailbox.validate_scope(&self.scope)?;
