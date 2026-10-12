@@ -8,7 +8,7 @@ use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{LazySnapshotRef, WorkBudget, WorkCounters, NativeMaterializationWork};
 use acyclic_harness::{Error, Result, TaskId, OperationId,
     durable_host::TaskJournalOwner, filesystem::{TaskCommandProgress, ForkPreparationLimits},
-    core::SchemaRegistry, NativeTaskContext, scheduler::LeaseFence,
+    core::SchemaRegistry, runtime::NativeTaskContext, scheduler::LeaseFence,
     store::StreamAggregate, workflow::WorkflowCommand};
 use acyclic_stream::{LocalStream};
 use serde::{Deserialize, Serialize};

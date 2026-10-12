@@ -28,7 +28,7 @@ pub(crate) struct PiRootPreparation {
     pub(crate) command: WorkflowCommand,
     pub(crate) plan: TaskEffectPlan,
     pub(crate) request: PiRootRequest,
-    pub(crate) context: std::sync::Arc<acyclic_harness::NativeTaskContext>,
+    pub(crate) context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
     pub(crate) custody: NativeAllocation,
 }
 
@@ -40,7 +40,7 @@ impl PiRootPreparation {
         session: &Path, runtime: &super::pi_native_host::PiNativeRuntime,
         filesystem: &FilesystemHost<super::LocalAuthorityBackend, super::LocalObjectBackend>,
         binding: &PiTaskBinding, origin: super::pi_recovery::PiTaskOrigin<'_>,
-        context: Option<std::sync::Arc<acyclic_harness::NativeTaskContext>>,
+        context: Option<std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>>,
         work: &NativeMaterializationWork,
     ) -> Result<Self>
     {

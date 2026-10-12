@@ -91,7 +91,7 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
         fixture.filesystem.clone(), fixture.stream.clone(), &fixture.resources, fixture.owner.clone(), &catalog_work).unwrap();
     coordinator.admit_preparation(&fixture.context, &fixture.journal, &fixture.fence, &plan).await.unwrap();
     let native = session.native_host_with_native_work(&catalog_work).unwrap();
-    let catalog_host = pi_fork_host::PiForkHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
+    let catalog_host = crate::pi_selected_host::PiControlHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
         fixture.stream.clone(), &fixture.resources, fixture.owner.clone(), &session.state, &session.roots,
         native);
     let reservation = catalog_host.reservation_with_native_work(&plan, &catalog_work).unwrap();

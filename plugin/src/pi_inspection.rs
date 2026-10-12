@@ -9,7 +9,7 @@ use acyclic_harness::{
 };
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_stream::{LocalStream, StreamProvider};
-use acyclic_fs::DemandSource as _;
+use acyclic_fs::demand::DemandSource as _;
 use serde::{Deserialize, Serialize};
 
 /// Independently authenticates both selections under the ORIGINAL root's retained admission tree.
@@ -112,7 +112,7 @@ pub(crate) struct PiWritebackPublicationGuard {
     resources: crate::ServiceResources,
     filesystem: std::sync::Arc<acyclic_harness::filesystem::FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
     stream: std::sync::Arc<LocalStream>,
-    context: std::sync::Arc<acyclic_harness::NativeTaskContext>,
+    context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
     owner: std::sync::Arc<TaskJournalOwner<LocalStream>>,
     request: crate::pi_root_inputs::PiRootRequest,
     allocation: crate::pi_root_allocation::PiRootAllocation,
@@ -129,7 +129,7 @@ impl PiWritebackPublicationGuard {
         resources: &crate::ServiceResources,
         filesystem: std::sync::Arc<acyclic_harness::filesystem::FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
         stream: std::sync::Arc<LocalStream>,
-        context: std::sync::Arc<acyclic_harness::NativeTaskContext>,
+        context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
         owner: std::sync::Arc<TaskJournalOwner<LocalStream>>,
         request: (crate::pi_root_inputs::PiRootRequest, acyclic_fs::NativeAllocation),
         key: &str, identity: acyclic_fs::NativeRootIdentity,
@@ -195,7 +195,7 @@ impl PiWritebackPublicationGuard {
 }
 
 pub(crate) async fn build_writeback_generations<'a>(
-    root: &PiOriginalWritebackRoot, native_context: &std::sync::Arc<acyclic_harness::NativeTaskContext>,
+    root: &PiOriginalWritebackRoot, native_context: &std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
     owner: &std::sync::Arc<TaskJournalOwner<LocalStream>>,
     verifier: &acyclic_harness::core::AuthorityVerifier, scope: &acyclic_harness::core::Scope,
     input_owner: &crate::pi_owner::PiOwnerConfig,
@@ -276,9 +276,9 @@ fn phase_operation(operation: acyclic_harness::OperationId, phase: &[u8]) -> acy
 
 /// Owns the actual issued caller/destination contexts, not copied scopes.
 struct PiSelectedPublicationGuard<P> {
-    caller: std::sync::Arc<acyclic_harness::NativeTaskContext>,
+    caller: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
     caller_owner: std::sync::Arc<TaskJournalOwner<P>>,
-    destination: std::sync::Arc<acyclic_harness::NativeTaskContext>,
+    destination: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
     destination_owner: std::sync::Arc<TaskJournalOwner<P>>,
     volume: VolumeRef,
     write_capability: String,
@@ -288,9 +288,9 @@ struct PiSelectedPublicationGuard<P> {
 
 impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
     fn new(
-        caller: std::sync::Arc<acyclic_harness::NativeTaskContext>,
+        caller: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
         caller_owner: std::sync::Arc<TaskJournalOwner<P>>,
-        destination: std::sync::Arc<acyclic_harness::NativeTaskContext>,
+        destination: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
         destination_owner: std::sync::Arc<TaskJournalOwner<P>>,
         mount_guard: Option<std::sync::Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>>,
         volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork,
@@ -574,18 +574,18 @@ pub(crate) struct PiNativeSelectedSource<'a, A, O, D, S> {
     reader: TaskId,
     volume: &'a VolumeRef,
     snapshot: acyclic_fs::LazySnapshotRef,
-    inspection: &'a TaskSourceInspection<crate::LocalStream, A, O>,
+    inspection: &'a TaskSourceInspection<acyclic_stream::LocalStream, A, O>,
 }
 
 impl<'a, A, O, D, S> PiNativeSelectedSource<'a, A, O, D, S>
 where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectStore + 'static,
-      D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
+      D: acyclic_fs::demand::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
 {
     pub(crate) fn snapshot(&self) -> acyclic_fs::LazySnapshotRef { self.snapshot }
 
     /// The inspection is constructed by the shared runtime from the opaque ORIGINAL-caller ProjectSourceReadHandle.
     pub(crate) fn select(
-        inspection: &'a TaskSourceInspection<crate::LocalStream, A, O>,
+        inspection: &'a TaskSourceInspection<acyclic_stream::LocalStream, A, O>,
         source: TaskId, reader: TaskId, volume: &'a VolumeRef,
         workspace: &'a acyclic_fs::LazyWorkspace<A, O, D, S>,
         snapshot: acyclic_fs::LazySnapshotRef,
@@ -713,9 +713,9 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
 /// The source's sealed canonical selected plan preserves actual recorded metadata, directories and negative proofs.
 pub(crate) async fn import_native_project<P, A, O, D, S>(
     source: &PiNativeSelectedSource<'_, A, O, D, S>,
-    caller_native: &std::sync::Arc<acyclic_harness::NativeTaskContext>,
+    caller_native: &std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
     caller_owner: &std::sync::Arc<TaskJournalOwner<P>>,
-    destination_native: &std::sync::Arc<acyclic_harness::NativeTaskContext>,
+    destination_native: &std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
     destination_owner: &std::sync::Arc<TaskJournalOwner<P>>,
     destination_workspace: &acyclic_fs::LazyWorkspace<A, O, D, S>, mount: Option<&acyclic_fs::LazyMount<A, O, D, S>>,
     mount_guard: Option<std::sync::Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>>,
@@ -728,7 +728,7 @@ pub(crate) async fn import_native_project<P, A, O, D, S>(
 ) -> Result<acyclic_fs::LazySnapshotRef>
 where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
       O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
-      D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
+      D: acyclic_fs::demand::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
 {
     let caller = caller_native.context();
     let destination = destination_native.context();
@@ -853,7 +853,7 @@ pub(crate) async fn diff_native<'a, P, A, O, D, S>(
     native_work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<PiNativeDiffPage<'a>>
 where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectStore + 'static,
-      D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
+      D: acyclic_fs::demand::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
 {
 
     owner.native_view_owner().verify_with_native_work(native_work).await?;

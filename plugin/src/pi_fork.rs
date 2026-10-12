@@ -315,7 +315,7 @@ impl PiForkCoordinator {
     }
 
     #[allow(clippy::too_many_arguments, reason = "actual original owner, canonical parent, and native cut are independent authorities")]
-    pub(crate) async fn begin(&self, shared: &Arc<acyclic_harness::NativeTaskContext>,
+    pub(crate) async fn begin(&self, shared: &Arc<acyclic_harness::runtime::NativeTaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>, fence: &LeaseFence, parent: StreamAggregate<LocalStream>,
         source: Arc<LocalLazyWorkspace>, frozen: LazySnapshotRef, mut commit: RetainedSpawnCommit,
         limits: ForkPreparationLimits, budget: WorkBudget, cancel: CancellationToken,
@@ -653,7 +653,7 @@ impl PiForkCoordinator {
          }}
 
     #[allow(clippy::too_many_arguments, reason = "original native owner, source cut, and invocation work stay distinct")]
-    async fn native_preparer(&self, shared: &Arc<acyclic_harness::NativeTaskContext>,
+    async fn native_preparer(&self, shared: &Arc<acyclic_harness::runtime::NativeTaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>, plan: &PiForkPlan, source: Arc<LocalLazyWorkspace>,
         budget: WorkBudget, cancel: &CancellationToken, work: &NativeMaterializationWork)
         -> Result<Arc<acyclic_harness::filesystem::FilesystemForkPreparer<LocalAuthorityBackend, LocalObjectBackend>>> {
@@ -734,7 +734,7 @@ impl PiForkCoordinator {
     /// Drives only the retained ordinary preparation.
     #[allow(clippy::too_many_arguments, reason = "exact parent lease and immutable source selection")]
     /// Advances only the ordinary registered preparation task.
-    pub(crate) async fn prepare(&self, shared: &Arc<acyclic_harness::NativeTaskContext>,
+    pub(crate) async fn prepare(&self, shared: &Arc<acyclic_harness::runtime::NativeTaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>, fence: &LeaseFence, plan: &PiForkPlan,
         source: Arc<LocalLazyWorkspace>, budget: WorkBudget, cancel: CancellationToken,
     ) -> Result<Option<(ForkReport, acyclic_fs::NativeAllocation)>> {
@@ -790,7 +790,7 @@ impl PiForkCoordinator {
     }
 
     #[allow(clippy::too_many_arguments, reason = "exact parent lease and immutable source selection")]
-    pub(crate) async fn advance(&self, shared: &Arc<acyclic_harness::NativeTaskContext>,
+    pub(crate) async fn advance(&self, shared: &Arc<acyclic_harness::runtime::NativeTaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>, fence: &LeaseFence, plan: &PiForkPlan,
         source: Arc<LocalLazyWorkspace>, budget: WorkBudget, cancel: CancellationToken,
     ) -> Result<Option<PreparedPiFork>> {
@@ -815,7 +815,7 @@ impl PiForkCoordinator {
     }
 
     /// Reopens only a previously published and bound admitted child.
-    pub(crate) async fn restore_admitted(&self, shared: &Arc<acyclic_harness::NativeTaskContext>,
+    pub(crate) async fn restore_admitted(&self, shared: &Arc<acyclic_harness::runtime::NativeTaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>, fence: &LeaseFence, plan: &PiForkPlan,
         source: Arc<LocalLazyWorkspace>, cancel: CancellationToken) -> Result<PreparedPiFork> {
         let context = shared.context();

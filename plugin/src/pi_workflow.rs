@@ -246,10 +246,10 @@ impl<'a> PiWorkflowHost<'a> {
     }
 
     async fn root_control_context(
-        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: &LeaseFence,
+        &self, context: Arc<acyclic_harness::runtime::NativeTaskContext>, fence: &LeaseFence,
         protected: Arc<pi_owner::PiOwnerConfig>,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<Arc<acyclic_harness::NativeTaskContext>> {
+    ) -> acyclic_harness::Result<Arc<acyclic_harness::runtime::NativeTaskContext>> {
         if context.context().durable_task_id() != Some(protected.policy().root_task) {
             return Err(acyclic_harness::Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -271,7 +271,7 @@ impl<'a> PiWorkflowHost<'a> {
     }
 
     async fn root_effects(
-        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: &LeaseFence,
+        &self, context: Arc<acyclic_harness::runtime::NativeTaskContext>, fence: &LeaseFence,
         command: &WorkflowCommand, payload: &Value,
         owner: Arc<pi_owner::PiOwnerConfig>,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -322,7 +322,7 @@ impl<'a> PiWorkflowHost<'a> {
     }
 
     async fn dispatch_native(
-        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        &self, context: Arc<acyclic_harness::runtime::NativeTaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value,
         work: &acyclic_fs::NativeMaterializationWork, reconcile: bool,
     ) -> acyclic_harness::Result<TaskCommandProgress> {
@@ -386,7 +386,7 @@ impl TaskCommandHost for PiWorkflowHost<'_> {
     }
 
     fn execute_with_native_work<'a>(
-        &'a self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        &'a self, context: Arc<acyclic_harness::runtime::NativeTaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'a, TaskCommandProgress>> {
@@ -396,7 +396,7 @@ impl TaskCommandHost for PiWorkflowHost<'_> {
     }
 
     fn reconcile_with_native_work<'a>(
-        &'a self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        &'a self, context: Arc<acyclic_harness::runtime::NativeTaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'a, TaskCommandProgress>> {

@@ -1,3 +1,4 @@
+use acyclic_harness::conversation::VolumeOperation;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::{PiScratchBinding, pi_owner::PiOwnerPolicy,
@@ -326,7 +327,7 @@ impl Fixture {
     }
     async fn current_context_with(&self, coordinator: &PiForkCoordinator,
         supplied: &acyclic_harness::runtime::TaskContext, journal: &Arc<TaskJournalOwner<LocalStream>>,
-        fence: &LeaseFence) -> Result<Arc<acyclic_harness::NativeTaskContext>> {
+        fence: &LeaseFence) -> Result<Arc<acyclic_harness::runtime::NativeTaskContext>> {
         let work = &coordinator.work;
         coordinator.authenticate(supplied, journal, fence).await?;
         let shared = coordinator.runtime.runtime.task_context_with_native_work(journal.task_id(), fence, work).await?;

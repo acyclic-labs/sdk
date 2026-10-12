@@ -23,7 +23,7 @@ use acyclic_harness::JsonValueSchema;
 #[cfg(test)]
 #[cfg(test)]
 use acyclic_harness::IdempotencyKey;
-use acyclic_harness::{core::Capabilities, interaction::{Interaction, InteractionResponse}, executor::ExecutionJournal};
+use acyclic_harness::{Capabilities, interaction::{Interaction, InteractionResponse}, executor::ExecutionJournal};
 use acyclic_stream::StreamProvider;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -986,7 +986,7 @@ impl PiNativeRootSeed {
     ) -> Result<(NativeVolumeMapping, NativeExistingLazyVolume, NativeVolumeCallbackGuard<P>, acyclic_fs::NativeAllocation)>
     where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
           O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
-          D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
+          D: acyclic_fs::demand::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
     {
         let context = shared.context();
         if !authority.2.work().shares_ledger(meter) || !original_volume_work.shares_ledger(meter) {
@@ -1137,7 +1137,7 @@ impl PiNativeRootSeed {
     ) -> Result<()>
     where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
           O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
-          D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
+          D: acyclic_fs::demand::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
     {
         if owner.task_id() != self.task || proof.original_task() != self.task || proof.volume() != &self.scratch
             || self.packet.operation_id() != NativePreparationRoot::operation(owner.task_id(), meter)?
@@ -1169,7 +1169,7 @@ impl<A, O> PiPreparedScratch<A, O> {
     ) -> Result<()>
     where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
           O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
-          D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
+          D: acyclic_fs::demand::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
     {
         let prepared = self.view.preparation();
         if owner.task_id() != prepared.task || context.durable_task_id() != Some(prepared.task)
@@ -1243,7 +1243,7 @@ async fn stop_unstarted_sources_with_work<P, A, O, D, S>(
 ) -> Result<()>
 where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
       O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
-      D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
+      D: acyclic_fs::demand::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
 {
     let Some(volume_work) = source_volume_work else {
         if mounts.is_empty() && startup.is_none() { return Ok(()); }

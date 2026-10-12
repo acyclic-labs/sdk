@@ -1,4 +1,5 @@
 
+use acyclic_harness::filesystem::NativeProcessView;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::Passive;

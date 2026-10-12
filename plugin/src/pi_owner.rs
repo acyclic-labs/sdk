@@ -1,5 +1,6 @@
 //! Immutable, private host credentials for reopening one Pi root runtime.
 
+use acyclic_harness::conversation::ContentResidencyVerifier;
 use super::pi_runtime::PiRuntimeAuthority;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::{
@@ -35,7 +36,7 @@ const OWNER_DIAGNOSTIC_LABEL_BYTES: u64 = super::pi_root_provider::pi_serde_diag
     "executable_prefix", "extension", "provider_extension", "environment", "VolumeRefWire",
     "provider", "id", "class", "owner", "kind", "project", "agent_private", "session_shared",
     "session", "ProviderRefWire", "namespace", "family",
-]) + acyclic_harness::contract::preparation_serde_diagnostic_label_bytes();
+]) + acyclic_harness::preparation_serde_diagnostic_label_bytes();
 const OWNER_MAGIC: &[u8; 8] = b"ACYPIOW1";
 const MAXIMUM_OWNER_BYTES: u64 = super::MAXIMUM_ADAPTER_STATE_BYTES;
 const ISSUER: &str = "acyclic.pi";

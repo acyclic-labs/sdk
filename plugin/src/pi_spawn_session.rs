@@ -5,7 +5,7 @@ use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{LazySnapshotRef, NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::{
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
-    filesystem::{ContentResidencyVerifier, FilesystemContentVerifier, TaskCommandProgress},
+    conversation::ContentResidencyVerifier, filesystem::{ FilesystemContentVerifier, TaskCommandProgress},
     runtime::NativeTaskContext,
     workflow::WorkflowCommand,
 };

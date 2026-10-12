@@ -444,7 +444,7 @@ async fn pi_root_provider_lost_output_ack_ignores_a_replaced_mutable_output_path
         dispatch.attempt_id, "result", &fixture.startup).await.unwrap().unwrap();
     let mut changed = fixture.provider.read_with_native_work::<PiRootAllocation>(&original.0, &fixture.startup).await.unwrap();
     changed.0.scratch.workspace_id = [124; 16];
-    let (_, write) = pi_input_grants(&fixture.owner).unwrap();
+    let (write, _write_custody) = pi_input_write_grant_with_native_work(&fixture.owner, &crate::pi_fork::tests::work()).unwrap();
     let substituted = fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, original.0.path(),
         &serde_json::to_vec(&changed.0).unwrap(), "application/json", "result.json",
         fixture.owner.policy().maximum_payload_bytes, &IdempotencyKey::new("different-output-operation").unwrap()).await.unwrap();
@@ -709,7 +709,7 @@ async fn pi_operator_input_original_upload_is_root_only_even_for_actual_created_
         &serde_json::json!({"different":"scope"}), &native).await.is_err());
     let (regular, _regular_custody) = stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "scope", &serde_json::json!({"not":"a bearer scope"}), &native).await.unwrap();
     assert_ne!(regular, operator);
-    let (_, write) = pi_input_grants(&fixture.owner).unwrap();
+    let (write, _write_custody) = pi_input_write_grant_with_native_work(&fixture.owner, &crate::pi_fork::tests::work()).unwrap();
     fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, operator.path(), b"{\"changed\":true}",
         "application/json", "scope.json", fixture.owner.policy().maximum_payload_bytes,
         &IdempotencyKey::new("different-operator-path-upload").unwrap()).await.unwrap();
@@ -772,7 +772,7 @@ fn guarded_pi_decode_rejects_original_quota_and_cancel_without_retaining_partial
 
 #[tokio::test]
 async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_receipt() {
-    use acyclic_harness::filesystem::ContentResidencyVerifier;
+    use acyclic_harness::conversation::ContentResidencyVerifier;
     let fixture = Fixture::new(true).await;
     let operation = OperationId::from_bytes([141; 16]);
     let payload = PiMailEnvelope { kind: PiMailKind::Message, message: "original immutable message".into() };
@@ -788,7 +788,7 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
     let retry = stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "native-mail", &payload, &work).await.unwrap();
     assert_eq!(retry.0, file);
     drop(retry);
-    let (_, write) = pi_input_grants(&fixture.owner).unwrap();
+    let (write, _write_custody) = pi_input_write_grant_with_native_work(&fixture.owner, &crate::pi_fork::tests::work()).unwrap();
     fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, file.path(),
         b"{\"later\":\"mutable head\"}", "application/json", "native-mail.json",
         fixture.owner.policy().maximum_payload_bytes, &IdempotencyKey::new("native-mail-later-head").unwrap())

@@ -4,7 +4,7 @@ use crate::{PiTaskBinding, pi_owner::PiOwnerConfig,
     pi_operator::{self, PiPreparedApproval, PiOperatorRequest, PiOperatorBody, PiOperatorDecision},
     pi_fork::{original_operation, derived}};
 use acyclic_fs::{NativeMaterializationWork, MaterializationPhase};
-use acyclic_harness::{Error, Result, Capabilities, OperationId, NativeTaskContext,
+use acyclic_harness::{Error, Result, Capabilities, OperationId, runtime::NativeTaskContext,
     durable_host::TaskJournalOwner, scheduler::LeaseFence,
     filesystem::{FilesystemExecutionJournal, TaskCommandProgress},
     core::SchemaRegistry, executor::ExecutionJournal,

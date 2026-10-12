@@ -127,7 +127,7 @@ async fn actual_mailbox_lost_ack_exact_sequence_and_original_sender() -> Result<
     let (observed, observed_custody) = wait(&reopened, &binding, parent, 0, |caller, selected| {
         assert_eq!(caller, child); assert_eq!(selected, parent); Ok(())
     }, &work).await?;
-    assert!(matches!(observed.state, PiWaitState::Pending));
+    assert_eq!(observed.state, "pending");
     assert_eq!(observed.task, parent);
     assert_eq!(observed.mail.as_ref().unwrap().item.sequence, 1);
     drop(observed);

@@ -5,6 +5,7 @@
 //! invalidation transaction. Failed publication retains a real SDK rescan rather
 //! than exposing stale resident source backing to lazy restore.
 
+use acyclic_fs::NativeAllocation;
 use super::*;
 
 pub(crate) type LocalWorkspace = Workspace<LocalAuthorityBackend, LocalObjectBackend>;
@@ -305,7 +306,7 @@ impl SharedPhysicalRoot {
         use native_root_source::{native_source_error, native_watch_error};
 
         self.observe_transaction(
-            || acyclic_harness::RootError::NativeBoundary {
+            || acyclic_harness::Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Storage,
                 reason: "physical root reference state is poisoned",
             },
@@ -314,7 +315,7 @@ impl SharedPhysicalRoot {
                     .validate_current(prior_source, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work))
                     .map_err(native_source_error)?;
                 let mut watcher = self.watcher.lock().map_err(|_| {
-                    acyclic_harness::RootError::NativeBoundary {
+                    acyclic_harness::Error::NativeBoundary {
                         code: acyclic_harness::wire::ErrorCode::Storage,
                         reason: "physical root watcher state is poisoned",
                     }

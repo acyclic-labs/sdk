@@ -417,7 +417,7 @@ impl PiSession {
                 return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi original root creation was substituted" });
             }
             if !handles.contains_key(key) && !self.roots.contains_key(key) {
-                let expected = acyclic_fs::SourceReference {
+                let expected = acyclic_fs::demand::SourceReference {
                     identity: creation.source_identity, epoch: creation.source_epoch,
                 };
                 let physical = self.resources.shared_roots.acquire_with_native_work(

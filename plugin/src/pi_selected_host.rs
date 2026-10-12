@@ -754,7 +754,7 @@ pub(crate) async fn read_imported_selected_files(
         return Err(denied("operator evidence does not bind the actual original selected import receipt"));
     }
     let capability = volume.capability_with_native_work(VolumeOperation::Read, work)?;
-    let grants = acyclic_harness::core::Capabilities::new_with_native_work([capability.0.as_str()], work)?;
+    let grants = acyclic_harness::Capabilities::new_with_native_work([capability.0.as_str()], work)?;
     let authorization = protected.conversation_authority_with_native_work(
         binding.task_id, binding.agent_id, &grants.0, work)?;
     let verifier = authorization.0.1.verifier_with_native_work(work)?;
