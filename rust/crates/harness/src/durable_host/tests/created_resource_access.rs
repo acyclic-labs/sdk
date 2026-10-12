@@ -561,7 +561,7 @@ impl CreationFixture {
         let proof = self.creator.proof(preparation)?;
         let mut child = self.admission(84, serde_json::json!({"action":"execute"}));
         child.grants = Capabilities::new([
-            created_resource_capability(&proof.resource, "execute")?,
+            created_resource_capability(&proof.resource, "execute", &mut None)?,
             "task:spawn:test.created@1".into(),
         ]);
         child = child.with_resource_proofs(vec![proof.clone()])?;
@@ -616,7 +616,7 @@ impl CreationFixture {
 async fn created_custom_operation_requires_canonical_admission_not_a_caller_receipt() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let request = fixture.sandbox_request()?;
-    let label = created_resource_capability(&request.resources[0], "execute")?;
+    let label = created_resource_capability(&request.resources[0], "execute", &mut None)?;
     assert!(!fixture.root_scope.grants().contains(&label));
     let (preparation, _, _invocation) = fixture.prepare(&request).await?;
     fixture.creator.create(&preparation, |_| {}).await?;
@@ -640,7 +640,7 @@ async fn created_custom_operation_requires_canonical_admission_not_a_caller_rece
     assert!(!narrowed.scope().grants().contains(&label));
     assert!(narrowed.scoped(Capabilities::new([label.clone()]), narrowed.scope().limits()).is_err());
     let foreign = ResourceRef::new(ResourceKind::Sandbox, fixture.creator.provider.clone(), b"foreign".to_vec(), None)?;
-    assert!(context.scoped(Capabilities::new([created_resource_capability(&foreign, "execute")?]), context.scope().limits()).is_err());
+    assert!(context.scoped(Capabilities::new([created_resource_capability(&foreign, "execute", &mut None)?]), context.scope().limits()).is_err());
     Ok(())
 }
 
@@ -731,7 +731,7 @@ async fn original_creation_fence_survives_current_preparation_and_parent_recover
     assert!(fixture.host.admit_owned(request.child.clone(), old_parent_fence).await.is_err());
     assert!(matches!(fixture.admit_child(request.child.clone()).await?, Admission::Accepted(_)));
     let context = fixture.harness.durable_context(TaskId::from_bytes([84; 16]), request.child.operation_id).await?;
-    assert!(context.scope().grants().contains(&created_resource_capability(&request.resources[0], "execute")?));
+    assert!(context.scope().grants().contains(&created_resource_capability(&request.resources[0], "execute", &mut None)?));
     Ok(())
 }
 
