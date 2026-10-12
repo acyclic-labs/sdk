@@ -1044,7 +1044,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                             "source-arguments", &arguments, self.maximum_request_bytes, cancellation, Some(&io)).await?;
                         let selected = self.source()?.select_with_native_work(
                             context, &original.0, cancellation, work)?.await?;
-                        validate_source_intent(&selected.0, &arguments, Some(&super::PreparationIo::from_native_work(work)?))?;
+                        validate_source_intent(&selected.0, &arguments, Some(&io))?;
                         if selected.0.caller != caller || selected.0.request.operation_id != invocation.operation_id {
                             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                                 reason: "native source selector differs from original caller/effect" });
@@ -1066,9 +1066,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         recursive_encode_with_native_work(&initial, work)?
                     }
                     State::SourcePinned { arguments, intent, command } => {
-                        validate_source_intent(&intent, &arguments, Some(&super::PreparationIo::from_native_work(work)?))?;
-                        check_source_command(&command, &intent, Some(&super::PreparationIo::from_native_work(work)?))?;
                         let retained_io = super::PreparationIo::from_native_work(work)?;
+                        validate_source_intent(&intent, &arguments, Some(&retained_io))?;
+                        check_source_command(&command, &intent, Some(&retained_io))?;
                         if retained_payload(context, &command.payload, self.maximum_request_bytes,
                             cancellation, Some(&retained_io)).await? != arguments {
                             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
