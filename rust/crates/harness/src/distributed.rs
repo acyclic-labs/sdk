@@ -1383,7 +1383,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Invalid,
                 "session declaration must be a root"));
         }
-        limits.validate_with_work(custody.work())?;
+        limits.validate(custody.work())?;
         validate_idempotency_key(idempotency_key.as_str(), custody.work())?;
         let operation_id = spec.operation_id;
         let declaration_key = crate::core::copy_text(idempotency_key.as_str(), &mut custody)?;
@@ -2785,7 +2785,7 @@ impl PreparedMaterializationCommit {
             .and_then(|bytes| bytes.checked_add(crate::contract::sdk_json_diagnostic_bytes()))
             .and_then(|bytes| bytes.checked_add(size_of::<Self>() as u64))
             .ok_or_else(overflow)?
-            .max(size_of::<(acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation)>() as u64);
+            .max(size_of::<(acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)>() as u64);
         let mut prepared = PreparedCommitRequest::new(template.key().clone(), 0, work);
         reserve_prepared_vector(
             &mut prepared.request.conditions, 2, &mut prepared.custody,
@@ -2854,7 +2854,7 @@ impl PreparedMaterializationCommit {
     pub(crate) async fn finish<P: StreamProvider>(
         self, client: &StreamClient<P>, counters: acyclic_fs::WorkCounters,
         mut phase: Option<&mut CommitPhase>,
-    ) -> Result<(acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation)> {
+    ) -> Result<(acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)> {
         if let Some(phase) = phase.as_deref_mut() { *phase = CommitPhase::NotCalled; }
         let Self { mut template, operation, sdk, sdk_recovery, mut sdk_custody, mut observer } = self;
         let finished = async {
@@ -2897,7 +2897,7 @@ impl PreparedMaterializationCommit {
             Err(error) => return Err(completion_error(error, custody)),
         };
         let output_bytes = std::mem::size_of::<(
-            acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation,
+            acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation,
         )>() as u64;
         if let Err(cause) = custody.substitute(output_bytes) {
             drop(journal);

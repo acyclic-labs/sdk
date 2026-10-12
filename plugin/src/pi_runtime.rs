@@ -192,9 +192,9 @@ where
         retained.2.absorb(&mut retained.5)
             .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
 
-        let machine = PiTaskMachine::new_with_native_work(work)?;
+        let machine = PiTaskMachine::new(work)?;
         let mut tasks = TaskRegistry::default();
-        let definition = machine.definition_with_native_work(work)?;
+        let definition = machine.definition(work)?;
         tasks.register_with_native_work(definition.0, definition.1, work)?;
         let fork_machine = acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?;
         let fork = fork_machine.definition_with_native_work(work)?;

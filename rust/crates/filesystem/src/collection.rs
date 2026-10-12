@@ -341,21 +341,6 @@ impl Collection {
         Ok(Hold { collection: Arc::clone(self), id, slot_quota })
     }
 
-    pub(crate) fn hold_record_measured(
-        collection: Option<&Arc<Self>>,
-        record: crate::kernel::FileRecord,
-        config: crate::model::VolumeConfig,
-        allocations: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Option<Hold>, crate::FsError> {
-        let mut accounting = KernelAccounting::borrowed_standalone(
-            allocations, work, budget, cancellation,
-        );
-        Self::hold_record_with_accounting(collection, record, config, &mut accounting)
-    }
-
     pub(crate) fn hold_record_with_accounting(
         collection: Option<&Arc<Self>>,
         record: crate::kernel::FileRecord,

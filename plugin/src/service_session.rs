@@ -727,8 +727,8 @@ impl PiSession {
             return Err(RootError::Invalid("Pi native instruction or model exceeds its admitted bounds".to_owned()));
         }
         owner.native_runtime()?.validate()?;
-        let original = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation);
-        let operations = pi_fork::PiForkOperations::new(original);
+        let original = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation, &work)?;
+        let operations = pi_fork::PiForkOperations::new(original, &work)?;
         let task = TaskId::from_bytes(operations.child.into_bytes());
         let source_task = match arguments.get("source") {
             None | Some(Value::Null) => caller,
@@ -821,8 +821,8 @@ impl PiSession {
         if sdk_operation.is_empty() || sdk_operation.len() > 512 {
             return Err(RootError::Invalid("Pi mail requires its original bounded SDK operation".to_owned()));
         }
-        let operation = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation);
         let work = self.mail_work(caller, owner, query_work).await?;
+        let operation = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation, &work)?;
         let message = arguments.get("message").and_then(Value::as_str).ok_or_else(|| RootError::Invalid("Pi mail message must be a string".to_owned()))?;
         let _envelope_custody = work.retain_owned(message.len() as u64)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;

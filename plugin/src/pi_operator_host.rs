@@ -2,7 +2,7 @@
 use crate::{PiTaskBinding, pi_owner::PiOwnerConfig,
     pi_native_host::{PiNativeRuntime, PiNativeFilesystem},
     pi_operator::{self, PiPreparedApproval, PiOperatorRequest, PiOperatorBody, PiOperatorDecision},
-    pi_fork::{original_operation_with_native_work, derived_with_native_work}, pi_selected_host::PiSelectedHost};
+    pi_fork::{original_operation, derived}, pi_selected_host::PiSelectedHost};
 use acyclic_fs::{NativeMaterializationWork, MaterializationPhase};
 use acyclic_harness::{Error, Result, Capabilities, OperationId, InteractionId, NativeTaskContext, NativeFutureBundle,
     durable_host::TaskJournalOwner, runtime::TaskContext, scheduler::LeaseFence,
@@ -76,9 +76,9 @@ fn interaction_id(task: acyclic_harness::TaskId, operation: OperationId, work: &
 }
 fn validate_descriptor(protected: &PiOwnerConfig, descriptor: &PiPreparedApprovalRef<'_>, work: &NativeMaterializationWork) -> Result<()> {
     let root = protected.policy().root_task;
-    let original = original_operation_with_native_work(root, root, descriptor.command.sdk_operation, work)?;
+    let original = original_operation(root, root, descriptor.command.sdk_operation, work)?;
     if descriptor.version != 1 || descriptor.command.caller != root || descriptor.command.source == root
-        || descriptor.operation != derived_with_native_work(original, "selected-writeback", work)?
+        || descriptor.operation != derived(original, "selected-writeback", work)?
         || descriptor.command.approval_digest.is_some() || descriptor.command.import_operation.is_some()
         || !descriptor.command.confirm || descriptor.command.paths.is_empty()
         || descriptor.journal.plan.operation_id != acyclic_fs::OperationId::from_bytes(descriptor.operation.into_bytes())
@@ -146,7 +146,7 @@ pub(crate) async fn read_prepared_approval(runtime: &PiNativeRuntime, filesystem
     if sdk_operation.is_empty() || sdk_operation.len() > 512 { return Err(denied("status requires the original bounded SDK operation")); }
     runtime.verify_owner_with_native_work(protected, work)?;
     let root = protected.policy().root_task;
-    let operation = derived_with_native_work(original_operation_with_native_work(root, root, sdk_operation, work)?, "selected-writeback", work)?;
+    let operation = derived(original_operation(root, root, sdk_operation, work)?, "selected-writeback", work)?;
     let (context, _context_custody) = runtime.runtime.harness().durable_context_with_native_work(
         root, OperationId::from_bytes(root.into_bytes()), work).await?;
     let descriptor: Option<(PiPreparedApproval, acyclic_fs::NativeAllocation)> =
@@ -275,7 +275,7 @@ pub(crate) async fn stage_operator_command(runtime: &PiNativeRuntime, protected:
     request: &PiOperatorRequest, work: &NativeMaterializationWork) -> Result<(WorkflowCommand, acyclic_fs::NativeAllocation)> {
     validate_approval_request(runtime, filesystem, protected, &request.session_id, request, work).await?;
     let root = protected.policy().root_task;
-    let operation_id = derived_with_native_work(original_operation_with_native_work(root, root, request.body.operation(), work)?,
+    let operation_id = derived(original_operation(root, root, request.body.operation(), work)?,
         "selected-writeback-publish", work)?;
     let mut staged = crate::pi_root_provider::stage_pi_operator_input(protected, filesystem,
         operation_id, "command", request, work).await?;
@@ -379,8 +379,8 @@ impl<'a> PiOperatorHost<'a> {
         let root = self.protected.policy().root_task;
         let (task, current_fence) = context.context().owned_task_binding_with_native_work(work)?;
         if task != root || prepared.command.caller != root || current_fence != &fence
-            || command.operation_id != derived_with_native_work(
-                original_operation_with_native_work(root, root, &prepared.command.sdk_operation, work)?,
+            || command.operation_id != derived(
+                original_operation(root, root, &prepared.command.sdk_operation, work)?,
                 "selected-writeback-publish", work)? {
             return Err(denied("operator control changed the original Root, current fence or SDK tool operation"));
         }

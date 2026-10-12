@@ -320,7 +320,7 @@ pub use native_mount::{
     OwnedNativeMountOriginalWorkScope,
     initialize_native_mount_services,
     detach_native_mount_destination_after_crash, materialize_checkout,
-    materialize_checkout_host_path, materialize_checkout_path, materialize_checkout_paths,
+    materialize_checkout_path, materialize_checkout_paths,
     mount_native, mount_native_over_existing, probe_native_mount,
     probe_native_storage_accelerations, probe_native_storage_capabilities,
     prepare_native_mount_start_with_meter,
@@ -393,14 +393,14 @@ pub use windows_usn::{
     capture_windows_usn_checkpoint, validate_windows_usn_checkpoint,
 };
 pub use workspace::{
-    ApplyOptions, ChangeSet, ChangedPath, Checkpoint, DrivenJoinError, ForkOptions, Generation,
-    GenerationPin, IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome,
+    ApplyOptions, ChangeSet, ChangedPath, DrivenJoinError, ForkOptions, Generation,
+    IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome,
     JoinPlan, Transaction, TransactionCommit, TransactionConflict, TransactionConflictRegion,
     TransactionDependencyUse, TransactionRebase, TransactionSparseSeek, Workspace, WorkspaceDelete,
     WorkspaceDirectoryEntry, WorkspaceDirectoryPage, WorkspaceError, WorkspaceExtentKind,
     WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName,
     WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
-    WorkspaceRestore, WorkspaceStat, WorkspaceSync,
+    WorkspaceRestore, WorkspaceStat,
 };
 pub use workspace_context::{
     MemoryWorkspaceContextStore, MemoryWorkspaceContextStoreError, WorkspaceContext,

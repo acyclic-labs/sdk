@@ -1,6 +1,7 @@
 //! Thin embedded `Fs`/`Volume`/`Checkout` composition over the two durable stores.
 
-use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore, StorageFuture};
+use acyclic_stream::ProviderTask;
+use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
 use crate::cancellation::{CancellationError, CancellationToken};
 use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Epoch, FileId, GenerationId, Head, OperationId, ProposedCommit,
@@ -100,7 +101,7 @@ use std::sync::{OnceLock, Weak};
 use thiserror::Error;
 
 /// Work supplied as a standalone budget or an original native invocation.
-pub trait FsWork: Sync + StorageFuture {
+pub trait FsWork: Sync + ProviderTask {
     /// Result shape for this work source.
     type Output<T, E>;
     #[doc(hidden)]
@@ -362,7 +363,7 @@ trait WorkspaceJoinPublication<A: AsyncAuthorityStore, O: AsyncObjectStore>: Sen
         &mut self, objects: &O, authority: &A, request: PublishGenerationRequest,
         intent: PublicationIntent, limits: crate::kernel::ClosureLimits, accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<WorkspaceJoinPublished, Self::Error>> + crate::async_storage::StorageFuture;
+    ) -> impl Future<Output = Result<WorkspaceJoinPublished, Self::Error>> + acyclic_stream::ProviderTask;
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> WorkspaceJoinPublication<A, O> for () {
@@ -923,7 +924,7 @@ impl ProofDataAdmission<'_> {
                 if pending.as_ref().is_some_and(|guard| guard.bytes() != 0) {
                     return Err(FsError::NativeKernel(NativeTreeMaterializationError::InvalidLayout));
                 }
-                let allocation = original.claim_allocation_with_work(bytes, operations, delta)?;
+                let allocation = original.claim_allocation(bytes, operations, delta)?;
                 *pending = Some(allocation);
             } else { original.charge(delta)?; }
             return Ok(());
@@ -3952,7 +3953,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         permit: PublicationPermit, budget: W, cancellation: &CancellationToken, guard: Option<&mut F>,
     ) -> W::Output<crate::Workspace<A, O>, WorkspaceError>
     where
-        F: FnMut(WorkBudget) -> Fut + StorageFuture, Fut: Future<Output = FsResult<()>> + StorageFuture,
+        F: FnMut(WorkBudget) -> Fut + ProviderTask, Fut: Future<Output = FsResult<()>> + ProviderTask,
     {
         let mut accounting = budget.accounting(cancellation);
         let name_allocation = if matches!(accounting, KernelAccounting::Standalone { .. } | KernelAccounting::BorrowedStandalone { .. }) {
@@ -6384,7 +6385,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         let working = (root, working_control);
         let captured_bytes = usize_to_u64(CheckoutDependencies::empty_logical_owned_bytes());
         cancellation.check()?;
-        let mut captured_guard = original.claim_allocation(captured_bytes, 1)?;
+        let mut captured_guard = original.claim_allocation(captured_bytes, 1, crate::WorkCounters::UNCHARGED)?;
         let mut captured_control = captured_guard.transfer_checkout_control(&custody, &witness)?;
         let mut captured = CheckoutDependencies::new(
             std::iter::empty(), std::iter::empty(), self.config.limits.maximum_checkout_dependencies,
@@ -6394,8 +6395,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         let proof_bytes = usize_to_u64(size_of::<Mutex<Proof>>());
         let paths_bytes = usize_to_u64(size_of::<ObservedPathMap>());
         cancellation.check()?;
-        let mut proof_guard = original.claim_allocation(proof_bytes, 1)?;
-        let mut paths_guard = original.claim_allocation(paths_bytes, 1)?;
+        let mut proof_guard = original.claim_allocation(proof_bytes, 1, crate::WorkCounters::UNCHARGED)?;
+        let mut paths_guard = original.claim_allocation(paths_bytes, 1, crate::WorkCounters::UNCHARGED)?;
         let proof_control = proof_guard.transfer_checkout_control(&custody, &witness)?;
         let paths_control = paths_guard.transfer_checkout_control(&custody, &witness)?;
         let mut dependencies = DependencyLedger::new_with_native_custody(
@@ -6827,9 +6828,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         let paths = (value, allocation);
         let Some(path) = paths.0.first() else { return Ok(None); };
         let mut accounting = KernelAccounting::native(work, cancellation);
-        let (value, allocation) = crate::workspace::namespace_path_text_with_accounting(
-            path, &mut accounting, cancellation,
-        )?;
+        let (value, allocation) = path.unicode_text_with_accounting(&mut accounting, cancellation)?;
         Ok(Some((value, native_pinned_allocation(allocation).map_err(WorkspaceError::Filesystem)?)))
     }
 
@@ -8146,7 +8145,7 @@ trait LivePublicationStrategy<A: AsyncAuthorityStore, O: AsyncObjectStore>: Send
         cancellation: &CancellationToken,
         producer_custody: Option<&Arc<crate::kernel::ProofDataCustody>>,
     ) -> impl Future<Output = Result<CheckoutCommitOutcome, Self::Error>>
-        + crate::async_storage::StorageFuture;
+        + acyclic_stream::ProviderTask;
 }
 
 struct StandaloneLivePublication;
@@ -8896,7 +8895,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         operations: &'a [Mutation],
         accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
         cancellation: &CancellationToken,
-    ) -> impl std::future::Future<Output = Result<crate::kernel::Owned<Vec<Dependency>>, FsError>> + StorageFuture + 'a {
+    ) -> impl std::future::Future<Output = Result<crate::kernel::Owned<Vec<Dependency>>, FsError>> + ProviderTask + 'a {
         let cancellation = cancellation.clone();
         async move {
             use crate::kernel::Owned;
@@ -9073,7 +9072,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         operation: &'a Mutation,
         accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
         cancellation: &CancellationToken,
-    ) -> impl std::future::Future<Output = Result<(Option<FileRecord>, Option<FileRecord>), FsError>> + StorageFuture + 'a + use<'a, 'accounting, A, O> {
+    ) -> impl std::future::Future<Output = Result<(Option<FileRecord>, Option<FileRecord>), FsError>> + ProviderTask + 'a + use<'a, 'accounting, A, O> {
         let cancellation = cancellation.clone();
         async move {
             let (first_id, second_id) = match operation {
@@ -9798,7 +9797,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         allowed: &'a [FileId],
         accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
         cancellation: &'a CancellationToken,
-    ) -> impl std::future::Future<Output = Result<(), FsError>> + StorageFuture + 'a {
+    ) -> impl std::future::Future<Output = Result<(), FsError>> + ProviderTask + 'a {
         async move {
             let parent_pending = match path.split_last() {
                 Some((parent, _)) => pending_binding_path(parent, pending,
@@ -11264,7 +11263,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
         cancellation: &'a CancellationToken,
         allowed_file_ids: &'a [FileId],
-    ) -> impl std::future::Future<Output = Result<Option<(LogicalName, crate::kernel::allocation::KernelOwnedAllocation)>, FsError>> + StorageFuture + 'a {
+    ) -> impl std::future::Future<Output = Result<Option<(LogicalName, crate::kernel::allocation::KernelOwnedAllocation)>, FsError>> + ProviderTask + 'a {
         async move {
             let mut frame_custody = None;
             let (future, frame_bytes) = crate::heap_future::in_heap_admitted(
@@ -11330,7 +11329,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     Ok(found)
                 },
             )?;
-            let mut future: crate::async_storage::BoxStorageFuture<'_, _> = future;
+            let mut future: acyclic_stream::BoxProviderFuture<'_, _> = future;
             let result = future.as_mut().await;
             drop(future);
             let mut frame_custody = frame_custody.ok_or(FsError::PendingMutationAllocationFailed)?;
@@ -12695,7 +12694,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         expected_file_id: Option<FileId>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl std::future::Future<Output = FsResult<()>> + StorageFuture + 'a + use<'a, A, O> {
+    ) -> impl std::future::Future<Output = FsResult<()>> + ProviderTask + 'a + use<'a, A, O> {
         let cancellation = cancellation.clone();
         async move {
             self.mutate(
@@ -12878,8 +12877,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> crate::MeasuredResult<FsReceipt<CheckoutCommitOutcome>, E>
     where
         E: From<FsError> + Send,
-        F: FnMut(WorkBudget) -> Fut + StorageFuture,
-        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + StorageFuture,
+        F: FnMut(WorkBudget) -> Fut + ProviderTask,
+        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + ProviderTask,
     {
         crate::heap_future::in_heap_measured_with_error(move |budget| async move {
                 if self.mode.access != AccessMode::ReadWrite
@@ -12906,8 +12905,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> crate::MeasuredResult<FsReceipt<CheckoutCommitOutcome>, E>
     where
         E: From<FsError> + Send,
-        F: FnMut(WorkBudget) -> Fut + StorageFuture,
-        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + StorageFuture,
+        F: FnMut(WorkBudget) -> Fut + ProviderTask,
+        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + ProviderTask,
     {
         crate::heap_future::in_heap_measured_with_error(move |budget| async move {
             if self.mode.access != AccessMode::ReadWrite
@@ -12934,8 +12933,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> crate::MeasuredResult<FsReceipt<CheckoutCommitOutcome>, E>
     where
         E: From<FsError> + Send,
-        F: FnMut(WorkBudget) -> Fut + StorageFuture,
-        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + StorageFuture,
+        F: FnMut(WorkBudget) -> Fut + ProviderTask,
+        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + ProviderTask,
     {
         if !self.has_pending_mutations() && permit == PublicationPermit::Unrestricted
             && operation_context.is_none() && operation_evidence.is_none()
@@ -12967,8 +12966,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> crate::MeasuredResult<FsReceipt<CheckoutCommitOutcome>, E>
     where
         E: From<FsError> + Send,
-        F: FnMut(WorkBudget) -> Fut + StorageFuture,
-        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + StorageFuture,
+        F: FnMut(WorkBudget) -> Fut + ProviderTask,
+        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + ProviderTask,
     {
         cancellation
             .check()
@@ -13400,8 +13399,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> crate::MeasuredResult<FsReceipt<Option<CheckoutCommitOutcome>>, E>
     where
         E: From<FsError> + Send,
-        F: FnMut(WorkBudget) -> Fut + StorageFuture,
-        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + StorageFuture,
+        F: FnMut(WorkBudget) -> Fut + ProviderTask,
+        Fut: Future<Output = crate::MeasuredResult<FsReceipt<()>, E>> + ProviderTask,
     {
         crate::heap_future::in_heap_measured_with_error(move |budget| async move {
             cancellation
@@ -16303,7 +16302,7 @@ trait CreationPublication<A: AsyncAuthorityStore>: Send {
         commit: ProposedCommit,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + crate::async_storage::StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + acyclic_stream::ProviderTask;
 }
 
 struct UnguardedCreationPublication<E>(std::marker::PhantomData<fn() -> E>);
@@ -16379,7 +16378,7 @@ where
     }
 }
 
-trait ForkPublication<A: AsyncAuthorityStore>: StorageFuture {
+trait ForkPublication<A: AsyncAuthorityStore>: ProviderTask {
     type Error: From<FsError> + From<crate::workspace::WorkspaceError> + Send;
 
     fn commit(
@@ -16390,7 +16389,7 @@ trait ForkPublication<A: AsyncAuthorityStore>: StorageFuture {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = Result<crate::WorkspaceForkOutcome, Self::Error>>
-        + crate::async_storage::StorageFuture;
+        + acyclic_stream::ProviderTask;
 }
 
 struct MeasuredForkPublication<'a, F> {
@@ -16400,8 +16399,8 @@ struct MeasuredForkPublication<'a, F> {
 impl<A, F, Fut> ForkPublication<A> for MeasuredForkPublication<'_, F>
 where
     A: AsyncAuthorityStore,
-    F: FnMut(WorkBudget) -> Fut + StorageFuture,
-    Fut: Future<Output = FsResult<()>> + StorageFuture,
+    F: FnMut(WorkBudget) -> Fut + ProviderTask,
+    Fut: Future<Output = FsResult<()>> + ProviderTask,
 {
     type Error = crate::workspace::WorkspaceError;
 

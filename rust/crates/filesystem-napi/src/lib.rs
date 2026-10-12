@@ -2007,12 +2007,12 @@ impl NativeWorkspace {
     #[napi]
     pub async fn sync(&self) -> Result<NativeGeneration> {
         self.inner
-            .sync()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
             .await
             .map(|receipt| NativeGeneration {
-                inner: receipt.into_generation(),
+                inner: receipt.value,
             })
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Retains the current generation under one human-readable label.
@@ -2026,7 +2026,7 @@ impl NativeWorkspace {
             .checkpoint(label)
             .await
             .map(|checkpoint| NativeGeneration {
-                inner: checkpoint.generation().clone(),
+                inner: checkpoint.1,
             })
             .map_err(napi_error)
     }
@@ -2042,7 +2042,7 @@ impl NativeWorkspace {
             .pin(identity)
             .await
             .map(|pin| NativeGeneration {
-                inner: pin.generation().clone(),
+                inner: pin.1,
             })
             .map_err(napi_error)
     }
@@ -2669,7 +2669,7 @@ impl NativeGeneration {
             .pin(identity)
             .await
             .map(|pin| NativeGeneration {
-                inner: pin.generation().clone(),
+                inner: pin.1,
             })
             .map_err(napi_error)
     }

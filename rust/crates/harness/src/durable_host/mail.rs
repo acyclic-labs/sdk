@@ -443,7 +443,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
             return owner.verify(settlement, work).await;
         }
-        if let Some(fence) = fence { return self.verify_owner_with_work(sender, fence, settlement, &mut None).await; }
+        if let Some(fence) = fence { return self.verify_owner(sender, fence, settlement, &mut None).await; }
         Ok(())
     }
 

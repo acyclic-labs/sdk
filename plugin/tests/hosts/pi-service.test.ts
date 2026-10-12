@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "bun:test";
-import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
+import { installedNativeFixture } from "./pi-native-fixture.ts";
 
 const provider = `
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
@@ -23,7 +23,7 @@ export default function(pi) {
 
 test("installed Pi controls retain one authenticated root across service death and native model switch", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-service-", import.meta.url)));
-  let fixture: InstalledNativeFixture | undefined;
+  let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   try {
     fixture = await installedNativeFixture(directory, provider, {}, 30_000);
     const { project, manager, command } = fixture;
