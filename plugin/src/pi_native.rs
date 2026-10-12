@@ -1282,7 +1282,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
         proof.authorize_settlement_with_native_work(owner, metadata_work).await?;
         session.stop_with_meter(&volume_work)
             .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
-        if !session.cleanup_state().cleanup_complete {
+        if !session.cleanup_state().cleanup_complete() {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Indeterminate,
                 reason: "Pi source startup cleanup has not physically completed" });
         }
