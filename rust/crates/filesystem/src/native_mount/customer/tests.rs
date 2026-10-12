@@ -57,9 +57,8 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
         .publication(MountPublication::Manual);
     let work =
         crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
-    let (ordinary_source, volume, root) = lazy
-        .prepare_authored_mount_source(&options, None, &work, None)
-        .await?;
+    let (ordinary_source, volume, root) =
+        lazy.prepare_authored_mount_source(&options, &work).await?;
     assert_eq!(volume, lazy.workspace().id().volume_id());
     assert_eq!(root.0, "/selected");
     work.receipt().verify(budget)?;
@@ -86,7 +85,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     let denied = crate::NativeMaterializationWork::new(denied_budget, &cancellation)
         .map_err(|(error, _)| error)?;
     assert!(
-        lazy.prepare_authored_mount_source(&options, None, &denied, None)
+        lazy.prepare_authored_mount_source(&options, &denied)
             .await
             .is_err()
     );
@@ -118,7 +117,10 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     drop(ordinary_job);
     ordinary_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
     let (native_source, _, _) = lazy
-        .prepare_authored_mount_source(&options, None, &work, Some(&work))
+        .prepare_authored_mount_source(
+            &options.clone().native_context(&work, None, Some(&work)),
+            &work,
+        )
         .await?;
     let before_foreign_job = job.receipt();
     assert!(matches!(
