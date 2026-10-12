@@ -5527,7 +5527,7 @@ pub(crate) fn customer_path(
     NamespacePath::parse_in_profile_with_ledger(
         path, config.profile, config.limits,
         &mut crate::kernel::allocation::AllocationLedger::default(),
-        &mut crate::WorkCounters::UNCHARGED, crate::WorkBudget::UNBOUNDED,
+        &mut crate::WorkCounters::default(), crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     ).map_err(WorkspaceError::from)
 }

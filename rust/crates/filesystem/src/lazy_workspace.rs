@@ -6853,8 +6853,10 @@ where
                 let paid = allocation.split_off(allocation.bytes())?;
                 let operations = std::mem::take(pending);
                 *pending_bytes = 0;
-                transaction.checkout.apply_authored_bulk_transaction_with_native_work(
-                    operations, paid, original, cancellation,
+                let bytes = paid.bytes();
+                transaction.checkout.apply_authored_bulk_transaction_with_accounting(
+                    crate::kernel::Owned::new(operations, crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(paid), bytes),
+                    &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation), cancellation,
                 ).await.map_err(|error| native_workspace_error(WorkspaceError::from(error)))
             }).await?;
             return Ok(work);
