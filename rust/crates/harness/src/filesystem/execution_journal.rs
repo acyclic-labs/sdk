@@ -1144,7 +1144,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
             let request = host.read_request(id, None).await?
                 .ok_or_else(|| Error::Storage("admitted interaction has no request".into()))?;
-            request.validate_response_with_work(&response, &mut None)?;
+            request.validate_response(&response, &mut None)?;
             if let Some(previous) = &prior && previous.outcome.is_terminal() {
                 let stored = match (&previous.outcome, &response) {
                     (InteractionOutcome::Approved, InteractionResponse::Approval { approved: true, .. })
@@ -2219,7 +2219,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
-        interaction.validate_with_work(&mut work)?;
+        interaction.validate(&mut work)?;
         if let Some((owner, _)) = &self.owner {
             owner.require_interaction_grant(&mut work)?;
             owner.verify(false, &mut work).await?;

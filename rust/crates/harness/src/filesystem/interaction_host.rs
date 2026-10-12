@@ -226,7 +226,7 @@ where
                 "interaction ticket identity or deadline is invalid"));
         }
         let mut borrowed = io.map(PreparationIo::history_io);
-        request.validate_with_work(&mut borrowed.as_mut().map(
+        request.validate(&mut borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo))?;
         let approval = match request {
             Interaction::Approval {
@@ -397,7 +397,7 @@ where
             .read_request(id, None)
             .await?
             .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
-        request.validate_response(&response)?;
+        request.validate_response(&response, &mut None)?;
         let answer = self
             .stage_answer(id, expected_version, operation_id, &response, None)
             .await?;
