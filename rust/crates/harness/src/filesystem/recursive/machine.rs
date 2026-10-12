@@ -58,7 +58,6 @@ impl ForkPreparationMachine {
         for code in [
             include_str!("mod.rs"),
             include_str!("source.rs"),
-            include_str!("native.rs"),
             include_str!("preparation.rs"),
             include_str!("machine.rs"),
         ] {

@@ -224,53 +224,60 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
                 )
             })?;
             self.validate_native_configuration_work(work)?;
-            self.model = None;
-            let before = io.owned_bytes()?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let io: Option<&super::PreparationIo> = None;
+        self.model = None;
+        let before = io
+            .map(super::PreparationIo::owned_bytes)
+            .transpose()?
+            .unwrap_or(0);
+        if let Some(io) = io {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
             io.retain_owned(std::mem::size_of::<ModelBinding>() as u64)?;
-            let model = crate::model::clone_model(model, Some(io))?;
-            let context = context.copy(Some(io))?;
-            let compaction = match compaction {
-                crate::context::CompactionPolicy::Disabled => {
-                    crate::context::CompactionPolicy::Disabled
-                }
-                crate::context::CompactionPolicy::Threshold(policy) => {
-                    let (retention, custody) =
-                        crate::context::clone_retention_native(&policy.retention, work)?;
-                    io.absorb_native_custody(custody)?;
-                    crate::context::CompactionPolicy::Threshold(
-                        crate::context::ThresholdCompaction {
-                            response_reserve_tokens: policy.response_reserve_tokens,
-                            recent_tokens: policy.recent_tokens,
-                            retention,
-                        },
-                    )
-                }
-            };
-            let binding_bytes =
-                io.owned_bytes()?
+        }
+        let model = crate::model::clone_model(model, io)?;
+        let context = context.copy(io)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let compaction = match (io, compaction) {
+            (Some(io), crate::context::CompactionPolicy::Threshold(policy)) => {
+                let (retention, custody) = crate::context::clone_retention_native(
+                    &policy.retention,
+                    io.original_native_work()
+                        .expect("configuration checked original work"),
+                )?;
+                io.absorb_native_custody(custody)?;
+                crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
+                    response_reserve_tokens: policy.response_reserve_tokens,
+                    recent_tokens: policy.recent_tokens,
+                    retention,
+                })
+            }
+            _ => compaction.clone(),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let compaction = compaction.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_custody = io
+            .map(|io| {
+                let bytes = io
+                    .owned_bytes()?
                     .checked_sub(before)
                     .ok_or(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Invalid,
                         reason: "native model configuration custody underflows",
                     })?;
-            self.model = Some(ModelBinding {
-                model,
-                provider,
-                context,
-                compaction,
-                native_custody: Some(io.take_native_custody(binding_bytes)?),
-            });
-            return Ok(self);
-        }
-        let _ = io;
+                io.take_native_custody(bytes)
+            })
+            .transpose()?;
+        let _ = before;
         self.model = Some(ModelBinding {
-            model: model.clone(),
+            model,
             provider,
-            context: context.clone(),
-            compaction: compaction.clone(),
+            context,
+            compaction,
             #[cfg(not(target_arch = "wasm32"))]
-            native_custody: None,
+            native_custody,
         });
         Ok(self)
     }

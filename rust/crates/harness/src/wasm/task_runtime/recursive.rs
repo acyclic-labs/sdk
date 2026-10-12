@@ -203,8 +203,8 @@ impl WasmTaskRuntime {
             Some(owner.restore_project_source_authorization(&context, authorization).await.map_err(js_error)?)
         } else { None };
         let binding = restore_recursive_fork_source(self.filesystem.clone(), &self.stream,
-            &original_owner.reducer, original_owner.issuer.verifier(&mut None).expect("verifier copy"), signed, source.project,
-            from_js(stream_provider)?, request, history_limits, source_read, resolver, &cancellation).await.map_err(js_error)?;
+            original_owner.reducer, &original_owner.issuer.verifier(&mut None).expect("verifier copy"), &signed, &source.project,
+            &from_js(stream_provider)?, request, history_limits, source_read.as_ref(), resolver, &cancellation, None).await.map_err(js_error)?;
         Ok(WasmRecursiveForkSource { binding, filesystem: self.filesystem.clone(), caller, snapshot })
     }
 

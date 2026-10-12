@@ -16,13 +16,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 mod machine;
-#[cfg(not(target_arch = "wasm32"))]
-mod native;
 mod preparation;
 mod source;
 pub use machine::ForkPreparationMachine;
-#[cfg(not(target_arch = "wasm32"))]
-pub use native::restore_recursive_fork_source_with_native_work;
 pub use preparation::fork_preparation_request;
 pub(in crate::filesystem) use source::fork_request;
 pub use source::{recursive_fork_source, restore_recursive_fork_source};
@@ -70,59 +66,6 @@ impl ForkToolArguments {
             ));
         }
         Ok(self.source.unwrap_or(caller))
-    }
-
-    /// Selects project data without granting read authority.
-    pub fn select_project(
-        &self,
-        caller: TaskId,
-        selected_task: TaskId,
-        project: VolumeRef,
-        generation: GenerationRef,
-        limits: Limits,
-        request: &mut ForkRequest,
-    ) -> Result<()> {
-        request.validate(&mut None)?;
-        let revision = ResourceRevision::Project {
-            volume: project,
-            generation,
-        };
-        revision.validate(&mut None)?;
-        if let ResourceRevision::Project { volume, .. } = &revision
-            && (volume == &request.preparation.child_project_volume
-                || volume.provider() != request.preparation.child_project_volume.provider())
-        {
-            return Err(Error::Invalid(
-                "selected source does not match child provider/allocation".into(),
-            ));
-        }
-        if self.source_task(caller, limits, &mut None)? != selected_task
-            || request.child_agent != self.id
-        {
-            return Err(Error::Unauthorized(
-                "fork source or new child identity differs from selection".into(),
-            ));
-        }
-        if selected_task != caller
-            && (request.preparation.inherited_through_sequence != 0
-                || request.preparation.summary.is_some())
-        {
-            return Err(Error::Unsupported(
-                "foreign workspace source cannot inherit conversation history".into(),
-            ));
-        }
-        let mut selected = request
-            .selections
-            .iter_mut()
-            .filter(|selection| matches!(selection.revision, ResourceRevision::Project { .. }));
-        let project_selection = selected
-            .next()
-            .ok_or_else(|| Error::Invalid("fork has no project selection".into()))?;
-        if selected.next().is_some() {
-            return Err(Error::Invalid("fork repeats project selection".into()));
-        }
-        project_selection.revision = revision;
-        Ok(())
     }
 }
 
