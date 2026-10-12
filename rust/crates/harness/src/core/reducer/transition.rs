@@ -244,8 +244,10 @@ impl Reducer {
                 self.projection
                     .conversation
                     .validate_append(&receipt.notice, &mut None)?;
+                copying::retain_entry::<ProjectMergeReceipt>(quota)?;
+                let receipt = receipt.copy(quota)?;
                 Ok(EventPayload::ProjectMergePublished {
-                    receipt: copying::copy_boxed(receipt.as_ref(), quota, copying::copy_receipt)?,
+                    receipt: Box::new(receipt),
                 })
             }
             Action::BindConversation { agent } => {
