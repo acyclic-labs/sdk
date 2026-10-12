@@ -189,8 +189,11 @@ impl PiSession {
         if !self.state.pending.iter().any(|pending| pending.fork_key == operations.fork.into_bytes()) {
             if let Some(plan) = &plan {
                 let root_waiting = if caller == owner.policy().root_task {
-                    let (suspension, suspension_custody) = self.runtime.runtime.task_host()
-                        .workflow_suspension(caller, &mut Some(&mut acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
+                    let (suspension, suspension_custody) = (async {
+                        let mut io = acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                        let value = self.runtime.runtime.task_host().workflow_suspension(caller, &mut Some(&mut io)).await?;
+                        Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+                    }).await?;
                     let suspension = suspension;
                     let waiting = suspension.as_ref()
                         .is_some_and(|suspension| suspension.waiting_command == Some(original));

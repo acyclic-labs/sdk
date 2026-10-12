@@ -214,8 +214,11 @@ impl<'a> PiWorkflowHost<'a> {
         }
         let suspension_custody;
         let suspension;
-        (suspension, suspension_custody) = host
-            .workflow_suspension(task, &mut Some(&mut acyclic_harness::store::history::native_work_io(&self.work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
+        (suspension, suspension_custody) = (async {
+            let mut io = acyclic_harness::store::history::native_work_io(&self.work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = host.workflow_suspension(task, &mut Some(&mut io)).await?;
+            Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+        }).await?;
         let Some(suspension) = suspension else {
             return Err(acyclic_harness::Error::Indeterminate(operation));
         };
