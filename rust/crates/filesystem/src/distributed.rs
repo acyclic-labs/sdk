@@ -250,7 +250,7 @@ impl<'a> ForkWork<'a> {
             original.admit(WorkCounters::UNCHARGED)
                 .map_err(|error| ForkFailure::new(error.into(), original.receipt()))?;
             self.cancellation.check().map_err(|_| ForkFailure::new(AuthorityStoreError::Cancelled, original.receipt()))?;
-            Some(original.claim_allocation(bytes, u64::from(bytes != 0))
+            Some(original.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)
                 .map_err(|error| ForkFailure::new(error.into(), original.receipt()))?)
         } else { None };
         #[cfg(target_arch = "wasm32")]
@@ -498,14 +498,16 @@ impl<'a> ForkWork<'a> {
         Ok(budget)
     }
 
-    fn merge_child(&mut self, mut child: WorkCounters) -> Result<(), ForkFailure> {
+    fn child<T>(&mut self, result: Result<crate::FsReceipt<T>, ForkFailure<crate::FsError>>)
+        -> Result<crate::FsReceipt<T>, ForkFailure<crate::FsError>> {
+        let mut work = match &result { Ok(receipt) => receipt.work, Err(failure) => failure.work };
         #[cfg(not(target_arch = "wasm32"))]
-        if self.is_native() {
-            return Err(ForkFailure::new(AuthorityStoreError::NativeOriginalUnsupported, self.spent()));
-        }
-        child.peak_allocation_bytes = self.allocations.live_bytes().checked_add(child.peak_allocation_bytes)
-            .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), self.work))?;
-        self.charge(child)
+        if self.is_native() { return Err(fork_fs_failure(ForkFailure::new(AuthorityStoreError::NativeOriginalUnsupported, self.spent()))); }
+        work.peak_allocation_bytes = self.allocations.live_bytes().checked_add(work.peak_allocation_bytes)
+            .ok_or_else(|| fork_fs_failure(ForkFailure::new(crate::WorkError::Overflow.into(), self.work)))?;
+        self.charge(work).map_err(fork_fs_failure)?;
+        result.map(|receipt| crate::FsReceipt { value: receipt.value, work: self.spent() })
+            .map_err(|failure| ForkFailure::new(failure.error, self.spent()))
     }
 
     fn push<T>(&mut self, values: &mut Vec<T>, value: T)
@@ -647,28 +649,17 @@ trait ForkPublicationGuard: ProviderTask {
     ) -> impl Future<Output = Result<AuthorityProviderOutput<acyclic_stream::CommitOutcome>, AppendFailure<Self::Error>>> + ProviderTask {
         async move {
             self.seal(meter).await.map_err(|failure| AppendFailure::Owner(failure.error))?;
-            store.commit(request, None, meter,
-                &mut None::<&mut fn() -> std::future::Ready<Result<(), Self::Error>>>).await
+            store.commit(request, None, meter, &mut ()).await.map_err(|failure| match failure {
+                AppendFailure::Authority(failure) | AppendFailure::Owner(failure) => AppendFailure::Authority(failure),
+            })
         }
     }
 }
 
-impl<F, Fut> ForkPublicationGuard for Option<&mut F>
-where F: FnMut(WorkBudget) -> Fut + ProviderTask, Fut: Future<Output = crate::FsResult<()>> + ProviderTask {
+impl ForkPublicationGuard for () {
     type Error = crate::FsError;
     async fn seal(&mut self, meter: &mut ForkWork<'_>) -> Result<(), ForkFailure<crate::FsError>> {
         meter.check().map_err(fork_fs_failure)?;
-        if let Some(guard) = self.as_deref_mut() {
-            let result = guard(meter.remaining().map_err(fork_fs_failure)?).await;
-            match result {
-                Ok(receipt) => meter.merge_child(receipt.work).map_err(fork_fs_failure)?,
-                Err(failure) => {
-                    let failure = ForkFailure::from(failure);
-                    meter.merge_child(failure.work).map_err(fork_fs_failure)?;
-                    return Err(ForkFailure::new(failure.error, meter.spent()));
-                }
-            }
-        }
         meter.check().map_err(fork_fs_failure)
     }
 
@@ -683,24 +674,31 @@ where F: FnMut(WorkBudget) -> Fut + ProviderTask, Fut: Future<Output = crate::Fs
             return Ok(crate::FsReceipt { value, work: meter.spent() });
         }
         let child_budget = meter.remaining().map_err(fork_fs_failure)?;
-        let result = match self.as_deref_mut() {
-            Some(guard) => crate::async_storage::commit_workspace_fork_in_steps_guarded(
-                store, fork, PublicationPermit::Unrestricted, child_budget, meter.cancellation, guard,
-            ).await.map_err(ForkFailure::from),
-            None => crate::async_storage::commit_workspace_fork_in_steps(
-                store, fork, child_budget, meter.cancellation,
-            ).await.map(|receipt| crate::FsReceipt { value: receipt.value, work: receipt.work }).map_err(fork_fs_failure),
-        };
-        match result {
-            Ok(receipt) => {
-                meter.merge_child(receipt.work).map_err(fork_fs_failure)?;
-                Ok(crate::FsReceipt { value: receipt.value, work: meter.spent() })
-            }
-            Err(failure) => {
-                meter.merge_child(failure.work).map_err(fork_fs_failure)?;
-                Err(ForkFailure::new(failure.error, meter.spent()))
-            }
-        }
+        let result = crate::async_storage::commit_workspace_fork_in_steps(
+            store, fork, child_budget, meter.cancellation,
+        ).await.map(|receipt| crate::FsReceipt { value: receipt.value, work: receipt.work }).map_err(fork_fs_failure);
+        meter.child(result)
+    }
+}
+
+impl<F, Fut> ForkPublicationGuard for &mut F
+where F: FnMut(WorkBudget) -> Fut + ProviderTask, Fut: Future<Output = crate::FsResult<()>> + ProviderTask {
+    type Error = crate::FsError;
+    async fn seal(&mut self, meter: &mut ForkWork<'_>) -> Result<(), ForkFailure<crate::FsError>> {
+        meter.check().map_err(fork_fs_failure)?;
+        let result = self(meter.remaining().map_err(fork_fs_failure)?).await.map_err(ForkFailure::from);
+        meter.child(result)?;
+        meter.check().map_err(fork_fs_failure)
+    }
+
+    async fn steps<S: AsyncAuthorityStore + ?Sized>(
+        &mut self, store: &S, fork: WorkspaceForkCommit, meter: &mut ForkWork<'_>,
+    ) -> Result<crate::FsReceipt<WorkspaceForkOutcome>, ForkFailure<crate::FsError>> {
+        let child_budget = meter.remaining().map_err(fork_fs_failure)?;
+        let result = crate::async_storage::commit_workspace_fork_in_steps_guarded(
+            store, fork, PublicationPermit::Unrestricted, child_budget, meter.cancellation, *self,
+        ).await.map_err(ForkFailure::from);
+        meter.child(result)
     }
 }
 
@@ -886,23 +884,15 @@ trait AuthorityPublicationGuard: Send {
     ) -> impl Future<Output = Result<AuthorityProviderOutput<acyclic_stream::CommitOutcome>, AppendFailure<Self::Error>>> + Send;
 }
 
-impl<E, F, Fut> AuthorityPublicationGuard for Option<&mut F>
-where E: Send, F: FnMut() -> Fut + Send, Fut: Future<Output = Result<(), E>> + Send {
-    type Error = E;
-    async fn seal(&mut self) -> Result<(), E> {
-        if let Some(guard) = self { guard().await?; }
-        Ok(())
-    }
+impl AuthorityPublicationGuard for () {
+    type Error = ForkFailure;
+    async fn seal(&mut self) -> Result<(), ForkFailure> { Ok(()) }
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn native_commit<P: acyclic_stream::StreamProvider>(
         &mut self, store: &StreamAuthorityStore<P>, request: acyclic_stream::CommitRequest,
         deadline: Option<u64>, meter: &mut ForkWork<'_>,
-    ) -> Result<AuthorityProviderOutput<acyclic_stream::CommitOutcome>, AppendFailure<E>> {
-        // Borrowed ordinary callbacks cannot authorize accepted native work.
-        if self.is_some() {
-            return Err(ForkFailure::new(AuthorityStoreError::NativeOriginalUnsupported, meter.spent()).into());
-        }
+    ) -> Result<AuthorityProviderOutput<acyclic_stream::CommitOutcome>, AppendFailure<ForkFailure>> {
         let result = match deadline {
             Some(deadline) => store.provider.native_commit_before(request, deadline, meter.native_meter()).await,
             None => store.provider.native_commit(request, meter.native_meter()).await,
@@ -1236,7 +1226,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let mut mutations = meter.vec(1)?;
         meter.push(&mut mutations, acyclic_stream::CommitMutation::Append { path: epochs, records: epoch_records })?;
         let outcome = self.commit(acyclic_stream::CommitRequest { conditions, mutations, idempotency_key },
-            None, meter, &mut None::<&mut fn() -> std::future::Ready<Result<(), ForkFailure>>>)
+            None, meter, &mut ())
             .await.map_err(|failure| match failure {
                 AppendFailure::Authority(failure) | AppendFailure::Owner(failure) => failure,
             })?;
@@ -2125,7 +2115,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         cancellation: &CancellationToken,
     ) -> AuthorityResult<CreateAuthorityOutcome> {
         self.create(authority_id, genesis_epoch, ForkWork::new(budget, cancellation),
-            None::<&mut fn(WorkBudget) -> std::future::Ready<crate::FsResult<()>>>).await
+            ()).await
             .map(|receipt| AuthorityReceipt { value: receipt.value, work: receipt.work })
             .map_err(|failure| project_fork_authority_failure(failure).into())
     }
@@ -2135,7 +2125,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         cancellation: &CancellationToken, guard: &mut F,
     ) -> crate::FsResult<CreateAuthorityOutcome>
     where F: FnMut(WorkBudget) -> Fut + ProviderTask, Fut: Future<Output = crate::FsResult<()>> + ProviderTask {
-        self.create(authority_id, genesis_epoch, ForkWork::new(budget, cancellation), Some(guard))
+        self.create(authority_id, genesis_epoch, ForkWork::new(budget, cancellation), guard)
             .await.map_err(Into::into)
     }
 
@@ -2145,7 +2135,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<CreateAuthorityOutcome, AuthorityStoreError> {
         self.create(authority, epoch, ForkWork::native(original, cancellation)?,
-            None::<&mut fn(WorkBudget) -> std::future::Ready<crate::FsResult<()>>>).await
+            ()).await
             .map(|receipt| receipt.value)
             .map_err(|failure| project_fork_authority_failure(failure).error)
     }
@@ -2168,7 +2158,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         cancellation: &CancellationToken,
     ) -> AuthorityResult<bool> {
         self.first_record(authority, commit, ForkWork::new(budget, cancellation),
-            None::<&mut fn(WorkBudget) -> std::future::Ready<crate::FsResult<()>>>).await
+            ()).await
             .map(|receipt| AuthorityReceipt { value: receipt.value, work: receipt.work })
             .map_err(|failure| project_fork_authority_failure(failure).into())
     }
@@ -2178,7 +2168,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         cancellation: &CancellationToken, guard: &mut F,
     ) -> crate::FsResult<bool>
     where F: FnMut(WorkBudget) -> Fut + ProviderTask, Fut: Future<Output = crate::FsResult<()>> + ProviderTask {
-        self.first_record(authority, commit, ForkWork::new(budget, cancellation), Some(guard))
+        self.first_record(authority, commit, ForkWork::new(budget, cancellation), guard)
             .await.map_err(Into::into)
     }
 
@@ -2192,7 +2182,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> Result<bool, AuthorityStoreError> {
         let meter = ForkWork::native(original, cancellation)?;
         self.first_record(authority, commit, meter,
-            None::<&mut fn(WorkBudget) -> std::future::Ready<crate::FsResult<()>>>).await
+            ()).await
             .map(|receipt| receipt.value)
             .map_err(|failure| project_fork_authority_failure(failure).error)
     }
@@ -2220,7 +2210,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> AuthorityResult<CreateAuthorityOutcome> {
         self.fork_generation(
             source, destination_authority, operation_id, ForkWork::new(budget, cancellation),
-            None::<&mut fn(WorkBudget) -> std::future::Ready<crate::FsResult<()>>>,
+            (),
         ).await
             .map(|receipt| AuthorityReceipt { value: receipt.value, work: receipt.work })
             .map_err(|failure| project_fork_authority_failure(failure).into())
@@ -2240,7 +2230,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         Fut: Future<Output = crate::FsResult<()>> + ProviderTask,
     {
         self.fork_generation(
-            source, destination_authority, operation_id, ForkWork::new(budget, cancellation), Some(guard),
+            source, destination_authority, operation_id, ForkWork::new(budget, cancellation), guard,
         ).await.map_err(Into::into)
     }
 
@@ -2251,7 +2241,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> Result<CreateAuthorityOutcome, AuthorityStoreError> {
         self.fork_generation(source, destination, operation,
             ForkWork::native(original, cancellation)?,
-            None::<&mut fn(WorkBudget) -> std::future::Ready<crate::FsResult<()>>>).await
+            ()).await
             .map(|receipt| receipt.value)
             .map_err(|failure| project_fork_authority_failure(failure).error)
     }
@@ -2273,7 +2263,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         &self, fork: WorkspaceForkCommit, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> AuthorityResult<WorkspaceForkOutcome> {
         self.workspace_fork(fork, PublicationPermit::Unrestricted, ForkWork::new(budget, cancellation),
-            None::<&mut fn(WorkBudget) -> std::future::Ready<crate::FsResult<()>>>).await
+            ()).await
             .map(|receipt| AuthorityReceipt { value: receipt.value, work: receipt.work })
             .map_err(|failure| project_fork_authority_failure(failure).into())
     }
@@ -2283,7 +2273,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         cancellation: &CancellationToken, guard: &mut F,
     ) -> crate::FsResult<WorkspaceForkOutcome>
     where F: FnMut(WorkBudget) -> Fut + ProviderTask, Fut: Future<Output = crate::FsResult<()>> + ProviderTask {
-        self.workspace_fork(fork, permit, ForkWork::new(budget, cancellation), Some(guard)).await.map_err(Into::into)
+        self.workspace_fork(fork, permit, ForkWork::new(budget, cancellation), guard).await.map_err(Into::into)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2293,7 +2283,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> Result<WorkspaceForkOutcome, AuthorityStoreError> {
         self.workspace_fork(fork, PublicationPermit::Unrestricted,
             ForkWork::native(original, cancellation)?,
-            None::<&mut fn(WorkBudget) -> std::future::Ready<crate::FsResult<()>>>).await
+            ()).await
             .map(|receipt| receipt.value)
             .map_err(|failure| project_fork_authority_failure(failure).error)
     }
@@ -2414,7 +2404,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         cancellation: &CancellationToken,
     ) -> AuthorityResult<FsAppendOutcome> {
         self.append(request, ForkWork::new(budget, cancellation),
-            None::<&mut fn() -> std::future::Ready<Result<(), ForkFailure>>>).await
+            ()).await
             .map_err(|failure| match failure {
                 AppendFailure::Authority(error) | AppendFailure::Owner(error) => error.into(),
             })
@@ -2429,11 +2419,10 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         let (_, allocation) = meter.vec_owned::<u8>(0).map_err(|failure| failure.error)?;
         let allocation = allocation.ok_or(AuthorityStoreError::RejectedStatic("native append lost original output custody"))?;
         self.append(request, meter,
-            None::<&mut fn() -> std::future::Ready<Result<(), AuthorityStoreError>>>).await
+            ()).await
             .map(|receipt| (receipt.value, allocation))
             .map_err(|failure| match failure {
-                AppendFailure::Authority(error) => error.error,
-                AppendFailure::Owner(error) => error,
+                AppendFailure::Authority(error) | AppendFailure::Owner(error) => error.error,
             })
     }
 

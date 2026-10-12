@@ -11,9 +11,9 @@ use acyclic_fs::demand::DemandSource;
 use serde::Deserialize;
 use std::sync::Arc;
 
-/// A retained original lazy source, not a descriptor-created namespace.
+/// A retained original lazy source.
 pub struct FsRootNativeSource<A, O> {
-    backing: Arc<dyn RootLazyBacking<A, O>>,
+    pub(crate) backing: Arc<dyn RootLazyBacking<A, O>>,
 }
 
 impl<A, O> Clone for FsRootNativeSource<A, O> {
@@ -27,12 +27,6 @@ fn root_source_error(source: acyclic_fs::LazyWorkspaceError) -> Error {
     { Error::Storage(source.to_string()) }
 }
 #[cfg(not(target_arch = "wasm32"))]
-type RootLazyPublication<A, O> = (
-    acyclic_fs::Generation<A, O>,
-    std::result::Result<LazySnapshotRef, Error>,
-);
-
-#[cfg(not(target_arch = "wasm32"))]
 fn root_lazy_mutations(mutations: &[super::WorkspaceMutation])
     -> impl Iterator<Item = acyclic_fs::lazy_workspace::LazyWriteMutation<'_>> + Send
 {
@@ -45,40 +39,32 @@ fn root_lazy_mutations(mutations: &[super::WorkspaceMutation])
     })
 }
 
-trait RootLazyBacking<A, O>: acyclic_stream::ProviderPlatform {
+pub(crate) trait RootLazyBacking<A, O>: acyclic_stream::ProviderPlatform {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId;
     #[cfg(not(target_arch = "wasm32"))]
     fn matches_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> bool;
-    fn validate<'a>(&'a self, snapshot: LazySnapshotRef, budget: WorkBudget,
-        cancellation: &'a acyclic_fs::CancellationToken)
-        -> acyclic_stream::BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>>;
+    fn validate<'a>(&'a self, snapshot: LazySnapshotRef, io: &'a super::PreparationIo)
+        -> Result<crate::store::history::HistoryContentFuture<'a, ()>>;
     fn read<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str, maximum: u64,
-        budget: WorkBudget, cancellation: &'a acyclic_fs::CancellationToken)
-        -> acyclic_stream::BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>>;
+        io: &'a super::PreparationIo)
+        -> Result<crate::store::history::HistoryContentFuture<'a, acyclic_stream::OwnedBytes>>;
     fn list<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str,
         cursor: Option<acyclic_fs::LazyDirectoryCursor>, maximum: u32,
         budget: WorkBudget, cancellation: &'a acyclic_fs::CancellationToken)
         -> acyclic_stream::BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_fs::LazyDirectoryPage>, Error>>;
     #[cfg(not(target_arch = "wasm32"))]
-    fn validate_native<'a>(&'a self, snapshot: LazySnapshotRef,
-        work: &'a acyclic_fs::NativeMaterializationWork) -> Result<crate::NativeFutureBundle<'a, ()>>;
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_native<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str, maximum: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>>;
-    #[cfg(not(target_arch = "wasm32"))]
     fn publish<'a>(&'a self, snapshot: LazySnapshotRef,
         mutations: &'a [super::WorkspaceMutation], key: acyclic_fs::IdempotencyKey,
         permit: acyclic_fs::PublicationPermit,
-        io: &'a super::fork_preparer::PreparationIo,
+        io: &'a super::PreparationIo,
         lease: &'a Arc<dyn crate::resource_preparation::CreatedTaskLease>)
-        -> Result<crate::store::history::HistoryContentFuture<'a, RootLazyPublication<A, O>>>;
+        -> Result<crate::store::history::HistoryContentFuture<'a, (acyclic_fs::Generation<A, O>, Result<LazySnapshotRef>)>>;
 }
 
 struct RetainedRootLazy<A, O, D, S> {
     lazy: Arc<LazyWorkspace<A, O, D, S>>,
     #[cfg(not(target_arch = "wasm32"))]
-    _custody: Option<acyclic_fs::NativeAllocation>,
+    _custody: acyclic_fs::NativeAllocation,
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
@@ -87,24 +73,41 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId { self.lazy.workspace().id() }
     #[cfg(not(target_arch = "wasm32"))]
     fn matches_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> bool {
-        self._custody.as_ref().is_some_and(|custody| custody.matches_work(work))
+        self._custody.matches_work(work)
     }
-    fn validate<'a>(&'a self, snapshot: LazySnapshotRef, budget: WorkBudget,
-        cancellation: &'a acyclic_fs::CancellationToken)
-        -> acyclic_stream::BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>>
+    fn validate<'a>(&'a self, snapshot: LazySnapshotRef, io: &'a super::PreparationIo)
+        -> Result<crate::store::history::HistoryContentFuture<'a, ()>>
     {
-        Box::pin(async move {
-            self.lazy.validate_snapshot_measured(snapshot, budget, cancellation).await
-                .map_err(|failure| failure.map_error(root_source_error))
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.original_native_work() {
+            return crate::NativeFutureBundle::new(work, || async move {
+                let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
+                    work, work.cancellation(),
+                )?;
+                self.lazy.validate_snapshot(snapshot, &accounting).await.map_err(Error::from)
+            }).map(crate::store::history::HistoryContentFuture::Native);
+        }
+        io.history_future(|| async move {
+            let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(io.remaining()?, &io.cancellation);
+            let result = self.lazy.validate_snapshot(snapshot, &accounting).await;
+            io.receive_content(accounting.measured(result, |error, work| error.with_prior_work(work)
+                .into_measured_failure().map_error(root_source_error)))
         })
     }
     fn read<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str, maximum: u64,
-        budget: WorkBudget, cancellation: &'a acyclic_fs::CancellationToken)
-        -> acyclic_stream::BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>>
+        io: &'a super::PreparationIo)
+        -> Result<crate::store::history::HistoryContentFuture<'a, acyclic_stream::OwnedBytes>>
     {
-        Box::pin(async move {
-            self.lazy.read_at_snapshot_measured(snapshot, path, maximum, budget, cancellation).await
-                .map_err(|failure| failure.map_error(root_source_error))
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.original_native_work() {
+            return crate::NativeFutureBundle::new(work, || async move {
+                self.lazy.read_at_snapshot_with_work(snapshot, path, maximum, work, work.cancellation()).await
+                    .map_err(|(source, custody)| Error::NativeSource { source, custody })
+            }).map(crate::store::history::HistoryContentFuture::Native);
+        }
+        io.history_future(|| async move {
+            io.receive_content(self.lazy.read_at_snapshot_measured(snapshot, path, maximum, io.remaining()?, &io.cancellation).await
+                .map_err(|failure| failure.map_error(root_source_error)))
         })
     }
     fn list<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str,
@@ -118,32 +121,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn validate_native<'a>(&'a self, snapshot: LazySnapshotRef,
-        work: &'a acyclic_fs::NativeMaterializationWork) -> Result<crate::NativeFutureBundle<'a, ()>>
-    {
-        crate::NativeFutureBundle::new(work, || async move {
-            self.lazy.validate_snapshot_with_native_work(snapshot, work).await
-                .map_err(Error::from)
-        })
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_native<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str, maximum: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>>
-    {
-        crate::NativeFutureBundle::new(work, || async move {
-            self.lazy.read_at_snapshot_with_work(snapshot, path, maximum, work, work.cancellation()).await
-                .map_err(|(source, custody)| Error::NativeSource { source, custody })
-        })
-    }
-    #[cfg(not(target_arch = "wasm32"))]
     fn publish<'a>(&'a self, snapshot: LazySnapshotRef,
         mutations: &'a [super::WorkspaceMutation], key: acyclic_fs::IdempotencyKey,
         permit: acyclic_fs::PublicationPermit,
         io: &'a super::fork_preparer::PreparationIo,
         lease: &'a Arc<dyn crate::resource_preparation::CreatedTaskLease>)
-        -> Result<crate::store::history::HistoryContentFuture<'a, RootLazyPublication<A, O>>>
+        -> Result<crate::store::history::HistoryContentFuture<'a, (acyclic_fs::Generation<A, O>, Result<LazySnapshotRef>)>>
     {
+        if mutations.iter().any(|mutation| matches!(mutation, super::WorkspaceMutation::Remove { .. })) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "Root upload candidate cannot contain a removal" });
+        }
+        if io.original_native_work().is_some_and(|work| !self.matches_native_work(work)) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "Root upload candidate belongs to another original native ledger" });
+        }
         let generation = |commit| match commit {
             acyclic_fs::TransactionCommit::Committed(generation)
             | acyclic_fs::TransactionCommit::AlreadyCommitted(generation) => generation,
@@ -192,63 +184,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootNativeSource<A, O> {
-
-    /// Funds the concrete adapter before allocation on the original ledger.
+    /// Retains the concrete lazy source on its original ledger before sharing it.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn from_lazy_with_native_work<D: DemandSource + 'static, S: LazyWorkspaceStore>(
+    pub fn from_lazy<D: DemandSource + 'static, S: LazyWorkspaceStore>(
         lazy: Arc<LazyWorkspace<A, O, D, S>>, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         let custody = work.retain_owned(std::mem::size_of::<RetainedRootLazy<A, O, D, S>>() as u64)
             .map_err(Error::from)?;
         work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
             .map_err(Error::from)?;
-        Ok(Self { backing: Arc::new(RetainedRootLazy { lazy, _custody: Some(custody) }) })
-    }
-
-    pub(crate) fn workspace_id(&self) -> acyclic_fs::WorkspaceId { self.backing.workspace_id() }
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn matches_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> bool {
-        self.backing.matches_native_work(work)
-    }
-    pub(crate) fn validate_snapshot_measured<'a>(&'a self, snapshot: LazySnapshotRef,
-        budget: WorkBudget, cancellation: &'a acyclic_fs::CancellationToken)
-        -> acyclic_stream::BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>>
-    { self.backing.validate(snapshot, budget, cancellation) }
-    pub(crate) fn read_measured<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str, maximum: u64,
-        budget: WorkBudget, cancellation: &'a acyclic_fs::CancellationToken)
-        -> acyclic_stream::BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>>
-    { self.backing.read(snapshot, path, maximum, budget, cancellation) }
-    pub(crate) fn list_measured<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str,
-        cursor: Option<acyclic_fs::LazyDirectoryCursor>, maximum: u32,
-        budget: WorkBudget, cancellation: &'a acyclic_fs::CancellationToken)
-        -> acyclic_stream::BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_fs::LazyDirectoryPage>, Error>>
-    { self.backing.list(snapshot, path, cursor, maximum, budget, cancellation) }
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn validate_snapshot_with_native_work<'a>(&'a self, snapshot: LazySnapshotRef,
-        work: &'a acyclic_fs::NativeMaterializationWork) -> Result<crate::NativeFutureBundle<'a, ()>>
-    { self.backing.validate_native(snapshot, work) }
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn read_with_native_work<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str,
-        maximum: u64, work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>>
-    { self.backing.read_native(snapshot, path, maximum, work) }
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn publish_with_io<'a>(&'a self, snapshot: LazySnapshotRef,
-        mutations: &'a [super::WorkspaceMutation], key: acyclic_fs::IdempotencyKey,
-        permit: acyclic_fs::PublicationPermit,
-        io: &'a super::fork_preparer::PreparationIo,
-        lease: &'a Arc<dyn crate::resource_preparation::CreatedTaskLease>)
-        -> Result<crate::store::history::HistoryContentFuture<'a, RootLazyPublication<A, O>>>
-    {
-        if mutations.iter().any(|mutation| matches!(mutation, super::WorkspaceMutation::Remove { .. })) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "Root upload candidate cannot contain a removal" });
-        }
-        if io.original_native_work().is_some_and(|work| !self.matches_native_work(work)) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "Root upload candidate belongs to another original native ledger" });
-        }
-        self.backing.publish(snapshot, mutations, key, permit, io, lease)
+        Ok(Self { backing: Arc::new(RetainedRootLazy { lazy, _custody: custody }) })
     }
 }
 
@@ -424,7 +369,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         if let Some(value) = &snapshot.native_snapshot {
             let lazy = self.native_source(&snapshot.project)
                 .ok_or_else(|| unauthorized(Some(io), "native source has no original provider binding"))?;
-            if lazy.workspace_id() != opened.id() {
+            if lazy.backing.workspace_id() != opened.id() {
                 return Err(unauthorized(Some(io), "native source names another original workspace"));
             }
             let encoded_hold;
@@ -454,14 +399,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             if frozen.workspace_id != opened.id() || frozen.authored_generation != generation_id {
                 return Err(unauthorized(Some(io), "native capture does not match the selected generation"));
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.original_native_work() {
-                lazy.validate_snapshot_with_native_work(frozen, work)?.await?;
-            } else {
-                io.receive_content(lazy.validate_snapshot_measured(frozen, io.remaining()?, context.cancellation).await)?;
-            }
-            #[cfg(target_arch = "wasm32")]
-            io.receive_content(lazy.validate_snapshot_measured(frozen, io.remaining()?, context.cancellation).await)?;
+            lazy.backing.validate(frozen, io)?.await?;
             #[cfg(not(target_arch = "wasm32"))]
             drop(frozen_hold);
         }

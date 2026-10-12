@@ -608,7 +608,7 @@ where
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async(crate::PublicationPermit::Unrestricted)
+            .sync_async(crate::PublicationPermit::Unrestricted, None).expect("unmetered unit construction cannot fail")
             .await
             .map_err(MountLifecycleError::Source)?;
         Ok(())
@@ -621,7 +621,7 @@ where
     ) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async(permit)
+            .sync_async(permit, None).expect("unmetered unit construction cannot fail")
             .await
             .map_err(MountLifecycleError::Source)
     }
@@ -1543,8 +1543,8 @@ where
                     WorkspaceError::StaleGeneration,
                 ));
             }
-            let expected_source = self.source_file_id_with_work(
-                node, &original, cancellation,
+            let expected_source = self.source_file_id(
+                &node.file_identity, &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation),
             ).map_err(MountLifecycleError::Lazy)?;
             original.charge(crate::WorkCounters {
                 bytes_hashed: (b"acyclic-fs-lazy-mount-root-v1\0".len() + 16 + root_text.0.len() + node.version.0.len()) as u64,

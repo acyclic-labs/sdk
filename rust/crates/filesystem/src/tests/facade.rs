@@ -379,8 +379,8 @@ mod heterogeneous_mount {
         let scratch = disk.create_workspace("scratch", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         root.write_text("/file", "memory").await?;
         scratch.write_text("/file", "disk").await?;
-        let root_head = root.head().await?;
-        let scratch_head = scratch.head().await?;
+        let root_head = root.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value;
+        let scratch_head = scratch.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value;
         assert!(matches!(
             scratch
                 .fork(
@@ -413,18 +413,20 @@ mod heterogeneous_mount {
                 )
                 .await?;
             fork.write_text("/file", "child only").await?;
-            assert_eq!(workspace.head().await?.id(), head.id());
-            assert_ne!(fork.head().await?.id(), head.id());
+            assert_eq!(workspace.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value.id(), head.id());
+            assert_ne!(fork.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value.id(), head.id());
         }
         let mut view = crate::MountedView::builder()
             .mount(
                 "/",
-                root.checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
+                root.checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await?.value,
             )?
             .mount(
                 "/.scratch",
                 scratch
-                    .checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
+                    .checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await?.value,
             )?
             .build()?;
         let cancellation = CancellationToken::new();
@@ -462,8 +464,8 @@ mod heterogeneous_mount {
             view.validate_rename(&root_path, &scratch_path),
             Err(crate::MountError::CrossVolume)
         );
-        assert_eq!(root.read("/file", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"memory");
-        assert_eq!(scratch.read("/file", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"disk");
+        assert_eq!(root.read("/file", 32, WorkBudget::UNBOUNDED, &cancellation).await?.value.as_ref(), b"memory");
+        assert_eq!(scratch.read("/file", 32, WorkBudget::UNBOUNDED, &cancellation).await?.value.as_ref(), b"disk");
         Ok(())
     }
 }
@@ -760,137 +762,51 @@ impl FaultAuthorityStore {
     }
 }
 
-impl AsyncAuthorityStore for FaultAuthorityStore {
-    async fn fork_generation_authority(
-        &self,
-        source: crate::GenerationForkSource,
-        destination_authority: crate::foundation::AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<CreateAuthorityOutcome> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        if self.control.should_fail() {
-            return Err(Self::failure(false));
-        }
-        self.inner
-            .fork_generation_authority(
-                source,
-                destination_authority,
-                operation_id,
-                budget,
-                cancellation,
-            )
-            .await
-    }
-
-    async fn create_authority(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        genesis_epoch: Epoch,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<CreateAuthorityOutcome> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+impl AuthorityStore for FaultAuthorityStore {
+    fn create_authority(&self, authority_id: crate::foundation::AuthorityId, genesis_epoch: Epoch, budget: WorkBudget) -> AuthorityResult<CreateAuthorityOutcome> {
         if self.control.should_fail() {
             return Err(Self::failure(false));
         }
         AuthorityStore::create_authority(&self.inner, authority_id, genesis_epoch, budget)
     }
 
-    async fn head(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Head> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+    fn head(&self, authority_id: crate::foundation::AuthorityId, budget: WorkBudget) -> AuthorityResult<Head> {
         if self.control.should_fail() {
             return Err(Self::failure(true));
         }
         AuthorityStore::head(&self.inner, authority_id, budget)
     }
 
-    async fn compare_and_append(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        epoch: Epoch,
-        expected: Head,
-        commit: ProposedCommit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<AppendOutcome> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+    fn compare_and_append(&self, authority_id: crate::foundation::AuthorityId, epoch: Epoch, expected: Head, commit: ProposedCommit, budget: WorkBudget) -> AuthorityResult<AppendOutcome> {
         if self.control.should_fail() {
             return Err(Self::failure(false));
         }
-        AuthorityStore::compare_and_append(
-            &self.inner,
-            authority_id,
-            epoch,
-            expected,
-            commit,
-            budget,
-        )
+        AuthorityStore::compare_and_append(&self.inner, authority_id, epoch, expected, commit, budget)
     }
 
-    async fn replay(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Vec<DurableCommit>> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+    fn replay(&self, authority_id: crate::foundation::AuthorityId, after: Sequence, limit: ReplayLimit, budget: WorkBudget) -> AuthorityResult<Vec<DurableCommit>> {
         if self.control.should_fail() {
             return Err(Self::failure(true));
         }
         AuthorityStore::replay(&self.inner, authority_id, after, limit, budget)
     }
 
-    async fn fence(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        expected: Head,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<FenceOutcome> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+    fn fence(&self, authority_id: crate::foundation::AuthorityId, expected: Head, budget: WorkBudget) -> AuthorityResult<FenceOutcome> {
         if self.control.should_fail() {
             return Err(Self::failure(false));
         }
         AuthorityStore::fence(&self.inner, authority_id, expected, budget)
     }
 
-    async fn find_operation(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Option<DurableCommit>> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+    fn find_operation(&self, authority_id: crate::foundation::AuthorityId, operation_id: OperationId, budget: WorkBudget) -> AuthorityResult<Option<DurableCommit>> {
         if self.control.should_fail() {
             return Err(Self::failure(true));
         }
         AuthorityStore::find_operation(&self.inner, authority_id, operation_id, budget)
     }
 }
+
+impl crate::async_storage::ImmediateAuthorityStore for FaultAuthorityStore {}
 
 impl FaultObjectStore {
     fn failure(read: bool) -> ObjectFailure {
@@ -905,78 +821,36 @@ impl FaultObjectStore {
     }
 }
 
-impl AsyncObjectStore for FaultObjectStore {
-    async fn put(
-        &self,
-        object_id: ObjectId,
-        bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+impl ObjectStore for FaultObjectStore {
+    fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()> {
         if self.control.should_fail() {
             return Err(Self::failure(false));
         }
         ObjectStore::put(&self.inner, object_id, bytes, budget)
     }
 
-    async fn put_many(
-        &self,
-        writes: &[ObjectWrite],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+    fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()> {
         if self.control.should_fail() {
             return Err(Self::failure(false));
         }
         ObjectStore::put_many(&self.inner, writes, budget)
     }
 
-    async fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+    fn read(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget) -> ObjectResult<ObjectRead> {
         if self.control.should_fail() {
             return Err(Self::failure(true));
         }
         ObjectStore::read(&self.inner, object_id, maximum_bytes, budget)
     }
 
-    async fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+    fn read_many(&self, requests: &[ObjectReadRequest], budget: WorkBudget) -> ObjectResult<Vec<ObjectRead>> {
         if self.control.should_fail() {
             return Err(Self::failure(true));
         }
         ObjectStore::read_many(&self.inner, requests, budget)
     }
 
-    async fn contains(
-        &self,
-        object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+    fn contains(&self, object_id: ObjectId, budget: WorkBudget) -> ObjectResult<bool> {
         if self.control.should_fail() {
             return Err(Self::failure(true));
         }
@@ -984,131 +858,38 @@ impl AsyncObjectStore for FaultObjectStore {
     }
 }
 
-impl AsyncObjectStore for CountingObjectStore {
-    async fn put(
-        &self,
-        object_id: ObjectId,
-        bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+impl crate::async_storage::ImmediateObjectStore for FaultObjectStore {}
+
+impl ObjectStore for CountingObjectStore {
+    fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()> {
         ObjectStore::put(&self.inner, object_id, bytes, budget)
     }
 
-    async fn put_many(
-        &self,
-        writes: &[ObjectWrite],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+    fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()> {
         ObjectStore::put_many(&self.inner, writes, budget)
     }
 
-    async fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+    fn read(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget) -> ObjectResult<ObjectRead> {
         self.record(object_id)?;
         ObjectStore::read(&self.inner, object_id, maximum_bytes, budget)
     }
 
-    async fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+    fn read_many(&self, requests: &[ObjectReadRequest], budget: WorkBudget) -> ObjectResult<Vec<ObjectRead>> {
         for request in requests {
             self.record(request.object_id)?;
         }
         ObjectStore::read_many(&self.inner, requests, budget)
     }
 
-    async fn contains(
-        &self,
-        object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+    fn contains(&self, object_id: ObjectId, budget: WorkBudget) -> ObjectResult<bool> {
         ObjectStore::contains(&self.inner, object_id, budget)
     }
 }
 
-impl AsyncObjectStore for PostPutObjectStore {
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn put_with_native_work(
-        &self, object_id: ObjectId, bytes: OwnedBytes,
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        AsyncObjectStore::put_with_native_work(&*self.inner, object_id, bytes, original, cancellation).await?;
-        if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
-        Ok(())
-    }
+impl crate::async_storage::ImmediateObjectStore for CountingObjectStore {}
 
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn put_hashed_with_native_work(
-        &self, object: HashedObject,
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        AsyncObjectStore::put_hashed_with_native_work(&*self.inner, object, original, cancellation).await?;
-        if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn put_many_with_native_work(
-        &self, writes: &[ObjectWrite],
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        AsyncObjectStore::put_many_with_native_work(&*self.inner, writes, original, cancellation).await?;
-        if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn read_with_native_work(
-        &self, object_id: ObjectId, maximum_bytes: u64,
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
-        AsyncObjectStore::read_with_native_work(&*self.inner, object_id, maximum_bytes, original, cancellation).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn read_many_with_native_work(
-        &self, requests: &[ObjectReadRequest],
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
-        AsyncObjectStore::read_many_with_native_work(&*self.inner, requests, original, cancellation).await
-    }
-
-    async fn put(
-        &self,
-        object_id: ObjectId,
-        bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+impl ObjectStore for PostPutObjectStore {
+    fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()> {
         let receipt = ObjectStore::put(&*self.inner, object_id, bytes, budget)?;
         if self.control.should_fail() {
             return Err(ObjectFailure::new(ObjectStoreError::Corrupt, receipt.work));
@@ -1116,15 +897,7 @@ impl AsyncObjectStore for PostPutObjectStore {
         Ok(receipt)
     }
 
-    async fn put_many(
-        &self,
-        writes: &[ObjectWrite],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+    fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()> {
         let receipt = ObjectStore::put_many(&*self.inner, writes, budget)?;
         if self.control.should_fail() {
             return Err(ObjectFailure::new(ObjectStoreError::Corrupt, receipt.work));
@@ -1132,109 +905,70 @@ impl AsyncObjectStore for PostPutObjectStore {
         Ok(receipt)
     }
 
-    async fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+    fn read(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget) -> ObjectResult<ObjectRead> {
         ObjectStore::read(&*self.inner, object_id, maximum_bytes, budget)
     }
 
-    async fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+    fn read_many(&self, requests: &[ObjectReadRequest], budget: WorkBudget) -> ObjectResult<Vec<ObjectRead>> {
         ObjectStore::read_many(&*self.inner, requests, budget)
     }
 
-    async fn contains(
-        &self,
-        object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+    fn contains(&self, object_id: ObjectId, budget: WorkBudget) -> ObjectResult<bool> {
         ObjectStore::contains(&*self.inner, object_id, budget)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_with_native_work(&self, object_id: ObjectId, maximum_bytes: u64, original: &crate::NativeMaterializationWork, cancellation: &CancellationToken) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
+        ObjectStore::read_with_native_work(&*self.inner, object_id, maximum_bytes, original, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_many_with_native_work(&self, requests: &[ObjectReadRequest], original: &crate::NativeMaterializationWork, cancellation: &CancellationToken) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
+        ObjectStore::read_many_with_native_work(&*self.inner, requests, original, cancellation)
     }
 }
 
-impl AsyncAuthorityStore for PostAppendAuthorityStore {
-    async fn fork_generation_authority(
-        &self,
-        source: crate::GenerationForkSource,
-        destination_authority: crate::foundation::AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<CreateAuthorityOutcome> {
-        self.inner
-            .fork_generation_authority(
-                source,
-                destination_authority,
-                operation_id,
-                budget,
-                cancellation,
-            )
-            .await
+impl crate::async_storage::ImmediateObjectStore for PostPutObjectStore {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_with_native_work(
+        &self, object_id: ObjectId, bytes: OwnedBytes,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<(), ObjectStoreError> {
+        crate::async_storage::ImmediateObjectStore::put_with_native_work(&*self.inner, object_id, bytes, original, cancellation)?;
+        if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
+        Ok(())
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_hashed_with_native_work(
+        &self, object: HashedObject,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<(), ObjectStoreError> {
+        crate::async_storage::ImmediateObjectStore::put_hashed_with_native_work(&*self.inner, object, original, cancellation)?;
+        if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_many_with_native_work(
+        &self, writes: &[ObjectWrite],
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<(), ObjectStoreError> {
+        crate::async_storage::ImmediateObjectStore::put_many_with_native_work(&*self.inner, writes, original, cancellation)?;
+        if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
+        Ok(())
+    }
+}
 
-    async fn create_authority(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        genesis_epoch: Epoch,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<CreateAuthorityOutcome> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+impl AuthorityStore for PostAppendAuthorityStore {
+    fn create_authority(&self, authority_id: crate::foundation::AuthorityId, genesis_epoch: Epoch, budget: WorkBudget) -> AuthorityResult<CreateAuthorityOutcome> {
         AuthorityStore::create_authority(&*self.inner, authority_id, genesis_epoch, budget)
     }
 
-    async fn head(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Head> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+    fn head(&self, authority_id: crate::foundation::AuthorityId, budget: WorkBudget) -> AuthorityResult<Head> {
         AuthorityStore::head(&*self.inner, authority_id, budget)
     }
 
-    async fn compare_and_append(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        epoch: Epoch,
-        expected: Head,
-        commit: ProposedCommit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<AppendOutcome> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let receipt = AuthorityStore::compare_and_append(
-            &*self.inner,
-            authority_id,
-            epoch,
-            expected,
-            commit,
-            budget,
-        )?;
+    fn compare_and_append(&self, authority_id: crate::foundation::AuthorityId, epoch: Epoch, expected: Head, commit: ProposedCommit, budget: WorkBudget) -> AuthorityResult<AppendOutcome> {
+        let receipt = AuthorityStore::compare_and_append(&*self.inner, authority_id, epoch, expected, commit, budget)?;
         if matches!(receipt.value, AppendOutcome::Committed(_)) && self.control.should_fail() {
             return Err(AuthorityFailure::new(
                 AuthorityStoreError::Indeterminate {
@@ -1247,46 +981,20 @@ impl AsyncAuthorityStore for PostAppendAuthorityStore {
         Ok(receipt)
     }
 
-    async fn replay(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Vec<DurableCommit>> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+    fn replay(&self, authority_id: crate::foundation::AuthorityId, after: Sequence, limit: ReplayLimit, budget: WorkBudget) -> AuthorityResult<Vec<DurableCommit>> {
         AuthorityStore::replay(&*self.inner, authority_id, after, limit, budget)
     }
 
-    async fn fence(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        expected: Head,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<FenceOutcome> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+    fn fence(&self, authority_id: crate::foundation::AuthorityId, expected: Head, budget: WorkBudget) -> AuthorityResult<FenceOutcome> {
         AuthorityStore::fence(&*self.inner, authority_id, expected, budget)
     }
 
-    async fn find_operation(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Option<DurableCommit>> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+    fn find_operation(&self, authority_id: crate::foundation::AuthorityId, operation_id: OperationId, budget: WorkBudget) -> AuthorityResult<Option<DurableCommit>> {
         AuthorityStore::find_operation(&*self.inner, authority_id, operation_id, budget)
     }
 }
+
+impl crate::async_storage::ImmediateAuthorityStore for PostAppendAuthorityStore {}
 
 
 #[test]
@@ -8981,7 +8689,7 @@ fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::er
         fingerprint: Digest::from_bytes([225; 32]),
         previous_digest: Digest::ZERO,
         digest: Digest::from_bytes([226; 32]),
-        payload: bytes::Bytes::from(encode_volume_created(VolumeCreated {
+        payload: bytes::Bytes::from(crate::kernel::encode_volume_created(VolumeCreated {
             volume_id: wrong_volume,
             config: config(),
             initial_generation_root: generation_root,
@@ -9050,12 +8758,7 @@ fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::er
     )?;
     let cancellation = CancellationToken::new();
     assert!(matches!(
-        poll_immediate(fs.read_creation(
-            expected_volume,
-            WorkCounters::default(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )),
+        poll_immediate(fs.read_creation_record(expected_volume, WorkBudget::UNBOUNDED, &cancellation)),
         Err(OperationFailure {
             error: FsError::VolumeMismatch,
             ..
@@ -9146,29 +8849,6 @@ fn nfc_config() -> VolumeConfig {
 
 
 #[test]
-fn profile_folded_volume_rejects_case_only_collisions() -> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume =
-        poll_immediate(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))?
-            .value;
-    let mut checkout = poll_immediate(volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?
-    .value;
-    poll_immediate(checkout.create(crate::AuthoredMutation::CreateFile { path: path("Foo")?, bytes: (bytes::Bytes::from_static(b"first")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?;
-    let collision = poll_immediate(checkout.create(crate::AuthoredMutation::CreateFile { path: path("foo")?, bytes: (bytes::Bytes::from_static(b"second")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation));
-    assert!(
-        collision.is_err(),
-        "creating \"foo\" must collide with the existing \"Foo\" under ProfileFolded"
-    );
-    Ok(())
-}
-
-#[test]
 fn profile_folded_admission_covers_directories_links_and_renames()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -9210,6 +8890,10 @@ fn profile_folded_admission_covers_directories_links_and_renames()
     assert_eq!(renamed.file_id, source);
 
     poll_immediate(checkout.create(crate::AuthoredMutation::CreateFile { path: path("Other")?, bytes: (bytes::Bytes::from_static(b"other")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?;
+    assert!(matches!(poll_immediate(checkout.create(crate::AuthoredMutation::CreateFile {
+        path: path("other")?, bytes: bytes::Bytes::from_static(b"collision").into(),
+        metadata: crate::kernel::FileMetadata::default(),
+    }, WorkBudget::UNBOUNDED, &cancellation)), Err(OperationFailure { error: FsError::NameCollision, .. })));
     let rename_collision = poll_immediate(checkout.mutate(vec![crate::kernel::Mutation::Rename { source: path("SOURCE")?, destination: path("other")?, replace: false }], WorkBudget::UNBOUNDED, &cancellation))
     .err()
     .ok_or("rename collision unexpectedly succeeded")?;
@@ -9340,34 +9024,6 @@ fn sensitive_volume_still_permits_case_distinct_siblings() -> Result<(), Box<dyn
     .value;
     poll_immediate(checkout.create(crate::AuthoredMutation::CreateFile { path: path("Foo")?, bytes: (bytes::Bytes::from_static(b"first")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?;
     poll_immediate(checkout.create(crate::AuthoredMutation::CreateFile { path: path("foo")?, bytes: (bytes::Bytes::from_static(b"second")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?;
-    Ok(())
-}
-
-#[test]
-fn profile_folded_volume_resolves_case_insensitive_lookups()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume =
-        poll_immediate(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))?
-            .value;
-    let mut checkout = poll_immediate(volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?
-    .value;
-    let created = poll_immediate(checkout.create(crate::AuthoredMutation::CreateFile { path: path("foo")?, bytes: (bytes::Bytes::from_static(b"body")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?
-    .value;
-    let lookup =
-        poll_immediate(checkout.lookup_no_follow(&path("FOO")?, WorkBudget::UNBOUNDED, &cancellation))?
-            .value;
-    assert_eq!(
-        lookup.record.map(|record| record.file_id),
-        Some(created),
-        "a folded lookup of \"FOO\" must resolve the entry created as \"foo\""
-    );
     Ok(())
 }
 
@@ -10069,9 +9725,9 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
             .inherit_paths(paths.clone()),
     ).await?;
     let initial = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    assert_eq!((child.read("/tree/nested/alias", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?).as_ref(), b"linked body");
-    assert!(child.read("/outside-alias", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
-    assert!(child.read("/omitted", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+    assert_eq!((child.read("/tree/nested/alias", 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value).as_ref(), b"linked body");
+    assert!(child.read("/outside-alias", 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.is_err());
+    assert!(child.read("/omitted", 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.is_err());
     let file = initial.stat("/tree/nested/file", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let alias = initial.stat("/tree/nested/alias", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(file.file_id, alias.file_id);

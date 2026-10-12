@@ -187,7 +187,7 @@ impl CodexProcess {
                 let (tree, result) = acyclic_native_runtime::run_blocking_io(move || {
                     let result = tree.terminate();
                     (tree, result)
-                })
+                }, None).expect("unmetered task construction cannot fail")
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?;
                 self.child = Some(tree);
@@ -211,7 +211,7 @@ impl CodexProcess {
         let (tree, result) = acyclic_native_runtime::run_blocking_io(move || {
             let result = tree.terminate_after(GRACE);
             (tree, result)
-        })
+        }, None).expect("unmetered task construction cannot fail")
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
         self.child = Some(tree);
@@ -250,7 +250,7 @@ pub(crate) async fn check_version(binary: &Path) -> Result<()> {
     command.arg("--version");
     let output = acyclic_native_runtime::run_blocking_io(move || {
         acyclic_native_runtime::process_output(&mut command, Duration::from_secs(30), STDERR_TAIL)
-    })
+    }, None).expect("unmetered task construction cannot fail")
     .await
     .map_err(|error| Error::Storage(error.to_string()))?
     .map_err(|error| {

@@ -437,8 +437,10 @@ mod source_bound_lost_ack {
         let (lazy, original) = recovered.value;
         assert_eq!(original.id(), initial_id);
         assert_eq!(original.workspace_id(), workspace_id);
-        assert_eq!(lazy.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
-        assert_eq!(lazy.snapshot().await?.source, reference);
+        assert_eq!(lazy.workspace().head(WorkBudget::UNBOUNDED, &cancellation).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
+        assert_eq!(lazy.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
+            WorkBudget::UNBOUNDED, &cancellation,
+        )).await?.source, reference);
         assert_eq!(
             store.load_lazy_workspace(workspace_id).await?.ok_or("binding absent after restart")?.source,
             reference

@@ -70,11 +70,27 @@ pub struct Client {
     descriptors: DescriptorPool,
 }
 
+/// Collects a response within `maximum`, returning `None` when it exceeds the bound.
+#[doc(hidden)]
+pub async fn response_body(response: &mut reqwest::Response, maximum: usize) -> Result<Option<Vec<u8>>, reqwest::Error> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum as u64)
+    {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if chunk.len() > maximum.saturating_sub(bytes.len()) {
+            return Ok(None);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(Some(bytes))
+}
+
 impl Client {
     /// Create a client. HTTPS or loopback HTTP is required.
-    ///
-    /// # Errors
-    /// Rejects unsafe endpoints, invalid credentials, or a zero response bound.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
         let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
         if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback(&endpoint))
@@ -181,19 +197,7 @@ impl Client {
         let status = response.status();
         #[cfg(not(target_arch = "wasm32"))]
         tracing::Span::current().record("http.status", status.as_u16());
-        if response
-            .content_length()
-            .is_some_and(|length| length > self.maximum as u64)
-        {
-            return Err(Error::ResponseTooLarge);
-        }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            if chunk.len() > self.maximum.saturating_sub(bytes.len()) {
-                return Err(Error::ResponseTooLarge);
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = response_body(&mut response, self.maximum).await?.ok_or(Error::ResponseTooLarge)?;
         if !status.is_success() {
             let detail = self
                 .decode::<wire::Error>("acyclic.workers.v1.Error", &bytes)
@@ -221,9 +225,6 @@ impl Client {
     }
 
     /// Execute the canonical `PublishVersion` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn publish_version(
         &self,
         request: &wire::PublishVersionRequest,
@@ -238,9 +239,6 @@ impl Client {
     }
 
     /// Execute the canonical `SelectDeployment` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn select_deployment(
         &self,
         request: &wire::SelectDeploymentRequest,
@@ -255,9 +253,6 @@ impl Client {
     }
 
     /// Execute the canonical `SubmitJob` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn submit_job(
         &self,
         request: &wire::SubmitJobRequest,
@@ -272,9 +267,6 @@ impl Client {
     }
 
     /// Execute the canonical `InspectJob` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn inspect_job(
         &self,
         request: &wire::InspectJobRequest,
@@ -289,9 +281,6 @@ impl Client {
     }
 
     /// Execute the canonical `CancelJob` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn cancel_job(
         &self,
         request: &wire::CancelJobRequest,
@@ -306,9 +295,6 @@ impl Client {
     }
 
     /// Execute the canonical `InvokeVersion` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn invoke_version(
         &self,
         request: &wire::InvokeVersionRequest,
@@ -331,9 +317,6 @@ impl Client {
     }
 
     /// Execute the canonical `InvokeDeployment` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn invoke_deployment(
         &self,
         request: &wire::InvokeDeploymentRequest,

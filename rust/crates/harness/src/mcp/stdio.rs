@@ -2,10 +2,10 @@
 
 use super::{
     PROTOCOL_VERSION,
-    rpc::{NativeWork, initialization, notification,
+    rpc::{initialization, notification,
         rpc_result},
 };
-use crate::{Error, OperationId, Result};
+use crate::{Error, NativeWork, OperationId, Result};
 use bytes::BytesMut;
 use rmcp::transport::async_rw::JsonRpcMessageCodec;
 use serde::{Deserialize, Serialize};

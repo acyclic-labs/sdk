@@ -2386,7 +2386,7 @@ fn projection_native_call<T>(
 }
 
 fn wait_native_unit_measured(
-    completion: acyclic_native_runtime::UnitCompletion,
+    completion: acyclic_native_runtime::NativeCompletion<()>,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
     let mut completion = std::pin::pin!(completion);
@@ -3019,8 +3019,8 @@ impl<'a> ProjectedNativeWriter<'a> {
         }
         // SAFETY: the existing raw native creator set asynchronous I/O and this transfer is the handle's sole positional I/O owner.
         let file = match unsafe {
-            acyclic_native_runtime::NativeFile::from_overlapped_file_measured_unchecked(
-                writer_file, work.runtime_meter(),
+            acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(
+                writer_file, Some(acyclic_native_runtime::NativeFileMeter::Borrowed(work.runtime_meter())),
             )
         } {
             Ok(file) => file,
@@ -3089,18 +3089,18 @@ fn finish_projected_file(
     use windows::Win32::Storage::FileSystem::{FileBasicInfo, FILE_BASIC_INFO, SetFileInformationByHandle};
     let meter = work.runtime_meter_owner();
     let size = u64::try_from(entry.basic_info().FileSize).map_err(|_| NativeMountError::Demand(crate::DemandError::InvalidRequest))?;
-    wait_native_unit_measured(file.set_len_bounded_async(size, Arc::clone(&meter))
+    wait_native_unit_measured(file.set_len_async(size, Some(Arc::clone(&meter)))
         .map_err(projection_io_error)?, work)?;
     let information = ordinary_basic_information(entry);
-    wait_native_unit_measured(file.control_bounded_async(move |file, meter| {
+    wait_native_unit_measured(file.control_async(move |file, meter| { let meter = meter.expect("metered control");
         meter.admit_write(0)?;
         // SAFETY: admitted, ordered held handle and fixed-size input.
         unsafe { SetFileInformationByHandle(
             windows::Win32::Foundation::HANDLE(file.as_raw_handle()), FileBasicInfo,
             (&raw const information).cast(), size_of::<FILE_BASIC_INFO>() as u32,
         ) }.map_err(projection_sdk_io_error)
-    }, Arc::clone(&meter)).map_err(projection_io_error)?, work)?;
-    wait_native_unit_measured(file.sync_bounded_async(acyclic_native_runtime::Durability::Full, meter)
+    }, Some(Arc::clone(&meter))).map_err(projection_io_error)?, work)?;
+    wait_native_unit_measured(file.sync_async(acyclic_native_runtime::Durability::Full, Some(meter))
         .map_err(projection_io_error)?, work)
 }
 
@@ -3164,7 +3164,7 @@ fn publish_projected_file(
     host_work.record(delta).map_err(detach_work_error)?;
     let length = u32::try_from(total).map_err(|_| crate::WorkError::Overflow)?;
     let meter = work.runtime_meter_owner();
-    wait_native_unit_measured(file.control_bounded_async(move |file, meter| {
+    wait_native_unit_measured(file.control_async(move |file, meter| { let meter = meter.expect("metered control");
         meter.admit_write(0)?;
         let mut status_block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
         // SAFETY: the control owns aligned information and the duplicated parent until this exact same-driver request has completed.
@@ -3180,7 +3180,7 @@ fn publish_projected_file(
                 unsafe { windows::Win32::Foundation::RtlNtStatusToDosError(status) } as i32,
             ))
         }
-    }, meter).map_err(projection_io_error)?, work)
+    }, Some(meter)).map_err(projection_io_error)?, work)
 }
 
 fn write_directly(
@@ -3339,11 +3339,11 @@ fn write_source_chunk(
 ) -> Result<(), NativeMountError> {
     let packet = RetainedBuffer::source_chunk(packet, projection)?;
     let meter = projection.work.runtime_meter_owner();
-    let completion = file.control_bounded_async(move |file, meter| {
-        acyclic_native_runtime::write_all_at_measured_held(
-            file, offset, &std::ops::Deref::deref(&packet).bytes, meter,
+    let completion = file.control_async(move |file, meter| { let meter = meter.expect("metered control");
+        acyclic_native_runtime::write_all_at(
+            file, offset, &std::ops::Deref::deref(&packet).bytes, Some((meter, true)),
         )
-    }, meter).map_err(projection_io_error)?;
+    }, Some(meter)).map_err(projection_io_error)?;
     let written = wait_native_unit_measured(completion, projection.work);
     let retired = projection.work.record_admitted(crate::WorkCounters::UNCHARGED).map_err(detach_work_error);
     written.and(retired)
@@ -6662,13 +6662,9 @@ mod tests {
         let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &cancellation);
         let mut writer = super::ProjectedNativeWriter::create(&parent, &[102], &meter, |_| Ok(()))?;
         let native_meter = meter.runtime_meter_owner();
-        super::wait_native_unit_measured(writer.file().write_bounded_async(
-            0, Bytes::from_static(b"physical"), Arc::clone(&native_meter),
-        ).map_err(super::projection_io_error)?, &meter)?;
+        super::wait_native_unit_measured(writer.file().write_async(0, Bytes::from_static(b"physical"), Arc::clone(&native_meter), ()).map_err(super::projection_io_error)?, &meter)?;
         cancellation.cancel();
-        let error = match writer.file().write_bounded_async(
-            8, Bytes::from_static(b"not written"), native_meter,
-        ) {
+        let error = match writer.file().write_async(8, Bytes::from_static(b"not written"), native_meter, ()) {
             Err(error) => super::projection_io_error(error),
             Ok(completion) => super::wait_native_unit_measured(completion, &meter)
                 .expect_err("cancelled native operation cannot write"),
@@ -7087,7 +7083,7 @@ mod tests {
                 .custom_flags(windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED.0)
                 .open(&destination)?;
             // SAFETY: this fresh FILE_FLAG_OVERLAPPED handle has no independent I/O or completion-port association; the fixture transfers it.
-            let file = unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file)? };
+            let file = unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, None).map_err(|(error, _)| error)? };
             let (result, counters, live) = measured_source_leaf(source.as_ref(), budget, &cancellation, |projection| {
                 let entries = super::source_listing(projection, &MountPath::root())?;
                 let entry = entries.iter().find(|entry| entry.component.as_slice() == component.as_slice())
