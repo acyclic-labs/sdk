@@ -598,7 +598,7 @@ impl MemoryAuthorityStore {
         let envelope = {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native {
-                let guard = original.claim_allocation(size_of::<(u64, MemoryPublicationProof)>() as u64, 0)
+                let guard = original.claim_allocation(size_of::<(u64, MemoryPublicationProof)>() as u64, 0, crate::WorkCounters::UNCHARGED)
                     .map_err(|error| accounting.failure(AuthorityStoreError::NativeOriginal(error)))?;
                 MemoryEntryEnvelope { _custody: Some(guard) }
             } else { accounting.logical_entry::<(u64, MemoryPublicationProof)>()? }
@@ -653,7 +653,7 @@ impl MemoryAuthorityStore {
         let value = operation(&mut accounting).map_err(|failure| failure.error)?;
         let guard = match accounting.output_custody.take() {
             Some(guard) => guard,
-            None => work.claim_allocation(0, 0)?,
+            None => work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?,
         };
         Ok((value, guard))
     }
@@ -946,7 +946,7 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
         guard(original).await?;
         let value = self.publish_append(&request, plan, &mut accounting)
             .map_err(|failure| E::from(failure.error))?;
-        let allocation = original.claim_allocation(0, 0)
+        let allocation = original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)
             .map_err(|error| E::from(AuthorityStoreError::from(error)))?;
         Ok((value, allocation))
     }
@@ -1148,7 +1148,7 @@ impl<'a> AuthorityAccounting<'a> {
         let bytes = size_of::<T>() as u64;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(native) = self.native {
-            let guard = native.claim_allocation(bytes, 0)
+            let guard = native.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED)
                 .map_err(|error| self.failure(AuthorityStoreError::NativeOriginal(error)))?;
             return Ok(MemoryEntryEnvelope { _custody: Some(guard) });
         }

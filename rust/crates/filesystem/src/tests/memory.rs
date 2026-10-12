@@ -835,14 +835,14 @@ fn original_first_record_is_atomic_exact_and_ordinary_byte_compatible()
     }
     assert_eq!(work.receipt().backend_write_operations, 1);
     // Persistent table/history buffers retain their original root through state drop.
-    let live = work.with_allocations(|allocations, _, _, _| {
+    let live = work.allocations(|allocations, _, _, _| {
         Ok::<_, crate::materializer::NativeTreeMaterializationError>(allocations.live_bytes())
-    })?;
+    }).map(|(value, _allocation)| value)?;
     assert_eq!(live, state + retained);
     drop(native);
-    assert_eq!(work.with_allocations(|allocations, _, _, _| {
+    assert_eq!(work.allocations(|allocations, _, _, _| {
         Ok::<_, crate::materializer::NativeTreeMaterializationError>(allocations.live_bytes())
-    })?, state);
+    }).map(|(value, _allocation)| value)?, state);
     Ok(())
 }
 
@@ -911,9 +911,9 @@ fn original_owner_failure_wins_after_planning_outside_every_lock()
     assert_eq!(prefix.allocation_operations, 3);
     assert_eq!(prefix.backend_write_operations, 0);
     assert_eq!(prefix.authority_records_appended, 0);
-    assert_eq!(work.with_allocations(|allocations, _, _, _| {
+    assert_eq!(work.allocations(|allocations, _, _, _| {
         Ok::<_, crate::materializer::NativeTreeMaterializationError>(allocations.live_bytes())
-    })?, NativeMaterializationWork::accounting_state_bytes());
+    }).map(|(value, _allocation)| value)?, NativeMaterializationWork::accounting_state_bytes());
     Ok(())
 }
 

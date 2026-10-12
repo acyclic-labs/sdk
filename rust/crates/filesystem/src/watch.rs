@@ -733,7 +733,7 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
     };
     // The tuple's field order frees every physical name before retiring custody.
     let mut owned = if let Some(original) = &original {
-        let (components, allocation) = original.with_owned_allocations(reserve)?;
+        let (components, allocation) = original.allocations(reserve)?;
         (components, Some(allocation))
     } else {
         (work.with_original_leaf(|actual| {
@@ -1331,7 +1331,7 @@ impl NativeWatch {
     ) -> Result<(PathBuf, Option<crate::NativeAllocation>), NativeWatchError> {
         work.check().map_err(demand_watch_error)?;
         if let Some(original) = original {
-            let (path, allocation) = original.copy_path(path)?;
+            let (path, allocation) = original.path(path, None)?;
             Ok((path, Some(allocation)))
         } else {
             let (path, _) = crate::native_host::clone_path_with_work(path, work)
@@ -2490,7 +2490,7 @@ impl NativeWatch {
             }
             let relative = convert(subtree, work)?;
             let mut host = if let Some(original) = original {
-                original.join_path(&self.root, &relative.0)
+                original.path(&self.root, Some(&relative.0))
                     .map(|(path, allocation)| (path, Some(allocation)))?
             } else {
                 let copied = self.root.as_os_str().len().checked_add(relative.0.as_os_str().len())
@@ -2516,7 +2516,7 @@ impl NativeWatch {
                 allocation.resize_retained(host.0.capacity() as u64)?;
             }
             let mut shared = if let Some(original) = original {
-                original.copy_path(&host.0)
+                original.path(&host.0, None)
                     .map(|(path, allocation)| (path, Some(allocation)))?
             } else {
                 crate::native_host::clone_path_with_work(&host.0, work)
@@ -2575,7 +2575,7 @@ impl NativeWatch {
                 .map_err(crate::demand::DemandError::from).map_err(demand_watch_error)
         };
         if let Some(original) = original {
-            original.with_owned_allocations(copy)
+            original.allocations(copy)
                 .map(|(path, allocation)| (path, Some(allocation)))
         } else {
             work.with_original_leaf(|actual| {

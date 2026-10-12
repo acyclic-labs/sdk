@@ -1,6 +1,6 @@
 //! Journaled pathwise application and crash recovery.
 
-use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, MemoryRecords, next_revision};
+use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, next_revision};
 use crate::{GenerationId, OperationId};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -64,7 +64,6 @@ impl NativeInvocationView {
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub(crate) struct NativeSourceExecutionView {
     work: NativeMaterializationWork,
-    base: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     _lease: crate::native_mount::NativeSourceIoLease,
     _metadata: NativeAllocation,
 }
@@ -538,7 +537,7 @@ impl_original_native_read_meter!(NativeResourceAllowance);
 #[cfg(not(target_arch = "wasm32"))]
 impl_original_native_read_meter!(NativeInvocationView);
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-impl_original_native_read_meter!(NativeSourceExecutionView, |owner: &NativeSourceExecutionView| Some(std::sync::Arc::clone(&owner.base)));
+impl_original_native_read_meter!(NativeSourceExecutionView, |owner: &NativeSourceExecutionView| Some(owner.work.runtime_meter_owner()));
 
 /// Retains an allocation's resource ownership through physical retirement.
 #[cfg(not(target_arch = "wasm32"))]
@@ -644,7 +643,7 @@ impl NativeMaterializationWork {
     /// Creates an owned local stop on the same original engine and resource.
     pub fn invocation_view(&self) -> Result<(Self, crate::CancellationToken), NativeTreeMaterializationError> {
         let cancellation = crate::CancellationToken::linked_child_with_native_work(self.cancellation(), self)?;
-        let metadata = self.claim_allocation_in_origin(std::mem::size_of::<NativeInvocationView>() as u64, 1, Some(&None))?;
+        let metadata = self.claim_allocation(std::mem::size_of::<NativeInvocationView>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         let view = std::sync::Arc::new_cyclic(|self_ref| NativeInvocationView {
             work: self.allocation_work(), cancellation: cancellation.clone(),
             self_ref: self_ref.clone(), _metadata: metadata,
@@ -773,9 +772,7 @@ impl NativeMaterializationWork {
         if let Some(invocation) = &work.invocation {
             if !invocation.owns_resource(work.resource.as_ref()) {
                 let cancellation = invocation.cancellation.clone();
-                let metadata = work.claim_allocation_in_origin(
-                    std::mem::size_of::<NativeInvocationView>() as u64, 1, Some(&None),
-                )?;
+                let metadata = work.claim_allocation(std::mem::size_of::<NativeInvocationView>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
                 let view = std::sync::Arc::new_cyclic(|self_ref| NativeInvocationView {
                     work: work.clone(), cancellation,
                     self_ref: self_ref.clone(), _metadata: metadata,
@@ -783,12 +780,9 @@ impl NativeMaterializationWork {
                 work.invocation = Some(view);
             }
         }
-        let metadata = work.claim_allocation_in_origin(
-            std::mem::size_of::<NativeSourceExecutionView>() as u64, 1, Some(&None),
-        )?;
-        let base = work.runtime_meter_owner();
+        let metadata = work.claim_allocation(std::mem::size_of::<NativeSourceExecutionView>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         let view = std::sync::Arc::new(NativeSourceExecutionView {
-            work: work.clone(), base, _lease: lease, _metadata: metadata,
+            work: work.clone(), _lease: lease, _metadata: metadata,
         });
         work.execution = Some(view);
         Ok(work)
@@ -876,14 +870,6 @@ impl NativeMaterializationWork {
             Some(resource) => std::sync::Arc::clone(resource) as std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
             None => std::sync::Arc::clone(&self.state) as std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         }
-    }
-
-    /// Pins capture custody only for an accepted source job's physical terminal.
-    #[cfg(feature = "native-watch")]
-    pub(crate) fn runtime_meter_owner_with_capture_custody(
-        &self, custody: &std::sync::Arc<crate::demand::CaptureTransientCustody>,
-    ) -> Result<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>, NativeTreeMaterializationError> {
-        crate::native_capture::capture_runtime_meter_owner(self, custody)
     }
 
     /// Recovers the first original runtime failure, or the supplied IO error.
@@ -983,16 +969,6 @@ impl NativeMaterializationWork {
         result.and(resource).map_err(native_materialization_work_error)
     }
 
-    pub(crate) fn with_allocations<T, E: From<NativeTreeMaterializationError>>(&self, operation: impl FnOnce(&mut crate::kernel::allocation::AllocationLedger, &mut crate::WorkCounters, crate::WorkBudget, &crate::CancellationToken) -> Result<T, E>) -> Result<T, E> {
-        let mut state = self.state();
-        if let Err(error) = state.reconcile_native_controls() {
-            drop(state);
-            return Err(E::from(NativeTreeMaterializationError::Work(error)));
-        }
-        let (allocations, work, budget, cancellation) = state.allocation_parts();
-        operation(allocations, work, budget, cancellation)
-    }
-
     /// Pure existing-root membership, not permission or retained-byte adoption.
     pub(crate) fn owns_native_checkout_token(
         &self, token: &std::sync::Arc<crate::kernel::ProofDataCustody>,
@@ -1027,7 +1003,7 @@ impl NativeMaterializationWork {
     }
 
     /// The failure path must have destroyed all of the leaf's own backing.
-    pub(crate) fn with_owned_allocations<T, E: From<NativeTreeMaterializationError>>(&self, operation: impl FnOnce(&mut crate::kernel::allocation::AllocationLedger, &mut crate::WorkCounters, crate::WorkBudget, &crate::CancellationToken) -> Result<T, E>) -> Result<(T, NativeAllocation), E> {
+    pub(crate) fn allocations<T, E: From<NativeTreeMaterializationError>>(&self, operation: impl FnOnce(&mut crate::kernel::allocation::AllocationLedger, &mut crate::WorkCounters, crate::WorkBudget, &crate::CancellationToken) -> Result<T, E>) -> Result<(T, NativeAllocation), E> {
         let mut state = self.state();
         if let Err(error) = state.reconcile_native_controls() {
             drop(state);
@@ -1136,39 +1112,33 @@ impl NativeMaterializationWork {
 
     /// Admits an allocation and retains its ownership until deallocation.
     pub fn claim(&self, bytes: u64) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        self.claim_allocation(bytes, u64::from(bytes != 0))
+        self.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
     }
 
-    /// Claims an allocation before the allocator runs.
-    pub(crate) fn claim_allocation(&self, bytes: u64, operations: u64) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        self.claim_allocation_in_origin(bytes, operations, None)
-    }
-
-    fn claim_allocation_in_origin(
-        &self, bytes: u64, operations: u64,
-        origin: Option<&Option<std::sync::Arc<crate::demand::CaptureTransientCustody>>>,
-    ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
+    /// Claims buffer ownership and any immediate work on the original ledger.
+    pub fn claim_allocation(&self, bytes: u64, operations: u64, delta: crate::WorkCounters) -> Result<NativeAllocation, NativeTreeMaterializationError> {
+        let combined = delta.checked_add(crate::WorkCounters {
+            allocation_operations: operations, ..crate::WorkCounters::UNCHARGED
+        })?;
         let mut state = self.state();
-        let delta = crate::WorkCounters { allocation_operations: operations, ..crate::WorkCounters::UNCHARGED };
-        let capture = origin.cloned().unwrap_or(None);
-        // Intrinsic guarded payload is not the capture's unguarded scratch.
+        let mut claim = || state.claim_native_owned_with_work(bytes, operations, delta, &None);
         let result = match &self.resource {
-            Some(resource) => resource.admission(delta, bytes, || state.claim_native_owned(bytes, operations, &None)),
-            None => state.claim_native_owned(bytes, operations, &None),
+            Some(resource) => resource.admission(combined, bytes, claim),
+            None => claim(),
         };
         drop(state);
         result.map_err(native_materialization_work_error)?;
-        Ok(NativeAllocation { meter: self.allocation_work(), bytes, capture })
+        Ok(NativeAllocation { meter: self.allocation_work(), bytes, capture: None })
     }
 
     fn claim_root_metadata(&self, bytes: u64) -> Result<NativeAllocation, NativeTreeMaterializationError> {
         let root = Self { state: std::sync::Arc::clone(&self.state), cancellation: self.cancellation.clone(), resource: None, capture_origin: None, invocation: self.invocation.clone(), #[cfg(feature = "native-mount")] execution: None };
-        root.claim_allocation_in_origin(bytes, 1, Some(&None))
+        root.claim_allocation(bytes, 1, crate::WorkCounters::UNCHARGED)
     }
 
     /// Funds only the actual capture token's compiled logical Self.
     pub(crate) fn claim_capture_custody_metadata(&self) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        self.claim_allocation_in_origin(std::mem::size_of::<crate::demand::CaptureTransientCustody>() as u64, 1, Some(&None))
+        self.claim_allocation(std::mem::size_of::<crate::demand::CaptureTransientCustody>() as u64, 1, crate::WorkCounters::UNCHARGED)
     }
 
     /// Funds only root-owned registered checkout-token bookkeeping.
@@ -1202,28 +1172,6 @@ impl NativeMaterializationWork {
         Ok(NativeAllocation { meter: self.allocation_work(), bytes, capture: None })
     }
 
-    /// Funds an allocation and its immediate copy and item work.
-    pub(crate) fn claim_allocation_with_work(
-        &self, bytes: u64, operations: u64, delta: crate::WorkCounters,
-    ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        let combined = delta.checked_add(crate::WorkCounters {
-            allocation_operations: operations, ..crate::WorkCounters::UNCHARGED
-        })?;
-        let mut state = self.state();
-        let capture = None;
-        let result = match &self.resource {
-            Some(resource) => resource.admission(combined, bytes, || {
-                state.with_resource_scope(None, |work|
-                    work.claim_native_owned_with_work(bytes, operations, delta, &None))
-            }),
-            None => state.with_resource_scope(None, |work|
-                work.claim_native_owned_with_work(bytes, operations, delta, &None)),
-        };
-        drop(state);
-        result.map_err(native_materialization_work_error)?;
-        Ok(NativeAllocation { meter: self.allocation_work(), bytes, capture })
-    }
-
     /// Records a completed allocation with its original capture ownership.
     pub(crate) fn record_completed_allocation(
         &self, bytes: u64,
@@ -1238,12 +1186,7 @@ impl NativeMaterializationWork {
 
     /// Takes custody of an already measured buffer.
     pub fn retain_owned(&self, bytes: u64) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        self.claim_allocation(bytes, 0)
-    }
-
-    /// Returns the owned capacity of a journal control buffer.
-    pub fn journal_control_bytes(journal: &MaterializationJournal) -> Result<u64, NativeTreeMaterializationError> {
-        journal_owned_bytes(journal)
+        self.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED)
     }
 
     /// Formats actionable text into an actually admitted owned UTF-8 buffer.
@@ -1265,17 +1208,8 @@ impl NativeMaterializationWork {
         Ok(crate::native_host::HostRoot::open_materialization_measured(path, self)?.identity())
     }
 
-    /// Copies actual lexical bytes into one exactly admitted owned path.
-    pub fn copy_path(&self, path: &std::path::Path) -> Result<(std::path::PathBuf, NativeAllocation), NativeTreeMaterializationError> {
-        self.owned_path(path, None)
-    }
-
-    /// Allocates a joined lexical path. This supplies buffer custody only;
-    pub fn join_path(&self, root: &std::path::Path, leaf: &std::path::Path) -> Result<(std::path::PathBuf, NativeAllocation), NativeTreeMaterializationError> {
-        self.owned_path(root, Some(leaf))
-    }
-
-    fn owned_path(&self, root: &std::path::Path, leaf: Option<&std::path::Path>) -> Result<(std::path::PathBuf, NativeAllocation), NativeTreeMaterializationError> {
+    /// Copies a lexical root and optional child into an admitted owned path.
+    pub fn path(&self, root: &std::path::Path, leaf: Option<&std::path::Path>) -> Result<(std::path::PathBuf, NativeAllocation), NativeTreeMaterializationError> {
         let copied = root.as_os_str().len().checked_add(leaf.map_or(0, |path| path.as_os_str().len())).ok_or(crate::WorkError::Overflow)?;
         let capacity = copied.checked_add(usize::from(leaf.is_some())).ok_or(crate::WorkError::Overflow)?;
         let copy = crate::WorkCounters { bytes_copied: copied as u64, ..crate::WorkCounters::default() };
@@ -1597,10 +1531,7 @@ impl NativeMaterializationWork {
         crate::native_host::directory_identity_materialization_measured(&directory, self)
     }
 
-    /// Observes a working-directory binding without granting mutation authority.
-    pub fn validate_working_directory(&self, root: &std::path::Path, expected: crate::NativeRootIdentity, relative: &std::path::Path) -> Result<(), NativeTreeMaterializationError> {
-        self.open_working_directory(root, expected, relative).map(drop)
-    }
+
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1948,7 +1879,7 @@ impl NativeOwnedCleanupCredit {
         let original = credit.meter.clone();
         let normal = original.runtime_meter_owner();
         let allocation_owner = normal.allocation_owner().unwrap_or(normal);
-        let metadata = original.claim_allocation_in_origin(std::mem::size_of::<Self>() as u64, 1, Some(&None))?;
+        let metadata = original.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(std::sync::Arc::new(Self {
             original, allocation_owner,
             state: parking_lot::Mutex::new(NativeOwnedCleanupState {
@@ -2586,7 +2517,8 @@ impl NativeAllocation {
     /// Admits one actual buffer growth before reallocating.
     pub fn grow(&mut self, bytes: u64) -> Result<(), NativeTreeMaterializationError> {
         let retained = self.bytes.checked_add(bytes).ok_or(crate::WorkError::Overflow)?;
-        let mut added = self.meter.claim_allocation_in_origin(bytes, u64::from(bytes != 0), Some(&self.capture))?;
+        let mut added = self.meter.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
+        added.capture = self.capture.clone();
         self.absorb(&mut added)?;
         debug_assert_eq!(self.bytes, retained);
         Ok(())
@@ -2884,7 +2816,7 @@ pub enum MaterializationPhase {
 }
 
 /// Complete versioned recovery journal.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MaterializationJournal {
     /// Serialization contract version.
     pub version: u32,
@@ -2908,6 +2840,10 @@ pub struct MaterializationJournal {
     pub applied: u32,
     /// Number of applied edits restored from the end.
     pub restored: u32,
+    /// Allocation ownership of the journal's in-memory payload.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[serde(skip)]
+    pub custody: Option<NativeAllocation>,
 }
 
 impl MaterializationJournal {
@@ -3001,7 +2937,7 @@ impl<E> NativeStageUncertainty<E> {
 
 #[cfg(not(target_arch = "wasm32"))]
 enum NativeStageJournal<C> {
-    Journal(OwnedMaterializationJournal),
+    Journal(MaterializationJournal),
     Accepted { completion: C, last_durable_work: crate::WorkCounters },
     Completing { last_durable_work: crate::WorkCounters },
 }
@@ -3012,7 +2948,7 @@ pub trait MaterializationActionCompletion: Send {
     /// The original provider failure type.
     type Error: std::error::Error + Send + Sync + 'static;
     /// Durably records the actual original work prefix and returns its journal.
-    fn complete(self) -> impl Future<Output = Result<OwnedMaterializationJournal, Self::Error>> + Send;
+    fn complete(self) -> impl Future<Output = Result<MaterializationJournal, Self::Error>> + Send;
 }
 
 /// Durable optimistic-concurrency adapter for materialization journals.
@@ -3027,22 +2963,22 @@ pub trait MaterializationJournalStore: Send + Sync {
 
     /// Admits journal completion before its authorized physical action.
     #[cfg(not(target_arch = "wasm32"))]
-    fn prepare_action<'a>(&'a self, journal: OwnedMaterializationJournal)
+    fn prepare_action<'a>(&'a self, journal: MaterializationJournal)
         -> impl Future<Output = Result<Self::ActionCompletion<'a>, Self::Error>> + Send;
 
     /// Loads one journal with its actual decoded or stored payload custody.
     fn load(
         &self,
         operation_id: OperationId,
-    ) -> impl Future<Output = Result<Option<OwnedMaterializationJournal>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<MaterializationJournal>, Self::Error>> + Send;
 
     /// Atomically replaces `expected_revision`; zero creates a journal.
     fn compare_and_swap(
         &self,
         operation_id: OperationId,
         expected_revision: u64,
-        replacement: OwnedMaterializationJournal,
-    ) -> impl Future<Output = Result<(bool, OwnedMaterializationJournal), Self::Error>> + Send;
+        replacement: MaterializationJournal,
+    ) -> impl Future<Output = Result<(bool, MaterializationJournal), Self::Error>> + Send;
 }
 
 /// Backend that can capture, apply, and restore every representable host fact.
@@ -3103,14 +3039,10 @@ pub trait MaterializationBackend: Send + Sync {
     fn retain_plan(&self, _plan: &MaterializationPlan) -> Result<Option<NativeAllocation>, Self::Error> { Ok(None) }
 
     /// Validates the journal's retained payload ownership.
-    fn check_custody(&self, _journal: &mut OwnedMaterializationJournal, #[cfg(not(target_arch = "wasm32"))] _incoming: &mut [Option<NativeAllocation>]) -> Result<(), Self::Error> { Ok(()) }
-
-    /// Admits allocation ownership of observation output.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn admit_observations(&self, _count: usize) -> Result<Option<NativeAllocation>, Self::Error> { Ok(None) }
+    fn check_custody(&self, _journal: &mut MaterializationJournal, #[cfg(not(target_arch = "wasm32"))] _incoming: &mut [Option<NativeAllocation>]) -> Result<(), Self::Error> { Ok(()) }
 
     /// Transfers captured bytes and their actual ownership into this journal.
-    fn append_preimage(&self, journal: &mut OwnedMaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Self::Error>;
+    fn append_preimage(&self, journal: &mut MaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Self::Error>;
 
     /// Revalidates the allocation currently named at its physical boundary.
     fn observe_allocation_identity(
@@ -3231,7 +3163,7 @@ pub enum MaterializationPreparationObservation {
 #[derive(Debug)]
 pub struct MaterializationInspection {
     /// Original operation, preparation identities and exact recovery progress.
-    pub journal: OwnedMaterializationJournal,
+    pub journal: MaterializationJournal,
     /// Root status even when preimage capture is incomplete.
     pub root: MaterializationRootObservation,
     /// Staging and cleanup status even when capture is incomplete.
@@ -3249,37 +3181,23 @@ pub struct JournaledMaterializer<S, B> {
     backend: B,
 }
 
-/// The same durable journal ownership packet in every recovery phase.
-#[derive(Debug)]
-pub struct OwnedMaterializationJournal {
-    /// Original immutable intent, witnesses and durable progress.
-    pub journal: MaterializationJournal,
-    /// Actual original decoded or constructed buffer ownership.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub custody: Option<NativeAllocation>,
-}
-
-impl OwnedMaterializationJournal {
-    /// Transfers an ordinary administrative journal without claiming native work.
-    pub fn ordinary(journal: MaterializationJournal) -> Self {
-        Self { journal, #[cfg(not(target_arch = "wasm32"))] custody: None }
+impl PartialEq for MaterializationJournal {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version
+            && self.revision == other.revision
+            && self.plan == other.plan
+            && self.root_identity == other.root_identity
+            && self.preparation_identity == other.preparation_identity
+            && self.preparation_progress == other.preparation_progress
+            && self.work == other.work
+            && self.preimages == other.preimages
+            && self.phase == other.phase
+            && self.applied == other.applied
+            && self.restored == other.restored
     }
 }
 
-impl std::ops::Deref for OwnedMaterializationJournal {
-    type Target = MaterializationJournal;
-    fn deref(&self) -> &Self::Target { &self.journal }
-}
-
-impl std::ops::DerefMut for OwnedMaterializationJournal {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.journal }
-}
-
-impl PartialEq for OwnedMaterializationJournal {
-    fn eq(&self, other: &Self) -> bool { self.journal == other.journal }
-}
-
-impl Eq for OwnedMaterializationJournal {}
+impl Eq for MaterializationJournal {}
 
 impl<S, B> JournaledMaterializer<S, B> {
     /// Creates a journaled materializer.
@@ -3303,7 +3221,7 @@ impl<S, B> JournaledMaterializer<S, B> {
 
 impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMaterializer<S, B> {
     /// Captures preimages and applies the plan with authorization before effects.
-    pub async fn apply<E, F, Fut>(&self, plan: MaterializationPlan, before_effect: &mut F) -> Result<OwnedMaterializationJournal, E>
+    pub async fn apply<E, F, Fut>(&self, plan: MaterializationPlan, before_effect: &mut F) -> Result<MaterializationJournal, E>
     where
         E: From<MaterializationError<S::Error, B::Error>>,
         F: FnMut(bool) -> Fut + Send,
@@ -3332,7 +3250,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         self.apply_journal(journal, before_effect).await
     }
 
-    async fn apply_journal<E, F, Fut>(&self, mut journal: OwnedMaterializationJournal, before_effect: &mut F) -> Result<OwnedMaterializationJournal, E>
+    async fn apply_journal<E, F, Fut>(&self, mut journal: MaterializationJournal, before_effect: &mut F) -> Result<MaterializationJournal, E>
     where
         E: From<MaterializationError<S::Error, B::Error>>,
         F: FnMut(bool) -> Fut + Send,
@@ -3407,7 +3325,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
     }
 
     /// Recovers with authorization before each effect.
-    pub async fn recover<E, F, Fut>(&self, operation_id: OperationId, recovery: MaterializationRecovery, before_effect: &mut F) -> Result<Option<OwnedMaterializationJournal>, E>
+    pub async fn recover<E, F, Fut>(&self, operation_id: OperationId, recovery: MaterializationRecovery, before_effect: &mut F) -> Result<Option<MaterializationJournal>, E>
     where
         E: From<MaterializationError<S::Error, B::Error>>,
         F: FnMut(bool) -> Fut + Send,
@@ -3419,7 +3337,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         self.recover_journal(journal, recovery, before_effect).await.map(Some)
     }
 
-    async fn recover_journal<E, F, Fut>(&self, journal: OwnedMaterializationJournal, recovery: MaterializationRecovery, before_effect: &mut F) -> Result<OwnedMaterializationJournal, E>
+    async fn recover_journal<E, F, Fut>(&self, journal: MaterializationJournal, recovery: MaterializationRecovery, before_effect: &mut F) -> Result<MaterializationJournal, E>
     where
         E: From<MaterializationError<S::Error, B::Error>>,
         F: FnMut(bool) -> Fut + Send,
@@ -3437,7 +3355,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
     }
 
     /// Retains original intent and allocation witnesses before staging.
-    pub async fn prepare(&self, plan: MaterializationPlan, #[cfg(not(target_arch = "wasm32"))] custody: Option<NativeAllocation>) -> Result<OwnedMaterializationJournal, MaterializationError<S::Error, B::Error>> {
+    pub async fn prepare(&self, plan: MaterializationPlan, #[cfg(not(target_arch = "wasm32"))] custody: Option<NativeAllocation>) -> Result<MaterializationJournal, MaterializationError<S::Error, B::Error>> {
         #[cfg(not(target_arch = "wasm32"))]
         let input = match custody {
             Some(custody) => Some(custody),
@@ -3448,7 +3366,8 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         if !self.backend.check_plan(&plan).map_err(MaterializationError::Backend)? {
             return Err(MaterializationError::IncompatibleJournal);
         }
-        let journal = MaterializationJournal {
+        let mut journal = MaterializationJournal {
+            #[cfg(not(target_arch = "wasm32"))] custody: None,
             version: JOURNAL_VERSION,
             revision: 1,
             plan,
@@ -3461,9 +3380,8 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
             applied: 0,
             restored: 0,
         };
-        let mut journal = OwnedMaterializationJournal {
-            journal, #[cfg(not(target_arch = "wasm32"))] custody: input,
-        };
+        #[cfg(not(target_arch = "wasm32"))]
+        { journal.custody = input; }
         self.backend.check_custody(&mut journal, #[cfg(not(target_arch = "wasm32"))] &mut []).map_err(MaterializationError::Backend)?;
         let (stored, mut journal) = self
             .store
@@ -3489,9 +3407,9 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
 
     async fn capture_preimages<E, F, Fut>(
         &self,
-        mut journal: OwnedMaterializationJournal,
+        mut journal: MaterializationJournal,
         before_effect: &mut F,
-    ) -> Result<OwnedMaterializationJournal, E>
+    ) -> Result<MaterializationJournal, E>
     where
         E: From<MaterializationError<S::Error, B::Error>>,
         F: FnMut(bool) -> Fut + Send,
@@ -3524,7 +3442,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         self.persist(journal).await.map_err(Into::into)
     }
 
-    async fn rollback<E, F, Fut>(&self, mut journal: OwnedMaterializationJournal, before_effect: &mut F) -> Result<OwnedMaterializationJournal, E>
+    async fn rollback<E, F, Fut>(&self, mut journal: MaterializationJournal, before_effect: &mut F) -> Result<MaterializationJournal, E>
     where
         E: From<MaterializationError<S::Error, B::Error>>,
         F: FnMut(bool) -> Fut + Send,
@@ -3600,7 +3518,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
     pub async fn load(
         &self,
         operation_id: OperationId,
-    ) -> Result<Option<OwnedMaterializationJournal>, MaterializationError<S::Error, B::Error>> {
+    ) -> Result<Option<MaterializationJournal>, MaterializationError<S::Error, B::Error>> {
         let mut journal = self
             .store
             .load(operation_id)
@@ -3667,8 +3585,6 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         let mut observations = Vec::new();
         if matches!(root, MaterializationRootObservation::Unverified | MaterializationRootObservation::Identical(_))
             && matches!(preparation, MaterializationPreparationObservation::Unverified | MaterializationPreparationObservation::Identical(_)) {
-            #[cfg(not(target_arch = "wasm32"))]
-            { custody[2] = self.backend.admit_observations(journal.preimages.len()).map_err(MaterializationError::Backend)?; }
             self.backend.reserve_observations(
                 &mut observations,
                 journal.preimages.len(),
@@ -3703,7 +3619,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
 
     async fn verify_effect_context(&self, journal: &MaterializationJournal) -> Result<(), MaterializationError<S::Error, B::Error>> {
         let current = self.load(journal.plan.operation_id).await?.ok_or(MaterializationError::IncompatibleJournal)?;
-        if current.journal != *journal { return Err(MaterializationError::PlanConflict); }
+        if current != *journal { return Err(MaterializationError::PlanConflict); }
         self.verify_allocation(journal).await
     }
 
@@ -3740,8 +3656,8 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
 
     async fn persist(
         &self,
-        mut journal: OwnedMaterializationJournal,
-    ) -> Result<OwnedMaterializationJournal, MaterializationError<S::Error, B::Error>> {
+        mut journal: MaterializationJournal,
+    ) -> Result<MaterializationJournal, MaterializationError<S::Error, B::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             if let Some(work) = self.backend.observed_work().map_err(MaterializationError::Backend)? {
                 journal.work = work;
@@ -3764,8 +3680,8 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
 }
 
 async fn compare_next_journal<S: MaterializationJournalStore, B: std::error::Error + 'static>(
-    store: &S, mut journal: OwnedMaterializationJournal,
-) -> Result<(bool, OwnedMaterializationJournal), MaterializationError<S::Error, B>> {
+    store: &S, mut journal: MaterializationJournal,
+) -> Result<(bool, MaterializationJournal), MaterializationError<S::Error, B>> {
     let expected = next_revision(&mut journal.revision);
     store.compare_and_swap(journal.plan.operation_id, expected, journal).await.map_err(MaterializationError::Store)
 }
@@ -3900,7 +3816,8 @@ fn plan_owned_bytes(plan: &MaterializationPlan) -> Result<u64, NativeTreeMateria
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn journal_owned_bytes(journal: &MaterializationJournal) -> Result<u64, NativeTreeMaterializationError> {
+/// Returns the owned capacity of a journal payload.
+pub fn journal_owned_bytes(journal: &MaterializationJournal) -> Result<u64, NativeTreeMaterializationError> {
     let mut bytes = plan_owned_bytes(&journal.plan)?.checked_add(owned_size(journal.preimages.capacity(), std::mem::size_of::<MaterializationPreimage>())?).ok_or(crate::WorkError::Overflow)?;
     for preimage in &journal.preimages {
         bytes = bytes.checked_add(owned_size(preimage.image.capacity(), 1)?).ok_or(crate::WorkError::Overflow)?;
@@ -4012,7 +3929,7 @@ fn native_absolute_string(path: &str, work: &NativeMaterializationWork) -> Resul
 
 #[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
 fn native_stage_options(options: &crate::MaterializeOptions, destination: &Path, expected: crate::NativeRootIdentity, work: &NativeMaterializationWork) -> Result<(crate::MaterializeOptions, NativeAllocation), NativeTreeMaterializationError> {
-    let (destination, custody) = work.copy_path(destination)?;
+    let (destination, custody) = work.path(destination, None)?;
     Ok((crate::MaterializeOptions {
         destination,
         expected_root_identity: Some(expected),
@@ -4066,9 +3983,8 @@ fn duplicate_native_preimage(preimage: &MaterializationPreimage, work: &NativeMa
 
 /// Duplicates the actual logical payload while retaining its original ledger.
 #[cfg(not(target_arch = "wasm32"))]
-fn duplicate_native_journal(journal: &MaterializationJournal, work: &NativeMaterializationWork) -> Result<OwnedMaterializationJournal, NativeTreeMaterializationError> {
-    let mut output = OwnedMaterializationJournal {
-        journal: MaterializationJournal {
+fn duplicate_native_journal(journal: &MaterializationJournal, work: &NativeMaterializationWork) -> Result<MaterializationJournal, NativeTreeMaterializationError> {
+    let mut output = MaterializationJournal {
             version: journal.version,
             revision: journal.revision,
             plan: MaterializationPlan {
@@ -4087,14 +4003,13 @@ fn duplicate_native_journal(journal: &MaterializationJournal, work: &NativeMater
             phase: journal.phase,
             applied: journal.applied,
             restored: journal.restored,
-        },
         custody: Some(work.claim(0)?),
     };
     let custody = output.custody.as_mut().expect("native journal custody");
     if let (
         MaterializationIntent::NativePreparation { selection, original },
         MaterializationIntent::NativePreparation { selection: copied, original: copied_original },
-    ) = (&journal.plan.intent, &mut output.journal.plan.intent) {
+    ) = (&journal.plan.intent, &mut output.plan.intent) {
         *copied_original = duplicate_native_bytes(original, work, custody)?;
         for selected in selection {
             let provider_identity = duplicate_native_bytes(&selected.provider_identity, work, custody)?;
@@ -4111,7 +4026,7 @@ fn duplicate_native_journal(journal: &MaterializationJournal, work: &NativeMater
             drop(edit);
             return Err(error);
         }
-        native_vec_push(&mut output.journal.plan.edits, edit, custody)?;
+        native_vec_push(&mut output.plan.edits, edit, custody)?;
     }
     for preimage in &journal.preimages {
         let (preimage, mut allocation) = duplicate_native_preimage(preimage, work)?;
@@ -4119,17 +4034,24 @@ fn duplicate_native_journal(journal: &MaterializationJournal, work: &NativeMater
             drop(preimage);
             return Err(error);
         }
-        native_vec_push(&mut output.journal.preimages, preimage, custody)?;
+        native_vec_push(&mut output.preimages, preimage, custody)?;
     }
     Ok(output)
 }
 
-fn duplicate_owned_journal(journal: &OwnedMaterializationJournal) -> Result<OwnedMaterializationJournal, MemoryMaterializationJournalStoreError> {
+pub(crate) fn duplicate_journal(journal: &MaterializationJournal) -> Result<MaterializationJournal, MemoryMaterializationJournalStoreError> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(custody) = &journal.custody {
-        return duplicate_native_journal(&journal.journal, custody.work()).map_err(MemoryMaterializationJournalStoreError::NativeWork);
+        return duplicate_native_journal(journal, custody.work()).map_err(MemoryMaterializationJournalStoreError::NativeWork);
     }
-    Ok(OwnedMaterializationJournal::ordinary(journal.journal.clone()))
+    Ok(MaterializationJournal {
+        version: journal.version, revision: journal.revision, plan: journal.plan.clone(),
+        root_identity: journal.root_identity, preparation_identity: journal.preparation_identity,
+        preparation_progress: journal.preparation_progress, work: journal.work,
+        preimages: journal.preimages.clone(), phase: journal.phase,
+        applied: journal.applied, restored: journal.restored,
+        #[cfg(not(target_arch = "wasm32"))] custody: None,
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -4141,10 +4063,10 @@ impl<S: MaterializationJournalStore> JournaledMaterializer<S, NativeTreeMaterial
         generation: &crate::Generation<A, O>,
         relative_selections: &[String],
         options: &crate::MaterializeOptions,
-        journal: OwnedMaterializationJournal,
+        journal: MaterializationJournal,
         physical_work: &crate::native_mount::NativeMountMeterWork,
         before_effect: &mut F,
-    ) -> Result<OwnedMaterializationJournal, E>
+    ) -> Result<MaterializationJournal, E>
     where
         A: crate::AsyncAuthorityStore,
         O: crate::AsyncObjectStore,
@@ -4226,8 +4148,8 @@ impl<S: MaterializationJournalStore> JournaledMaterializer<S, NativeTreeMaterial
 
     #[cfg(feature = "native-mount")]
     async fn reset_stage<E, F, Fut>(
-        &self, journal: OwnedMaterializationJournal, relative: &str, before_effect: &mut F,
-    ) -> Result<(OwnedMaterializationJournal, crate::NativeRootIdentity), E>
+        &self, journal: MaterializationJournal, relative: &str, before_effect: &mut F,
+    ) -> Result<(MaterializationJournal, crate::NativeRootIdentity), E>
     where
         E: From<MaterializationError<S::Error, NativeTreeMaterializationError>>
             + From<NativeStageUncertainty<E>>,
@@ -4286,10 +4208,10 @@ struct NativeEntry<'a> {
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeTreeMaterializationBackend {
     async fn prepare_allocations<S, F, Fut, E>(
-        store: &S, mut journal: OwnedMaterializationJournal, root: &Path,
+        store: &S, mut journal: MaterializationJournal, root: &Path,
         operation_directory: &Path, work: &NativeMaterializationWork,
         before_effect: &mut F,
-    ) -> Result<OwnedMaterializationJournal, E>
+    ) -> Result<MaterializationJournal, E>
     where
         S: MaterializationJournalStore,
         F: FnMut() -> Fut + Send,
@@ -4322,8 +4244,8 @@ impl NativeTreeMaterializationBackend {
             if !stored { return Err(MaterializationError::<S::Error, NativeTreeMaterializationError>::Contended.into()); }
             let current = store.load(journal.plan.operation_id).await.map_err(store_error)?.ok_or_else(incompatible)?;
             if current != journal { return Err(MaterializationError::<S::Error, NativeTreeMaterializationError>::PlanConflict.into()); }
-            let (root_copy, root_custody) = work.copy_path(root).map_err(backend_error)?;
-            let (operation_copy, operation_custody) = work.copy_path(operation_directory).map_err(backend_error)?;
+            let (root_copy, root_custody) = work.path(root, None).map_err(backend_error)?;
+            let (operation_copy, operation_custody) = work.path(operation_directory, None).map_err(backend_error)?;
             let actual = acyclic_native_runtime::run_blocking_io({
                 let work = work.clone();
                 move || {
@@ -4428,10 +4350,10 @@ impl NativeTreeMaterializationBackend {
         let nested = native_directory_contains(&root_directory_cap, operation_root.identity(), &work)?
             || native_directory_contains(&operation_directory_cap, root_identity, &work)?;
         if nested { return Err(NativeTreeMaterializationError::InvalidLayout); }
-        let mut target_owned = work.join_path(&operation_directory, Path::new("target"))?;
+        let mut target_owned = work.path(&operation_directory, Some(Path::new("target")))?;
         custody.absorb(&mut target_owned.1)?;
         let target = target_owned.0;
-        let mut backup_owned = work.join_path(&operation_directory, Path::new("backup"))?;
+        let mut backup_owned = work.path(&operation_directory, Some(Path::new("backup")))?;
         custody.absorb(&mut backup_owned.1)?;
         let backup = backup_owned.0;
         let operation_identity = operation_root.identity().to_bytes();
@@ -4496,7 +4418,7 @@ impl NativeTreeMaterializationBackend {
         if !path.is_empty() && !crate::path::is_canonical_relative_with_step(path, || self.work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() }))? {
             return Err(native_diagnostic(&self.work, path, NativeTreeMaterializationError::InvalidPath)?);
         }
-        self.work.join_path(self.target.as_path(), Path::new(path))
+        self.work.path(self.target.as_path(), Some(Path::new(path)))
     }
 
     /// Checks each actual held initial allocation before staging can write.
@@ -4828,7 +4750,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         self.work.retain_owned(plan_owned_bytes(plan)?).map(Some)
     }
 
-    fn check_custody(&self, journal: &mut OwnedMaterializationJournal, incoming: &mut [Option<NativeAllocation>]) -> Result<(), Self::Error> {
+    fn check_custody(&self, journal: &mut MaterializationJournal, incoming: &mut [Option<NativeAllocation>]) -> Result<(), Self::Error> {
         let bytes = journal_owned_bytes(journal)?;
         let custody = journal.custody.as_mut().ok_or(NativeTreeMaterializationError::MissingCustody)?;
         if !self.work.shares_ledger(custody.work()) || custody.bytes() < bytes {
@@ -4851,22 +4773,18 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         count: usize,
         allocation: &mut Option<NativeAllocation>,
     ) -> Result<(), Self::Error> {
-        let allocation = allocation.as_mut().ok_or(NativeTreeMaterializationError::MissingCustody)?;
+        let bytes = owned_size(count, std::mem::size_of::<MaterializationObservation>())?;
+        *allocation = Some(self.work.claim_allocation(bytes, u64::from(count != 0), crate::WorkCounters::UNCHARGED)?);
+        let allocation = allocation.as_mut().expect("admitted observations");
         observations.try_reserve_exact(count).map_err(NativeTreeMaterializationError::AllocationFailed)?;
         allocation.reconcile_capacity(owned_size(observations.capacity(), std::mem::size_of::<MaterializationObservation>())?)
     }
 
-    fn admit_observations(&self, count: usize) -> Result<Option<NativeAllocation>, Self::Error> {
-        let bytes = owned_size(count, std::mem::size_of::<MaterializationObservation>())?;
-        if count == 0 { self.work.retain_owned(bytes).map(Some) }
-        else { self.work.claim(bytes).map(Some) }
-    }
-
-    fn append_preimage(&self, packet: &mut OwnedMaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Self::Error> {
+    fn append_preimage(&self, packet: &mut MaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Self::Error> {
         let mut image_custody = preimage.custody.ok_or(NativeTreeMaterializationError::MissingCustody)?;
         let preimage = preimage.preimage;
-        let OwnedMaterializationJournal { journal, custody } = packet;
-        let custody = custody.as_mut().ok_or(NativeTreeMaterializationError::MissingCustody)?;
+        let journal = packet;
+        let custody = journal.custody.as_mut().ok_or(NativeTreeMaterializationError::MissingCustody)?;
         if !self.work.shares_ledger(custody.work()) || !custody.shares_ledger(&image_custody) {
             return Err(NativeTreeMaterializationError::MissingCustody);
         }
@@ -4934,9 +4852,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 let before = native_metadata_fingerprint(&metadata, None, &backend.work)?;
                 let after = native_metadata_fingerprint(&metadata, Some(&desired), &backend.work)?;
                 let (image, custody) = encode_native_witness(Some(before), Some(after), Some(native_metadata_from_stat(&metadata)), &backend.work)?;
-                return Ok(OwnedMaterializationPreimage {
-                    preimage: MaterializationPreimage { image }, custody: Some(custody),
-                });
+                return Ok(OwnedMaterializationPreimage { preimage: MaterializationPreimage { image }, custody: Some(custody) });
             }
             let before = backend.fingerprint_for_edit(&live, edit)?;
             let after = match edit {
@@ -4951,9 +4867,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 }
             };
             let (image, custody) = encode_native_witness(before, after, None, &backend.work)?;
-            Ok(OwnedMaterializationPreimage {
-                preimage: MaterializationPreimage { image }, custody: Some(custody),
-            })
+            Ok(OwnedMaterializationPreimage { preimage: MaterializationPreimage { image }, custody: Some(custody) })
         })
         .await?
     }
@@ -5188,80 +5102,44 @@ fn remove_native_walk(parent: &cap_std::fs::Dir, name: &NativeWalkNameRef, work:
         return remove_native_walk_leaf(parent, name, false, work);
     }
     let root = native_remove_frame(parent, name, &metadata, work)?;
-    let mut walker = NativeRemoveWalker::new(root, work)?;
-    while let Some(step) = walker.next(work)? {
-        walker.execute(parent, name, step, work)?;
-    }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-enum NativeRemoveStep {
-    Leaf { name: NativeWalkName, allocation: NativeAllocation },
-    Directory(NativeRemoveFrame),
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct NativeRemoveWalker {
-    frames: Vec<NativeRemoveFrame>,
-    storage: NativeAllocation,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeRemoveWalker {
-    fn new(root: NativeRemoveFrame, work: &NativeMaterializationWork) -> Result<Self, NativeTreeMaterializationError> {
-        let storage = work.claim(std::mem::size_of::<NativeRemoveFrame>() as u64)?;
-        let mut frames = Vec::new();
-        frames.try_reserve_exact(1).map_err(NativeTreeMaterializationError::AllocationFailed)?;
-        frames.push(root);
-        Ok(Self { frames, storage })
-    }
-
-    fn next(&mut self, work: &NativeMaterializationWork) -> Result<Option<NativeRemoveStep>, NativeTreeMaterializationError> {
-        while let Some(frame) = self.frames.last_mut() {
-            if let Some((child, allocation)) = next_native_walk_name(&mut frame.reader, work)? {
-                let metadata = stat_native_walk_name(&frame.directory, &child, work)?;
-                if metadata.is_dir() && !metadata.file_type().is_symlink() {
-                    let mut next = native_remove_frame(&frame.directory, &child, &metadata, work)?;
-                    next.name = Some((child, allocation));
-                    if self.frames.len() == self.frames.capacity() {
-                        self.storage.grow(std::mem::size_of::<NativeRemoveFrame>() as u64)?;
-                        self.frames.try_reserve_exact(1).map_err(NativeTreeMaterializationError::AllocationFailed)?;
-                    }
-                    self.frames.push(next);
-                } else {
-                    return Ok(Some(NativeRemoveStep::Leaf { name: child, allocation }));
+    let mut storage = work.claim(std::mem::size_of::<NativeRemoveFrame>() as u64)?;
+    let mut frames = Vec::new();
+    frames.try_reserve_exact(1).map_err(NativeTreeMaterializationError::AllocationFailed)?;
+    frames.push(root);
+    while let Some(frame) = frames.last_mut() {
+        if let Some((child, allocation)) = next_native_walk_name(&mut frame.reader, work)? {
+            let metadata = stat_native_walk_name(&frame.directory, &child, work)?;
+            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                let mut next = native_remove_frame(&frame.directory, &child, &metadata, work)?;
+                next.name = Some((child, allocation));
+                if frames.len() == frames.capacity() {
+                    storage.grow(std::mem::size_of::<NativeRemoveFrame>() as u64)?;
+                    frames.try_reserve_exact(1).map_err(NativeTreeMaterializationError::AllocationFailed)?;
                 }
+                frames.push(next);
             } else {
-                return Ok(self.frames.pop().map(NativeRemoveStep::Directory));
-            }
-        }
-        Ok(None)
-    }
-
-    fn execute(&self, parent: &cap_std::fs::Dir, root_name: &NativeWalkNameRef, step: NativeRemoveStep, work: &NativeMaterializationWork) -> Result<(), NativeTreeMaterializationError> {
-        let parent = self.frames.last().map(|frame| &frame.directory).unwrap_or(parent);
-        match step {
-            NativeRemoveStep::Leaf { name, allocation, .. } => {
-                remove_native_walk_leaf(parent, &name, false, work)?;
+                remove_native_walk_leaf(&frame.directory, &child, false, work)?;
+                drop(child);
                 drop(allocation);
             }
-            NativeRemoveStep::Directory(frame) => {
-                crate::native_host::sync_directory_held_measured(&frame.directory, work)?;
-                let NativeRemoveFrame { directory, reader, cursor, name, .. } = frame;
-                drop(reader);
-                drop(cursor);
-                drop(directory);
-                if let Some((name, allocation)) = name {
-                    remove_native_walk_leaf(parent, &name, true, work)?;
-                    drop(allocation);
-                } else {
-                    remove_native_walk_leaf(parent, root_name, true, work)?;
-                }
+        } else {
+            let frame = frames.pop().expect("current removal frame");
+            crate::native_host::sync_directory_held_measured(&frame.directory, work)?;
+            let NativeRemoveFrame { directory, reader, cursor, name: child } = frame;
+            drop(reader);
+            drop(cursor);
+            drop(directory);
+            let parent = frames.last().map_or(parent, |frame| &frame.directory);
+            if let Some((child, allocation)) = child {
+                remove_native_walk_leaf(parent, &child, true, work)?;
+                drop(child);
+                drop(allocation);
+            } else {
+                remove_native_walk_leaf(parent, name, true, work)?;
             }
         }
-        Ok(())
     }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -5329,7 +5207,7 @@ struct NativeImageWriter<'a> {
 #[cfg(not(target_arch = "wasm32"))]
 impl<'a> NativeImageWriter<'a> {
     fn new(work: &'a NativeMaterializationWork, encoded: bool) -> Result<Self, NativeTreeMaterializationError> {
-        Ok(Self { image: Vec::new(), work, encoded, failure: None, allocation: work.claim_allocation(0, 0)? })
+        Ok(Self { image: Vec::new(), work, encoded, failure: None, allocation: work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)? })
     }
 
     fn append(&mut self, bytes: &[u8]) -> Result<usize, NativeTreeMaterializationError> {
@@ -6278,7 +6156,7 @@ pub async fn prepare_native_generation_transition<A: crate::AsyncAuthorityStore,
     to_generation: &crate::Generation<A, O>,
     state: &crate::LocalCoreStateStore,
     publication: NativeWorkspacePublication<'_>,
-)-> Result<crate::OperationReceipt<OwnedMaterializationJournal>, (NativeWorkspacePublicationError, crate::WorkCounters)> {
+)-> Result<crate::OperationReceipt<MaterializationJournal>, (NativeWorkspacePublicationError, crate::WorkCounters)> {
     let work = NativeMaterializationWork::new(publication.budget, publication.cancellation)
         .map_err(|(error, work)| (NativeWorkspacePublicationError::Native(error), work))?;
     let mut before_effect = || std::future::ready(Ok::<(), NativeWorkspacePublicationError>(()));
@@ -6296,7 +6174,7 @@ pub async fn load_native_materialization_journal(
     operation_id: OperationId,
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
-)-> Result<crate::OperationReceipt<Option<OwnedMaterializationJournal>>, (NativeWorkspacePublicationError, crate::WorkCounters)> {
+)-> Result<crate::OperationReceipt<Option<MaterializationJournal>>, (NativeWorkspacePublicationError, crate::WorkCounters)> {
     let work = NativeMaterializationWork::new(budget, cancellation)
         .map_err(|(error, work)| (NativeWorkspacePublicationError::Native(error), work))?;
     let result = async {
@@ -6323,7 +6201,7 @@ pub async fn publish_native_generation_transition<A, O, F, Fut>(
     publication: NativeWorkspacePublication<'_>,
     work: NativeMaterializationWork,
     mut before_effect: F,
-)-> Result<crate::OperationReceipt<OwnedMaterializationJournal>, (NativeWorkspacePublicationError, crate::WorkCounters)>
+)-> Result<crate::OperationReceipt<MaterializationJournal>, (NativeWorkspacePublicationError, crate::WorkCounters)>
 where
     A: crate::AsyncAuthorityStore,
     O: crate::AsyncObjectStore,
@@ -6346,7 +6224,7 @@ async fn publish_native_transition_inner<A: crate::AsyncAuthorityStore, O: crate
     work: NativeMaterializationWork,
     prepare_only: bool,
     before_effect: &mut F,
-) -> Result<OwnedMaterializationJournal, NativeWorkspacePublicationError>
+) -> Result<MaterializationJournal, NativeWorkspacePublicationError>
 where
     F: FnMut() -> Fut + Send,
     Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
@@ -6371,8 +6249,8 @@ where
     if from_generation.id() != from || to_generation.id() != to {
         return Err(NativeWorkspacePublicationError::MismatchedJournal);
     }
-    let mut root_owned = work.copy_path(root)?;
-    let mut operation_owned = work.copy_path(operation_directory)?;
+    let mut root_owned = work.path(root, None)?;
+    let mut operation_owned = work.path(operation_directory, None)?;
     root_owned.1.absorb(&mut operation_owned.1)?;
     let path_custody = root_owned.1;
     let root = root_owned.0;
@@ -6537,14 +6415,15 @@ where
     if !native_check_plan(&plan, &work)? { return Err(NativeWorkspacePublicationError::MismatchedJournal); }
     work.set_original_work(crate::WorkCounters::UNCHARGED);
     let parent = crate::native_host::HostRoot::open_materialization_measured(operation_directory.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?, &work)?;
-    let journal = MaterializationJournal {
+    let mut journal = MaterializationJournal {
+        #[cfg(not(target_arch = "wasm32"))] custody: None,
         version: JOURNAL_VERSION, revision: 0, plan,
         root_identity: Some(source_root_identity.to_bytes()), preparation_identity: None,
         preparation_progress: Some(MaterializationPreparationProgress { parent: parent.identity().to_bytes(), operation: None, target: None, backup: None, pending: None }),
         work: work.journal_work()?, preimages: Vec::new(),
         phase: MaterializationPhase::Preparing, applied: 0, restored: 0,
     };
-    let journal = OwnedMaterializationJournal { journal, custody: Some(plan_custody) };
+    journal.custody = Some(plan_custody);
     drop(parent);
     let (stored, original) = compare_next_journal::<_, NativeTreeMaterializationError>(&store, journal).await?;
     if !stored { return Err(NativeWorkspacePublicationError::MismatchedJournal); }
@@ -6949,26 +6828,25 @@ impl From<(crate::WorkspaceError, Option<NativeAllocation>)> for NativeWorkspace
 /// Process-local materialization journal adapter.
 #[derive(Default)]
 pub struct MemoryMaterializationJournalStore {
-    journals: MemoryRecords<OperationId, OwnedMaterializationJournal>,
+    journals: std::sync::Mutex<std::collections::BTreeMap<OperationId, MaterializationJournal>>,
 }
 
 /// A pre-funded completion in the original process-local journal adapter.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct MemoryMaterializationActionCompletion<'a> {
     store: &'a MemoryMaterializationJournalStore,
-    journal: OwnedMaterializationJournal,
-    replacement: OwnedMaterializationJournal,
-    work: Option<NativeMaterializationWork>,
-    expected_revision: u64,
+    journal: MaterializationJournal,
+    replacement: MaterializationJournal,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl MaterializationActionCompletion for MemoryMaterializationActionCompletion<'_> {
     type Error = MemoryMaterializationJournalStoreError;
 
-    async fn complete(self) -> Result<OwnedMaterializationJournal, Self::Error> {
-        let Self { store, mut journal, mut replacement, work, expected_revision } = self;
-        if let Some(work) = &work {
+    async fn complete(self) -> Result<MaterializationJournal, Self::Error> {
+        let Self { store, mut journal, mut replacement } = self;
+        let expected_revision = journal.revision - 1;
+        if let Some(work) = replacement.custody.as_ref().map(NativeAllocation::work) {
             let completed = match work.journal_work() {
                 Ok(completed) => completed,
                 Err(error) => return Err(Self::Error::ActionNativeWork(error, journal)),
@@ -6977,7 +6855,7 @@ impl MaterializationActionCompletion for MemoryMaterializationActionCompletion<'
             replacement.work = completed;
         }
         let retired = {
-            let mut journals = match store.journals.0.lock() {
+            let mut journals = match store.journals.lock() {
                 Ok(journals) => journals,
                 Err(_) => return Err(Self::Error::ActionUnavailable(journal)),
             };
@@ -6998,10 +6876,6 @@ impl MaterializationActionCompletion for MemoryMaterializationActionCompletion<'
     }
 }
 
-impl crate::record_store::Revisioned for OwnedMaterializationJournal {
-    fn revision(&self) -> u64 { self.journal.revision }
-}
-
 impl MaterializationJournalStore for MemoryMaterializationJournalStore {
     type Error = MemoryMaterializationJournalStoreError;
 
@@ -7011,10 +6885,10 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
     #[cfg(not(target_arch = "wasm32"))]
     async fn prepare_action<'a>(
         &'a self,
-        mut journal: OwnedMaterializationJournal,
+        mut journal: MaterializationJournal,
     ) -> Result<Self::ActionCompletion<'a>, Self::Error> {
         if let Some(custody) = &journal.custody {
-            let bytes = match journal_owned_bytes(&journal.journal) {
+            let bytes = match journal_owned_bytes(&journal) {
                 Ok(bytes) => bytes,
                 Err(error) => return Err(Self::Error::ActionNativeWork(error, journal)),
             };
@@ -7025,7 +6899,7 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
             }
         }
         let work = {
-            let journals = match self.journals.0.lock() {
+            let journals = match self.journals.lock() {
                 Ok(journals) => journals,
                 Err(_) => return Err(Self::Error::ActionUnavailable(journal)),
             };
@@ -7033,7 +6907,7 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
                 drop(journals);
                 return Err(Self::Error::ActionConflict(journal));
             };
-            if stored.journal != journal.journal {
+            if *stored != journal {
                 drop(journals);
                 return Err(Self::Error::ActionConflict(journal));
             }
@@ -7045,7 +6919,7 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
                             NativeTreeMaterializationError::InvalidLayout, journal,
                         ));
                     }
-                    let bytes = match journal_owned_bytes(&stored.journal) {
+                    let bytes = match journal_owned_bytes(stored) {
                         Ok(bytes) => bytes,
                         Err(error) => {
                             drop(journals);
@@ -7078,12 +6952,12 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
                 if let Err(error) = work.admit(crate::WorkCounters::UNCHARGED) {
                     return Err(Self::Error::ActionNativeWork(error, journal));
                 }
-                match duplicate_native_journal(&journal.journal, work) {
+                match duplicate_native_journal(&journal, work) {
                     Ok(replacement) => replacement,
                     Err(error) => return Err(Self::Error::ActionNativeWork(error, journal)),
                 }
             }
-            None => OwnedMaterializationJournal::ordinary(journal.journal.clone()),
+            None => duplicate_journal(&journal)?,
         };
         if let Some(work) = &work
             && let Err(error) = work.admit(crate::WorkCounters::UNCHARGED) {
@@ -7092,28 +6966,28 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
         journal.revision = next_revision;
         replacement.revision = next_revision;
         Ok(MemoryMaterializationActionCompletion {
-            store: self, journal, replacement, work, expected_revision,
+            store: self, journal, replacement,
         })
     }
 
     async fn load(
         &self,
         operation_id: OperationId,
-    ) -> Result<Option<OwnedMaterializationJournal>, Self::Error> {
-        let journals = self.journals.0.lock().map_err(|_| MemoryMaterializationJournalStoreError::Unavailable)?;
-        journals.get(&operation_id).map(duplicate_owned_journal).transpose()
+    ) -> Result<Option<MaterializationJournal>, Self::Error> {
+        let journals = self.journals.lock().map_err(|_| MemoryMaterializationJournalStoreError::Unavailable)?;
+        journals.get(&operation_id).map(duplicate_journal).transpose()
     }
 
     async fn compare_and_swap(
         &self,
         operation_id: OperationId,
         expected_revision: u64,
-        replacement: OwnedMaterializationJournal,
-    ) -> Result<(bool, OwnedMaterializationJournal), Self::Error> {
-        let mut journals = self.journals.0.lock().map_err(|_| MemoryMaterializationJournalStoreError::Unavailable)?;
+        replacement: MaterializationJournal,
+    ) -> Result<(bool, MaterializationJournal), Self::Error> {
+        let mut journals = self.journals.lock().map_err(|_| MemoryMaterializationJournalStoreError::Unavailable)?;
         let stored = crate::record_store::stored_revision(&journals, &operation_id) == expected_revision;
         if stored {
-            let copied = duplicate_owned_journal(&replacement)?;
+            let copied = duplicate_journal(&replacement)?;
             journals.insert(operation_id, copied);
         }
         Ok((stored, replacement))
@@ -7133,15 +7007,15 @@ pub enum MemoryMaterializationJournalStoreError {
     /// The original journal changed before its admitted completion was stored.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("materialization memory action completion conflicted")]
-    ActionConflict(OwnedMaterializationJournal),
+    ActionConflict(MaterializationJournal),
     /// An admitted action could not access its store; its packet stays owned.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("materialization memory action completion store is unavailable")]
-    ActionUnavailable(OwnedMaterializationJournal),
+    ActionUnavailable(MaterializationJournal),
     /// Original preparation or completion work failed with its journal intact.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("materialization memory action completion native work failed: {0}")]
-    ActionNativeWork(#[source] NativeTreeMaterializationError, OwnedMaterializationJournal),
+    ActionNativeWork(#[source] NativeTreeMaterializationError, MaterializationJournal),
 }
 
 #[cfg(test)]
@@ -7172,7 +7046,7 @@ mod tests {
     impl MaterializationBackend for Backend {
         type Error = BackendError;
 
-        fn append_preimage(&self, journal: &mut OwnedMaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Self::Error> {
+        fn append_preimage(&self, journal: &mut MaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Self::Error> {
             journal.preimages.push(preimage.preimage);
             Ok(())
         }
@@ -7214,6 +7088,7 @@ mod tests {
         for version in [0, 1, 3, u32::MAX] {
             let operation_id = OperationId::new();
             let journal = MaterializationJournal {
+                #[cfg(not(target_arch = "wasm32"))] custody: None,
                 version,
                 revision: 1,
                 root_identity: None,
@@ -7232,7 +7107,7 @@ mod tests {
             };
             let store = MemoryMaterializationJournalStore::default();
             store
-                .compare_and_swap(operation_id, 0, OwnedMaterializationJournal::ordinary(journal.clone()))
+                .compare_and_swap(operation_id, 0, duplicate_journal(&journal).expect("ordinary journal copy"))
                 .await
                 .expect("seed obsolete journal");
             let materializer = JournaledMaterializer::new(store, Backend::default());
@@ -7248,7 +7123,7 @@ mod tests {
                     .store
                     .load(operation_id)
                     .await
-                    .expect("retained journal").map(|owned| owned.journal),
+                    .expect("retained journal"),
                 Some(journal)
             );
         }
@@ -7266,7 +7141,8 @@ mod tests {
             .compare_and_swap(
                 operation_id,
                 0,
-                OwnedMaterializationJournal::ordinary(MaterializationJournal {
+                MaterializationJournal {
+        #[cfg(not(target_arch = "wasm32"))] custody: None,
                     version: JOURNAL_VERSION,
                     revision: 1,
                     root_identity: None,
@@ -7278,7 +7154,7 @@ mod tests {
                     phase: MaterializationPhase::RollingBack,
                     applied: 1,
                     restored: 1,
-                }),
+                },
             )
             .await
             .expect("store journal");
@@ -7361,100 +7237,6 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
-    async fn native_tree_backend_pauses_before_overwriting_an_external_mutation() {
-        let temporary = tempfile::tempdir().expect("temporary root");
-        let root = temporary.path().join("checkout");
-        let operation = temporary.path().join("operation");
-        let target = operation.join("target");
-        std::fs::create_dir_all(&root).expect("root");
-        std::fs::create_dir_all(&target).expect("target");
-        std::fs::write(root.join("file.txt"), b"before").expect("before");
-        std::fs::write(target.join("file.txt"), b"after").expect("after");
-        let backend =
-            NativeTreeMaterializationBackend::new(&root, &operation, None, unbounded_native_work(), true).expect("native backend");
-        let plan = backend
-            .plan_paths(
-                OperationId::new(),
-                GenerationId::new(Digest::from_bytes([1; 32])),
-                GenerationId::new(Digest::from_bytes([2; 32])),
-                ["file.txt".to_owned()],
-            )
-            .expect("plan");
-        let preimage = backend.capture(&plan.edits[0]).await.expect("capture");
-        let store = MemoryMaterializationJournalStore::default();
-        store
-            .compare_and_swap(
-                plan.operation_id,
-                0,
-                captured_fixture_journal(MaterializationJournal {
-                    version: JOURNAL_VERSION,
-                    revision: 1,
-                    root_identity: backend.allocation_identity(),
-                    preparation_identity: backend.preparation_identity(),
-                    preparation_progress: None,
-                    work: crate::WorkCounters::default(),
-                    plan: plan.clone(),
-                    preimages: Vec::new(),
-                    phase: MaterializationPhase::Prepared,
-                    applied: 0,
-                    restored: 0,
-                }, preimage, &backend),
-            )
-            .await
-            .expect("journal");
-        std::fs::write(root.join("file.txt"), b"external").expect("external mutation");
-
-        assert!(matches!(
-            JournaledMaterializer::new(store, backend).apply(plan, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(()))).await,
-            Err(MaterializationError::ExternalMutation)
-        ));
-        assert_eq!(
-            std::fs::read(root.join("file.txt")).expect("external remains"),
-            b"external"
-        );
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
-    async fn native_tree_backend_rejects_tampered_or_missing_staged_targets() {
-        for replacement in [Some(b"tampered".as_slice()), None] {
-            let temporary = tempfile::tempdir().expect("temporary root");
-            let root = temporary.path().join("checkout");
-            let operation = temporary.path().join("operation");
-            let target = operation.join("target");
-            std::fs::create_dir_all(&root).expect("root");
-            std::fs::create_dir_all(&target).expect("target");
-            std::fs::write(root.join("file.txt"), b"before").expect("before");
-            std::fs::write(target.join("file.txt"), b"after").expect("after");
-            let backend =
-                NativeTreeMaterializationBackend::new(&root, &operation, None, unbounded_native_work(), true).expect("native backend");
-            let plan = backend
-                .plan_paths(
-                    OperationId::new(),
-                    GenerationId::new(Digest::from_bytes([1; 32])),
-                    GenerationId::new(Digest::from_bytes([2; 32])),
-                    ["file.txt".to_owned()],
-                )
-                .expect("plan");
-            let edit = plan.edits.first().expect("install edit");
-            let preimage = backend.capture(edit).await.expect("capture");
-            match replacement {
-                Some(bytes) => std::fs::write(target.join("file.txt"), bytes).expect("tamper"),
-                None => std::fs::remove_file(target.join("file.txt")).expect("delete target"),
-            }
-            assert_eq!(
-                backend.observe(edit, &preimage.preimage).await.expect("observe"),
-                MaterializationObservation::Diverged
-            );
-            assert_eq!(
-                std::fs::read(root.join("file.txt")).expect("live remains"),
-                b"before"
-            );
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
     async fn native_tree_backend_rejects_missing_staged_target_during_capture() {
         let temporary = tempfile::tempdir().expect("temporary root");
         let root = temporary.path().join("checkout");
@@ -7490,31 +7272,6 @@ mod tests {
             std::fs::read(root.join("file.txt")).expect("live remains"),
             b"before"
         );
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
-    async fn refused_observation_diagnostic_preserves_original_native_cause_and_guard() {
-        let temporary = tempfile::tempdir().expect("actual native operation");
-        let root = temporary.path().join("checkout");
-        let operation = temporary.path().join("operation");
-        std::fs::create_dir_all(&root).expect("root");
-        std::fs::create_dir_all(operation.join("target")).expect("target");
-        std::fs::write(root.join("file.txt"), b"before").expect("original user file");
-        let cancellation = crate::CancellationToken::new();
-        let budget = finite_native_budget();
-        let work = NativeMaterializationWork::new(budget, &cancellation).expect("original finite meter");
-        let backend = NativeTreeMaterializationBackend::new(root.clone(), operation, None, work.clone(), true).expect("held native backend");
-        let edit = MaterializationEdit::Install { path: "file.txt".to_owned(), image: Vec::new() };
-        let error = backend.capture(&edit).await.expect_err("real missing staged target");
-        let live = work.live_allocation_bytes();
-        cancellation.cancel();
-        let error = backend.describe_observation_error(error).expect_err("diagnostic formatting refused after cancellation");
-        assert!(matches!(&error, NativeTreeMaterializationError::MissingTarget(path, Some(allocation))
-            if path == "file.txt" && allocation.work().shares_ledger(&work)));
-        assert_eq!(work.live_allocation_bytes(), live, "failed formatter retires only its own scratch, not the original cause");
-        work.receipt().verify(budget).expect("original failure and formatter prefix remain available");
-        assert_eq!(std::fs::read(root.join("file.txt")).expect("user file remains"), b"before");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -7639,72 +7396,6 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
-    async fn native_tree_backend_journals_directory_metadata_without_replacing_children() {
-        let temporary = tempfile::tempdir().expect("temporary root");
-        let root = temporary.path().join("checkout");
-        let operation = temporary.path().join("operation");
-        std::fs::create_dir_all(root.join("directory")).expect("directory");
-        std::fs::create_dir_all(operation.join("target")).expect("target");
-        std::fs::write(root.join("directory/child.txt"), b"child").expect("child");
-        let before = native_metadata(
-            &std::fs::symlink_metadata(root.join("directory")).expect("before metadata"),
-        );
-        let mut desired = before.clone();
-        desired.readonly = !before.readonly;
-        #[cfg(windows)]
-        {
-            const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-            desired.windows_attributes = before
-                .windows_attributes
-                .map(|attributes| attributes ^ FILE_ATTRIBUTE_HIDDEN);
-            desired.readonly = desired
-                .windows_attributes
-                .is_some_and(|attributes| attributes & 1 != 0);
-        }
-        #[cfg(unix)]
-        {
-            desired.posix_mode = before.posix_mode.map(|mode| mode ^ 0o200);
-        }
-        let backend =
-            NativeTreeMaterializationBackend::new(&root, &operation, None, unbounded_native_work(), true).expect("native backend");
-        let operation_id = OperationId::new();
-        let plan = test_plan(operation_id, vec![MaterializationEdit::SetMetadata {
-                path: "directory".to_owned(),
-                image: native_metadata_bytes(&desired).to_vec(),
-            }]
-        );
-        let materializer =
-            JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), backend);
-        materializer.apply(plan, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(()))).await.expect("apply metadata");
-        assert_eq!(
-            std::fs::read(root.join("directory/child.txt")).expect("child remains"),
-            b"child"
-        );
-        let applied = native_metadata(
-            &std::fs::symlink_metadata(root.join("directory")).expect("applied metadata"),
-        );
-        assert_eq!(applied.readonly, desired.readonly);
-        #[cfg(windows)]
-        assert_eq!(applied.windows_attributes, desired.windows_attributes);
-        #[cfg(unix)]
-        assert_eq!(applied.posix_mode, desired.posix_mode);
-
-        materializer
-            .recover(operation_id, MaterializationRecovery::RollBack, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
-            .await
-            .expect("rollback metadata");
-        let restored = native_metadata(
-            &std::fs::symlink_metadata(root.join("directory")).expect("restored metadata"),
-        );
-        assert_eq!(restored.readonly, before.readonly);
-        #[cfg(windows)]
-        assert_eq!(restored.windows_attributes, before.windows_attributes);
-        #[cfg(unix)]
-        assert_eq!(restored.posix_mode, before.posix_mode);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
     async fn metadata_edit_preserves_concurrent_child_content() {
         let temporary = tempfile::tempdir().expect("temporary root");
         let root = temporary.path().join("checkout");
@@ -7781,106 +7472,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
-    async fn native_tree_backend_recognizes_apply_before_progress_was_persisted() {
-        let temporary = tempfile::tempdir().expect("temporary root");
-        let root = temporary.path().join("checkout");
-        let operation = temporary.path().join("operation");
-        let target = operation.join("target");
-        std::fs::create_dir_all(&root).expect("root");
-        std::fs::create_dir_all(&target).expect("target");
-        std::fs::write(root.join("file.txt"), b"before").expect("before");
-        std::fs::write(target.join("file.txt"), b"after").expect("after");
-        let backend =
-            NativeTreeMaterializationBackend::new(&root, &operation, None, unbounded_native_work(), true).expect("native backend");
-        let plan = backend
-            .plan_paths(
-                OperationId::new(),
-                GenerationId::new(Digest::from_bytes([1; 32])),
-                GenerationId::new(Digest::from_bytes([2; 32])),
-                ["file.txt".to_owned()],
-            )
-            .expect("plan");
-        let preimage = backend.capture(&plan.edits[0]).await.expect("capture");
-        let store = MemoryMaterializationJournalStore::default();
-        store
-            .compare_and_swap(
-                plan.operation_id,
-                0,
-                captured_fixture_journal(MaterializationJournal {
-                    version: JOURNAL_VERSION,
-                    revision: 1,
-                    root_identity: backend.allocation_identity(),
-                    preparation_identity: backend.preparation_identity(),
-                    preparation_progress: None,
-                    work: crate::WorkCounters::default(),
-                    plan: plan.clone(),
-                    preimages: Vec::new(),
-                    phase: MaterializationPhase::Applying,
-                    applied: 0,
-                    restored: 0,
-                }, preimage, &backend),
-            )
-            .await
-            .expect("journal");
-        let retained = store.load(plan.operation_id).await.expect("paid source clone").expect("journal");
-        backend
-            .apply(&plan.edits[0], &retained.preimages[0])
-            .await
-            .expect("physical apply");
-
-        let recovered = JournaledMaterializer::new(store, backend)
-            .recover(plan.operation_id, MaterializationRecovery::Complete, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
-            .await
-            .expect("recover")
-            .expect("journal");
-        assert_eq!(recovered.phase, MaterializationPhase::Applied);
-        assert_eq!(
-            std::fs::read(root.join("file.txt")).expect("after remains"),
-            b"after"
-        );
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
-    async fn native_tree_backend_pauses_rollback_after_external_mutation() {
-        let temporary = tempfile::tempdir().expect("temporary root");
-        let root = temporary.path().join("checkout");
-        let operation = temporary.path().join("operation");
-        let target = operation.join("target");
-        std::fs::create_dir_all(&root).expect("root");
-        std::fs::create_dir_all(&target).expect("target");
-        std::fs::write(root.join("file.txt"), b"before").expect("before");
-        std::fs::write(target.join("file.txt"), b"after").expect("after");
-        let backend =
-            NativeTreeMaterializationBackend::new(&root, &operation, None, unbounded_native_work(), true).expect("native backend");
-        let plan = backend
-            .plan_paths(
-                OperationId::new(),
-                GenerationId::new(Digest::from_bytes([1; 32])),
-                GenerationId::new(Digest::from_bytes([2; 32])),
-                ["file.txt".to_owned()],
-            )
-            .expect("plan");
-        let operation_id = plan.operation_id;
-        let materializer =
-            JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), backend);
-        materializer.apply(plan, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(()))).await.expect("apply");
-        std::fs::write(root.join("file.txt"), b"external").expect("external mutation");
-
-        assert!(matches!(
-            materializer
-                .recover(operation_id, MaterializationRecovery::RollBack, &mut |_| std::future::ready(Ok::<(), MaterializationError<_, _>>(())))
-                .await,
-            Err(MaterializationError::ExternalMutation)
-        ));
-        assert_eq!(
-            std::fs::read(root.join("file.txt")).expect("external remains"),
-            b"external"
-        );
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn native_tree_backend_preserves_dangling_symlinks_on_rollback() {
@@ -7934,14 +7525,6 @@ mod tests {
             Err(NativeTreeMaterializationError::InvalidLayout)
         ));
         assert_eq!(std::fs::read(sentinel).expect("sentinel remains"), b"keep");
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn captured_fixture_journal(journal: MaterializationJournal, preimage: OwnedMaterializationPreimage, backend: &NativeTreeMaterializationBackend) -> OwnedMaterializationJournal {
-        let custody = Some(backend.work.retain_owned(journal_owned_bytes(&journal).expect("actual fixture capacity")).expect("actual fixture journal admission"));
-        let mut owned = OwnedMaterializationJournal { journal, custody };
-        backend.append_preimage(&mut owned, preimage).expect("original captured witness transfer");
-        owned
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -8135,15 +7718,15 @@ mod tests {
         type ActionCompletion<'a> = <crate::core_state::MeasuredMaterializationStore<'store> as MaterializationJournalStore>::ActionCompletion<'a>
         where Self: 'a;
 
-        async fn prepare_action<'a>(&'a self, journal: OwnedMaterializationJournal) -> Result<Self::ActionCompletion<'a>, Self::Error> {
+        async fn prepare_action<'a>(&'a self, journal: MaterializationJournal) -> Result<Self::ActionCompletion<'a>, Self::Error> {
             self.store.prepare_action(journal).await
         }
 
-        async fn load(&self, operation_id: OperationId) -> Result<Option<OwnedMaterializationJournal>, Self::Error> {
+        async fn load(&self, operation_id: OperationId) -> Result<Option<MaterializationJournal>, Self::Error> {
             self.store.load(operation_id).await
         }
 
-        async fn compare_and_swap(&self, operation_id: OperationId, expected_revision: u64, replacement: OwnedMaterializationJournal) -> Result<(bool, OwnedMaterializationJournal), Self::Error> {
+        async fn compare_and_swap(&self, operation_id: OperationId, expected_revision: u64, replacement: MaterializationJournal) -> Result<(bool, MaterializationJournal), Self::Error> {
             let fail = replacement.revision == self.fail_revision;
             if fail && !self.lose_ack {
                 return Err(std::io::Error::other("injected pre-journal failure").into());
@@ -8194,7 +7777,7 @@ mod tests {
         std::fs::rename(&root, &moved_root).expect("unavailable checkout");
         std::fs::rename(&operation, &moved_operation).expect("unavailable staging");
         let loaded = load_native_materialization_journal(&crate::LocalCoreStateStore::new(&state_path), operation_id, budget, &cancellation).await.expect("root-independent restart query");
-        assert_eq!(loaded.value.as_ref().map(|owned| &owned.journal), Some(&prepared.value.journal));
+        assert_eq!(loaded.value.as_ref(), Some(&prepared.value));
         std::fs::rename(moved_root, &root).expect("original allocation returns");
         std::fs::rename(moved_operation, &operation).expect("original staging returns");
         let work = NativeMaterializationWork::new(budget, &cancellation).expect("apply meter");
@@ -8337,7 +7920,8 @@ mod tests {
                 let plan = test_plan(operation_id, vec![MaterializationEdit::Remove { path: "file".to_owned() }]
                 );
                 let state = crate::LocalCoreStateStore::new(&state_path);
-                let journal = MaterializationJournal {
+                let mut journal = MaterializationJournal {
+        #[cfg(not(target_arch = "wasm32"))] custody: None,
                     version: JOURNAL_VERSION, revision: 0, plan,
                     root_identity: Some(source.to_bytes()), preparation_identity: None,
                     preparation_progress: Some(MaterializationPreparationProgress {
@@ -8347,7 +7931,7 @@ mod tests {
                     phase: MaterializationPhase::Preparing, applied: 0, restored: 0,
                 };
                 let custody = work.retain_owned(journal_owned_bytes(&journal).expect("actual fixture capacity")).expect("original fixture admission");
-                let journal = OwnedMaterializationJournal { journal, custody: Some(custody) };
+                journal.custody = Some(custody);
                 let initial = compare_next_journal::<_, NativeTreeMaterializationError>(&state.materialization_with_work(work.clone()), journal).await.expect("first original intent").1;
                 assert!(!operation.exists());
                 let fault = FaultingLocalJournal { store: state.materialization_with_work(work.clone()), fail_revision, lose_ack };
@@ -8405,8 +7989,8 @@ mod tests {
         fn retain_original_work(&self, work: crate::WorkCounters) { self.inner.retain_original_work(work); }
         fn check_plan(&self, plan: &MaterializationPlan) -> Result<bool, Self::Error> { self.inner.check_plan(plan) }
         fn retain_plan(&self, plan: &MaterializationPlan) -> Result<Option<NativeAllocation>, Self::Error> { MaterializationBackend::retain_plan(&self.inner, plan) }
-        fn check_custody(&self, journal: &mut OwnedMaterializationJournal, incoming: &mut [Option<NativeAllocation>]) -> Result<(), Self::Error> { self.inner.check_custody(journal, incoming) }
-        fn append_preimage(&self, journal: &mut OwnedMaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Self::Error> { self.inner.append_preimage(journal, preimage) }
+        fn check_custody(&self, journal: &mut MaterializationJournal, incoming: &mut [Option<NativeAllocation>]) -> Result<(), Self::Error> { self.inner.check_custody(journal, incoming) }
+        fn append_preimage(&self, journal: &mut MaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Self::Error> { self.inner.append_preimage(journal, preimage) }
         async fn observe_allocation_identity(&self) -> Result<Option<[u8; 16]>, Self::Error> { self.inner.observe_allocation_identity().await }
         async fn observe_preparation_identity(&self) -> Result<Option<MaterializationPreparationIdentity>, Self::Error> { self.inner.observe_preparation_identity().await }
         async fn observe(&self, edit: &MaterializationEdit, preimage: &MaterializationPreimage) -> Result<MaterializationObservation, Self::Error> { self.inner.observe(edit, preimage).await }

@@ -7082,7 +7082,7 @@ mod tests {
         config.profile = crate::model::FilesystemProfile::Windows;
         let root_path = crate::kernel::NamespacePath::new(Vec::new(), config.limits)?;
         let fresh = CheckoutMountSource::new_at_meter(
-            checkout, config, root_path, original.claim_allocation(0, 0)?,
+            checkout, config, root_path, original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?,
             &meter, Some(&original),
         )?.into_arc_meter(&meter)?;
         let cold = crate::native_mount::prepare_native_mount_start_with_meter(&meter)?
@@ -7096,7 +7096,7 @@ mod tests {
             >>().map_err(|_| "original stock checkout alias differs")?;
         let fresh = CheckoutMountSource::new_at_meter(
             checkout, config, crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
-            original.claim_allocation(0, 0)?, &meter, Some(&original),
+            original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?, &meter, Some(&original),
         )?.into_arc_meter(&meter)?;
         let mut restarted = crate::native_mount::prepare_native_mount_start_with_meter(&meter)?
             .restart_with_meter(old.expect("actual original issuer retained once"), fresh, &meter)?;

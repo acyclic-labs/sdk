@@ -176,7 +176,7 @@ impl WorkspaceNameAccounting<'_> {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(original) =>
-                original.claim_allocation(bytes, operations)
+                original.claim_allocation(bytes, operations, crate::WorkCounters::UNCHARGED)
                     .map(WorkspaceNameAllocation::Native).map_err(WorkspaceError::from),
         }
     }
@@ -6956,7 +6956,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 ).await?;
                 return Ok((JoinOutcome::StaleTarget(Generation {
                     workspace: self.target.clone(), id, publication_closure: None,
-                }), original.claim_allocation(0, 0).map_err(FsError::from)?));
+                }), original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED).map_err(FsError::from)?));
             }
             let (outcome, allocation) = self.target.volume.fs.apply_workspace_join_guarded_with_native_work(
                 crate::facade::WorkspaceJoinRequest {

@@ -1722,11 +1722,9 @@ impl DriverSessionResources {
         original: &crate::NativeMaterializationWork,
     ) -> Result<(usize, crate::NativeAllocation), NativeMountError> {
         let bytes = unsafe { acyclic_fs_darwin_mount_session_allocation_size() } as u64;
-        let allocation = original.allocation_work().claim_allocation_with_work(
-            bytes, 1, crate::WorkCounters {
+        let allocation = original.allocation_work().claim_allocation(bytes, 1, crate::WorkCounters {
                 backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
-            },
-        )?;
+            })?;
         let pointer = unsafe { acyclic_fs_darwin_mount_session_new() } as usize;
         if pointer == 0 {
             return Err(std::io::Error::from_raw_os_error(libc::ENOMEM).into());

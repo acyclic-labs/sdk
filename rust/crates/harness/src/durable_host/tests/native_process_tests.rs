@@ -1466,7 +1466,7 @@ where
                 std::mem::size_of::<crate::runtime::NativeVolumeCallbackGuard<P>>(),
             ).ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "native source guard slot count overflow" })?;
-            let custody = work.claim_allocation(guard_bytes as u64, u64::from(guard_bytes != 0))?;
+            let custody = work.claim_allocation(guard_bytes as u64, u64::from(guard_bytes != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
             let mut guards = (Vec::with_capacity(borrowed.len()), custody);
             for _ in &borrowed {
                 guards.0.push(context.volume_callback_guard_with_native_work(
@@ -1488,7 +1488,7 @@ where
                     .map_err(|error| Error::Storage(error.to_string()))?;
                 let lazy = lazy.into_arc_with_native_work(work)?;
                 let callback = guards.0[0].for_volume(&owner, &source, false, &volume_work)?;
-                let (path, _path_custody) = volume_work.join_path(&options.root, std::path::Path::new("src"))?;
+                let (path, _path_custody) = volume_work.path(&options.root, Some(std::path::Path::new("src")))?;
                 volume_work.create_owned_directory(&options.root, preparation_root.expected_identity,
                     std::path::Path::new("src"), true)?;
                 let mut allocation = volume_work.claim_allocation(std::mem::size_of::<acyclic_fs::LazyMount<

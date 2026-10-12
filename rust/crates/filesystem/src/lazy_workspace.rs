@@ -1445,7 +1445,7 @@ impl MemoryLazyWorkspaceStore {
         let position = memory_lazy_search_with_visit(&state.workspaces, &workspace_id, || original.charge(
             WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED },
         ).map_err(Into::into))?;
-        let allocation = original.claim_allocation(0, 0)?;
+        let allocation = original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
         let value = if let Ok(index) = position {
             let copied = WorkCounters { bytes_copied: std::mem::size_of::<LazyWorkspaceState>() as u64,
                 ..WorkCounters::UNCHARGED };
@@ -1879,7 +1879,7 @@ impl<'a> LazyTreapWork<'a> {
     ) -> Result<Self, LazyWorkspaceError> {
         let original = original.clone();
         original.admit(WorkCounters::UNCHARGED)?;
-        let scratch = original.claim_allocation(0, 0)?;
+        let scratch = original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
         Ok(Self {
             meter: LazyTreapMeter::NativeOriginal {
                 original,
@@ -1904,7 +1904,7 @@ impl<'a> LazyTreapWork<'a> {
             }
             #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, scratch } => {
-                let (value, mut allocation) = original.with_owned_allocations(operation)?;
+                let (value, mut allocation) = original.allocations(operation)?;
                 let absorbed = scratch.lock().expect("lazy treap scratch lock poisoned")
                     .absorb(&mut allocation);
                 if let Err(error) = absorbed {
@@ -2715,8 +2715,7 @@ impl<A, O, D, S> LazyWorkspace<A, O, D, S> {
     ) -> Result<Arc<Self>, LazyWorkspaceError> {
         drop(self.allocation.take());
         self.allocation = Some(original.claim_allocation(
-            std::mem::size_of::<Self>() as u64, 1,
-        )?);
+            std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?);
         Ok(Arc::new(self))
     }
 }
@@ -4369,13 +4368,13 @@ where
             }
             #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
-                let (overlay, allocation) = original.with_owned_allocations(
+                let (overlay, allocation) = original.allocations(
                     |_, _, _, _| Ok::<_, LazyWorkspaceError>(overlay),
                 )?;
                 store.put_lazy_overlay_with_native_work(
                     overlay_id, NativeOwnedCoreState::from_parts(overlay, allocation), original,
                 ).await?;
-                let (shadows, allocation) = original.with_owned_allocations(
+                let (shadows, allocation) = original.allocations(
                     |_, _, _, _| Ok::<_, LazyWorkspaceError>(LazyShadow::default()),
                 )?;
                 shadow_id = LazyShadowId(hash_lazy_value(&shadows, Some(meter))?);
@@ -5780,7 +5779,7 @@ where
                     head.id(), &original, cancellation,
                 ).await.map_err(native_workspace_error)?;
                 drop(head);
-                let (_, allocation) = original.with_owned_allocations(
+                let (_, allocation) = original.allocations(
                     |_, _, _, _| Ok::<(), LazyWorkspaceError>(()),
                 )?;
                 let mut context = NativeInspectState {
@@ -6014,7 +6013,7 @@ where
                 return Err(LazyWorkspaceError::StaleSource);
             }
             let reader = self.directory_head_reader(original, cancellation).await?;
-            let ((), allocation) = original.with_owned_allocations(
+            let ((), allocation) = original.allocations(
                 |_, _, _, _| Ok::<_, LazyWorkspaceError>(()),
             )?;
             let mut context = NativeInspectState { reader, record: None, metadata: None, allocation };
@@ -6862,7 +6861,7 @@ where
             .map_err(|error| (error, None))?;
         self.load_shadow_with_readonly_accounting(state.shadows, &mut accounting).await
             .map_err(|error| (error, None))?;
-        let (_, allocation) = original.with_owned_allocations(
+        let (_, allocation) = original.allocations(
             |_, _, _, _| Ok::<(), LazyWorkspaceError>(()),
         ).map_err(|error| (error, None))?;
         let mut context = NativeInspectState {
@@ -10623,7 +10622,7 @@ where
                         head.id(), original, cancellation,
                     ).await.map_err(native_workspace_error)?;
                     drop(head);
-                    let (_, allocation) = original.with_owned_allocations(
+                    let (_, allocation) = original.allocations(
                         |_, _, _, _| Ok::<(), LazyWorkspaceError>(()),
                     )?;
                     let mut context = NativeInspectState {
@@ -16040,7 +16039,7 @@ impl<'a> DirectoryProjectionWork<'a> {
         original.admit(WorkCounters::UNCHARGED)?;
         cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
             crate::NativeTreeMaterializationError::Cancelled))?;
-        let allocation = original.claim_allocation(0, 0)?;
+        let allocation = original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
         Ok(Self::Native { original, cancellation, allocation })
     }
 
@@ -19780,8 +19779,7 @@ mod tests {
             .expect("SDK intrinsic input before writer allocation");
         let key = IdempotencyKey::new();
         let calls = Arc::new((AtomicUsize::new(0), original.claim_allocation(
-            std::mem::size_of::<(AtomicUsize, crate::materializer::NativeAllocation)>() as u64, 1,
-        ).expect("funded owner counter")));
+            std::mem::size_of::<(AtomicUsize, crate::materializer::NativeAllocation)>() as u64, 1, crate::WorkCounters::UNCHARGED).expect("funded owner counter")));
         let owner_calls = Arc::clone(&calls);
         let owner_original = original.clone();
         let mut owner = move |work: &crate::NativeMaterializationWork| {
@@ -19840,8 +19838,7 @@ mod tests {
                 .expect("original admission");
             let root = root.into_arc_with_native_work(&original).expect("funded actual root Arc");
             let calls = Arc::new((AtomicUsize::new(0), original.claim_allocation(
-                std::mem::size_of::<(AtomicUsize, crate::materializer::NativeAllocation)>() as u64, 1,
-            ).expect("funded owner counter")));
+                std::mem::size_of::<(AtomicUsize, crate::materializer::NativeAllocation)>() as u64, 1, crate::WorkCounters::UNCHARGED).expect("funded owner counter")));
             let owner_calls = Arc::clone(&calls);
             let bytes = root.read_at_snapshot_with_work(
                 basis, "/target", 64, &original, &token,

@@ -83,7 +83,7 @@ impl NativeViewBaseline {
         read_only: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>, crate::NativeTreeMaterializationError> {
-        let allocation = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1)?;
+        let allocation = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(std::sync::Arc::new(Self {
             root_identity, read_only, _allocation: Some(allocation),
         }))
@@ -6677,7 +6677,7 @@ async fn settled_sparse_ranges(
                 meter.native().admit(WorkCounters { source_bytes_read: wanted,
                     ..WorkCounters::UNCHARGED })
                     .map_err(|error| OperationFailure::new(CaptureError::NativeKernel(error), capture_meter(meter).completed()))?;
-                let runtime = meter.native().runtime_meter_owner_with_capture_custody(
+                let runtime = crate::native_capture::capture_runtime_meter_owner(&meter.native(),
                     meter.custody.as_ref().expect("capture scope is live"))
                     .map_err(|error| OperationFailure::new(CaptureError::NativeKernel(error), capture_meter(meter).completed()))?;
                 let value = reader.read_exact_measured(wanted as usize, runtime)
@@ -6877,7 +6877,7 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
             ..WorkCounters::UNCHARGED })?;
         let copy = original.reserve_copy(maximum as u64)?;
         let runtime = match &self.capture_custody {
-            Some(custody) => original.runtime_meter_owner_with_capture_custody(custody)?,
+            Some(custody) => crate::native_capture::capture_runtime_meter_owner(&original, custody)?,
             None => original.runtime_meter_owner(),
         };
         let result = reader.read_exact_measured(maximum, runtime).await
@@ -6985,7 +6985,7 @@ mod native_range_tests {
             .map_err(|(error, _)| error)?;
         let mut scope = CaptureWorkScope::new(&original)?;
         let native = std::sync::Arc::new(native_positional_file_measured(fixture_file(&path)?, &scope)?);
-        let meter = original.runtime_meter_owner_with_capture_custody(
+        let meter = crate::native_capture::capture_runtime_meter_owner(&original,
             scope.custody.as_ref().expect("live scope"))?;
         let base = meter.allocation_owner().expect("capture allocations use the original base");
         assert!(std::sync::Arc::ptr_eq(&base, &original.runtime_meter_owner()));
@@ -7052,7 +7052,7 @@ mod native_range_tests {
             .map_err(|(error, _)| error)?;
         let mut scope = CaptureWorkScope::new(&original)?;
         let native = std::sync::Arc::new(native_positional_file_measured(fixture_file(&path)?, &scope)?);
-        let meter = original.runtime_meter_owner_with_capture_custody(
+        let meter = crate::native_capture::capture_runtime_meter_owner(&original,
             scope.custody.as_ref().expect("live scope"))?;
         let (started, start) = std::sync::mpsc::channel();
         let (resume, resumed) = std::sync::mpsc::channel();

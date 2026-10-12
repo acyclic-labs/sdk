@@ -1393,7 +1393,7 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> 
                 .ok_or(NativeTreeMaterializationError::Work(crate::WorkError::Overflow))? as u64;
             // Both metadata buffers are live during this copy. Payload OwnedBytes
             // keep their existing owners; no payload allocation or copy occurs.
-            let (mut replacement, mut replacement_custody) = work.with_owned_allocations(
+            let (mut replacement, mut replacement_custody) = work.allocations(
                 |ledger, counters, budget, cancellation| {
                     cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
                     counters.checked_add(extra)

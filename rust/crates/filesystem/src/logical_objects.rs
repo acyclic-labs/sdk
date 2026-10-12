@@ -1743,7 +1743,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
         let baseline = work.remaining()?.peak_allocation_bytes;
-        let mut custody = work.claim_allocation(4, 1)?;
+        let mut custody = work.claim_allocation(4, 1, crate::WorkCounters::UNCHARGED)?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(4).map_err(crate::NativeTreeMaterializationError::AllocationFailed)?;
         custody.reconcile_capacity(bytes.capacity() as u64)?;

@@ -3063,7 +3063,7 @@ type PreparedNativeRecovery = std::convert::Infallible;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) struct PreparedMaterializationCommit {
     template: Option<crate::filesystem::NativePreparationCompletionTemplate>,
-    journal: Option<acyclic_fs::OwnedMaterializationJournal>,
+    journal: Option<acyclic_fs::MaterializationJournal>,
     request: acyclic_stream::CommitRequest,
     vectors: u64,
     operation: OperationId,
@@ -3144,7 +3144,7 @@ impl PreparedMaterializationCommit {
             .and_then(|bytes| bytes.checked_add(crate::contract::sdk_json_diagnostic_bytes()))
             .and_then(|bytes| bytes.checked_add(size_of::<Self>() as u64))
             .ok_or_else(overflow)?
-            .max(size_of::<(acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation)>() as u64);
+            .max(size_of::<(acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)>() as u64);
         let mut prepared = PreparedCommitRequest::new(template.key().clone(), 0, work);
         reserve_prepared_vector(
             &mut prepared.request.conditions, 2, &mut prepared.custody, &mut prepared.vectors,
@@ -3258,7 +3258,7 @@ impl PreparedMaterializationCommit {
         client: &StreamClient<P>,
         counters: acyclic_fs::WorkCounters,
         mut phase: Option<&mut CommitPhase>,
-    ) -> Result<(acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation)> {
+    ) -> Result<(acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)> {
         if let Some(phase) = phase.as_deref_mut() { *phase = CommitPhase::NotCalled; }
         let encoded = {
             let template = self.template.as_mut().expect("closed original completion template");
@@ -3331,7 +3331,7 @@ impl PreparedMaterializationCommit {
         drop((template, request, sdk, sdk_recovery, sdk_custody, template_custody));
         let mut custody = observer.into_custody();
         let output_bytes = std::mem::size_of::<(
-            acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation,
+            acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation,
         )>() as u64;
         if let Err(cause) = custody.substitute(output_bytes) {
             drop(journal);
