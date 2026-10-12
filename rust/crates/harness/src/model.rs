@@ -113,12 +113,7 @@ pub(crate) fn clone_file(
     file: &FileRef, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<FileRef> {
     model_step(io, 1)?;
-    crate::executor::with_history_io(io, |work| {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let file = crate::core::copy_file(file, &mut quota)?;
-        quota.transfer();
-        Ok(file)
-    })
+    crate::executor::with_history_io(io, |work| file.copy(work))
 }
 
 /// Copies the actual Value representation, including private/raw marker keys.
@@ -234,20 +229,17 @@ fn model_content_in_quota(
     })
 }
 
-pub(crate) fn clone_message(
-    message: &ModelMessage, io: Option<&crate::executor::PreparationIo>,
-) -> Result<ModelMessage> {
-    if io.is_none() { return Ok(message.clone()); }
-    model_step(io, 1)?;
-    Ok(ModelMessage { role: message.role, content: crate::executor::with_history_io(io, |work| clone_content(&message.content, work).map(|(copy, _)| copy))? })
-}
-
 pub(crate) fn clone_messages(
     messages: &[ModelMessage], io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<ModelMessage>> {
     if io.is_none() { return Ok(messages.to_vec()); }
     let mut copied = vec_with_capacity(messages.len(), io)?;
-    for message in messages { crate::executor::stock_vec_push(&mut copied, clone_message(message, io)?, io)?; }
+    for message in messages {
+        model_step(io, 1)?;
+        let content = crate::executor::with_history_io(io, |work|
+            clone_content(&message.content, work).map(|(copy, _)| copy))?;
+        crate::executor::stock_vec_push(&mut copied, ModelMessage { role: message.role, content }, io)?;
+    }
     Ok(copied)
 }
 
@@ -1478,8 +1470,6 @@ impl PreparedModelRequest {
         let mut segments = Vec::new();
         let mut visited = std::collections::BTreeSet::new();
         let mut expected_count = None;
-        let mut total_bytes = 0_u64;
-        let mut total_messages = local.messages.len();
         while let Some(reference) = next {
             model_step(io, 1)?;
             crate::executor::with_history_io(io, |work| reference.validate(work))?;
@@ -1496,23 +1486,19 @@ impl PreparedModelRequest {
                     "model prefix identity or cycle is invalid".into(),
                 ));
             }
-            total_bytes = total_bytes
-                .checked_add(reference.descriptor().byte_length())
-                .ok_or_else(|| Error::Invalid("model prefix byte count overflow".into()))?;
             if visited.len() > limits.context_messages {
                 return Err(Error::Invalid(
                     "model prefix traversal exceeds limit".into(),
                 ));
             }
-            #[cfg(feature = "filesystem")]
-            let _bytes_hold;
-            crate::context::verify_file(&reference, verifier, io).await?;
-            let bytes = verifier.read(&reference, reference.descriptor().byte_length(), io)?.await?;
-            #[cfg(feature = "filesystem")]
-            {
-                _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+            if !verifier.supports_read(reference.volume(), io)? {
+                return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Unsupported,
+                    "context verifier has no bounded capability"));
             }
-            crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
+            let _bytes_hold;
+            let (bytes, hold) = crate::conversation::verified_content_bytes(
+                verifier, &reference, reference.descriptor().byte_length(), io).await?;
+            _bytes_hold = hold;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<ModelPrefix>, &bytes, crate::wire::ErrorCode::Storage)?),
@@ -1545,8 +1531,8 @@ impl PreparedModelRequest {
                     "model prefix parent count is invalid".into(),
                 ));
             }
-            total_messages = total_messages
-                .checked_add(segment.messages.len())
+            let total_messages = segment.total_messages
+                .checked_add(local.messages.len())
                 .ok_or_else(|| Error::Invalid("model prefix message count overflow".into()))?;
             if total_messages > limits.context_messages {
                 return Err(Error::Invalid(
@@ -2060,23 +2046,14 @@ mod tests {
     );
 
     impl crate::conversation::ContentResidencyVerifier for PrefixReader {
-        fn verify<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
             crate::conversation::BoundedContentFuture::new(io, || async move {
                 let capability = file.read_capability()?;
                 if !self.1.contains(&capability) {
                     return Err(Error::Unauthorized("prefix read is not granted".into()));
                 }
-                let bytes = self
-                    .0
-                    .get(&capability)
-                    .ok_or_else(|| Error::NotFound("prefix version is missing".into()))?;
-                file.descriptor().verify(bytes, &mut None)
-            })
-        }
-        fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-            crate::conversation::BoundedContentFuture::new(io, || async move {
                 self.0
-                    .get(&file.read_capability()?)
+                    .get(&capability)
                     .cloned()
                     .ok_or_else(|| Error::NotFound("prefix version is missing".into()))
             })
@@ -2159,8 +2136,8 @@ mod tests {
             prepared = next;
         }
         let reopened = reader.clone();
+        let mut local = request()?;
         for child in ["a", "b"] {
-            let mut local = request()?;
             local.messages = vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text(format!(
@@ -2175,64 +2152,52 @@ mod tests {
                 inherited.bytes(),
                 PreparedModelRequest::prepare(expected, limits, None)?.bytes()
             );
-            let mut changed = local.clone();
-            changed.model.revision = "changed".into();
-            let changed_request =
-                PreparedModelRequest::inherit(changed, &head, &reader, limits, None).await?;
-            assert_eq!(changed_request.request().model.revision, "changed");
-            assert_eq!(
-                changed_request.request().messages,
-                inherited.request().messages
-            );
-            // Inherited tool exchanges must still validate against the new schema set.
-            let mut incompatible = local.clone();
-            incompatible.tools.clear();
-            assert!(
-                PreparedModelRequest::inherit(incompatible, &head, &reader, limits, None)
-                    .await
-                    .is_err()
-            );
-            assert!(
-                PreparedModelRequest::inherit(
-                    local.clone(),
-                    &head,
-                    &PrefixReader::default(),
-                    limits,
-                    None,
-                )
+        }
+        let mut changed = local.clone();
+        changed.model.revision = "changed".into();
+        let changed_request =
+            PreparedModelRequest::inherit(changed, &head, &reader, limits, None).await?;
+        assert_eq!(changed_request.request().model.revision, "changed");
+        let mut expected_messages = prepared.request().messages.clone();
+        expected_messages.extend(local.messages.clone());
+        assert_eq!(changed_request.request().messages, expected_messages);
+        // Inherited tool exchanges must still validate against the new schema set.
+        let mut incompatible = local.clone();
+        incompatible.tools.clear();
+        assert!(
+            PreparedModelRequest::inherit(incompatible, &head, &reader, limits, None)
                 .await
                 .is_err()
-            );
-            let mut denied = reader.clone();
-            denied.1.remove(&head.read_capability()?);
-            assert!(matches!(
-                PreparedModelRequest::inherit(local.clone(), &head, &denied, limits, None).await,
-                Err(Error::Unauthorized(_))
-            ));
-            let mut missing_attachment = reader.clone();
-            missing_attachment.0.remove(&attachment.read_capability()?);
-            assert!(
-                PreparedModelRequest::inherit(local.clone(), &head, &missing_attachment, limits, None)
-                    .await
-                    .is_err()
-            );
-            let lower_limits = Limits {
-                context_messages: prepared.request().messages.len(),
-                ..limits
-            };
-            assert!(
-                PreparedModelRequest::inherit(local.clone(), &head, &reader, lower_limits, None)
-                    .await
-                    .is_err()
-            );
-            let mut corrupt = reader.clone();
-            corrupt.0.insert(head.read_capability()?, b"{}".to_vec().into());
-            assert!(
-                PreparedModelRequest::inherit(local, &head, &corrupt, limits, None)
-                    .await
-                    .is_err()
-            );
-        }
+        );
+        let mut denied = reader.clone();
+        denied.1.remove(&head.read_capability()?);
+        assert!(matches!(
+            PreparedModelRequest::inherit(local.clone(), &head, &denied, limits, None).await,
+            Err(Error::Unauthorized(_))
+        ));
+        let mut missing_attachment = reader.clone();
+        missing_attachment.0.remove(&attachment.read_capability()?);
+        assert!(
+            PreparedModelRequest::inherit(local.clone(), &head, &missing_attachment, limits, None)
+                .await
+                .is_err()
+        );
+        let lower_limits = Limits {
+            context_messages: prepared.request().messages.len(),
+            ..limits
+        };
+        assert!(
+            PreparedModelRequest::inherit(local.clone(), &head, &reader, lower_limits, None)
+                .await
+                .is_err()
+        );
+        let mut corrupt = reader.clone();
+        corrupt.0.insert(head.read_capability()?, b"{}".to_vec().into());
+        assert!(
+            PreparedModelRequest::inherit(local, &head, &corrupt, limits, None)
+                .await
+                .is_err()
+        );
         let mut changed_parent = prepared.request().clone();
         changed_parent.messages[0].content = ModelContent::Text("later parent mutation".into());
         let changed_parent = PreparedModelRequest::prepare(changed_parent, limits, None)?;
