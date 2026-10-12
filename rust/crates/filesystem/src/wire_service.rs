@@ -740,8 +740,8 @@ where
         let base = self.generation(request.base).await?;
         let workspace = self.workspace(generation_ref(&base).workspace).await?;
         let mut transaction = workspace
-            .begin_transaction_at(&base, operation(request.operation)?)
-            .await
+            .begin_transaction_at(&base, operation(request.operation)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
@@ -788,8 +788,8 @@ where
         let base = self.generation(request.base).await?;
         let workspace = self.workspace(generation_ref(&base).workspace).await?;
         let mut transaction = workspace
-            .begin_transaction_at(&base, operation(request.operation)?)
-            .await
+            .begin_transaction_at(&base, operation(request.operation)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
@@ -1605,27 +1605,26 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .create_file(
                     &value.path,
                     Bytes::from(value.contents),
-                    metadata(value.metadata)?,
-                )
-                .await
+                    metadata(value.metadata)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::CreateDirectory(value) => {
             transaction
-                .create_directory(&value.path)
-                .await
+                .create_directory(&value.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| status(&error))?;
             transaction
-                .set_metadata(&value.path, metadata(value.metadata)?)
-                .await
+                .set_metadata(&value.path, metadata(value.metadata)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::CreateSymbolicLink(value) => {
             transaction
-                .create_symbolic_link(&value.path, Bytes::from(value.target))
-                .await
+                .create_symbolic_link(&value.path, Bytes::from(value.target), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| status(&error))?;
             transaction
-                .set_metadata(&value.path, metadata(value.metadata)?)
-                .await
+                .set_metadata(&value.path, metadata(value.metadata)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::Remove(value) => transaction.remove(&value.path).await,
         Mutation::Rename(value) => {
@@ -1635,13 +1634,13 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         Mutation::HardLink(value) => {
             transaction
-                .hard_link(&value.source, &value.destination)
-                .await
+                .hard_link(&value.source, &value.destination, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::Write(value) => {
             transaction
-                .write_range(&value.path, value.offset, Bytes::from(value.contents))
-                .await
+                .write_range(&value.path, value.offset, Bytes::from(value.contents), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::Resize(value) => transaction.resize(&value.path, value.logical_bytes).await,
         Mutation::ZeroRange(value) => {
@@ -1684,10 +1683,10 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         Mutation::SetMetadata(value) => {
             transaction
-                .set_metadata(&value.path, metadata(value.metadata)?)
-                .await
+                .set_metadata(&value.path, metadata(value.metadata)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
-        Mutation::CreateDirectories(value) => transaction.create_dir_all(&value.path).await,
+        Mutation::CreateDirectories(value) => transaction.create_dir_all(&value.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Mutation::PutFile(value) => {
             transaction
                 .write(&value.path, Bytes::from(value.contents))

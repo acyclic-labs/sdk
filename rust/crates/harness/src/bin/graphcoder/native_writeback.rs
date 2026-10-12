@@ -306,8 +306,8 @@ impl NativeSession {
         let maximum_bytes = (MAX_FRAME_BYTES as u64).min(admission.limits.file_bytes);
         let interaction_verifier = binding.owner.verifier()?;
         let journal = Journal::for_task(owner, binding.operation_id, binding.operation_id, self.files.clone(),
-            self.config.private_volume.clone(), self.config.owner.verifier()?, self.config.owner.scope.clone(), maximum_bytes)?
-            .with_interaction_owner(interaction_verifier.clone(), SchemaRegistry::default(), binding.owner.scope.clone(), binding.private_volume.clone())?;
+            &self.config.private_volume, &self.config.owner.verifier()?, &self.config.owner.scope, maximum_bytes, None)?
+            .with_interaction_owner(&interaction_verifier, &SchemaRegistry::default(), &binding.owner.scope, &binding.private_volume, None)?;
         let interactions = Interactions::new(self.stream.clone(), self.files.clone(), &binding.owner.authority,
             &interaction_verifier, &SchemaRegistry::default(), &binding.owner.scope, &binding.private_volume, maximum_bytes, None)?;
         Ok((journal, interactions))
@@ -378,8 +378,8 @@ impl NativeSession {
         let capabilities = Capabilities::new(["interaction:resolve".to_owned(), ticket.responder_grant()]);
         let label = format!("native-publication-responder:{}", ticket.id);
         let scope = match binding.owner.scope.agent() {
-            Some(agent) => issuer.root_for_agent(agent, label, capabilities),
-            None => issuer.root(label, capabilities),
+            Some(agent) => issuer.issue(&label, &capabilities, Some(agent), None, &mut None).expect("scope proof"),
+            None => issuer.issue(&label, &capabilities, None, None, &mut None).expect("scope proof"),
         };
         let aggregate = StreamAggregate::open(&self.stream, binding.owner.authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::default()).await?;
         let operation = decision_operation(binding.operation_id, approved);

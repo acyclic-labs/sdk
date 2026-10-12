@@ -498,7 +498,7 @@ async fn original_native_first_dispatch_pending(
         return Ok(false);
     }
     let outcome = host.outcome_with_native_work(task, work).await?;
-    if host.cancellation_requested_with_native_work(task, work).await?
+    if host.cancellation_requested(task, Some(work)).await?
         || outcome.0.is_some()
     {
         return Ok(false);

@@ -217,7 +217,7 @@ impl ResourcePreparationRequest {
         if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
             let io = crate::filesystem::PreparationIo::from_native_work(original)?;
             let decoded = io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Invalid)?;
-            let (request, custody) = decoded.into_native_parts()?;
+            let (request, custody) = crate::filesystem::native_decoded(decoded)?;
             let extent = custody.bytes();
             if let Some(observer) = work.as_deref_mut() {
                 if let Err(error) = observer.absorb_native_custody(custody) {

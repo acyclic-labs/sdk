@@ -1933,7 +1933,7 @@ impl WasmReducer {
     #[wasm_bindgen(js_name = issueScope)]
     pub fn issue_scope(&self, id: String, capabilities: JsValue) -> Result<JsValue, JsValue> {
         let capabilities: Vec<String> = from_js(capabilities)?;
-        to_js(&self.issuer.root(id, Capabilities::new(capabilities)))
+        to_js(&self.issuer.issue(&id, &Capabilities::new(capabilities), None, None, &mut None).expect("scope proof"))
     }
 
     /// Issues a root scope signed for one acting agent.
@@ -1948,8 +1948,7 @@ impl WasmReducer {
         let capabilities: Vec<String> = from_js(capabilities)?;
         to_js(
             &self
-                .issuer
-                .root_for_agent(agent, id, Capabilities::new(capabilities)),
+                .issuer.issue(&id, &Capabilities::new(capabilities), Some(agent), None, &mut None).expect("scope proof"),
         )
     }
 
@@ -1963,8 +1962,7 @@ impl WasmReducer {
         let layers: Vec<PolicyLayer> = from_js(layers)?;
         to_js(
             &self
-                .issuer
-                .root_with_policies(id, &layers)
+                .issuer.issue(&id, &crate::resolve_policy_layers(&layers).map_err(js_error)?, None, None, &mut None)
                 .map_err(js_error)?,
         )
     }
@@ -1981,8 +1979,7 @@ impl WasmReducer {
         let layers: Vec<PolicyLayer> = from_js(layers)?;
         to_js(
             &self
-                .issuer
-                .root_with_policies_for_agent(agent, id, &layers)
+                .issuer.issue(&id, &crate::resolve_policy_layers(&layers).map_err(js_error)?, Some(agent), None, &mut None)
                 .map_err(js_error)?,
         )
     }

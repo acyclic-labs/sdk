@@ -48,7 +48,7 @@ struct NativeRegistryLease {
     // capacity rounding must never expose unfunded slots.
     funded_slots: usize,
     original: crate::NativeMaterializationWork,
-    cancellation_visits: parking_lot::Mutex<Option<crate::materializer::NativeItemReservation>>,
+    cancellation_visits: parking_lot::Mutex<Option<crate::materializer::NativeWorkReservation>>,
     allocation: parking_lot::Mutex<crate::NativeAllocation>,
 }
 
@@ -153,7 +153,7 @@ impl Drop for PreparedCancellation {
             if let Some(lease) = &self.registry_lease {
                 if let Some(credit) = &mut *lease.cancellation_visits.lock()
                 {
-                    credit.consume_deferred(1);
+                    credit.record_deferred(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED });
                 }
             }
         }
@@ -338,7 +338,7 @@ impl CancellationToken {
                 {
                     // Record the actual lookup, including empty/dead slots,
                     // on this backing's original prepaid terminal credit.
-                    credit.consume_deferred(visits);
+                    credit.record_deferred(crate::WorkCounters { items_examined: visits, ..crate::WorkCounters::UNCHARGED });
                 }
             }
             lease
@@ -423,7 +423,7 @@ impl CancellationToken {
         if let Some(lease) = &lease {
             let mut credit = lease.cancellation_visits.lock();
             credit.as_mut().ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?
-                .consume(visits)?;
+                .record_completed(crate::WorkCounters { items_examined: visits, ..crate::WorkCounters::UNCHARGED })?;
         } else if !waiters.is_empty() {
             // A preexisting ordinary registry has no original native credit.
             // Its source owner must retain custody and report uncertainty.
@@ -563,7 +563,7 @@ pub struct Cancelled<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     native_original: Option<&'a crate::NativeMaterializationWork>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_cleanup: Option<crate::materializer::NativeItemReservation>,
+    native_cleanup: Option<crate::materializer::NativeWorkReservation>,
 }
 
 /// Only the backing allocation this invocation actually created. A generation
@@ -623,7 +623,7 @@ pub(crate) struct PreparedCancelled {
     registered: Option<usize>,
     waiter_bytes: u64,
     #[cfg(not(target_arch = "wasm32"))]
-    native_cleanup: Option<crate::materializer::NativeItemReservation>,
+    native_cleanup: Option<crate::materializer::NativeWorkReservation>,
 }
 
 impl PreparedCancelled {
@@ -829,16 +829,16 @@ impl Cancelled<'_> {
                 }).and_then(|()| original.admit_retained(retained)) {
                     return Poll::Ready(Err(error.into()));
                 }
-                self.native_cleanup = match original.reserve_items(1) {
+                self.native_cleanup = match original.reserve_work(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }) {
                     Ok(credit) => Some(credit),
                     Err(error) => return Poll::Ready(Err(error.into())),
                 };
                 if grows {
-                    growth_visits = match original.reserve_items(waiters.len() as u64) {
+                    growth_visits = match original.reserve_work(crate::WorkCounters { items_examined: waiters.len() as u64, ..crate::WorkCounters::UNCHARGED }) {
                         Ok(credit) => Some(credit),
                         Err(error) => return Poll::Ready(Err(error.into())),
                     };
-                    cancellation_visits = match original.reserve_items(cancellation_items) {
+                    cancellation_visits = match original.reserve_work(crate::WorkCounters { items_examined: cancellation_items, ..crate::WorkCounters::UNCHARGED }) {
                         Ok(credit) => Some(credit),
                         Err(error) => return Poll::Ready(Err(error.into())),
                     };
@@ -977,7 +977,7 @@ impl Cancelled<'_> {
                             if let Some(lease) = &new_lease { lease.registered.fetch_add(1, Ordering::AcqRel); }
                         }
                         if let Some(credit) = &mut growth_visits {
-                            credit.consume_deferred(1);
+                            credit.record_deferred(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED });
                         }
                     }
                     *waiter.registry_lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_lease.clone();
@@ -1108,7 +1108,7 @@ impl Drop for Cancelled<'_> {
             }
             if self.registered.is_some() {
                 if let Some(credit) = &mut self.native_cleanup {
-                    credit.consume_deferred(1);
+                    credit.record_deferred(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED });
                 }
             }
         }

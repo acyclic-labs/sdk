@@ -341,17 +341,8 @@ impl<P: StreamProvider> HistoryReader<P> {
         Ok(Self { client: client.clone(), stream, verifier })
     }
 
-    /// Explicitly hydrates one finite logical prefix for fork grant capture.
+    /// Hydrates a bounded logical prefix for fork grant capture.
     pub async fn fork_history(
-        &self,
-        parent: &crate::core::Reducer,
-        through_sequence: u64,
-        limits: HistoryReadLimits,
-    ) -> Result<crate::fork::PreparedForkHistory> {
-        self.fork_history_with_work(parent, through_sequence, limits, &mut None).await
-    }
-
-    pub(crate) async fn fork_history_with_work(
         &self,
         parent: &crate::core::Reducer,
         through_sequence: u64,
@@ -375,7 +366,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             through_revision: parent.revision(),
         };
         let cursor_bytes = cursor.authority.id.capacity() as u64;
-        let messages = self.conversation_range_with_work(
+        let messages = self.conversation_range(
             &cursor, 0, through_sequence, limits, work,
         ).await;
         drop(cursor);
@@ -384,7 +375,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             if messages.is_ok() { released?; }
         }
         let (mut conversation, _) =
-            crate::conversation::ConversationState::selected_view(messages?, work)?;
+            crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: messages?, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
         conversation.agent = source.agent;
         if through_sequence >= source.resident_after_sequence()
             && conversation.history_prefix_digest(through_sequence, work)?
@@ -477,7 +468,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         if parent.verifier.audience() != &seed.parent || self.verifier.audience() != &seed.child {
             return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Unauthorized, "published child differs from the original parent or child audience"));
         }
-        let child_cut = self.pin_with_work(0,
+        let child_cut = self.pin(0,
             work.as_mut().map(|work| &mut **work as &mut dyn HistoryIo)).await?;
         if child_cut.through_revision == 0 {
             return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Unauthorized, "published child is not bound"));
@@ -532,26 +523,8 @@ impl<P: StreamProvider> HistoryReader<P> {
         released_binding
     }
 
-    /// Resolves a globally unique admitted operation without restoring its aggregate.
-    pub async fn operation_event(&self, operation: crate::OperationId) -> Result<Option<Event>> {
-        super::operations::find_operation_bounded_with_work(
-            &self.client,
-            self.verifier.audience(),
-            &self.verifier,
-            operation, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut None,
-        ).await.map(|(event, _)| event)
-    }
-
     /// Resolves an attested operation under a finite encoded-byte allowance.
-    pub async fn operation_event_bounded(
-        &self,
-        operation: crate::OperationId,
-        maximum_bytes: u64,
-    ) -> Result<(Option<Event>, u64)> {
-        self.operation_event_bounded_with_work(operation, maximum_bytes, &mut None).await
-    }
-
-    pub(crate) async fn operation_event_bounded_with_work(
+    pub async fn operation_event(
         &self,
         operation: crate::OperationId,
         maximum_bytes: u64,
@@ -590,7 +563,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         seed.validate(&mut None)?;
         let publication_revision = crate::contract::next_revision(seed.parent_revision)?;
         let (publication, consumed) = self
-            .operation_event_bounded(seed.operation_id, limits.maximum_bytes)
+            .operation_event(seed.operation_id, limits.maximum_bytes, &mut None)
             .await?;
         let publication = publication
             .ok_or_else(|| Error::Conflict("inherited history has no published fork".into()))?;
@@ -626,7 +599,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 maximum_events: limits.maximum_events - 1,
                 maximum_bytes: remaining_bytes,
             },
-        )
+         &mut None)
         .await
     }
 
@@ -712,23 +685,13 @@ impl<P: StreamProvider> HistoryReader<P> {
                 Error::Storage("selected history message is missing at its pinned cutoff".into())
             })?);
         }
-        let view = crate::conversation::ConversationState::selected_view(messages, &mut None).map(|(state, _)| state)?;
+        let view = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).map(|(state, _)| state)?;
         crate::projection::validate_model_context_selection_at_revision(&view, selection, selection.conversation_revision, None)?;
         Ok(view)
     }
 
-    /// Reads an exact contiguous canonical message range at one event cutoff.
+    /// Reads an exact canonical message range at one event cutoff.
     pub async fn conversation_range(
-        &self,
-        cursor: &HistoryCursor,
-        after_sequence: u64,
-        through_sequence: u64,
-        limits: HistoryReadLimits,
-    ) -> Result<Vec<crate::conversation::ConversationMessage>> {
-        self.conversation_range_with_work(cursor, after_sequence, through_sequence, limits, &mut None).await
-    }
-
-    pub(crate) async fn conversation_range_with_work(
         &self,
         cursor: &HistoryCursor,
         after_sequence: u64,
@@ -786,25 +749,8 @@ impl<P: StreamProvider> HistoryReader<P> {
         Ok(messages)
     }
 
-    /// Reconstructs one exact effect at the pinned canonical cut.
+    /// Reconstructs an effect at the pinned cut and returns its retained bytes.
     pub async fn effect(
-        &self,
-        cursor: &HistoryCursor,
-        effect: crate::EffectId,
-        limits: HistoryReadLimits,
-    ) -> Result<Option<crate::core::EffectState>> {
-        self.effect_with_work(cursor, effect, limits, None).await
-    }
-
-    pub(crate) async fn effect_with_work(
-        &self, cursor: &HistoryCursor, effect: crate::EffectId,
-        limits: HistoryReadLimits, work: Option<&mut dyn HistoryIo>,
-    ) -> Result<Option<crate::core::EffectState>> {
-        self.effect_with_retained_quota(cursor, effect, limits, work).await
-            .map(|effect| effect.map(|(state, _)| state))
-    }
-
-    pub(crate) async fn effect_with_retained_quota(
         &self, cursor: &HistoryCursor, effect: crate::EffectId,
         limits: HistoryReadLimits, mut work: Option<&mut dyn HistoryIo>,
     ) -> Result<Option<(crate::core::EffectState, u64)>> {
@@ -830,12 +776,8 @@ impl<P: StreamProvider> HistoryReader<P> {
         result.map(Some)
     }
 
-    /// Captures a committed boundary once for explicit archival traversal.
-    pub async fn pin(&self, after_revision: u64) -> Result<HistoryCursor> {
-        self.pin_with_work(after_revision, None).await
-    }
-
-    pub(crate) async fn pin_with_work(
+    /// Captures a committed boundary for archival traversal.
+    pub async fn pin(
         &self,
         after_revision: u64,
         mut work: Option<&mut dyn HistoryIo>,

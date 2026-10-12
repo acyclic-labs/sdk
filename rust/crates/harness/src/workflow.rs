@@ -92,7 +92,6 @@ macro_rules! workflow_physical_copy {
     };
 }
 
-workflow_physical_copy!(workflow_copy_text, String, crate::core::copy_text);
 workflow_physical_copy!(workflow_copy_value, Value, crate::core::copy_value);
 workflow_physical_copy!(workflow_copy_identity, MachineIdentity, copy_machine_identity);
 workflow_physical_copy!(workflow_copy_checkpoint, MachineCheckpoint, copy_machine_checkpoint);
@@ -155,11 +154,11 @@ pub struct MachineIdentity {
 
 impl MachineIdentity {
     /// Rejects an unpinned or malformed state-machine implementation.
-    pub fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
-        workflow_label(&self.name, "machine name", io)?;
-        workflow_label(&self.version, "machine version", io)?;
+    pub fn validate(&self, work: &mut Option<&mut dyn crate::store::HistoryIo>) -> Result<()> {
+        workflow_label(&self.name, "machine name", work)?;
+        workflow_label(&self.version, "machine version", work)?;
         if self.digest == [0; 32] {
-            return Err(workflow_invalid_error(io,
+            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid,
                 "machine implementation digest must be a nonzero 32-byte value"));
         }
         Ok(())
@@ -294,40 +293,34 @@ impl MachineRegistry {
         Ok((Self(copied), observer.into_custody()))
     }
 
-    /// Registers one exact implementation.
-    pub fn register(&mut self, machine: Arc<dyn ResumableMachine>) -> Result<()> {
-        self.register_with_io(machine, None)
-    }
-
-    pub(crate) fn register_with_io(
-        &mut self, machine: Arc<dyn ResumableMachine>, io: Option<&crate::executor::PreparationIo>,
+    /// Registers one exact implementation on the optional work observer.
+    pub fn register(
+        &mut self, machine: Arc<dyn ResumableMachine>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if io.is_some() && !machine.supports_native_work() {
+        if work.is_some() && !machine.supports_native_work() {
             return Err(native_workflow_unsupported("machine has no native state callbacks"));
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let identity = if let Some(io) = io {
-            let work = io.original_native_work().ok_or_else(|| {
-                native_workflow_unsupported("native machine metadata requires original work")
-            })?;
-            machine.identity_with_native_work(work)?
-        } else {
-            machine.identity()
-        };
+        let identity = if let Some(observer) = work.as_deref() {
+            let native = observer.original_native_work().ok_or_else(||
+                native_workflow_unsupported("native machine metadata requires original work"))?;
+            machine.identity_with_native_work(native)?
+        } else { machine.identity() };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let identity = machine.identity();
-        identity.validate(io)?;
-        crate::contract::compile_json_schema(machine.state_schema(), "machine state", io)?;
-        let key = (
-            workflow_copy_text(&identity.name, io)?,
-            workflow_copy_text(&identity.version, io)?,
-            identity.digest,
-        );
+        identity.validate(work)?;
+        crate::contract::compile_json_schema_with_work(machine.state_schema(), "machine state", work)?;
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let key = (crate::core::copy_text(&identity.name, &mut quota)?,
+            crate::core::copy_text(&identity.version, &mut quota)?, identity.digest);
         if self.0.contains_key(&key) {
-            return Err(workflow_recovery_error(io, "machine identity is already registered", false));
+            return Err(crate::scheduler::diagnostic(quota.work(), crate::wire::ErrorCode::Conflict,
+                "machine identity is already registered"));
         }
         self.0.insert(key, machine);
+        quota.transfer();
         Ok(())
     }
 
@@ -340,7 +333,7 @@ impl MachineRegistry {
             return Err(native_workflow_unsupported("machine has no native state callbacks"));
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let result = self.register_with_io(machine, Some(&io));
+        let result = crate::executor::with_history_io(Some(&io), |work| self.register(machine, work));
         let retained = io.owned_bytes()?;
         let (_, custody) = finish_native_io(result, io, retained)?;
         Ok(custody)
@@ -617,7 +610,7 @@ impl WorkflowAdmission {
         if self.request_digest == [0; 32] || self.initial.revision != 0 {
             return Err(workflow_invalid_error(io, "workflow admission identity is invalid"));
         }
-        self.initial.machine.validate(io)
+        crate::executor::with_history_io(io, |work| self.initial.machine.validate(work))
     }
 }
 
@@ -1377,19 +1370,16 @@ fn validate_workflow_key(
     Ok(())
 }
 
-fn workflow_label(value: &str, field: &str, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+fn workflow_label(value: &str, field: &str, work: &mut Option<&mut dyn crate::store::HistoryIo>) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io {
-        io.check_cancellation()?;
-        io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 }, false)?;
-        return if crate::contract::is_valid_component_label(value) {
-            Ok(())
-        } else {
-            Err(workflow_invalid_error(Some(io), "workflow component label is invalid"))
-        };
+    if let Some(observer) = work.as_deref_mut() {
+        observer.check_cancellation()?;
+        observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+        return if crate::contract::is_valid_component_label(value) { Ok(()) }
+            else { Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "workflow component label is invalid" }) };
     }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let _ = io;
+    let _ = work;
     crate::contract::validate_component_label(value, field)
 }
 
@@ -1591,7 +1581,7 @@ mod tests {
         registry.register(Arc::new(Counter {
             identity: identity.clone(),
             schema: json!({"type":"integer","minimum":0}),
-        }))?;
+        }), &mut None)?;
         let initial = MachineCheckpoint {
             machine: identity,
             revision: 0,

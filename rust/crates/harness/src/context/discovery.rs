@@ -206,7 +206,7 @@ impl PinnedContextPath {
                 &self.root.directory,
                 &self.path,
                 Some(&self.generation),
-                crate::conversation::MAX_LIMIT_FILE_BYTES, None,
+                crate::conversation::MAX_EXACT_JS_INTEGER, None,
             )?
             .await?;
         if file.volume() != &self.root.volume || file.path() != self.path {

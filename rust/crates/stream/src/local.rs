@@ -1738,7 +1738,7 @@ fn joined_path(
     observed?;
     capacity?;
     if let Some(meter) = meter { meter.check()?; }
-    Ok(MemoryOutput { value: path, allocation: crate::memory::MemoryAllocation { allocation } })
+    Ok(MemoryOutput { value: path, allocation: allocation })
 }
 
 /// The temporary file's real close is accepted before acquiring the handle.

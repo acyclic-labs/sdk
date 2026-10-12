@@ -114,7 +114,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         &fixture.host.verifier, &restored_record.policy_scope, &project, VolumeOperation::Read,
     ).is_err());
     let mut other_purpose = restored_record.clone();
-    other_purpose.policy_scope = issuer.root("harness.other-purpose.v1", Capabilities::new(["harness.other-purpose.v1"]));
+    other_purpose.policy_scope = issuer.issue("harness.other-purpose.v1", &Capabilities::new(["harness.other-purpose.v1"]), None, None, &mut None).expect("scope proof");
     fixture.host.verifier.verify(&other_purpose.policy_scope)?;
     assert!(other_purpose.verify_scope(&fixture.host.verifier).is_err());
     let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
@@ -332,7 +332,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let crate::distributed::WorkPull::Claimed(helper_lease) = fixture.host.pull_work(&fixture.worker).await? else {
         return Err(Error::NotFound("authorized source preparation lease".into()));
     };
-    fixture.host.start_task(&helper_lease).await?;
+    fixture.host.start_task(&helper_lease, None).await?;
     let helper_guard = acyclic_fs::CancellationToken::new();
     let helper_owner = Arc::new(fixture.host.journal_owner(TaskId::from_bytes([130;16]), (&helper_lease.reservation).into()).await?
         .with_invocation_cancellation(&helper_guard));
@@ -360,7 +360,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
             8 => record.native_snapshot = Some(serde_json::json!({"forgedNativeProof":true})),
             9 => record.graph_root = child,
             10 => record.maximum_work += 1,
-            _ => record.policy_scope = foreign.root(record.policy_scope.id(), record.policy_scope.capabilities().clone()),
+            _ => record.policy_scope = foreign.issue(&record.policy_scope.id(), record.policy_scope.capabilities(), None, None, &mut None).expect("scope proof"),
         }
         assert!(record.verify_scope(&fixture.host.verifier).is_err(), "descriptor control {control}");
     }
@@ -378,7 +378,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let crate::distributed::WorkPull::Claimed(recovered_root) = fixture.host.recover_work(fixture.root).await? else {
         return Err(Error::NotFound("recovered original source caller".into()));
     };
-    fixture.host.start_task(&recovered_root).await?;
+    fixture.host.start_task(&recovered_root, None).await?;
     let recovered_context = runtime.task_context(fixture.root, (&recovered_root.reservation).into()).await?;
     let recovered_guard = acyclic_fs::CancellationToken::new();
     let recovered_owner = Arc::new(fixture.host.journal_owner(fixture.root, recovered_context.owned_task_fence()?).await?

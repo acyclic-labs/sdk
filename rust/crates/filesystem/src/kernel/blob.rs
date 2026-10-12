@@ -775,9 +775,9 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = &native {
             let capacity = owned.value.capacity();
-            let copied = original.reserve_copy(usize_to_u64(capacity))?;
+            let copied = original.reserve_work(crate::WorkCounters { bytes_copied: usize_to_u64(capacity), ..crate::WorkCounters::UNCHARGED })?;
             owned.value.resize(capacity, 0);
-            copied.record(usize_to_u64(capacity))?;
+            { let mut copy = copied; copy.record_completed(crate::WorkCounters { bytes_copied: usize_to_u64(capacity), ..crate::WorkCounters::UNCHARGED }) }?;
             let owned = buffer.take().expect("original source storage");
             prepared = Some(acyclic_stream::PreparedOwnedBytes::new(
                 owned.value, owned.custody, original.runtime_meter_owner(),

@@ -110,7 +110,7 @@ impl WasmTaskRuntime {
         turn: String,
     ) -> std::result::Result<WasmHeadlessExecution, JsValue> {
         let (model, provider, compaction) = self.model.as_ref().ok_or_else(|| js_error(Error::Unsupported("model is not bound".into())))?;
-        let execution = self.runtime.stock_execution(TaskId::parse(&task).map_err(js_error)?, from_js(fence)?, OperationId::parse(&turn).map_err(js_error)?, model.clone(), provider.clone(), ContextPipeline::default()).await.map_err(js_error)?.with_compaction_policy(compaction.clone());
+        let execution = self.runtime.stock_execution(TaskId::parse(&task).map_err(js_error)?, from_js(fence)?, OperationId::parse(&turn).map_err(js_error)?, model.clone(), provider.clone(), ContextPipeline::default(), None).await.map_err(js_error)?.with_compaction_policy(compaction.clone());
         Ok(WasmHeadlessExecution { execution })
     }
 }

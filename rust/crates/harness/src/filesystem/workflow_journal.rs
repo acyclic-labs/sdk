@@ -108,18 +108,16 @@ pub struct FilesystemWorkflowJournal<P, A, O> {
 }
 
 /// A private original-owner observation, usable only with an atomic workflow tail comparison.
-pub(crate) struct WorkflowReleaseWitness<'a, P> {
-    owner: &'a TaskJournalOwner<P>,
+pub(crate) struct WorkflowReleaseWitness<'a> {
+    binding: (crate::TaskId, &'a crate::scheduler::LeaseFence),
     path: &'a str,
     tail: u64,
 }
 
-impl<P: StreamProvider> WorkflowReleaseWitness<'_, P> {
-    pub(crate) fn task_binding(&self) -> (crate::TaskId, &crate::scheduler::LeaseFence) {
-        self.owner.task_binding()
+impl WorkflowReleaseWitness<'_> {
+    pub(crate) fn condition(&self) -> ((crate::TaskId, &crate::scheduler::LeaseFence), (&str, u64)) {
+        (self.binding, (self.path, self.tail))
     }
-    pub(crate) fn path(&self) -> &str { self.path }
-    pub(crate) fn tail(&self) -> u64 { self.tail }
 }
 
 impl<P, A, O> FilesystemWorkflowJournal<P, A, O>
@@ -180,13 +178,13 @@ where
         owner.validate_storage(verifier, maximum_payload_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         let stream = owner.stream();
         let io = PreparationIo::from_native_work(work)?;
-        ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Read, &io)?;
-        ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Write, &io)?;
+        ContentGrant::authorize_volume(verifier, scope, volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
+        ContentGrant::authorize_volume(verifier, scope, volume, VolumeOperation::Write, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
         let (verifier, verifier_custody) = verifier.clone_with_native_work(work)?;
         io.absorb_native_custody(verifier_custody)?;
         let (scope, scope_custody) = scope.clone_with_native_work(work)?;
         io.absorb_native_custody(scope_custody)?;
-        let volume = volume.copy(&io)?;
+        let volume = volume.copy(&mut Some(&mut io.history_io()))?;
         let identity_io = PreparationIo::from_native_work(work)?;
         let _identity;
         let identity = crate::contract::preparation_format(format_args!("{}", owner.operation_id()), Some(&identity_io))?;
@@ -240,12 +238,9 @@ where
         {
             return Err(Error::Invalid("workflow journal binding is invalid".into()));
         }
-        if let Some(io) = io {
-            ContentGrant::verify_original_volume_with_io(&verifier, &scope, &volume, VolumeOperation::Read, io)?;
-            ContentGrant::verify_original_volume_with_io(&verifier, &scope, &volume, VolumeOperation::Write, io)?;
-        } else {
-            ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read)?;
-            ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Write)?;
+        if io.is_none() {
+            ContentGrant::authorize_volume(&verifier, &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
+            ContentGrant::authorize_volume(&verifier, &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
         }
         let path_hold;
         let path = crate::contract::preparation_format(
@@ -299,7 +294,7 @@ where
         let bytes = self.read_bound_content(reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let record: WorkflowRecord = match io {
-            Some(io) => io.decode_preparation::<WorkflowRecord>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
+            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowRecord>(&bytes, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?,
         };
@@ -363,7 +358,7 @@ where
             .ok_or_else(|| observation_boundary(io, crate::wire::ErrorCode::Invalid,
                 "workflow replay vector ownership overflow"))? as u64;
         let vector_hold = if let Some(io) = io {
-            io.claim(vector_bytes)?;
+            io.retain_owned(vector_bytes)?;
             let hold = io.guard_owned(vector_bytes)?;
             io.allocation_attempt(vector_bytes)?;
             Some(hold)
@@ -381,7 +376,7 @@ where
             let reference_hold;
             let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
             let reference: FileRef = match io {
-                Some(io) => io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?.into_retained(),
+                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                     Error::Storage(format!("workflow reference is invalid: {error}"))
                 })?,
@@ -486,13 +481,13 @@ where
 
     pub(crate) async fn prove_release_with_io(
         &self, io: &PreparationIo,
-    ) -> Result<Option<WorkflowReleaseWitness<'_, P>>> {
+    ) -> Result<Option<WorkflowReleaseWitness<'_>>> {
         let Some(record) = self.observe_latest_record(Some(io)).await? else { return Ok(None); };
         if !matches!(record.transition.status, MachineStatus::Suspended) { return Ok(None); }
         let owner = self.owner.as_ref().ok_or_else(|| {
             Error::Unsupported("workflow release requires its original task owner".into())
         })?;
-        Ok(Some(WorkflowReleaseWitness { owner, path: &self.path, tail: record.next.revision }))
+        Ok(Some(WorkflowReleaseWitness { binding: owner.task_binding(), path: &self.path, tail: record.next.revision }))
     }
 
     async fn verify_observation_owner(
@@ -575,14 +570,14 @@ where
                     return Err(observation_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
                         "workflow content belongs to another private volume"));
                 }
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io,
+                ContentGrant::authorize_volume(
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()),
                 )?;
                 self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await
             }
             None => {
                 let read = ContentGrant::verify(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read,
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None,
                 )?;
                 self.host.read_content(reference, &read, self.maximum_payload_bytes).await
             }
@@ -729,7 +724,7 @@ where
         let _reference_hold;
         let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
         let reference: FileRef = match io {
-            Some(io) => io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?.into_retained(),
+            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                 Error::Storage(format!("workflow admission reference is invalid: {error}"))
             })?,
@@ -755,7 +750,7 @@ where
         let bytes = self.read_bound_content(&reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let admission: WorkflowAdmission = match io {
-            Some(io) => io.decode_preparation::<WorkflowAdmission>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
+            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowAdmission>(&bytes, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
         };
@@ -804,12 +799,12 @@ where
         let grant = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                ContentGrant::verify_with_work(
+                ContentGrant::verify(
                     &self.verifier, &self.scope, &self.volume, VolumeOperation::Write,
                     io.remaining()?.bytes_encoded, &mut Some(&mut borrowed),
                 )?
             }
-            None => ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write)?,
+            None => ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?,
         };
         _grant = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
         self.host.put_content_impl(&self.volume, &grant, &path, &bytes, "application/json",
@@ -1062,7 +1057,7 @@ where
             let _pinned;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let pinned: WorkflowAdmission = match io {
-                Some(io) => io.decode_preparation::<WorkflowAdmission>(&pinned_bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
+                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowAdmission>(&pinned_bytes, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&pinned_bytes)
                     .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
             };

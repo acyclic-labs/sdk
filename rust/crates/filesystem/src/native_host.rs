@@ -1329,11 +1329,11 @@ pub(crate) fn read_builtin_file(
     let mut transfer = acyclic_native_runtime::NativeByteReservation::new(
         work.native_read_meter().as_ref(), acyclic_native_runtime::NativeOperationKind::Read, destination.len(),
     ).map_err(native_builtin_runtime_error)?;
-    let copy = work.reserve_copy(destination.len() as u64)?;
+    let copy = work.reserve_work(crate::WorkCounters { bytes_copied: destination.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
     work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
     let count = (&*file).read(destination)?;
     let transferred = transfer.record(count).map_err(native_builtin_runtime_error);
-    let copied = copy.record(count as u64);
+    let copied = { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: count as u64, ..crate::WorkCounters::UNCHARGED }) };
     transferred?;
     copied?;
     Ok(count)
@@ -1346,11 +1346,11 @@ pub(crate) fn write_builtin_file(
     let mut transfer = acyclic_native_runtime::NativeByteReservation::new(
         work.native_read_meter().as_ref(), acyclic_native_runtime::NativeOperationKind::Write, source.len(),
     ).map_err(native_builtin_runtime_error)?;
-    let copy = work.reserve_copy(source.len() as u64)?;
+    let copy = work.reserve_work(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
     work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })?;
     let count = (&*file).write(source)?;
     let transferred = transfer.record(count).map_err(native_builtin_runtime_error);
-    let copied = copy.record(count as u64);
+    let copied = { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: count as u64, ..crate::WorkCounters::UNCHARGED }) };
     transferred?;
     copied?;
     Ok(count)
@@ -2097,12 +2097,6 @@ use windows::Win32::Storage::FileSystem::FILE_BASIC_INFO;
 #[error("native metadata cannot represent {0}")]
 pub(crate) struct NativeMetadataError(pub(crate) &'static str);
 
-#[cfg(target_os = "linux")]
-#[cfg(any(feature = "native-mount", test))]
-pub(crate) struct LinuxMetadataTarget {
-    inode: std::os::fd::OwnedFd,
-}
-
 #[cfg(target_os = "macos")]
 #[cfg(any(feature = "native-mount", test))]
 pub(crate) enum MacMetadataTarget {
@@ -2570,46 +2564,24 @@ impl HostRoot {
     }
 }
 
-#[cfg(target_os = "linux")]
-#[cfg(any(feature = "native-mount", test))]
-impl LinuxMetadataTarget {
-    fn open<W: crate::demand::SourceDemandReadWork>(root: &Dir, path: &Path, work: &mut W) -> Result<Self, DemandError> {
-        let file = with_unix_parent_leaf(root, path, work, |parent, leaf, work| {
-            open_unix(parent.as_raw_fd(), leaf, libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                || native_read_with_work(work))
-        })?;
-        Ok(Self { inode: file.into() })
-    }
+#[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "native-mount"))]
+pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
+    file: &File, attributes: &[(Vec<u8>, acyclic_stream::OwnedBytes)], work: &mut W,
+) -> Result<(), DemandError> {
+    use std::os::unix::ffi::OsStrExt as _;
 
-    fn observed_measured<W: crate::demand::SourceDemandReadWork>(&self, work: &mut W) -> Result<libc::stat, DemandError> {
-
-        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-        native_read_with_work(work)?;
-        // SAFETY: the held inode is live and fstat initializes stat on success.
-        if unsafe { libc::fstat(self.inode.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
-            return Err(io::Error::last_os_error().into());
-        }
-        // SAFETY: fstat succeeded and initialized the complete structure.
-        Ok(unsafe { stat.assume_init() })
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
-        &self,
-        attributes: &[(Vec<u8>, acyclic_stream::OwnedBytes)],
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        use std::os::unix::ffi::OsStrExt as _;
-
-        work.check()?;
-        if attributes.is_empty() { return Ok(()); }
-        if self.observed_measured(work)?.st_mode & libc::S_IFMT == libc::S_IFLNK {
+    work.check()?;
+    if attributes.is_empty() { return Ok(()); }
+    #[cfg(target_os = "linux")]
+    let mut pinned = [0_u8; 32];
+    #[cfg(target_os = "linux")]
+    let pinned = {
+        if fstat_with_work(file.as_raw_fd(), work)?.st_mode & libc::S_IFMT == libc::S_IFLNK {
             return Err(NativeMetadataError("named_attributes on a symbolic link").into());
         }
         // O_PATH cannot receive xattr calls.
-        let mut pinned = [0_u8; 32];
         let prefix = b"/proc/self/fd/";
-        let fd = self.inode.as_raw_fd() as u32;
+        let fd = file.as_raw_fd() as u32;
         let digits = fd.checked_ilog10().unwrap_or(0) as usize + 1;
         let length = prefix.len() + digits;
         work.charge(WorkCounters { bytes_copied: prefix.len() as u64,
@@ -2622,131 +2594,140 @@ impl LinuxMetadataTarget {
         }
         let pinned = std::ffi::CStr::from_bytes_with_nul(&pinned[..=length])
             .map_err(|_| NativeMetadataError("named_attributes"))?;
-        for (name, value) in attributes {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            let mut entered = false;
-            let result = unix_name_with_work(OsStr::from_bytes(name), work, |name, work| {
-                entered = true;
-                native_write(work)?;
-                // SAFETY: names and the exact value slice remain live.
-                if unsafe { libc::setxattr(pinned.as_ptr(), name.as_ptr(),
-                    value.as_ptr().cast(), value.len(), 0) } != 0 {
-                    return Err(io::Error::last_os_error().into());
+        pinned
+    };
+    #[cfg(target_os = "macos")]
+    let fd = file.as_raw_fd();
+    for (name, value) in attributes {
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+        let mut entered = false;
+        let result = unix_name_with_work(OsStr::from_bytes(name), work, |name, work| {
+            entered = true;
+            native_write(work)?;
+            // SAFETY: the held target, terminated name, and value remain live.
+            #[cfg(target_os = "linux")]
+            let written = unsafe { libc::setxattr(pinned.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0) };
+            #[cfg(target_os = "macos")]
+            let written = unsafe { libc::fsetxattr(fd, name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0) };
+            if written != 0 {
+                return Err(io::Error::last_os_error().into());
+            }
+            let length = value.len().checked_add(1).ok_or(crate::WorkError::Overflow)?;
+            work.allocate(length as u64)?;
+            let mut readback = vec![0_u8; length];
+            let result = (|| {
+                work.check()?;
+                work.admit(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
+                native_read_with_work(work)?;
+                // SAFETY: the output buffer is writable for its full length.
+                #[cfg(target_os = "linux")]
+                let read = unsafe { libc::getxattr(pinned.as_ptr(), name.as_ptr(), readback.as_mut_ptr().cast(), readback.len()) };
+                #[cfg(target_os = "macos")]
+                let read = unsafe { libc::fgetxattr(fd, name.as_ptr(), readback.as_mut_ptr().cast(), readback.len(), 0, 0) };
+                if let Ok(read) = u64::try_from(read) {
+                    work.record(WorkCounters { source_bytes_read: read, ..WorkCounters::UNCHARGED })?;
                 }
-                let length = value.len().checked_add(1).ok_or(crate::WorkError::Overflow)?;
-                work.allocate(length as u64)?;
-                let mut readback = vec![0_u8; length];
-                let result = (|| {
-                    work.check()?;
-                    work.admit(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
-                    native_read_with_work(work)?;
-                    // SAFETY: the output buffer is writable for its full length.
-                    let read = unsafe { libc::getxattr(pinned.as_ptr(), name.as_ptr(),
-                        readback.as_mut_ptr().cast(), readback.len()) };
-                    if let Ok(read) = u64::try_from(read) {
-                        work.record(WorkCounters { source_bytes_read: read, ..WorkCounters::UNCHARGED })?;
-                    }
-                    if usize::try_from(read).ok() != Some(value.len()) {
+                if usize::try_from(read).ok() != Some(value.len()) {
+                    return Err(NativeMetadataError("named_attributes readback mismatch").into());
+                }
+                for (actual, expected) in readback.iter().zip(value.iter()) {
+                    work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                    if actual != expected {
                         return Err(NativeMetadataError("named_attributes readback mismatch").into());
                     }
-                    for (actual, expected) in readback.iter().zip(value.iter()) {
-                        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                        if actual != expected {
-                            return Err(NativeMetadataError("named_attributes readback mismatch").into());
-                        }
-                    }
-                    Ok(())
-                })();
-                drop(readback);
-                work.release(length as u64)?;
-                result
-            });
-            match result {
-                Err(DemandError::Io(error)) if !entered && error.kind() == io::ErrorKind::InvalidInput =>
-                    return Err(NativeMetadataError("named_attributes").into()),
-                result => result?,
-            }
+                }
+                Ok(())
+            })();
+            drop(readback);
+            work.release(length as u64)?;
+            result
+        });
+        match result {
+            Err(DemandError::Io(error)) if !entered && error.kind() == io::ErrorKind::InvalidInput =>
+                return Err(NativeMetadataError("named_attributes").into()),
+            result => result?,
         }
-        Ok(())
     }
+    Ok(())
+}
 
+#[cfg(target_os = "linux")]
+#[cfg(any(feature = "native-mount", test))]
+pub(crate) fn apply_linux_metadata<W: crate::demand::SourceDemandReadWork>(
+    file: &File, metadata: crate::kernel::FileMetadata, work: &mut W,
+) -> Result<(), DemandError> {
+    use crate::kernel::MetadataField;
 
-    pub(crate) fn apply<W: crate::demand::SourceDemandReadWork>(
-        &self, metadata: crate::kernel::FileMetadata, work: &mut W,
-    ) -> Result<(), DemandError> {
-        use crate::kernel::MetadataField;
-
-        let mut observed = self.observed_measured(work)?;
-        validate_linux_metadata(observed, metadata, work)?;
-        let requested_uid = match metadata.posix_uid {
-            MetadataField::Value(uid) if uid != observed.st_uid => uid,
-            _ => libc::uid_t::MAX,
-        };
-        let requested_gid = match metadata.posix_gid {
-            MetadataField::Value(gid) if gid != observed.st_gid => gid,
-            _ => libc::gid_t::MAX,
-        };
-        if requested_uid != libc::uid_t::MAX || requested_gid != libc::gid_t::MAX {
+    let mut observed = fstat_with_work(file.as_raw_fd(), work)?;
+    validate_linux_metadata(observed, metadata, work)?;
+    let requested_uid = match metadata.posix_uid {
+        MetadataField::Value(uid) if uid != observed.st_uid => uid,
+        _ => libc::uid_t::MAX,
+    };
+    let requested_gid = match metadata.posix_gid {
+        MetadataField::Value(gid) if gid != observed.st_gid => gid,
+        _ => libc::gid_t::MAX,
+    };
+    if requested_uid != libc::uid_t::MAX || requested_gid != libc::gid_t::MAX {
+        native_write(work)?;
+        // SAFETY: AT_EMPTY_PATH acts on the pinned inode, including a final symlink.
+        if unsafe {
+            libc::fchownat(
+                file.as_raw_fd(),
+                c"".as_ptr(),
+                requested_uid,
+                requested_gid,
+                libc::AT_EMPTY_PATH,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error().into());
+        }
+        observed = fstat_with_work(file.as_raw_fd(), work)?;
+    }
+    if let MetadataField::Value(mode) = metadata.posix_mode {
+        let desired = mode & 0o7777;
+        if desired != observed.st_mode & 0o7777 {
             native_write(work)?;
-            // SAFETY: AT_EMPTY_PATH acts on the pinned inode, including a final symlink.
+            // SAFETY: fchmodat2 with AT_EMPTY_PATH acts only on the held inode.
             if unsafe {
-                libc::fchownat(
-                    self.inode.as_raw_fd(),
+                libc::syscall(
+                    LINUX_FCHMODAT2_SYSCALL,
+                    file.as_raw_fd(),
                     c"".as_ptr(),
-                    requested_uid,
-                    requested_gid,
+                    desired,
                     libc::AT_EMPTY_PATH,
                 )
             } != 0
             {
                 return Err(io::Error::last_os_error().into());
             }
-            observed = self.observed_measured(work)?;
+            observed = fstat_with_work(file.as_raw_fd(), work)?;
         }
-        if let MetadataField::Value(mode) = metadata.posix_mode {
-            let desired = mode & 0o7777;
-            if desired != observed.st_mode & 0o7777 {
-                native_write(work)?;
-                // SAFETY: fchmodat2 with AT_EMPTY_PATH acts only on the held inode.
-                if unsafe {
-                    libc::syscall(
-                        LINUX_FCHMODAT2_SYSCALL,
-                        self.inode.as_raw_fd(),
-                        c"".as_ptr(),
-                        desired,
-                        libc::AT_EMPTY_PATH,
-                    )
-                } != 0
-                {
-                    return Err(io::Error::last_os_error().into());
-                }
-                observed = self.observed_measured(work)?;
-            }
-        }
-        if matches!(metadata.modified_ns, MetadataField::Value(_))
-            || matches!(metadata.accessed_ns, MetadataField::Value(_))
-        {
-            let times = [
-                linux_time_spec(metadata.accessed_ns)?,
-                linux_time_spec(metadata.modified_ns)?,
-            ];
-            native_write(work)?;
-            // SAFETY: AT_EMPTY_PATH targets the held inode and the timespecs remain live until the syscall returns.
-            if unsafe {
-                libc::utimensat(
-                    self.inode.as_raw_fd(),
-                    c"".as_ptr(),
-                    times.as_ptr(),
-                    libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-                )
-            } != 0
-            {
-                return Err(io::Error::last_os_error().into());
-            }
-            observed = self.observed_measured(work)?;
-        }
-        verify_linux_metadata(observed, metadata).map_err(Into::into)
     }
+    if matches!(metadata.modified_ns, MetadataField::Value(_))
+        || matches!(metadata.accessed_ns, MetadataField::Value(_))
+    {
+        let times = [
+            linux_time_spec(metadata.accessed_ns)?,
+            linux_time_spec(metadata.modified_ns)?,
+        ];
+        native_write(work)?;
+        // SAFETY: AT_EMPTY_PATH targets the held inode and the timespecs remain live until the syscall returns.
+        if unsafe {
+            libc::utimensat(
+                file.as_raw_fd(),
+                c"".as_ptr(),
+                times.as_ptr(),
+                libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error().into());
+        }
+        observed = fstat_with_work(file.as_raw_fd(), work)?;
+    }
+    verify_linux_metadata(observed, metadata).map_err(Into::into)
 }
 
 #[cfg(target_os = "linux")]
@@ -3434,9 +3415,9 @@ fn prepare_source_link_buffer<W: crate::demand::SourceDemandReadWork>(
         let _cleanup = work.release(allocation);
         return Err(error);
     }
-    let copied = original.reserve_copy(allocation).map_err(crate::native_name::original_name_error)?;
+    let copied = original.reserve_work(crate::WorkCounters { bytes_copied: allocation, ..crate::WorkCounters::UNCHARGED }).map_err(crate::native_name::original_name_error)?;
     buffer.resize(buffer.capacity(), 0);
-    copied.record(allocation).map_err(crate::native_name::original_name_error)?;
+    { let mut copy = copied; copy.record_completed(crate::WorkCounters { bytes_copied: allocation, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
     acyclic_stream::PreparedOwnedBytes::new(buffer, ownership, original.runtime_meter_owner())
         .map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
@@ -4639,8 +4620,11 @@ impl HostRoot {
     #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn open_linux_metadata_target<W: crate::demand::SourceDemandReadWork>(
         &self, path: &Path, work: &mut W,
-    ) -> Result<LinuxMetadataTarget, DemandError> {
-        LinuxMetadataTarget::open(&self.directory, path, work)
+    ) -> Result<File, DemandError> {
+        with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+            open_unix(parent.as_raw_fd(), leaf, libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                || native_read_with_work(work))
+        })
     }
 
 
@@ -4723,7 +4707,7 @@ fn open_macos_metadata_target<W: crate::demand::SourceDemandReadWork>(
             libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK
                 | if kind == libc::S_IFIFO { libc::O_EVTONLY } else { 0 },
             || native_read_with_work(work))?;
-        let after = macos_fstat_measured(file.as_raw_fd(), work)?;
+        let after = fstat_with_work(file.as_raw_fd(), work)?;
         if before.st_dev != after.st_dev || before.st_ino != after.st_ino {
             return Err(io::Error::other("metadata target changed during admission").into());
         }
@@ -4760,66 +4744,6 @@ impl MacMetadataTarget {
         }
     }
 
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
-        &self, attributes: &[(Vec<u8>, acyclic_stream::OwnedBytes)], work: &mut W,
-    ) -> Result<(), DemandError> {
-        use std::os::unix::ffi::OsStrExt as _;
-        work.check()?;
-        if attributes.is_empty() { return Ok(()); }
-        let Self::Held(file) = self else {
-            return Err(NativeMetadataError("named_attributes on a non-ordinary file kind").into());
-        };
-        let fd = file.as_raw_fd();
-        for (name, value) in attributes {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            let mut entered = false;
-            let result = unix_name_with_work(OsStr::from_bytes(name), work, |name, work| {
-                entered = true;
-                native_write(work)?;
-                // SAFETY: the name and exact value slice remain live.
-                if unsafe { libc::fsetxattr(fd, name.as_ptr(), value.as_ptr().cast(),
-                    value.len(), 0, 0) } != 0 {
-                    return Err(io::Error::last_os_error().into());
-                }
-                let length = value.len().checked_add(1).ok_or(crate::WorkError::Overflow)?;
-                work.allocate(length as u64)?;
-                let mut readback = vec![0_u8; length];
-                let result = (|| {
-                    work.check()?;
-                    work.admit(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
-                    native_read_with_work(work)?;
-                    // SAFETY: readback is writable for its whole length.
-                    let read = unsafe { libc::fgetxattr(fd, name.as_ptr(),
-                        readback.as_mut_ptr().cast(), readback.len(), 0, 0) };
-                    if let Ok(read) = u64::try_from(read) {
-                        work.record(WorkCounters { source_bytes_read: read, ..WorkCounters::UNCHARGED })?;
-                    }
-                    if usize::try_from(read).ok() != Some(value.len()) {
-                        return Err(NativeMetadataError("named_attributes readback mismatch").into());
-                    }
-                    for (actual, expected) in readback.iter().zip(value.iter()) {
-                        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                        if actual != expected {
-                            return Err(NativeMetadataError("named_attributes readback mismatch").into());
-                        }
-                    }
-                    Ok(())
-                })();
-                drop(readback);
-                work.release(length as u64)?;
-                result
-            });
-            match result {
-                Err(DemandError::Io(error)) if !entered && error.kind() == io::ErrorKind::InvalidInput =>
-                    return Err(NativeMetadataError("named_attributes").into()),
-                result => result?,
-            }
-        }
-        Ok(())
-    }
-
-
     pub(crate) fn apply<W: crate::demand::SourceDemandReadWork>(
         self, metadata: crate::kernel::FileMetadata, work: &mut W,
     ) -> Result<(), DemandError> {
@@ -4853,7 +4777,7 @@ impl MacMetadataTarget {
             }
         };
         let fd = file.as_raw_fd();
-        let current = macos_fstat_measured(fd, work)?;
+        let current = fstat_with_work(fd, work)?;
         if let MetadataField::Value(mode) = metadata.posix_mode
             && mode & u32::from(libc::S_IFMT) != 0
             && mode & u32::from(libc::S_IFMT) != u32::from(current.st_mode & libc::S_IFMT)
@@ -4886,7 +4810,7 @@ impl MacMetadataTarget {
             }
         }
         apply_macos_timestamp_metadata_measured(fd, metadata, work)?;
-        let observed = macos_fstat_measured(fd, work)?;
+        let observed = fstat_with_work(fd, work)?;
         if macos_mismatch(metadata.posix_uid, observed.st_uid)
             || macos_mismatch(metadata.posix_gid, observed.st_gid)
             || matches!(metadata.posix_mode, MetadataField::Value(value) if u32::from(observed.st_mode) & 0o7777 != value & 0o7777)
@@ -5022,9 +4946,9 @@ fn macos_nanos(seconds: libc::time_t, nanoseconds: libc::c_long) -> Option<i64> 
     i64::try_from(nanos).ok()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[cfg(any(feature = "native-mount", test))]
-fn macos_fstat_measured<W: crate::demand::SourceDemandReadWork>(fd: std::os::fd::RawFd, work: &mut W) -> Result<libc::stat, DemandError> {
+fn fstat_with_work<W: crate::demand::SourceDemandReadWork>(fd: std::os::fd::RawFd, work: &mut W) -> Result<libc::stat, DemandError> {
     let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
     native_read_with_work(work)?;
     // SAFETY: fstat initializes the whole result on success.
@@ -7123,7 +7047,7 @@ mod tests {
             ..FileMetadata::default()
         };
         assert!(matches!(
-            target.apply(FileMetadata {
+            super::apply_linux_metadata(&target, FileMetadata {
                 created_ns: MetadataField::Value(12),
                 ..representable
             }, &mut work),
@@ -7133,7 +7057,7 @@ mod tests {
             std::fs::metadata(&moved)?.permissions().mode() & 0o7777,
             original_mode
         );
-        target.apply(representable, &mut work)?;
+        super::apply_linux_metadata(&target, representable, &mut work)?;
         let old = std::fs::metadata(&moved)?;
         assert_eq!(old.permissions().mode() & 0o777, 0o600);
         assert_eq!(old.atime() * 1_000_000_000 + old.atime_nsec(), atime_ns);
@@ -7166,7 +7090,7 @@ mod tests {
         let root = HostRoot::open(&root_path, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let target = root.open_linux_metadata_target(Path::new("link"), &mut work)?;
         let desired = 1_700_000_000_456_789_123_i64;
-        target.apply(FileMetadata {
+        super::apply_linux_metadata(&target, FileMetadata {
             modified_ns: MetadataField::Value(desired),
             ..FileMetadata::default()
         }, &mut work)?;

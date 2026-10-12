@@ -4,15 +4,15 @@ use serde_json::{Map, Value};
 
 type Result<T = ()> = std::result::Result<T, &'static str>;
 
-fn object(value: &Value) -> Result<&Map<String, Value>> {
+pub(crate) fn object(value: &Value) -> Result<&Map<String, Value>> {
     value.as_object().ok_or("expected object")
 }
 
-fn field<'a>(item: &'a Map<String, Value>, name: &str) -> Result<&'a Value> {
+pub(crate) fn field<'a>(item: &'a Map<String, Value>, name: &str) -> Result<&'a Value> {
     item.get(name).ok_or("missing field")
 }
 
-fn string(value: &Value) -> Result<&str> {
+pub(crate) fn string(value: &Value) -> Result<&str> {
     value
         .as_str()
         .filter(|value| !value.is_empty())
@@ -23,7 +23,7 @@ fn encoded_bytes(value: &Value) -> Result<&str> {
     value.as_str().ok_or("expected base64 string")
 }
 
-fn u64_string(value: &Value) -> Result<u64> {
+pub(crate) fn u64_string(value: &Value) -> Result<u64> {
     let value = string(value)?;
     if !value.as_bytes().iter().all(|byte| byte.is_ascii_digit())
         || (value.len() > 1 && value.starts_with('0'))
@@ -33,11 +33,11 @@ fn u64_string(value: &Value) -> Result<u64> {
     value.parse().map_err(|_| "expected decimal uint64 string")
 }
 
-fn boolean(value: &Value) -> Result<bool> {
+pub(crate) fn boolean(value: &Value) -> Result<bool> {
     value.as_bool().ok_or("expected boolean")
 }
 
-fn array(value: &Value) -> Result<&Vec<Value>> {
+pub(crate) fn array(value: &Value) -> Result<&Vec<Value>> {
     value.as_array().ok_or("expected array")
 }
 
@@ -89,7 +89,7 @@ fn sextet(value: u8) -> Option<u8> {
     }
 }
 
-fn bytes(value: &Value) -> Result<Vec<u8>> {
+pub(crate) fn bytes(value: &Value) -> Result<Vec<u8>> {
     decode_base64(encoded_bytes(value)?).ok_or("expected base64")
 }
 

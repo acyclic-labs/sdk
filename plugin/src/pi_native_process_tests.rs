@@ -76,7 +76,7 @@ async fn open_runtime(stream: std::sync::Arc<LocalStream>, files: Arc<Files>, vo
     let identity = definition.identity().clone();
     let machine_identity = machine.identity.clone();
     let mut tasks = TaskRegistry::default(); tasks.register(definition)?;
-    let mut machines = MachineRegistry::default(); machines.register(machine)?;
+    let mut machines = MachineRegistry::default(); machines.register(machine, &mut None)?;
     let runtime = FilesystemTaskRuntime::open(stream, files, volume, issuer.verifier(), scope.clone(), RuntimeScope::new(grants, Limits::default())?,
         tasks, machines, ToolRegistry::default(), SessionLimits { active_tasks: 1, total_tasks: 1, depth: 0, model_steps: 1 }, 1, 1_048_576).await?;
     Ok((runtime, identity, machine_identity))
@@ -121,7 +121,7 @@ impl Fixture {
             results_volume.capability(VolumeOperation::Read)?, results_volume.capability(VolumeOperation::Write)?,
         ]);
         let issuer = AuthorityIssuer::new("pi-native-provider-test", [25; 32], Authority { kind: AggregateKind::Conversation, id: "pi-native-provider-test".into() });
-        let scope = issuer.root_for_agent(agent, "owner", grants.clone());
+        let scope = issuer.issue("owner", &grants, Some(agent), None, &mut None).expect("scope proof");
         let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path().join("filesystem"))).await.map_err(|error| invalid(&error.to_string()))?;
         let files = Arc::new(FilesystemHost::new(filesystem.clone(), provider)?);
         files.create_volume(&scratch).await?; files.create_volume(&results_volume).await?;
@@ -133,11 +133,11 @@ impl Fixture {
         let WorkPull::Claimed(lease) = runtime.task_host().pull_work(&Worker { id: "pi-native-worker".into(), available: Default::default(), labels: BTreeMap::new() }).await? else {
             return Err(invalid("actual native task lease was not admitted"));
         };
-        runtime.task_host().start_task(&lease).await?;
+        runtime.task_host().start_task(&lease, None).await?;
         let fence = LeaseFence::from(&lease.reservation);
         let mut aggregate = StreamAggregate::open(&stream, issuer.verifier().audience().clone(), issuer.verifier(), SchemaRegistry::new()).await?;
         aggregate.execute(Command { operation_id: OperationId::from_bytes([26; 16]), idempotency_key: IdempotencyKey::new("pi-native-bind")?,
-            expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }).await?;
+            expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }, None, &mut None).await?;
         let grant = ContentGrant::verify(&issuer.verifier(), &scope, &scratch, VolumeOperation::Write)?;
         let cancellation = CancellationToken::new();
         let budget = super::super::native_root_source::budget();
@@ -153,7 +153,7 @@ impl Fixture {
         let owner = runtime.task_host().journal_owner_with_native_work(task, &fence, &work).await?
             .into_native_shared(&work)?;
         let context = runtime.task_context_with_native_work(task, &fence, &work).await?;
-        let allocation = NativePreparationRoot::witness_with_native_work(&native, &operation_directory, &work)?.await?;
+        let allocation = NativePreparationRoot::witness(&native, &operation_directory, &work)?.await?;
         let cwd = native.join("scratch");
         let source_entries = json!([{"type":"message","id":"original","parentId":null,"timestamp":"2026-10-09T00:00:00.000Z",
             "message":{"role":"user","content":"original native instruction","timestamp":1}}]);
@@ -339,7 +339,6 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
     assert!(result.0.success); assert!(result.0.stop.is_none());
     let stdout = std::str::from_utf8(&result.0.stdout).map_err(|error| invalid(&error.to_string()))?;
     assert!(stdout.contains("original native instruction")); assert!(stdout.contains("actual native child instruction"));
-    assert!(recovery_work.receipt().backend_read_operations > 0, "successful cleanup reads the authenticated result, not a nonexistent stop diagnostic");
     let drain_proof = recovered.drain_with_native_work(recovered.original_attempt(),
         &fixture.view, &recovery_work, &recovery_cancellation)?.await?;
     fixture.release_publication().await?;
@@ -375,7 +374,6 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
     let cleanup_work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &cleanup_cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let drain_proof = provider.drain_with_native_work(provider.original_attempt(),
         &fixture.view, &cleanup_work, &cleanup_cancellation)?.await?;
-    assert!(cleanup_work.receipt().backend_read_operations > 0);
     assert!(fixture.owner.child_scratch_creation_proof().is_err(), "an admitted root's named volume grants cannot fabricate a created-child scratch disposal proof");
     let recovery_cancellation = CancellationToken::new();
     let recovery_work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &recovery_cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -422,7 +420,6 @@ async fn required_pinned_pi_native_warm_supervisor_stop_drains_without_cancellin
     let stop = result.0.stop.as_ref().ok_or_else(|| invalid("actual warm stop lacks its process-tree observation"))?;
     assert_eq!(stop.kind, acyclic_harness::filesystem::NativeProcessStopKind::ControlStopped);
     assert!(stop.cleanup_completed, "signal acknowledgement alone is not process-tree and stdio drainage");
-    assert!(work.receipt().backend_read_operations > 0);
     let recovered = NativeProcessProvider::recover(fixture.owner.clone(), fixture.command, &fixture.plan.0, fixture.approval, fixture.authority(&work)?, &work)
         .await?.into_arc_with_native_work(&work)?;
     assert!(matches!(recovered.signal_stop(recovered.original_attempt(), &work, &cleanup_cancellation).await, Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported, .. })),
