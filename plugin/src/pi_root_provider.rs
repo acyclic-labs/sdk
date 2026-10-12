@@ -506,7 +506,7 @@ fn pi_input_write_grant_with_native_work(
 fn validate_pi_input_media(
     owner: &PiOwnerConfig, file: &FileRef, path: &str, display_name: &str, media_type: &str,
 ) -> Result<()> {
-    owner.policy().limits.validate_file(file)?;
+    owner.policy().limits.validate_file(file, &mut None)?;
     if file.volume() != &owner.policy().journal || file.path() != path || file.display_name() != display_name
         || file.descriptor().media_type() != media_type
         || file.descriptor().byte_length() > owner.policy().maximum_payload_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES) {

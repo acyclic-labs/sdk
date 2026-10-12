@@ -64,7 +64,7 @@ fn selected_conflict(reason: &'static str) -> Error {
 }
 
 fn validate_page(directory: &str, maximum_entries: u32) -> Result<()> {
-    if !directory.is_empty() { validate_content_path(directory)?; }
+    if !directory.is_empty() { validate_content_path(directory, &mut None)?; }
     if maximum_entries == 0 || maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE {
         return Err(selected_invalid("selected inspection page bound is invalid"));
     }
@@ -242,7 +242,7 @@ pub(crate) async fn build_writeback_generations<'a>(
         return Err(selected_invalid("writeback repeats a selected path"));
     }
     for path in paths {
-        validate_content_path(path)?;
+        validate_content_path(path, &mut Some(&mut acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let mut absolute = native_work.display(&format_args!("/{path}")).map_err(native_error)?;
         absolute_paths.2.absorb(&mut absolute.1).map_err(native_error)?;
         absolute_paths.0.push(absolute.0);
@@ -629,7 +629,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
         if context.durable_task_id() != Some(self.reader) {
             return Err(selected_unauthorized("native selected reader belongs to another original caller"));
         }
-        if !path.is_empty() { validate_content_path(path)?; }
+        if !path.is_empty() { validate_content_path(path, &mut None)?; }
         Ok(())
     }
 
@@ -803,7 +803,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
         return Err(selected_invalid("native import repeats a selected path"));
     }
     for path in paths {
-        validate_content_path(path)?;
+        validate_content_path(path, &mut Some(&mut acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         source.require_reader(caller, path)?;
         caller_owner.native_view_owner().verify_with_native_work(native_work).await?;
         let absolute = native_work.display(&format_args!("/{path}")).map_err(native_error)?;

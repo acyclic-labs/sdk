@@ -842,7 +842,7 @@ pub(crate) async fn read_imported_selected_files(
     let start = evidence.map(|request| request.path.as_str());
     for &path in &paths.0 {
         if start.is_some_and(|start| path < start) { continue; }
-        acyclic_harness::conversation::validate_content_path(path)?;
+        acyclic_harness::conversation::validate_content_path(path, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let selected = descriptor.command.paths.iter().any(|prefix| path == prefix
             || path.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with('/')));
         if !selected { return Err(denied("candidate evidence edit escaped the explicitly selected paths")); }
